@@ -1,7 +1,7 @@
 # rtl-buddy
 # vim: set sw=2:ts=2:et:
 #
-# Copyright 2024 Loh Zhi-Hern, Xie Jiacheng, Emil Goh, Damien Lim, Chai Wei Lynthia, Zubin Jain
+# Copyright 2024 rtl_buddy contributors
 #
 """
 coverage module handles rtl-buddy coverage result orchestration

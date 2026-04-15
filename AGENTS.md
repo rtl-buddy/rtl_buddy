@@ -4,8 +4,6 @@
 
 This repo is the source-of-truth implementation of the `rtl_buddy` CLI.
 
-Do implementation work here first.
-
 ## Key Files
 
 ```text
