@@ -23,7 +23,8 @@ Run `python scripts/gen_cli_reference.py` from the repo root to regenerate it.
 
 def run_help(*args):
     cmd = ["rtl-buddy", *args, "--help"]
-    env = {**os.environ, "COLUMNS": "88", "NO_COLOR": "1"}
+    env = {k: v for k, v in os.environ.items() if k != "FORCE_COLOR"}
+    env.update({"COLUMNS": "88", "NO_COLOR": "1", "TERM": "dumb"})
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except FileNotFoundError:
