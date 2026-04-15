@@ -1,60 +1,46 @@
 # Installation
 
-## Current distribution: git submodule
+`rtl_buddy` is now published as a standalone open-source repo and is intended to be installed into your project environment with `uv`.
 
-`rtl_buddy` is currently distributed as a git submodule inside your RTL project.
-
-### Setup
-
-1. Add `rtl_buddy` as a submodule under `tools/rtl_buddy`:
-
-   ```bash
-   git submodule add <rtl_buddy-repo-url> tools/rtl_buddy
-   ```
-
-2. Point `requirements.txt` at the submodule:
-
-   ```text
-   -e tools/rtl_buddy
-   ```
-
-3. Install from `requirements.txt` in your project's setup script:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Verify:
-
-   ```bash
-   rtl-buddy --version
-   ```
-
-### Updating
-
-To update to a newer commit:
-
-```bash
-git -C tools/rtl_buddy fetch
-git -C tools/rtl_buddy checkout <tag-or-sha>
-git add tools/rtl_buddy
-git commit -m "Update rtl_buddy to <version>"
-```
-
-## Planned distribution: uv / git install
-
-A `uv`-based install path is planned as the primary distribution mechanism. This page will be updated when that path is available.
-
-The intended form will be:
-
-```bash
-uv add "rtl_buddy @ git+<repo-url>@<tag>"
-```
-
-See [Submodule to uv migration](migrations/submodule-to-uv.md) for transition guidance when this path lands.
-
-## Requirements
+## Prerequisites
 
 - Python 3.11 or later
-- Simulation tool: Verilator (macOS/Linux) or VCS (Linux)
-- Optional: Verible for lint and syntax checks
+- `uv`
+- Simulation tool on `PATH`: Verilator (macOS/Linux) or VCS (Linux)
+- Optional Verible binaries if you want to use `uv run rb verible ...`
+- Optional system-level coverage tools:
+  - `lcov` for `.info` export and HTML reports
+  - Antmicro `coverview` for Coverview package generation
+
+`rtl_buddy` can be used with different project-specific tool setups, but the primary supported flows are Verilator and VCS. Basic Verible command integration exists; broader first-class Verible and PeakRDL workflows are on the roadmap.
+
+## Install Into A Project With `uv`
+
+Add `rtl_buddy` to your project environment from the public Git repo:
+
+```bash
+uv add "rtl_buddy @ git+ssh://git@github.com/rtl-buddy/rtl_buddy.git@<tag-or-sha>"
+```
+
+If your environment cannot use SSH, use the HTTPS form instead:
+
+```bash
+uv add "rtl_buddy @ git+https://github.com/rtl-buddy/rtl_buddy.git@<tag-or-sha>"
+```
+
+Then verify the install:
+
+```bash
+uv run rb --version
+```
+
+## Updating
+
+To move a project to a newer `rtl_buddy` version, update the pinned git ref in your project and resync the environment:
+
+```bash
+uv lock
+uv sync
+```
+
+Commit the resulting lockfile change in your project repo.

@@ -7,37 +7,37 @@ This guide assumes `rtl_buddy` is already installed in your project. See [Instal
 Run the test named `basic` using `tests.yaml` in the current directory:
 
 ```bash
-rtl-buddy test basic
+uv run rb test basic
 ```
 
 Specify a different test config file:
 
 ```bash
-rtl-buddy test basic --test-config path/to/tests.yaml
+uv run rb test basic --test-config path/to/tests.yaml
 ```
 
 Run all tests in a config:
 
 ```bash
-rtl-buddy test
+uv run rb test
 ```
 
 List available tests without running them:
 
 ```bash
-rtl-buddy test --list
+uv run rb test --list
 ```
 
 ## Run a regression
 
 ```bash
-rtl-buddy regression
+uv run rb regression
 ```
 
 This uses the regression config path from `root_config.yaml`. To specify a different file:
 
 ```bash
-rtl-buddy regression --reg-config path/to/regressions.yaml
+uv run rb regression --reg-config path/to/regressions.yaml
 ```
 
 ## Run with randomization
@@ -45,19 +45,19 @@ rtl-buddy regression --reg-config path/to/regressions.yaml
 Run a test once with a new random seed:
 
 ```bash
-rtl-buddy test basic --rnd-new
+uv run rb test basic --rnd-new
 ```
 
 Run the same test 5 times with different seeds:
 
 ```bash
-rtl-buddy randtest basic 5
+uv run rb randtest basic 5
 ```
 
 Repeat a specific iteration from a previous `randtest` run:
 
 ```bash
-rtl-buddy randtest basic 5 --rnd-rpt 3
+uv run rb randtest basic 5 --rnd-rpt 3
 ```
 
 ## Check logs
@@ -69,7 +69,7 @@ Simulation output for each test goes to `logs/{test_name}.log`. For convenience,
 For machine-readable output (useful with CI or AI agents):
 
 ```bash
-rtl-buddy --machine test basic
+uv run rb --machine test basic
 ```
 
 In machine mode, `rtl_buddy.log` is written as JSON Lines and console output is plain text. See [For Agents](agents.md) for more on machine mode.

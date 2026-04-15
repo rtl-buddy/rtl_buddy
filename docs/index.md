@@ -2,7 +2,7 @@
 
 RTL Buddy is a CLI tool for automating tests, regressions, and RTL workflows for Verilog/SystemVerilog codebases.
 
-It wraps simulation tools (Verilator on macOS, VCS on Linux) and provides a structured, config-driven test and regression system for ASIC and FPGA projects.
+It wraps simulation tools (primarily Verilator on macOS/Linux and VCS on Linux) and provides a structured, config-driven test and regression system for ASIC and FPGA projects.
 
 ## Features
 
@@ -10,8 +10,10 @@ It wraps simulation tools (Verilator on macOS, VCS on Linux) and provides a stru
 - Randomized seed testing with repeat support
 - Plugin hooks for sweep generation, test pre-processing, and post-processing
 - Filelist generation from `models.yaml`
-- Verible lint and syntax checking integration
+- Basic Verible command integration for lint, syntax, formatting, and preprocessing
 - Machine-readable JSONL logging for use with AI agents and CI pipelines
+
+`rtl_buddy` can be adapted to different project toolchains, but the primary supported flows are Verilator and VCS. Broader first-class Verible and PeakRDL workflows are on the roadmap.
 
 ## Getting Started
 
