@@ -1,5 +1,10 @@
 # `rtl_buddy`
 
+[![PyPI](https://img.shields.io/pypi/v/rtl_buddy)](https://pypi.org/project/rtl_buddy/)
+[![Python](https://img.shields.io/pypi/pyversions/rtl_buddy)](https://pypi.org/project/rtl_buddy/)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-rtl--buddy.github.io-blue)](https://rtl-buddy.github.io/rtl_buddy/)
+
 `rtl_buddy` is a CLI for running RTL tests, regressions, filelist generation, and adjacent workflow automation in Verilog and SystemVerilog projects. It is designed to work well for both humans and AI agents.
 
 It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day verification work. The primary supported flows are Verilator and VCS-based compile, simulation, and regression workflows. Basic Verible command integration exists, while broader first-class Verible and PeakRDL workflows are on the roadmap.
@@ -29,7 +34,11 @@ It is built to sit on top of the tools your project already uses, while giving y
 
 ## Installation
 
-`rtl_buddy` is installed into your project environment with `uv` directly from the Git repository. PyPI publication is planned but not yet available.
+`rtl_buddy` is available on [PyPI](https://pypi.org/project/rtl_buddy/) and installed into your project environment with `uv`:
+
+```bash
+uv add rtl_buddy
+```
 
 Prerequisites:
 
@@ -43,43 +52,23 @@ Prerequisites:
   - `lcov` for LCOV and HTML coverage export
   - [Coverview](https://github.com/antmicro/coverview) for Coverview package generation
 
-See [docs/install.md](docs/install.md) for the full install flow.
-
 ## Documentation
 
-Full documentation lives in [`docs/`](docs/), is built with MkDocs, and is intended to be published on GitHub Pages.
-
-To preview the docs locally while developing:
-
-```bash
-uv sync --group docs
-uv run mkdocs serve
-```
-
-Useful entry points:
-
-- [Installation](docs/install.md)
-- [Quick Start](docs/quickstart.md)
-- [Coverage](docs/concepts/coverage.md)
-- [CLI Reference](docs/reference/cli.md)
-- [YAML Formats](docs/reference/yaml.md)
+Full documentation is at **[rtl-buddy.github.io/rtl_buddy](https://rtl-buddy.github.io/rtl_buddy/)**.
 
 ## Quick Start
 
-Run a test:
+The fastest way to get started is the **[rtl-buddy project template](https://github.com/rtl-buddy/rtl-buddy-project-template)** — a ready-to-run RTL project with example designs, tests, and full `rtl_buddy` integration.
+
+Once you have a project set up, the basic commands are:
 
 ```bash
-uv run rb test basic
+uv run rb test basic      # run a single test
+uv run rb regression      # run the full regression
 ```
 
-Run a regression:
-
-```bash
-uv run rb regression
-```
-
-For full usage, see [docs/quickstart.md](docs/quickstart.md).
+For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/quickstart/).
 
 ## Known Issues
 
-See [docs/known-issues.md](docs/known-issues.md).
+See the [known issues page](https://rtl-buddy.github.io/rtl_buddy/known-issues/).
