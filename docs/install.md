@@ -1,6 +1,6 @@
 # Installation
 
-`rtl_buddy` is now published as a standalone open-source repo and is intended to be installed into your project environment with `uv`.
+`rtl_buddy` is available on PyPI and installed into your project environment with `uv`.
 
 ## Prerequisites
 
@@ -16,16 +16,10 @@
 
 ## Install Into A Project With `uv`
 
-Add `rtl_buddy` to your project environment from the public Git repo:
+Add `rtl_buddy` to your project environment:
 
 ```bash
-uv add "rtl_buddy @ git+ssh://git@github.com/rtl-buddy/rtl_buddy.git@<tag-or-sha>"
-```
-
-If your environment cannot use SSH, use the HTTPS form instead:
-
-```bash
-uv add "rtl_buddy @ git+https://github.com/rtl-buddy/rtl_buddy.git@<tag-or-sha>"
+uv add rtl_buddy
 ```
 
 Then verify the install:
@@ -36,10 +30,10 @@ uv run rb --version
 
 ## Updating
 
-To move a project to a newer `rtl_buddy` version, update the pinned git ref in your project and resync the environment:
+To move a project to a newer `rtl_buddy` version:
 
 ```bash
-uv lock
+uv add rtl_buddy@latest
 uv sync
 ```
 

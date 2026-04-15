@@ -29,7 +29,11 @@ It is built to sit on top of the tools your project already uses, while giving y
 
 ## Installation
 
-`rtl_buddy` is installed into your project environment with `uv` directly from the Git repository. PyPI publication is planned but not yet available.
+`rtl_buddy` is available on [PyPI](https://pypi.org/project/rtl_buddy/) and installed into your project environment with `uv`:
+
+```bash
+uv add rtl_buddy
+```
 
 Prerequisites:
 
@@ -43,26 +47,17 @@ Prerequisites:
   - `lcov` for LCOV and HTML coverage export
   - [Coverview](https://github.com/antmicro/coverview) for Coverview package generation
 
-See [docs/install.md](docs/install.md) for the full install flow.
+See the [installation docs](https://rtl-buddy.github.io/rtl_buddy/install/) for the full setup guide.
 
 ## Documentation
 
-Full documentation lives in [`docs/`](docs/), is built with MkDocs, and is intended to be published on GitHub Pages.
+Full documentation is at **[rtl-buddy.github.io/rtl_buddy](https://rtl-buddy.github.io/rtl_buddy/)**.
 
-To preview the docs locally while developing:
-
-```bash
-uv sync --group docs
-uv run mkdocs serve
-```
-
-Useful entry points:
-
-- [Installation](docs/install.md)
-- [Quick Start](docs/quickstart.md)
-- [Coverage](docs/concepts/coverage.md)
-- [CLI Reference](docs/reference/cli.md)
-- [YAML Formats](docs/reference/yaml.md)
+- [Installation](https://rtl-buddy.github.io/rtl_buddy/install/)
+- [Quick Start](https://rtl-buddy.github.io/rtl_buddy/quickstart/)
+- [Coverage](https://rtl-buddy.github.io/rtl_buddy/concepts/coverage/)
+- [CLI Reference](https://rtl-buddy.github.io/rtl_buddy/reference/cli/)
+- [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/reference/yaml/)
 
 ## Quick Start
 
@@ -78,8 +73,8 @@ Run a regression:
 uv run rb regression
 ```
 
-For full usage, see [docs/quickstart.md](docs/quickstart.md).
+For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/quickstart/).
 
 ## Known Issues
 
-See [docs/known-issues.md](docs/known-issues.md).
+See the [known issues page](https://rtl-buddy.github.io/rtl_buddy/known-issues/).
