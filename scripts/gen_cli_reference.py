@@ -3,6 +3,7 @@
 
 import argparse
 import difflib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,8 +23,9 @@ Run `python scripts/gen_cli_reference.py` from the repo root to regenerate it.
 
 def run_help(*args):
     cmd = ["rtl-buddy", *args, "--help"]
+    env = {**os.environ, "COLUMNS": "88"}
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     except FileNotFoundError:
         raise RuntimeError("rtl-buddy not found in PATH")
     if result.returncode != 0:
