@@ -61,16 +61,13 @@ Full documentation is at **[rtl-buddy.github.io/rtl_buddy](https://rtl-buddy.git
 
 ## Quick Start
 
-Run a test:
+The fastest way to get started is the **[rtl-buddy project template](https://github.com/rtl-buddy/rtl-buddy-project-template)** — a ready-to-run RTL project with example designs, tests, and full `rtl_buddy` integration.
+
+Once you have a project set up, the basic commands are:
 
 ```bash
-uv run rb test basic
-```
-
-Run a regression:
-
-```bash
-uv run rb regression
+uv run rb test basic      # run a single test
+uv run rb regression      # run the full regression
 ```
 
 For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/quickstart/).
