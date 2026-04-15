@@ -21,19 +21,27 @@ authors = [
 
 description = "RTL Buddy is a build-system with testplan, regression, workflow support for Verilog RTL codebases."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 keywords = [ "SystemVerilog", "Verilog", "ASIC", "FPGA" ]
 
 classifiers = [
-  "Programming Language :: Python",
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
 ]
 
 [project.urls]
-# Source = ""
-# Tracker
-# Changelog
-# Documentation
+Source = "https://github.com/rtl-buddy/rtl_buddy"
+Documentation = "https://rtl-buddy.github.io/rtl_buddy/"
+Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
+
+[tool.setuptools_scm]
 
 [dependency-groups]
 docs = [
