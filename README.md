@@ -1,5 +1,10 @@
 # `rtl_buddy`
 
+[![PyPI](https://img.shields.io/pypi/v/rtl_buddy)](https://pypi.org/project/rtl_buddy/)
+[![Python](https://img.shields.io/pypi/pyversions/rtl_buddy)](https://pypi.org/project/rtl_buddy/)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-rtl--buddy.github.io-blue)](https://rtl-buddy.github.io/rtl_buddy/)
+
 `rtl_buddy` is a CLI for running RTL tests, regressions, filelist generation, and adjacent workflow automation in Verilog and SystemVerilog projects. It is designed to work well for both humans and AI agents.
 
 It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day verification work. The primary supported flows are Verilator and VCS-based compile, simulation, and regression workflows. Basic Verible command integration exists, while broader first-class Verible and PeakRDL workflows are on the roadmap.
@@ -47,17 +52,9 @@ Prerequisites:
   - `lcov` for LCOV and HTML coverage export
   - [Coverview](https://github.com/antmicro/coverview) for Coverview package generation
 
-See the [installation docs](https://rtl-buddy.github.io/rtl_buddy/install/) for the full setup guide.
-
 ## Documentation
 
 Full documentation is at **[rtl-buddy.github.io/rtl_buddy](https://rtl-buddy.github.io/rtl_buddy/)**.
-
-- [Installation](https://rtl-buddy.github.io/rtl_buddy/install/)
-- [Quick Start](https://rtl-buddy.github.io/rtl_buddy/quickstart/)
-- [Coverage](https://rtl-buddy.github.io/rtl_buddy/concepts/coverage/)
-- [CLI Reference](https://rtl-buddy.github.io/rtl_buddy/reference/cli/)
-- [YAML Formats](https://rtl-buddy.github.io/rtl_buddy/reference/yaml/)
 
 ## Quick Start
 
