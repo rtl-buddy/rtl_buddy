@@ -22,13 +22,6 @@ hooks:
 
 plugins:
   - search
-  - mike:
-      alias_type: symlink
-      canonical_version: latest
-
-extra:
-  version:
-    provider: mike
 
 nav:
   - Home: index.md
