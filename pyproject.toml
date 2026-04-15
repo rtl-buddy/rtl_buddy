@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=80.9.0", "setuptools-scm[simple]>=9.2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtl_buddy"
+dynamic = ["version"]
+requires-python = ">=3.11"
+dependencies = [
+  "ruamel.yaml >= 0.18.15",
+  "typer >= 0.19.2",
+  "click >= 8.3.0",
+  "pyserde[yaml] >= 0.27.0",
+  "rich >= 14.0.0"
+]
+
+authors = [
+  { name = "Zhi-Hern Loh"},
+  { name = "Xie Jiacheng"}
+]
+
+description = "RTL Buddy is a build-system with testplan, regression, workflow support for Verilog RTL codebases."
+readme = "README.md"
+license = { file = "LICENSE" }
+keywords = [ "SystemVerilog", "Verilog", "ASIC", "FPGA" ]
+
+classifiers = [
+  "Programming Language :: Python",
+  "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+
+[project.urls]
+# Source = ""
+# Tracker
+# Changelog
+# Documentation
+
+[dependency-groups]
+docs = [
+  "mkdocs>=1.6.0",
+  "mkdocs-material>=9.5.0",
+  "mike>=2.1.0",
+]
+
+[project.scripts]
+rtl_buddy = "rtl_buddy.__main__:main"
+rtl-buddy = "rtl_buddy.__main__:main"
+rb = "rtl_buddy.__main__:main"

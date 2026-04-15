@@ -1,0 +1,43 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'scripts/gen_cli_reference.py'
+      - 'src/rtl_buddy/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'scripts/gen_cli_reference.py'
+      - 'src/rtl_buddy/**'
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --group docs
+
+      - name: Check CLI reference is up to date
+        run: uv run python scripts/gen_cli_reference.py --check
+
+      - name: Build docs
+        run: uv run mkdocs build --strict
+
+      - name: Check site links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline site/**/*.html
+          fail: true

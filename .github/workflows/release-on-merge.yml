@@ -1,0 +1,91 @@
+name: Release on PR Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout merged commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Compute next version
+        id: version
+        run: |
+          LATEST=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          if [ -z "$LATEST" ]; then
+            LATEST="v0.0.0"
+          fi
+
+          VERSION=${LATEST#v}
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+          if echo "$LABELS" | grep -qi '"version/major"'; then
+            NEW_TAG="v$((MAJOR + 1)).0.0"
+          elif echo "$LABELS" | grep -qi '"version/minor"'; then
+            NEW_TAG="v${MAJOR}.$((MINOR + 1)).0"
+          elif echo "$LABELS" | grep -qi '"version/patch"'; then
+            NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          else
+            echo "No version label found, skipping release."
+            echo "new_tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "latest_tag=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Bumping ${LATEST} -> ${NEW_TAG}"
+
+      - name: Create and push tag
+        if: steps.version.outputs.new_tag != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.new_tag }}" \
+            -m "Release ${{ steps.version.outputs.new_tag }}"
+          git push origin "${{ steps.version.outputs.new_tag }}"
+
+      - name: Create GitHub release
+        if: steps.version.outputs.new_tag != ''
+        uses: actions/github-script@v8
+        env:
+          TAG: ${{ steps.version.outputs.new_tag }}
+          PREV_TAG: ${{ steps.version.outputs.latest_tag }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_USER: ${{ github.event.pull_request.user.login }}
+          SERVER_URL: ${{ github.server_url }}
+          REPO: ${{ github.repository }}
+        with:
+          script: |
+            const tag = process.env.TAG;
+            const prevTag = process.env.PREV_TAG;
+            let body = `**PR #${process.env.PR_NUMBER}** by @${process.env.PR_USER}: ${process.env.PR_TITLE}`;
+
+            if (prevTag && prevTag !== 'v0.0.0') {
+              body += `\n\n**Full changelog:** ${process.env.SERVER_URL}/${process.env.REPO}/compare/${prevTag}...${tag}`;
+            }
+
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Release ${tag}`,
+              body,
+              draft: false,
+              prerelease: false,
+            });

@@ -1,0 +1,13 @@
+**egg-info
+**__pycache__
+**.sw?
+tags
+.venv
+.worktrees/
+# Sphinx
+docs/_build/
+_build/
+
+.DS_Store
+# MkDocs build output
+site/
