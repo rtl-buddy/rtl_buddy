@@ -4,7 +4,7 @@ on:
   release:
     types: [published]
   schedule:
-    - cron: "0 5 * * 1"  # Weekly on Monday
+    - cron: "0 5 * * 1"  # Weekly on Monday — catches new Verilator releases
   workflow_dispatch:
     inputs:
       manual_verilator:
@@ -17,9 +17,11 @@ on:
 jobs:
   resolve-versions:
     runs-on: ubuntu-latest
+    permissions:
+      packages: read
     outputs:
-      verilator_versions: ${{ steps.resolve.outputs.verilator_versions }}
-      rtl_buddy_versions: ${{ steps.resolve.outputs.rtl_buddy_versions }}
+      pairs: ${{ steps.filter.outputs.pairs }}
+      build_needed: ${{ steps.filter.outputs.build_needed }}
       latest_verilator: ${{ steps.resolve.outputs.latest_verilator }}
       latest_rtl_buddy: ${{ steps.resolve.outputs.latest_rtl_buddy }}
     steps:
@@ -44,20 +46,52 @@ jobs:
           python3 docker/scripts/resolve_supported_versions.py \
             --verilator-tags-file "${{ steps.fetch.outputs.verilator_tags }}" \
             --rtl-buddy-tags-file "${{ steps.fetch.outputs.rtl_buddy_tags }}" \
-            --manual-verilator "${{ github.event.inputs.manual_verilator }}" \
-            --manual-rtl-buddy "${{ github.event.inputs.manual_rtl_buddy }}" \
+            --manual-verilator "${{ inputs.manual_verilator }}" \
+            --manual-rtl-buddy "${{ inputs.manual_rtl_buddy }}" \
             --github-output "$GITHUB_OUTPUT"
+
+      - name: Filter to unbuilt pairs
+        id: filter
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERILATOR_VERSIONS: ${{ steps.resolve.outputs.verilator_versions }}
+          RTL_BUDDY_VERSIONS: ${{ steps.resolve.outputs.rtl_buddy_versions }}
+        run: |
+          set -euo pipefail
+          EXISTING=$(gh api /orgs/rtl-buddy/packages/container/verilator_rb/versions \
+            --paginate --jq '.[].metadata.container.tags[]' 2>/dev/null || true)
+          export EXISTING
+          PAIRS=$(python3 - <<'PYEOF'
+          import json, os
+          verilator = json.loads(os.environ['VERILATOR_VERSIONS'])
+          rtl_buddy = json.loads(os.environ['RTL_BUDDY_VERSIONS'])
+          existing = set(os.environ.get('EXISTING', '').split())
+          pairs = [
+              {'verilator': v, 'rtl_buddy': r}
+              for v in verilator
+              for r in rtl_buddy
+              if f'{v}-{r}' not in existing
+          ]
+          print(json.dumps(pairs))
+          PYEOF
+          )
+          echo "pairs=$PAIRS" >> "$GITHUB_OUTPUT"
+          if [ "$PAIRS" = "[]" ]; then
+            echo "build_needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_needed=true" >> "$GITHUB_OUTPUT"
+          fi
 
   build:
     runs-on: ubuntu-latest
     needs: resolve-versions
+    if: needs.resolve-versions.outputs.build_needed == 'true'
     permissions:
       packages: write
     strategy:
       fail-fast: false
       matrix:
-        verilator: ${{ fromJSON(needs.resolve-versions.outputs.verilator_versions) }}
-        rtl_buddy: ${{ fromJSON(needs.resolve-versions.outputs.rtl_buddy_versions) }}
+        include: ${{ fromJSON(needs.resolve-versions.outputs.pairs) }}
     steps:
       - uses: actions/checkout@v4
 
