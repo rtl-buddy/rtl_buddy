@@ -1,0 +1,97 @@
+name: Build and Push Docker Image
+
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 5 * * 1"  # Weekly on Monday
+  workflow_dispatch:
+    inputs:
+      manual_verilator:
+        description: "Optional comma-separated Verilator versions (e.g. v5.044,v5.046)"
+        required: false
+      manual_rtl_buddy:
+        description: "Optional comma-separated rtl_buddy versions (e.g. v2.1.4)"
+        required: false
+
+jobs:
+  resolve-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      verilator_versions: ${{ steps.resolve.outputs.verilator_versions }}
+      rtl_buddy_versions: ${{ steps.resolve.outputs.rtl_buddy_versions }}
+      latest_verilator: ${{ steps.resolve.outputs.latest_verilator }}
+      latest_rtl_buddy: ${{ steps.resolve.outputs.latest_rtl_buddy }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch release tags
+        id: fetch
+        run: |
+          set -euo pipefail
+          VERILATOR_TAGS=$(mktemp)
+          RTL_BUDDY_TAGS=$(mktemp)
+          git ls-remote --tags https://github.com/verilator/verilator \
+            | sed 's|.*refs/tags/||' | grep -v '\^{}' > "$VERILATOR_TAGS"
+          git ls-remote --tags https://github.com/rtl-buddy/rtl_buddy \
+            | sed 's|.*refs/tags/||' | grep -v '\^{}' > "$RTL_BUDDY_TAGS"
+          echo "verilator_tags=$VERILATOR_TAGS" >> "$GITHUB_OUTPUT"
+          echo "rtl_buddy_tags=$RTL_BUDDY_TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve version matrix
+        id: resolve
+        run: |
+          python3 docker/scripts/resolve_supported_versions.py \
+            --verilator-tags-file "${{ steps.fetch.outputs.verilator_tags }}" \
+            --rtl-buddy-tags-file "${{ steps.fetch.outputs.rtl_buddy_tags }}" \
+            --manual-verilator "${{ github.event.inputs.manual_verilator }}" \
+            --manual-rtl-buddy "${{ github.event.inputs.manual_rtl_buddy }}" \
+            --github-output "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: resolve-versions
+    permissions:
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        verilator: ${{ fromJSON(needs.resolve-versions.outputs.verilator_versions) }}
+        rtl_buddy: ${{ fromJSON(needs.resolve-versions.outputs.rtl_buddy_versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/rtl-buddy/verilator_rb"
+          TAGS="${IMAGE}:${{ matrix.verilator }}-${{ matrix.rtl_buddy }}"
+          if [ "${{ matrix.verilator }}" = "${{ needs.resolve-versions.outputs.latest_verilator }}" ] \
+          && [ "${{ matrix.rtl_buddy }}" = "${{ needs.resolve-versions.outputs.latest_rtl_buddy }}" ]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          file: docker/Dockerfile
+          build-args: |
+            VERILATOR_VERSION=${{ matrix.verilator }}
+            RTL_BUDDY_VERSION=${{ matrix.rtl_buddy }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=registry,ref=ghcr.io/rtl-buddy/verilator_rb:buildcache-${{ matrix.verilator }}
+          cache-to: type=registry,ref=ghcr.io/rtl-buddy/verilator_rb:buildcache-${{ matrix.verilator }},mode=max
