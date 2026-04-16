@@ -46,11 +46,15 @@ RUN git clone --depth 1 --branch "${VERILATOR_VERSION}" "${VERILATOR_REPO}" veri
     && rm -rf verilator \
     && ccache -C
 
-# Install rtl_buddy from PyPI via uv
+# Install rtl_buddy from PyPI via uv into a venv on PATH.
+# A venv avoids PEP 668 (Ubuntu 24.04 marks the system Python as externally managed).
 # Strip leading 'v' so "v2.1.4" becomes the valid PyPI specifier "2.1.4".
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-RUN version="$(echo "${RTL_BUDDY_VERSION}" | sed 's/^v//')" \
-    && uv pip install --system "rtl_buddy==${version}"
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN uv venv "$VIRTUAL_ENV" \
+    && version="$(echo "${RTL_BUDDY_VERSION}" | sed 's/^v//')" \
+    && uv pip install "rtl_buddy==${version}"
 
 WORKDIR /work
 
