@@ -9,94 +9,60 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Iterable
 
 
-VERILATOR_RE = re.compile(r"^v?(\d+)\.(\d+)$")
-RTL_BUDDY_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
-
-
-def read_tags(path: str | None) -> list[str]:
-    if not path:
-        return []
-    return [line.strip() for line in Path(path).read_text().splitlines() if line.strip()]
-
-
-def parse_manual_versions(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    return [token for token in re.split(r"[\s,]+", raw.strip()) if token]
-
-
-def normalize_verilator(tag: str) -> tuple[int, int, str]:
-    match = VERILATOR_RE.fullmatch(tag)
-    if not match:
-        raise ValueError(f"Unsupported Verilator tag format: {tag}")
-    major, patch = (int(part) for part in match.groups())
-    return major, patch, f"v{major}.{patch:03d}"
-
-
-def normalize_rtl_buddy(tag: str) -> tuple[int, int, int, str]:
-    match = RTL_BUDDY_RE.fullmatch(tag)
-    if not match:
-        raise ValueError(f"Unsupported rtl_buddy tag format: {tag}")
-    major, minor, patch = (int(part) for part in match.groups())
-    return major, minor, patch, f"v{major}.{minor}.{patch}"
-
-
-def select_verilator_versions(tags: Iterable[str]) -> list[str]:
+def select_verilator(tags: list[str]) -> list[str]:
+    """Return the last 3 even-numbered Verilator release tags, sorted."""
     seen: dict[tuple[int, int], str] = {}
     for tag in tags:
-        match = VERILATOR_RE.fullmatch(tag)
-        if not match:
-            continue
-        major, patch = (int(part) for part in match.groups())
-        if patch % 2 != 0:
-            continue
-        seen[(major, patch)] = f"v{major}.{patch:03d}"
-
-    selected = [value for _, value in sorted(seen.items())]
-    return selected[-3:]
+        m = re.fullmatch(r"v?(\d+)\.(\d+)", tag)
+        if m and int(m[2]) % 2 == 0:
+            major, patch = int(m[1]), int(m[2])
+            seen[(major, patch)] = f"v{major}.{patch:03d}"
+    return [v for _, v in sorted(seen.items())][-3:]
 
 
-def select_rtl_buddy_versions(tags: Iterable[str]) -> list[str]:
-    per_major: dict[int, list[tuple[int, int, int, str]]] = defaultdict(list)
+def select_rtl_buddy(tags: list[str]) -> list[str]:
+    """Return the last 5 semver tags for each of the latest 2 major versions."""
+    per_major: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
     seen: set[tuple[int, int, int]] = set()
-
     for tag in tags:
-        match = RTL_BUDDY_RE.fullmatch(tag)
-        if not match:
+        m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+        if not m:
             continue
-        major, minor, patch = (int(part) for part in match.groups())
-        key = (major, minor, patch)
-        if key in seen:
-            continue
-        seen.add(key)
-        per_major[major].append((major, minor, patch, f"v{major}.{minor}.{patch}"))
-
-    selected: list[str] = []
+        key = int(m[1]), int(m[2]), int(m[3])
+        if key not in seen:
+            seen.add(key)
+            per_major[key[0]].append(key)
+    result = []
     for major in sorted(per_major)[-2:]:
-        versions = sorted(per_major[major])
-        selected.extend(version for _, _, _, version in versions[-5:])
-    return selected
+        for t in sorted(per_major[major])[-5:]:
+            result.append(f"v{t[0]}.{t[1]}.{t[2]}")
+    return result
 
 
-def normalize_manual_verilator(tags: Iterable[str]) -> list[str]:
-    versions = sorted({normalize_verilator(tag) for tag in tags})
-    return [version for _, _, version in versions]
+def normalize_verilator(tags: list[str]) -> list[str]:
+    """Normalize and deduplicate manually specified Verilator tags."""
+    seen: dict[tuple[int, int], str] = {}
+    for tag in tags:
+        m = re.fullmatch(r"v?(\d+)\.(\d+)", tag)
+        if not m:
+            raise ValueError(f"Unsupported Verilator tag format: {tag}")
+        major, patch = int(m[1]), int(m[2])
+        seen[(major, patch)] = f"v{major}.{patch:03d}"
+    return [v for _, v in sorted(seen.items())]
 
 
-def normalize_manual_rtl_buddy(tags: Iterable[str]) -> list[str]:
-    versions = sorted({normalize_rtl_buddy(tag) for tag in tags})
-    return [version for _, _, _, version in versions]
-
-
-def write_output(path: str | None, values: dict[str, str]) -> None:
-    if not path:
-        return
-    with open(path, "a", encoding="utf-8") as handle:
-        for key, value in values.items():
-            handle.write(f"{key}={value}\n")
+def normalize_rtl_buddy(tags: list[str]) -> list[str]:
+    """Normalize and deduplicate manually specified rtl_buddy tags."""
+    seen: dict[tuple[int, int, int], str] = {}
+    for tag in tags:
+        m = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+        if not m:
+            raise ValueError(f"Unsupported rtl_buddy tag format: {tag}")
+        key = int(m[1]), int(m[2]), int(m[3])
+        seen[key] = f"v{key[0]}.{key[1]}.{key[2]}"
+    return [v for _, v in sorted(seen.items())]
 
 
 def main() -> int:
@@ -108,40 +74,41 @@ def main() -> int:
     parser.add_argument("--github-output")
     args = parser.parse_args()
 
-    manual_verilator = parse_manual_versions(args.manual_verilator)
-    manual_rtl_buddy = parse_manual_versions(args.manual_rtl_buddy)
+    def read_tags(path: str | None) -> list[str]:
+        if not path:
+            return []
+        return [line.strip() for line in Path(path).read_text().splitlines() if line.strip()]
+
+    def split(raw: str | None) -> list[str]:
+        return [t for t in re.split(r"[\s,]+", raw.strip()) if t] if raw else []
 
     try:
-        verilator_versions = (
-            normalize_manual_verilator(manual_verilator)
-            if manual_verilator
-            else select_verilator_versions(read_tags(args.verilator_tags_file))
-        )
-        rtl_buddy_versions = (
-            normalize_manual_rtl_buddy(manual_rtl_buddy)
-            if manual_rtl_buddy
-            else select_rtl_buddy_versions(read_tags(args.rtl_buddy_tags_file))
-        )
+        verilator = normalize_verilator(split(args.manual_verilator)) if args.manual_verilator else select_verilator(read_tags(args.verilator_tags_file))
+        rtl_buddy = normalize_rtl_buddy(split(args.manual_rtl_buddy)) if args.manual_rtl_buddy else select_rtl_buddy(read_tags(args.rtl_buddy_tags_file))
     except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+        print(exc, file=sys.stderr)
         return 1
 
-    if not verilator_versions:
+    if not verilator:
         print("No supported Verilator versions found.", file=sys.stderr)
         return 1
-    if not rtl_buddy_versions:
+    if not rtl_buddy:
         print("No supported rtl_buddy versions found.", file=sys.stderr)
         return 1
 
     outputs = {
-        "verilator_versions": json.dumps(verilator_versions),
-        "rtl_buddy_versions": json.dumps(rtl_buddy_versions),
-        "latest_verilator": verilator_versions[-1],
-        "latest_rtl_buddy": rtl_buddy_versions[-1],
+        "verilator_versions": json.dumps(verilator),
+        "rtl_buddy_versions": json.dumps(rtl_buddy),
+        "latest_verilator": verilator[-1],
+        "latest_rtl_buddy": rtl_buddy[-1],
     }
-
-    write_output(args.github_output, outputs)
     print(json.dumps(outputs, indent=2))
+
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as f:
+            for key, value in outputs.items():
+                f.write(f"{key}={value}\n")
+
     return 0
 
 
