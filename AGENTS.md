@@ -10,6 +10,8 @@ This repo is the source-of-truth implementation of the `rtl_buddy` CLI.
 src/rtl_buddy/
 ├── __main__.py            # package entry point
 ├── rtl_buddy.py           # Typer CLI and top-level command flow
+├── skill_install.py       # `rtl-buddy skill ...` subcommands
+├── skill/                 # bundled agent skill (shipped in the wheel)
 ├── logging_utils.py       # log_event(), setup_logging(), console helpers
 ├── errors.py              # FatalRtlBuddyError, FilelistError, SetupScriptError
 ├── seed_mode.py           # seed handling enum
@@ -87,6 +89,28 @@ After meaningful `rtl_buddy` changes:
 1. **If any CLI command, flag, or help text changed**: run `python scripts/gen_cli_reference.py` and commit the updated `docs/reference/cli.md` in the same PR. The file is committed to the repo and must stay in sync — CI will catch drift via `python scripts/gen_cli_reference.py --check`.
 2. Update any downstream agent docs if command behavior, YAML schema, version expectations, or validation notes changed.
 3. Update downstream integrations to the intended commit as needed.
+
+## Skill Distribution
+
+The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated.
+
+### Rules when editing skill content
+
+- `src/rtl_buddy/skill/SKILL.md` is the single source consumed by both Claude Code (at `.claude/skills/rtl_buddy/`) and Codex (at `.agents/skills/rtl_buddy/` for project scope, `~/.codex/skills/rtl_buddy/` for user scope).
+- Keep `SKILL.md` ≤60 lines and agent-specific. Anything covered by the docs site should cite <https://rtl-buddy.github.io/rtl_buddy/>, not restate it.
+- Any edit to `SKILL.md` takes effect for users only after they re-run `rtl-buddy skill install`. `rtl-buddy skill status` surfaces stale installs via the `.rtl_buddy_skill_version` marker.
+- `src/rtl_buddy/skill/gitignore_snippet.txt` is printed by project-level installs and by `rtl-buddy skill print-gitignore`.
+- Package-data for the skill dir is declared in `pyproject.toml` under `[tool.setuptools.package-data]`. Adding new files to `src/rtl_buddy/skill/` requires updating that glob.
+
+### Install scope policy
+
+- **Default is user-level** (`~/.claude/skills/rtl_buddy/`, `~/.codex/skills/rtl_buddy/`). This is deliberate: the skill is workflow-pattern guidance that changes rarely across rtl_buddy versions, and a single copy per machine nudges users to keep rtl_buddy versions aligned across projects.
+- `--project` (or `--root PATH`) opts into project-level install at `<root>/.claude/skills/rtl_buddy/` and `<root>/.agents/skills/rtl_buddy/`. Claude Code's project-level precedence means a project-level copy overrides the user-level one when both exist — this is the escape hatch for projects that pin a divergent rtl_buddy major.
+- Do not flip the default to project-level without rediscussion; the precedence model makes user-level-plus-project-override the clean path.
+
+### Project root discovery
+
+`skill_install._discover_project_root()` reuses `config.root._discover_root_cfg()` (walks up for `root_config.yaml`), then falls back to walking up for `.git/`, then errors. This handles agents invoking from `verif/<suite>/` subdirs — `Path.cwd()` would be wrong.
 
 ## Release Workflow
 
