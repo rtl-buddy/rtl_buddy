@@ -19,6 +19,7 @@ from .logging_utils import emit_console_text, is_machine_mode, log_event, render
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .seed_mode import SeedMode
+from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
@@ -61,6 +62,7 @@ class RtlBuddy():
     self.app.command("regression", help="run rtl regression")(self.do_rtl_regression)
     self.app.command("filelist", help="generate filelists using models.yaml")(self.do_gen_model_filelist)
     self.app.command("verible", help="run verible cmd")(self.do_verible)
+    self.app.add_typer(skill_app, name="skill", help="manage the rtl_buddy agent skill")
 
     if '.' not in os.environ["PATH"].split(os.pathsep):
       os.environ["PATH"] = '.' + os.pathsep + os.environ["PATH"]
@@ -108,9 +110,13 @@ class RtlBuddy():
     if ctx.resilient_parsing or any(arg in {"--help", "-h"} for arg in rtl_buddy_argv):
       return
 
+    if ctx.invoked_subcommand == "skill":
+      return
+
     setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
 
     log_event(logger, logging.INFO, "cli.start", version=version("rtl-buddy"))
+
     if ctx.invoked_subcommand in self._GIT_COMMANDS and not self._is_test_list_invocation(ctx):
       self.show_git_rev()
 

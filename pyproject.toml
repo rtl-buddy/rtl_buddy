@@ -43,6 +43,9 @@ Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
 
 [tool.setuptools_scm]
 
+[tool.setuptools.package-data]
+"rtl_buddy.skill" = ["SKILL.md", "gitignore_snippet.txt"]
+
 [dependency-groups]
 docs = [
   "mkdocs>=1.6.0",

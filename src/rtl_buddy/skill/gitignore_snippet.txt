@@ -1,0 +1,3 @@
+# rtl_buddy skill (materialized by `rtl-buddy skill install --project`)
+.claude/skills/rtl_buddy/
+.agents/skills/rtl_buddy/
