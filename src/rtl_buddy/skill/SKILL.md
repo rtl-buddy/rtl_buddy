@@ -5,7 +5,9 @@ description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, r
 
 # rtl_buddy
 
-You are running [`rtl_buddy`](https://rtl-buddy.github.io/rtl_buddy/) — a Verilog/SV build and regression driver. This skill covers agent-specific conventions. Everything else lives in the docs site; fetch it when you need CLI or YAML detail.
+You are running [`rtl_buddy`](https://rtl-buddy.github.io/rtl_buddy/) — a Verilog/SV build and regression driver. It is a CLI tool that makes running tests, regressions and more easy, with configuration done in YAML files.
+
+This skill covers agent-specific conventions. Everything else lives in the docs site; fetch it when you need CLI or YAML detail.
 
 A docs-query MCP tool is planned. Until it ships, use WebFetch on <https://rtl-buddy.github.io/rtl_buddy/> for authoritative reference.
 
@@ -28,6 +30,15 @@ rtl-buddy --version
 ```
 
 This skill ships with the CLI, so its content matches the installed major. Surface any observed behavior differences in your summary.
+
+## YAML types
+
+rtl_buddy reads four YAML file types. The names are conventional — paths are set in `root_config.yaml` or passed with `-c`. See <https://rtl-buddy.github.io/rtl_buddy/> for exact schemas.
+
+- **`root_config.yaml`** — project root. Selects platform, builders, builder modes, verible path, coverage config, and the default `regression.yaml` path. Discovered by walking up from the invocation directory.
+- **`regression.yaml`** — lists the suite `tests.yaml` paths and reg-levels that `regression` iterates over.
+- **`tests.yaml`** — per-suite. Declares `testbenches` (TB filelists) and `tests` that map test names to a model, model_path, and testbench. Lives in each verification suite dir.
+- **`models.yaml`** — per-design. Maps model names to source/include filelists; consumed by `filelist` and referenced from `tests.yaml`.
 
 ## Multi-suite discovery and CWD rules
 
