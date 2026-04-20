@@ -3,6 +3,7 @@
 **.sw?
 tags
 .venv
+build/
 .worktrees/
 # Sphinx
 docs/_build/

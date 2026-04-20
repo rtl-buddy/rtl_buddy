@@ -101,6 +101,38 @@ def _same_content(path: Path, text: str) -> bool:
     return hashlib.sha256(path.read_bytes()).hexdigest() == hashlib.sha256(text.encode()).hexdigest()
 
 
+def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> str:
+    snippet_lines = snippet.strip().splitlines()
+    comment_lines = [l for l in snippet_lines if l.startswith("#")]
+    pattern_lines = [l for l in snippet_lines if l and not l.startswith("#")]
+
+    existing_text = gitignore_path.read_text() if gitignore_path.is_file() else ""
+    existing_lines = {l.strip() for l in existing_text.splitlines()}
+
+    missing = [p for p in pattern_lines if p.strip() not in existing_lines]
+    if not missing:
+        return "already present"
+
+    lines_to_add = []
+    for cl in comment_lines:
+        if cl.strip() not in existing_lines:
+            lines_to_add.append(cl)
+    lines_to_add.extend(missing)
+
+    if dry_run:
+        return f"would add {len(missing)} pattern(s) (dry run)"
+
+    if not existing_text:
+        prefix = ""
+    elif existing_text.endswith("\n"):
+        prefix = "\n"
+    else:
+        prefix = "\n\n"
+
+    gitignore_path.open("a").write(prefix + "\n".join(lines_to_add) + "\n")
+    return f"added {len(missing)} pattern(s)"
+
+
 @app.command("install")
 def cmd_install(
     project: Annotated[bool, typer.Option("--project", help="install into the discovered project root instead of the user home")] = False,
@@ -157,11 +189,9 @@ def cmd_install(
         typer.echo(f"Wrote {changed} file(s); {unchanged} already up to date.")
 
     if scope == "project":
-        typer.echo("")
-        typer.echo("Add these lines to your project's .gitignore (skill files are machine-local):")
-        typer.echo("")
-        for line in _bundled_gitignore_snippet().splitlines():
-            typer.echo(f"  {line}")
+        gitignore_path = base / ".gitignore"
+        result = _update_gitignore(gitignore_path, _bundled_gitignore_snippet(), dry_run=dry_run)
+        typer.echo(f".gitignore: {result}")
 
 
 @app.command("uninstall")
