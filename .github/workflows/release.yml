@@ -1,4 +1,4 @@
-name: Release on PR Merge
+name: Release
 
 on:
   pull_request:
