@@ -5,10 +5,24 @@ on:
     types: [closed]
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      description:
+        description: 'Release description (optional)'
+        required: false
+        type: string
 
 jobs:
   release:
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.merge_commit_sha }}
 
       - name: Compute next version
         id: version
@@ -35,17 +49,29 @@ jobs:
           MINOR=$(echo "$VERSION" | cut -d. -f2)
           PATCH=$(echo "$VERSION" | cut -d. -f3)
 
-          LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
-          if echo "$LABELS" | grep -qi '"version/major"'; then
-            NEW_TAG="v$((MAJOR + 1)).0.0"
-          elif echo "$LABELS" | grep -qi '"version/minor"'; then
-            NEW_TAG="v${MAJOR}.$((MINOR + 1)).0"
-          elif echo "$LABELS" | grep -qi '"version/patch"'; then
-            NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BUMP_TYPE="${{ inputs.bump }}"
           else
-            echo "No version label found, skipping release."
-            echo "new_tag=" >> "$GITHUB_OUTPUT"
-            exit 0
+            LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+            if echo "$LABELS" | grep -qi '"version/major"'; then
+              BUMP_TYPE="major"
+            elif echo "$LABELS" | grep -qi '"version/minor"'; then
+              BUMP_TYPE="minor"
+            elif echo "$LABELS" | grep -qi '"version/patch"'; then
+              BUMP_TYPE="patch"
+            else
+              echo "No version label found, skipping release."
+              echo "new_tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          if [ "$BUMP_TYPE" = "major" ]; then
+            NEW_TAG="v$((MAJOR + 1)).0.0"
+          elif [ "$BUMP_TYPE" = "minor" ]; then
+            NEW_TAG="v${MAJOR}.$((MINOR + 1)).0"
+          else
+            NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
           fi
 
           echo "latest_tag=${LATEST}" >> "$GITHUB_OUTPUT"
@@ -70,13 +96,20 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_USER: ${{ github.event.pull_request.user.login }}
+          DESCRIPTION: ${{ inputs.description }}
+          ACTOR: ${{ github.actor }}
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
         with:
           script: |
             const tag = process.env.TAG;
             const prevTag = process.env.PREV_TAG;
-            let body = `**PR #${process.env.PR_NUMBER}** by @${process.env.PR_USER}: ${process.env.PR_TITLE}`;
+            let body;
+            if (context.eventName === 'workflow_dispatch') {
+              body = process.env.DESCRIPTION || `Manual release triggered by @${process.env.ACTOR}`;
+            } else {
+              body = `**PR #${process.env.PR_NUMBER}** by @${process.env.PR_USER}: ${process.env.PR_TITLE}`;
+            }
 
             if (prevTag && prevTag !== 'v0.0.0') {
               body += `\n\n**Full changelog:** ${process.env.SERVER_URL}/${process.env.REPO}/compare/${prevTag}...${tag}`;
