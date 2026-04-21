@@ -105,7 +105,7 @@ class RootConfig:
       self.rtl_builder_cfgs = { cfg.get_name(): cfg for cfg in data.builders }
 
       # Populate verible configs
-      self.verible_cfgs = { cfg.name: cfg.initialise(self.root_cfg_path) for cfg in data.veribles }
+      self.verible_cfgs = { cfg.name: cfg.initialise() for cfg in data.veribles }
 
       # Populate coverage configs
       self.coverage_cfgs = {
