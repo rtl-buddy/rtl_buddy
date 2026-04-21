@@ -5,35 +5,30 @@ description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, r
 
 # rtl_buddy
 
-You are running [`rtl_buddy`](https://rtl-buddy.github.io/rtl_buddy/) — a Verilog/SV build and regression driver. It is a CLI tool that makes running tests, regressions and more easy, with configuration done in YAML files.
+You are running [`rtl_buddy`](https://rtl-buddy.github.io/rtl_buddy/) — a Verilog/SV build and regression driver configured with YAML.
 
-This skill covers agent-specific conventions. Everything else lives in the docs site; fetch it when you need CLI or YAML detail.
+This skill covers agent-specific conventions. Use local docs first:
 
-A docs-query MCP tool is planned. Until it ships, use WebFetch on <https://rtl-buddy.github.io/rtl_buddy/> for authoritative reference.
+- `rtl-buddy docs list`
+- `rtl-buddy docs show agents`
+- `rtl-buddy --machine docs show reference/yaml`
+
+GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> remains the fallback reference.
 
 ## Always use `--machine`
 
-All agent invocations must use `--machine` so `rtl_buddy.log` is written as JSONL and console output is plain text:
+All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL and console output is plain text.
 
-```bash
-rtl-buddy --machine <subcommand> ...
-```
-
-See <https://rtl-buddy.github.io/rtl_buddy/agents/> for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
+See `rtl-buddy docs show agents` or <https://rtl-buddy.github.io/rtl_buddy/agents/> for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
 
 ## Version check
 
-Report the installed version at the top of every run summary:
-
-```bash
-rtl-buddy --version
-```
-
+Report `rtl-buddy --version` at the top of every run summary.
 This skill ships with the CLI, so its content matches the installed major. Surface any observed behavior differences in your summary.
 
 ## YAML types
 
-rtl_buddy reads four YAML file types. The names are conventional — paths are set in `root_config.yaml` or passed with `-c`. See <https://rtl-buddy.github.io/rtl_buddy/> for exact schemas.
+rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` for exact schemas.
 
 - **`root_config.yaml`** — project root. Selects platform, builders, builder modes, verible path, coverage config, and the default `regression.yaml` path. Discovered by walking up from the invocation directory.
 - **`regression.yaml`** — lists the suite `tests.yaml` paths and reg-levels that `regression` iterates over.
@@ -42,15 +37,10 @@ rtl_buddy reads four YAML file types. The names are conventional — paths are s
 
 ## Multi-suite discovery and CWD rules
 
-Tests are defined in one or more `tests.yaml` files, and their referenced testbench/model paths are typically relative. Running from the wrong directory causes path failures.
-
-1. Discover suites:
-   ```bash
-   rg --files -g '**/tests.yaml'
-   ```
-2. Run `test` / `randtest` **from each suite's directory**.
-3. Run `regression` from the repo root so `root_config.yaml` and `design/regression.yaml` resolve naturally.
-4. Summarize results per suite, not just globally.
+- Discover suites with `rg --files -g '**/tests.yaml'`.
+- Run `test` / `randtest` from each suite directory.
+- Run `regression` from the repo root.
+- Summarize results per suite, not just globally.
 
 ## Log locations
 
@@ -58,11 +48,5 @@ Tests are defined in one or more `tests.yaml` files, and their referenced testbe
 - `logs/<test>.log`, `logs/<test>.err`, `logs/<test>.randseed` — per-test artifacts in the same CWD.
 - `logs/<test>.compile.log` — written only on compile failure.
 - Symlinks `test.log`, `test.err`, `test.randseed` point at the latest run.
-
-For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `logs/`. Report logs per suite.
-
-## Where to look next
-
-- CLI reference: <https://rtl-buddy.github.io/rtl_buddy/reference/cli/>
-- YAML schemas and coverage workflow: <https://rtl-buddy.github.io/rtl_buddy/>
-- Known issues: <https://rtl-buddy.github.io/rtl_buddy/known-issues/>
+- For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `logs/`; report logs per suite.
+- Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`

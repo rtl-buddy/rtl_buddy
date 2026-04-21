@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 import sys
+import json
 import typer
 from importlib.metadata import version
 from typing_extensions import Annotated
@@ -14,6 +15,7 @@ import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.model import ModelConfigLoader
+from .docs_access import get_page, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
 from .logging_utils import emit_console_text, is_machine_mode, log_event, render_summary, setup_logging
 from .runner.test_results import SetupFailResults, SkipResults
@@ -56,6 +58,7 @@ class RtlBuddy():
 
   def __init__(self, name):
     self.app = typer.Typer(no_args_is_help=True)
+    self.docs_app = typer.Typer(help="browse bundled rtl_buddy documentation", no_args_is_help=True)
     self.app.callback()(self.root_options)
     self.app.command("test", help="run a simple test")(self.do_cmd_test)
     self.app.command("randtest", help="repeat a test with multiple random seeds")(self.do_rand_test)
@@ -63,6 +66,9 @@ class RtlBuddy():
     self.app.command("filelist", help="generate filelists using models.yaml")(self.do_gen_model_filelist)
     self.app.command("verible", help="run verible cmd")(self.do_verible)
     self.app.add_typer(skill_app, name="skill", help="manage the rtl_buddy agent skill")
+    self.docs_app.command("list", help="list bundled documentation pages")(self.do_docs_list)
+    self.docs_app.command("show", help="show a bundled documentation page")(self.do_docs_show)
+    self.app.add_typer(self.docs_app, name="docs", help="browse bundled documentation")
 
     if '.' not in os.environ["PATH"].split(os.pathsep):
       os.environ["PATH"] = '.' + os.pathsep + os.environ["PATH"]
@@ -73,6 +79,7 @@ class RtlBuddy():
     self.root_cfg = None
     self.coverage = None
     self.run_depth = RunDepth.POST
+    self.machine = False
 
   def run(self):
     try:
@@ -110,7 +117,9 @@ class RtlBuddy():
     if ctx.resilient_parsing or any(arg in {"--help", "-h"} for arg in rtl_buddy_argv):
       return
 
-    if ctx.invoked_subcommand == "skill":
+    self.machine = machine
+
+    if ctx.invoked_subcommand in {"skill", "docs"}:
       return
 
     setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
@@ -542,6 +551,28 @@ class RtlBuddy():
     log_event(logger, logging.INFO, "command.filelist", model=model_name, output=output_path)
     vlog_fl.write_output(output_filepath=output_path, unroll=unroll, flatten=flatten, strip=strip_options, deduplicate=deduplicate)
     return
+
+  def do_docs_list(self):
+    pages = [page.to_list_item() for page in list_pages()]
+    if self.machine:
+      print(json.dumps({"pages": pages}, ensure_ascii=True))
+      return
+
+    for page in pages:
+      print(f'{page["slug"]} - {page["title"]}: {page["summary"]}')
+
+  def do_docs_show(self,
+    slug: Annotated[str, typer.Argument(help="MkDocs path slug, for example concepts/root-config")],
+    ):
+    page = get_page(slug)
+    if page is None:
+      raise click.ClickException(f"Unknown docs page '{slug}'. Run `rtl-buddy docs list` to see available slugs.")
+
+    if self.machine:
+      print(json.dumps(page.to_show_payload(), ensure_ascii=True))
+      return
+
+    print(page.content, end="" if page.content.endswith("\n") else "\n")
 
   def do_lint(self):
     assert False, "not yet impl"

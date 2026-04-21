@@ -169,6 +169,20 @@ def test_help_outside_project_root_is_clean():
   assert "Traceback" not in result.stderr
 
 
+def test_docs_help_outside_project_root_is_clean():
+  result = subprocess.run(
+    [sys.executable, "-m", "rtl_buddy", "docs", "--help"],
+    cwd="/tmp",
+    capture_output=True,
+    text=True,
+    check=False,
+  )
+
+  assert result.returncode == 0
+  assert "browse bundled documentation" in result.stdout
+  assert "Traceback" not in result.stderr
+
+
 def test_show_git_rev_is_best_effort(monkeypatch):
   rb = RtlBuddy(name="rtl_buddy")
 

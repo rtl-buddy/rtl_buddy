@@ -45,6 +45,7 @@ Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
 
 [tool.setuptools.package-data]
 "rtl_buddy.skill" = ["SKILL.md", "gitignore_snippet.txt"]
+"rtl_buddy" = ["docs_data.json"]
 
 [dependency-groups]
 docs = [

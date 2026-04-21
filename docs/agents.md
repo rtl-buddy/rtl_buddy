@@ -2,6 +2,18 @@
 
 This page covers how AI agents should interact with `rtl_buddy`. It describes the bundled skill, machine mode, log formats, and the recommended validation workflow.
 
+## Local docs access
+
+Use the bundled docs commands first when you need CLI or YAML reference:
+
+```bash
+rtl-buddy docs list
+rtl-buddy docs show agents
+rtl-buddy --machine docs show reference/yaml
+```
+
+`docs list` shows each page's slug, title, and summary. `docs show --machine` returns lightweight metadata plus the canonical Markdown for the selected page. GitHub Pages remains a convenient human-facing fallback.
+
 ## Agent Skill Install
 
 The `rtl_buddy` wheel bundles an agent skill for Claude Code and Codex. Users run a one-time install to materialize it into their agent skill directories:
