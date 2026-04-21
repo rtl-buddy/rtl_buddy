@@ -41,7 +41,7 @@ cfg-rtl-builder:
 
 cfg-verible:
   - name: "verible-macos"
-    path: "/opt/homebrew/bin"
+    path: "tools/verible/macos/active/bin"
     extra_args:
       lint:
         - "--rules=-module-filename"

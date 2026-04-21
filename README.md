@@ -47,7 +47,7 @@ Prerequisites:
 - A simulator on `PATH`
   - Verilator is the recommended open-source starting point
   - VCS is also supported as a first-class flow
-- Optional: Verible if you want to use `uv run rb verible ...` — e.g. `brew tap chipsalliance/verible && brew install verible` on macOS, or see [Verible releases](https://github.com/chipsalliance/verible/releases) for other platforms
+- Optional Verible binaries if you want to use `uv run rb verible ...`
 - Optional system-level coverage tools:
   - `lcov` for LCOV and HTML coverage export
   - [Coverview](https://github.com/antmicro/coverview) for Coverview package generation
