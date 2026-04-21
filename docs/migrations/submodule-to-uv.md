@@ -1,6 +1,6 @@
 # Migrating from Submodule to uv
 
-This page will document the migration path from the current submodule-based distribution to the planned `uv`/git install path.
+Use this page to migrate an RTL project from the legacy `rtl_buddy` submodule flow to a pinned `uv` dependency.
 
 ## Current state
 

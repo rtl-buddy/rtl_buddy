@@ -1,6 +1,6 @@
 # For Agents
 
-This page covers how AI agents should interact with `rtl_buddy`. It describes the bundled skill, machine mode, log formats, and the recommended validation workflow.
+Use this page to run `rtl_buddy` effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
 
 ## Local docs access
 
