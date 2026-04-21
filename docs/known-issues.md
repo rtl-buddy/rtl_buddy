@@ -1,4 +1,5 @@
 # Known Issues
+List of known issues with rtl_buddy and how it uses VCS, Verilator, etc.
 
 ## Instance pRNG seeding with Verilator
 

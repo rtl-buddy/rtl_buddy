@@ -44,6 +44,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ filelist    generate filelists using models.yaml                                     │
 │ verible     run verible cmd                                                          │
 │ skill       manage the rtl_buddy agent skill                                         │
+│ docs        browse bundled documentation                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -197,5 +198,21 @@ Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...
 │ status           Report whether the skill is installed and whether it matches the    │
 │                  current package version.                                            │
 │ print-gitignore  Print the gitignore lines for project-level skill installs.         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## docs
+
+```text
+Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...                                      
+                                                                                        
+ browse bundled documentation                                                           
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ list  list bundled documentation pages                                               │
+│ show  show a bundled documentation page                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

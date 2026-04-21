@@ -1,6 +1,6 @@
 # Quick Start
 
-This guide assumes `rtl_buddy` is already installed in your project. See [Installation](install.md) if not.
+Use this guide to run your first `rtl_buddy` test, regression, and supporting commands in an already-installed project.
 
 ## Run a test
 
