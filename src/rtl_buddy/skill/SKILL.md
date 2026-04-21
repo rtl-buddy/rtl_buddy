@@ -5,15 +5,15 @@ description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, r
 
 # rtl_buddy
 
-You are running [`rtl_buddy`](https://rtl-buddy.github.io/rtl_buddy/) — a Verilog/SV build and regression driver configured with YAML.
+You are running rtl_buddy a Verilog/SV build and regression helper configured with YAML.
 
-This skill covers agent-specific conventions. Use local docs first:
+This skill covers agent-specific conventions. Use local docs if you need help:
 
 - `rtl-buddy docs list`
 - `rtl-buddy docs show agents`
 - `rtl-buddy --machine docs show reference/yaml`
 
-GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> remains the fallback reference.
+Use GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> as a fallback reference.
 
 ## Always use `--machine`
 
@@ -50,3 +50,6 @@ rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` f
 - Symlinks `test.log`, `test.err`, `test.randseed` point at the latest run.
 - For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `logs/`; report logs per suite.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
+
+## Bugs & Improvements
+If you discover a rtl_buddy bug or potential improvement, you can post an issue on GitHub <https://github.com/rtl-buddy/rtl_buddy/> documenting your findings, with permission from your user.
