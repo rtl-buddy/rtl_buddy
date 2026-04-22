@@ -1,0 +1,36 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/lint.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/lint.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+
+jobs:
+  ruff-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install lint dependencies
+        run: uv sync --group lint
+
+      - name: Run Ruff
+        run: uv run ruff check

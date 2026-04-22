@@ -67,12 +67,13 @@ def test_coverage_reporter_generate_unmerged_artifacts_passes_suite_source_root(
   captured = {}
 
   class FakeCov:
-    def generate_artifacts(self, raw_path, outdir, html_output, artifact_name, source_roots):
+    def generate_artifacts(self, raw_path, outdir, html_output, artifact_name, source_roots, html_outdir=None):
       captured["raw_path"] = raw_path
       captured["outdir"] = outdir
       captured["html_output"] = html_output
       captured["artifact_name"] = artifact_name
       captured["source_roots"] = list(source_roots)
+      captured["html_outdir"] = html_outdir
       return CoverageMetrics(lcov_path=str(tmp_path / "coverage.info"))
 
   reporter = CoverageReporter(DummyRootCfg(tmp_path))
@@ -93,6 +94,7 @@ def test_coverage_reporter_generate_unmerged_artifacts_passes_suite_source_root(
   assert captured["raw_path"] == "/tmp/basic.dat"
   assert captured["html_output"] is True
   assert captured["artifact_name"].endswith("tests.yaml__basic")
+  assert captured["html_outdir"] == str(tmp_path)
   assert captured["source_roots"] == [str(tmp_path / "verif" / "sandbox")]
 
 
@@ -100,12 +102,13 @@ def test_coverage_reporter_merge_passes_source_roots(monkeypatch, tmp_path):
   captured = {}
 
   class FakeCov:
-    def merge(self, raw_paths, outdir, merge_basename, html_output, source_roots):
+    def merge(self, raw_paths, outdir, merge_basename, html_output, source_roots, html_outdir=None):
       captured["raw_paths"] = list(raw_paths)
       captured["outdir"] = outdir
       captured["merge_basename"] = merge_basename
       captured["html_output"] = html_output
       captured["source_roots"] = list(source_roots)
+      captured["html_outdir"] = html_outdir
       return CoverageMetrics(line=0.5)
 
   reporter = CoverageReporter(DummyRootCfg(tmp_path))
@@ -125,6 +128,7 @@ def test_coverage_reporter_merge_passes_source_roots(monkeypatch, tmp_path):
 
   assert captured["raw_paths"] == ["/tmp/basic.dat"]
   assert captured["html_output"] is True
+  assert captured["html_outdir"] == str(tmp_path)
   assert captured["source_roots"] == [str(tmp_path / "verif" / "sandbox")]
 
 

@@ -40,6 +40,14 @@ It is built to sit on top of the tools your project already uses, while giving y
 uv add rtl_buddy
 ```
 
+For local development in this repo, install the composite `dev` group:
+
+```bash
+uv sync --group dev
+uv run ruff check
+uv run pytest
+```
+
 Prerequisites:
 
 - Python 3.11+

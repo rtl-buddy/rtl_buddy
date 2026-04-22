@@ -1,7 +1,6 @@
 import logging
 from dataclasses import dataclass
 from serde import serde, field
-from serde.yaml import from_yaml
 from .model import ModelConfig, ModelConfigLoader
 from .uvm import UVMConfig
 

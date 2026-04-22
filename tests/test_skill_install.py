@@ -1,7 +1,3 @@
-from pathlib import Path
-
-import pytest
-
 from rtl_buddy.skill_install import _update_gitignore
 
 _SNIPPET = (

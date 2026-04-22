@@ -584,8 +584,8 @@ class RtlBuddy():
     status_lines = status_result.stdout.splitlines()
     git_branch = status_lines[0][3:].split('...')[0] if status_lines else 'unknown'
     file_lines = status_lines[1:]
-    mod = sum(1 for l in file_lines if len(l) > 1 and l[1] not in (' ', '?'))
-    staged = sum(1 for l in file_lines if len(l) > 0 and l[0] not in (' ', '?'))
+    mod = sum(1 for line in file_lines if len(line) > 1 and line[1] not in (' ', '?'))
+    staged = sum(1 for line in file_lines if len(line) > 0 and line[0] not in (' ', '?'))
     git_commit = commit_result.stdout.strip()
 
     if mod > 0 or staged > 0:

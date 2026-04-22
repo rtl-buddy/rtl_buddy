@@ -3,7 +3,7 @@ logger = logging.getLogger(__name__)
 import pprint
 
 from dataclasses import dataclass
-from serde import serde, field
+from serde import serde
 from .rtl import RtlBuilderConfig
 from .verible import VeribleConfig
 from ..errors import FatalRtlBuddyError

@@ -3,7 +3,7 @@ from contextlib import nullcontext
 from rtl_buddy.errors import FilelistError
 from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
-from rtl_buddy.runner.test_results import CompileFailResults, FilelistFailResults, SetupFailResults
+from rtl_buddy.runner.test_results import FilelistFailResults, SetupFailResults
 from rtl_buddy.runner.test_runner import RunDepth, TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.vlog_sim import VlogSim
 

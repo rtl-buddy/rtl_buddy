@@ -3,7 +3,7 @@ logger = logging.getLogger(__name__)
 import pprint
 import os
 
-from serde import serde, field, SerdeError
+from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
 from .suite import SuiteConfig
@@ -48,7 +48,10 @@ class RegConfig:
     try:
       with open(path, 'r') as file:
         data = from_yaml(RegConfigFile, file.read())
-        self.suite_configs = list(map(lambda suite_path: SuiteConfig(os.path.join(os.path.dirname(self.path), suite_path)), data.test_configs))
+        self.suite_configs = [
+          SuiteConfig(os.path.join(os.path.dirname(self.path), suite_path))
+          for suite_path in data.test_configs
+        ]
     except Exception as e:
       log_event(logger, logging.ERROR, "regression_config.load_failed", name=self.name, path=path, error=e)
       raise FatalRtlBuddyError(f'{self.name}: failed to load "{path}"') from e

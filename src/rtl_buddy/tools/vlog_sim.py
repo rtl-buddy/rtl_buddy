@@ -142,7 +142,7 @@ class VlogSim:
       plusargs = self.test_cfg.get_plusargs()
       log_event(logger, logging.DEBUG, "sim.plusargs", test=self.test_name, plusargs=plusargs)
       for plusarg in plusargs:
-        if plusargs[plusarg]!=None:
+        if plusargs[plusarg] is not None:
           pa_list += [ f"+{plusarg}={plusargs[plusarg]}" ]
         else:
           pa_list += [ f"+{plusarg}" ]
@@ -154,7 +154,7 @@ class VlogSim:
       plusdefines = self.test_cfg.get_plusdefines()
       log_event(logger, logging.DEBUG, "compile.plusdefines", test=self.test_name, plusdefines=plusdefines)
       for plusdefine in plusdefines:
-        if plusdefines[plusdefine]!=None:
+        if plusdefines[plusdefine] is not None:
           pd_list += [ f"+define+{plusdefine}={plusdefines[plusdefine]}" ]
         else:
           pd_list += [ f"+define+{plusdefine}" ]
@@ -329,7 +329,7 @@ class VlogSim:
                 pass
 
               t_time = time.time() - s_time
-              if returncode == None:
+              if returncode is None:
                 process.send_signal(signal.SIGQUIT)
                 returncode = 4444
                 log_event(

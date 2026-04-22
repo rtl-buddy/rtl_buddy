@@ -3,7 +3,6 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-import logging
 from .rtl_buddy import RtlBuddy
 
 DESCRIPTION = """

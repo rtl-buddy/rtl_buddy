@@ -6,7 +6,7 @@ import os
 from serde import serde, field
 from serde.yaml import from_yaml
 from typing import Literal
-from .test import TestbenchConfig, TestConfig, TestConfigFile
+from .test import TestbenchConfig, TestConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 

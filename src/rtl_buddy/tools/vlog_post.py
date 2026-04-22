@@ -9,7 +9,7 @@ vlog_post module handles post-processing of output from verilog simulations for 
 import logging
 logger = logging.getLogger(__name__)
 import re
-from ..runner.test_results import TestResults,TestPassResults
+from ..runner.test_results import TestResults
 
 class VlogPost:
   """

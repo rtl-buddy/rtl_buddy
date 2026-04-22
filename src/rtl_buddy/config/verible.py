@@ -4,7 +4,7 @@ import pprint
 import os
 
 from dataclasses import dataclass
-from serde import serde, field
+from serde import serde
 from ..logging_utils import log_event
 
 @dataclass

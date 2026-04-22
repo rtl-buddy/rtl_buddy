@@ -8,12 +8,10 @@ vlog_filelist module handles verilog filelist processing for rtl-buddy
 """
 import logging
 logger = logging.getLogger(__name__)
-from ..config import ModelConfig
 from ..errors import FilelistError
 from ..logging_utils import log_event
 import os.path
 import re
-import collections
 
 class VlogFilelist:
   """
@@ -37,7 +35,7 @@ class VlogFilelist:
     """
     prefix_parent = os.path.dirname(fpath)
     entries = []
-    libexts = set();
+    libexts = set()
 
     for line in lines_in:
       line = line.strip()
@@ -93,8 +91,6 @@ class VlogFilelist:
 
       elif line_option == '-F ' and unroll: # Recurse if unroll
         path_next = os.path.join(prefix_parent, line_path) # path of next file
-        prefix_next = os.path.dirname(path_next)
-        #logger.debug(f'{fpath}: Recursively opening "{path_next}" with prefix "{prefix_next}"')
         try:
           with open(path_next, 'r') as f:
             lines_next = f.readlines()
@@ -160,7 +156,7 @@ class VlogFilelist:
     return out_lines
 
   def write_output(self, output_filepath=None, unroll=False, flatten=False, strip=False, deduplicate=False, test_filelist=None):
-    if output_filepath == None:
+    if output_filepath is None:
       output_filepath = self.output_path
     log_event(logger, logging.DEBUG, "filelist.write_start", output=output_filepath)
 

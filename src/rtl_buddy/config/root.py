@@ -8,12 +8,12 @@ from typing import Literal
 from serde import serde, field
 from serde.yaml import from_yaml
 
-from .platform import PlatformConfig, PlatformConfigFile
+from .platform import PlatformConfigFile
 from .reg import RegConfig
 from .rtl import RtlBuilderConfig
-from .verible import VeribleConfig, VeribleConfigFile
-from .coverage import CoverageConfig, CoverageConfigFile
-from .coverview import CoverviewConfig, CoverviewConfigFile
+from .verible import VeribleConfigFile
+from .coverage import CoverageConfigFile
+from .coverview import CoverviewConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 

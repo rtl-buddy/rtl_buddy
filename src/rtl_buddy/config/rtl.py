@@ -8,7 +8,8 @@ import re
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
-process_opts = lambda opts: re.sub(r'\s+', ' ', opts).split(' ')
+def process_opts(opts):
+  return re.sub(r'\s+', ' ', opts).split(' ')
 
 @serde
 class RtlBuilderConfigOpts:

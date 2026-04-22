@@ -15,3 +15,20 @@ from .model import ModelConfig, ModelConfigLoader
 from .verible import VeribleConfig
 from .coverage import CoverageConfig, CoverageConfigFile
 from .coverview import CoverviewConfig, CoverviewConfigFile
+
+__all__ = [
+  "TestConfig",
+  "TestbenchConfig",
+  "SuiteConfig",
+  "RegConfig",
+  "RootConfig",
+  "PlatformConfig",
+  "RtlBuilderConfig",
+  "ModelConfig",
+  "ModelConfigLoader",
+  "VeribleConfig",
+  "CoverageConfig",
+  "CoverageConfigFile",
+  "CoverviewConfig",
+  "CoverviewConfigFile",
+]

@@ -9,7 +9,13 @@ logger = logging.getLogger(__name__)
 
 from ..tools.vlog_sim import VlogSim
 from ..seed_mode import SeedMode
-from .test_results import *
+from .test_results import (
+  CompileFailResults,
+  EarlyStopResults,
+  FilelistFailResults,
+  SetupFailResults,
+  SimTimeoutResults,
+)
 from ..errors import FilelistError
 from ..logging_utils import log_event
 

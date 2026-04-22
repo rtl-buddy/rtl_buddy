@@ -9,7 +9,6 @@ Claude Code resolves with higher precedence than user-level.
 from __future__ import annotations
 
 import hashlib
-import os
 from importlib.metadata import version as _pkg_version
 from importlib.resources import files as _resource_files
 from pathlib import Path
@@ -103,11 +102,11 @@ def _same_content(path: Path, text: str) -> bool:
 
 def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> str:
     snippet_lines = snippet.strip().splitlines()
-    comment_lines = [l for l in snippet_lines if l.startswith("#")]
-    pattern_lines = [l for l in snippet_lines if l and not l.startswith("#")]
+    comment_lines = [line for line in snippet_lines if line.startswith("#")]
+    pattern_lines = [line for line in snippet_lines if line and not line.startswith("#")]
 
     existing_text = gitignore_path.read_text() if gitignore_path.is_file() else ""
-    existing_lines = {l.strip() for l in existing_text.splitlines()}
+    existing_lines = {line.strip() for line in existing_text.splitlines()}
 
     missing = [p for p in pattern_lines if p.strip() not in existing_lines]
     if not missing:

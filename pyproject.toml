@@ -52,8 +52,26 @@ docs = [
   "mkdocs-material>=9.5.0",
   "mike>=2.1.0",
 ]
+lint = [
+  "ruff>=0.11.0",
+]
+test = [
+  "pytest>=8.4.0",
+]
+dev = [
+  { include-group = "docs" },
+  { include-group = "lint" },
+  { include-group = "test" },
+]
 
 [project.scripts]
 rtl_buddy = "rtl_buddy.__main__:main"
 rtl-buddy = "rtl_buddy.__main__:main"
 rb = "rtl_buddy.__main__:main"
+
+[tool.ruff]
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["F", "E7", "E9"]
