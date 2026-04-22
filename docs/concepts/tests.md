@@ -64,6 +64,33 @@ reglvl:
 
 Use `--reg-level` and `--start-level` on the `regression` subcommand to select a level range. See [Regressions](regressions.md).
 
+### Default transcript parsing
+
+When `uvm` is **not** set, `rtl_buddy` determines the result by parsing `logs/{test_name}.log` after simulation. Your testbench must print a result marker to **stdout** at the start of a line:
+
+- `PASS <optional detail>`
+- `FAIL <optional detail>`
+
+When emitting `FAIL`, also print an `ERR:` or `FAT:` line. The default failure parser expects one:
+
+```systemverilog
+if (test_passed) begin
+  $display("PASS smoke completed");
+end else begin
+  $display("FAIL smoke completed");
+  $display("ERR: expected done=1 before timeout");
+end
+```
+
+Rules to follow:
+
+- Emit exactly one terminal result marker.
+- Start the line with `PASS` or `FAIL`; other wording will not be detected.
+- Write the marker to stdout, not stderr.
+- When using `FAIL`, follow it with an `ERR:` or `FAT:` line.
+- If no `PASS` or `FAIL` marker is found, `rtl_buddy` records the test as `NA` with description `test result unknown`.
+- Do not rely on the simulator exit code alone to communicate pass/fail in non-UVM tests.
+
 ### UVM report parsing
 
 When `uvm` is set, `rtl_buddy` parses the UVM summary at the end of simulation output and fails the test if thresholds are exceeded:
@@ -73,6 +100,17 @@ uvm:
   max_warns: 0
   max_errors: 0
 ```
+
+With `uvm` enabled, `rtl_buddy` uses the UVM Report Summary instead of `PASS` / `FAIL` transcript markers. Missing or malformed UVM summaries are treated as test failures.
+
+### Other failure modes
+
+The transcript parser is not the only source of failures. `rtl_buddy` also marks a test as `FAIL` when:
+
+- a sweep or pre-processing script fails during setup
+- filelist validation fails before compile
+- compilation fails
+- simulation times out
 
 ## Running tests
 
