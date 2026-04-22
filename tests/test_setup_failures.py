@@ -235,6 +235,14 @@ class DummyExecuteTestCfg:
     return None
 
 
+class DummyPreprocTestCfg(DummyExecuteTestCfg):
+  def __init__(self, script_path):
+    self._script_path = script_path
+
+  def get_preproc_path(self):
+    return self._script_path
+
+
 class DummyProcess:
   def __enter__(self):
     return self
@@ -271,3 +279,50 @@ def test_vlog_sim_missing_hier_seed_file_is_nonfatal(tmp_path, monkeypatch):
   assert returncode == 0
   assert (tmp_path / "logs" / "basic.randseed").read_text() == "31310\n"
   assert "hierarchical seed file missing at HierInstanceSeed.txt" in log_path.read_text()
+
+
+def test_preproc_script_receives___file__(tmp_path, monkeypatch):
+  setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+  monkeypatch.chdir(tmp_path)
+
+  script_path = tmp_path / "my_preproc.py"
+  sentinel = tmp_path / "preproc_file.txt"
+  script_path.write_text(
+    "from pathlib import Path\n"
+    "Path('preproc_file.txt').write_text(str(Path(__file__).resolve().name))\n"
+  )
+
+  sim = VlogSim(
+    name="rtl_buddy/vlog_sim",
+    root_cfg=DummyRootCfg(),
+    test_cfg=DummyPreprocTestCfg(str(script_path)),
+    rtl_builder_mode="reg",
+    sim_mode={"sim_to_stdout": False},
+  )
+
+  error = sim.pre()
+
+  assert error is None
+  assert sentinel.read_text() == "my_preproc.py"
+
+
+def test_sweep_script_receives___file__(tmp_path):
+  setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+  sweep_script = tmp_path / "sweep.py"
+  sweep_script.write_text(
+    "from pathlib import Path\n"
+    "assert Path(__file__).resolve().name == 'sweep.py'\n"
+    "out_test_cfgs = [test_cfg]\n"
+  )
+
+  rb = RtlBuddy(name="rtl_buddy")
+  rb.builder = "vcs"
+  rb.root_cfg = object()
+  rb.run_depth = RunDepth.POST
+  rb.rtl_builder_mode = "debug"
+
+  test_cfgs, error = rb._expand_tests_with_sweep(DummySweepTest(str(sweep_script)))
+
+  assert error is None
+  assert len(test_cfgs) == 1
+  assert test_cfgs[0] is not None
