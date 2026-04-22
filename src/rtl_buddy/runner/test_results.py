@@ -5,91 +5,107 @@
 #
 import pprint
 
+
 class TestResults:
-  """
-  Test results
-  """
-
-  def __init__(self, name, results={'result':'NA', 'desc':'NA'}):
     """
-    results from vlog_sim.post()
+    Test results
     """
-    self.name = name
-    self.results = results
 
-    if 'result' not in results:
-      results['result'] = 'NA'
+    def __init__(self, name, results={"result": "NA", "desc": "NA"}):
+        """
+        results from vlog_sim.post()
+        """
+        self.name = name
+        self.results = results
 
-    if 'desc' not in results:
-      results['desc'] = 'NA'
+        if "result" not in results:
+            results["result"] = "NA"
 
-  def is_pass(self):
-    return self.results['result']=='PASS' or self.results['result']=='SKIP'
+        if "desc" not in results:
+            results["desc"] = "NA"
 
-  def __str__(self):
-    return "test_results: "+pprint.pformat(self.results)
+    def is_pass(self):
+        return self.results["result"] == "PASS" or self.results["result"] == "SKIP"
+
+    def __str__(self):
+        return "test_results: " + pprint.pformat(self.results)
+
 
 class TestPassResults(TestResults):
-  """
-  Generic test pass results
-  """
-  
-  def __init__(self, name):
-    super().__init__(name=name, 
-      results={'result':'PASS', 'name':name, 'desc':'Generic test pass'})
+    """
+    Generic test pass results
+    """
+
+    def __init__(self, name):
+        super().__init__(
+            name=name,
+            results={"result": "PASS", "name": name, "desc": "Generic test pass"},
+        )
+
 
 class CompileFailResults(TestResults):
-  """
-  Compilation failed
-  """
-  
-  def __init__(self, name):
-    super().__init__(name=name, 
-      results={'result':'FAIL', 'name':name, 'desc':'Compile failed'})
+    """
+    Compilation failed
+    """
+
+    def __init__(self, name):
+        super().__init__(
+            name=name,
+            results={"result": "FAIL", "name": name, "desc": "Compile failed"},
+        )
+
 
 class EarlyStopResults(TestResults):
-  """
-  Early Stopping
-  """
-  
-  def __init__(self, name, desc):
-    super().__init__(name=name, 
-      results={'result':'NA', 'name':name, 'desc':desc})
+    """
+    Early Stopping
+    """
+
+    def __init__(self, name, desc):
+        super().__init__(
+            name=name, results={"result": "NA", "name": name, "desc": desc}
+        )
+
 
 class SimTimeoutResults(TestResults):
-  """
-  Simulation timeout
-  """
+    """
+    Simulation timeout
+    """
 
-  def __init__(self, name):
-    super().__init__(name=name, 
-      results={'result':'FAIL', 'name':name, 'desc':'Sim hit timeout'})
+    def __init__(self, name):
+        super().__init__(
+            name=name,
+            results={"result": "FAIL", "name": name, "desc": "Sim hit timeout"},
+        )
+
 
 class SkipResults(TestResults):
-  """
-  Test skipped due to regression level
-  """
+    """
+    Test skipped due to regression level
+    """
 
-  def __init__(self, name, desc):
-    super().__init__(name=name,
-      results={'result':'SKIP', 'name':name, 'desc':desc})
+    def __init__(self, name, desc):
+        super().__init__(
+            name=name, results={"result": "SKIP", "name": name, "desc": desc}
+        )
 
 
 class FilelistFailResults(TestResults):
-  """
-  Filelist validation failed before compile (bad path, malformed line, missing file, etc.).
-  """
+    """
+    Filelist validation failed before compile (bad path, malformed line, missing file, etc.).
+    """
 
-  def __init__(self, name, desc):
-    super().__init__(name=name,
-      results={'result':'FAIL', 'name':name, 'desc':desc})
+    def __init__(self, name, desc):
+        super().__init__(
+            name=name, results={"result": "FAIL", "name": name, "desc": desc}
+        )
 
 
 class SetupFailResults(TestResults):
-  """
-  Test setup failed before compile/sim.
-  """
+    """
+    Test setup failed before compile/sim.
+    """
 
-  def __init__(self, name, desc):
-    super().__init__(name=name,
-      results={'result':'FAIL', 'name':name, 'desc':desc})
+    def __init__(self, name, desc):
+        super().__init__(
+            name=name, results={"result": "FAIL", "name": name, "desc": desc}
+        )

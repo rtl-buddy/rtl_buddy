@@ -32,7 +32,7 @@ def run_help(*args):
         raise RuntimeError("rtl-buddy not found in PATH")
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{result.stderr}")
-    plain = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', result.stdout)
+    plain = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", result.stdout)
     return plain.strip()
 
 
@@ -45,8 +45,11 @@ def generate():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true",
-                        help="Exit non-zero if committed file differs from generated output")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit non-zero if committed file differs from generated output",
+    )
     args = parser.parse_args()
 
     try:
@@ -75,6 +78,7 @@ def main():
 def on_pre_build(config):
     """MkDocs hook: regenerate cli.md before each build."""
     import logging
+
     log = logging.getLogger("mkdocs")
     try:
         content = generate()

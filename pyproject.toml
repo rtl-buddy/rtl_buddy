@@ -70,6 +70,7 @@ rtl-buddy = "rtl_buddy.__main__:main"
 rb = "rtl_buddy.__main__:main"
 
 [tool.ruff]
+line-length = 88
 target-version = "py311"
 src = ["src", "tests"]
 

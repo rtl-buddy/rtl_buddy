@@ -78,10 +78,7 @@ def test_comment_not_duplicated(tmp_path):
 
 def test_patterns_present_comment_missing(tmp_path):
     gitignore = tmp_path / ".gitignore"
-    gitignore.write_text(
-        ".claude/skills/rtl_buddy/\n"
-        ".agents/skills/rtl_buddy/\n"
-    )
+    gitignore.write_text(".claude/skills/rtl_buddy/\n.agents/skills/rtl_buddy/\n")
     result = _update_gitignore(gitignore, _SNIPPET, dry_run=False)
     assert result == "already present"
     assert "# rtl_buddy skill" not in gitignore.read_text()
