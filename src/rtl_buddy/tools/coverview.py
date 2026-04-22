@@ -138,6 +138,27 @@ class CoverviewPacker:
       return None
     return result
 
+  def _metric_source_roots_from_raw_path(self, raw_path: str) -> list[str]:
+    """
+    Build preferred source roots for raw coverage-derived `.info` rewriting.
+
+    The raw database may live directly under `artefacts/` or under nested
+    per-test/per-run directories such as `artefacts/<test>/run-0001/`.
+    """
+    raw_dir = Path(os.path.dirname(raw_path)).resolve()
+    roots: list[Path] = [raw_dir]
+    seen = {str(raw_dir)}
+
+    for ancestor in raw_dir.parents:
+      if ancestor.name in {"logs", "artefacts"}:
+        suite_root = ancestor.parent
+        if str(suite_root) not in seen:
+          roots.append(suite_root)
+          seen.add(str(suite_root))
+        break
+
+    return [str(root) for root in roots]
+
   def _get_info_process(self):
     """
     Resolve the info-process executable from PATH or the active virtual environment.
@@ -352,14 +373,10 @@ class CoverviewPacker:
     )
     if result is None or not os.path.exists(metric_info):
       return None
-    raw_dir = Path(os.path.dirname(raw_path)).resolve()
-    metric_source_roots = [raw_dir]
-    if raw_dir.name == "logs":
-      metric_source_roots.append(raw_dir.parent)
     self._rewrite_sf_relative_to_project_root(
       metric_info,
       base_dir=os.path.dirname(raw_path),
-      source_roots=[str(root) for root in metric_source_roots],
+      source_roots=self._metric_source_roots_from_raw_path(raw_path),
     )
     return metric_info
 

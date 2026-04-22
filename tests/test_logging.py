@@ -88,16 +88,16 @@ def test_human_sim_failure_message_lists_artifacts(tmp_path):
     test="basic",
     run_id=1,
     returncode=9,
-    log="logs/basic_0001.log",
-    err="logs/basic_0001.err",
-    randseed="logs/basic_0001.randseed",
+    log="artefacts/basic/run-0001/test.log",
+    err="artefacts/basic/run-0001/test.err",
+    randseed="artefacts/basic/run-0001/test.randseed",
   )
 
   file_text = log_path.read_text()
   assert "basic #0001: simulation failed (returncode 9)" in file_text
-  assert "logs/basic_0001.log" in file_text
-  assert "logs/basic_0001.err" in file_text
-  assert "logs/basic_0001.randseed" in file_text
+  assert "artefacts/basic/run-0001/test.log" in file_text
+  assert "artefacts/basic/run-0001/test.err" in file_text
+  assert "artefacts/basic/run-0001/test.randseed" in file_text
 
 
 def test_render_summary_logs_plain_text_once(tmp_path, capsys):
@@ -244,6 +244,47 @@ def test_vlog_filelist_missing_source_raises_fatal(tmp_path):
     vlog_fl.write_output()
 
   assert "filelist source missing" in log_path.read_text()
+
+
+def test_vlog_filelist_entries_are_relative_to_output_dir(tmp_path):
+  model_dir = tmp_path / "design"
+  model_dir.mkdir()
+  model_path = model_dir / "models.yaml"
+  src_file = model_dir / "rtl.sv"
+  src_file.write_text("module rtl;\nendmodule\n")
+  model_path.write_text("models: []\n")
+  model_cfg = DummyModelCfg(model_path, ["rtl.sv\n"])
+
+  output_path = tmp_path / "artefacts" / "basic" / "run.f"
+  output_path.parent.mkdir(parents=True)
+  vlog_fl = VlogFilelist(name="rtl_buddy/vlog_filelist", model_cfg=model_cfg, output_path=output_path)
+
+  vlog_fl.write_output()
+
+  file_text = output_path.read_text()
+  assert "../../design/rtl.sv" in file_text
+
+
+def test_vlog_filelist_nested_model_includes_resolve_from_models_yaml(tmp_path):
+  model_dir = tmp_path / "design"
+  nested_dir = model_dir / "rtl"
+  nested_dir.mkdir(parents=True)
+  model_path = model_dir / "models.yaml"
+  nested_filelist = model_dir / "nested.f"
+  src_file = nested_dir / "rtl.sv"
+  src_file.write_text("module rtl;\nendmodule\n")
+  nested_filelist.write_text("rtl/rtl.sv\n")
+  model_path.write_text("models: []\n")
+  model_cfg = DummyModelCfg(model_path, ["-F nested.f\n"])
+
+  output_path = tmp_path / "artefacts" / "basic" / "run.f"
+  output_path.parent.mkdir(parents=True)
+  vlog_fl = VlogFilelist(name="rtl_buddy/vlog_filelist", model_cfg=model_cfg, output_path=output_path)
+
+  vlog_fl.write_output(unroll=True)
+
+  file_text = output_path.read_text()
+  assert "../../design/rtl/rtl.sv" in file_text
 
 
 def test_verible_path_missing_is_debug_only(tmp_path):

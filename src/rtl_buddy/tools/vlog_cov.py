@@ -197,7 +197,7 @@ class VlogCov:
       basename_matches = []
       normalized_suffix = "/" + "/".join(parts)
       search_roots = source_roots + [root for root in repo_roots if root not in source_roots]
-      ignored_dirs = {"coverage_annotated", "cov_annot", "coverage_merge.html", "logs"}
+      ignored_dirs = {"coverage_annotated", "cov_annot", "coverage_merge.html", "logs", "artefacts"}
       for search_root in search_roots:
         for match in search_root.rglob(basename):
           match = match.resolve()

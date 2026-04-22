@@ -121,21 +121,23 @@ class VlogFilelist:
 
     return entries
 
-  def _process(self, entries, flatten=False, strip=False, deduplicate=False):
+  def _process(self, entries, output_dir, flatten=False, strip=False, deduplicate=False):
     """Do flatten, strip, and deduplicate after all lines are collected at the top level."""
+    output_dir = os.path.abspath(output_dir)
     out_lines = []
     for line_path, line_option in entries:
-      line_path = os.path.relpath(line_path) # simplifies path
+      resolved_line_path = os.path.normpath(os.path.join(output_dir, line_path))
+      line_path = os.path.relpath(resolved_line_path, start=output_dir) # simplifies path relative to the filelist location
       # File or dir exists check
       if line_option == '+incdir+' or line_option == '-y ':
-        if not os.path.isdir(line_path):
+        if not os.path.isdir(resolved_line_path):
           self._fail(
             "filelist.directory_missing",
             f'{line_path} is not a directory',
             path=line_path,
           )
       elif line_option != '+libext+':
-        if not os.path.isfile(line_path):
+        if not os.path.isfile(resolved_line_path):
           self._fail(
             "filelist.source_missing",
             f'{line_path} file does not exist',
@@ -165,17 +167,20 @@ class VlogFilelist:
     log_event(logger, logging.DEBUG, "filelist.write_start", output=output_filepath)
 
     # Get filelist from models
-    path_prefix = os.path.relpath(os.path.dirname(self.model_cfg.get_model_path()) or ".", os.path.dirname(output_filepath) or ".") # Path from output dir to model dir
     model_filelist = self.model_cfg.get_filelist()
-
-    entries = self._extract(model_filelist, unroll, os.path.join(path_prefix, "models.yaml"))
+    entries = self._extract(model_filelist, unroll, os.path.abspath(self.model_cfg.get_model_path()))
 
     # Get filelist from tests. assume tests.yaml is in the same dir
     if test_filelist:
-      path_prefix = os.path.relpath(".", os.path.dirname(output_filepath) or ".")
-      entries.extend(self._extract(test_filelist, unroll, path_prefix))
+      entries.extend(self._extract(test_filelist, unroll, os.path.join(os.path.abspath("."), "tests.yaml")))
 
-    lines = self._process(entries, flatten=flatten, strip=strip, deduplicate=deduplicate)
+    lines = self._process(
+      entries,
+      output_dir=os.path.dirname(output_filepath) or ".",
+      flatten=flatten,
+      strip=strip,
+      deduplicate=deduplicate,
+    )
 
     with open(output_filepath, "w") as f:
       f.write("// rtl-buddy generated model filelist\n")
