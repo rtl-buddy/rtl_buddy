@@ -28,6 +28,7 @@ The sweep hook runs before the test flow and expands a single test entry into mu
 | `test_cfg` | TestConfig (immutable) | The original test entry from `tests.yaml` |
 | `root_cfg` | RootConfig (mutable) | The loaded root config |
 | `out_test_cfgs` | list | **Assign** the expanded list of `TestConfig` objects here |
+| `__file__` | string | Absolute path to the current sweep script |
 
 Everything in `TestConfig` except `reglvl` can be mutated in the generated tests (e.g. change `name`, `plusargs`, `plusdefines`).
 
@@ -69,6 +70,7 @@ The pre-processing hook runs after sweep expansion but before the compilation st
 | `logger` | Logger | Use for all logging |
 | `test_cfg` | TestConfig (mutable) | Modify this to change compile/sim parameters |
 | `root_cfg` | RootConfig (mutable) | The loaded root config |
+| `__file__` | string | Absolute path to the current pre-processing script |
 
 **Example:**
 
