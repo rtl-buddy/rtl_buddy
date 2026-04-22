@@ -35,6 +35,21 @@ rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` f
 - **`tests.yaml`** — per-suite. Declares `testbenches` (TB filelists) and `tests` that map test names to a model, model_path, and testbench. Lives in each verification suite dir.
 - **`models.yaml`** — per-design. Maps model names to source/include filelists; consumed by `filelist` and referenced from `tests.yaml`.
 
+## Test Pass/fail detection
+- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and applies the configured thresholds.
+- Otherwise, `rtl_buddy` parses `logs/<test>.log` and expects one stdout line starting with `PASS` or `FAIL`.
+- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
+- Always use the `PASS` or `FAIL` markers as otherwise the result is ambiguous and shows `NA`.
+- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
+
+```systemverilog
+if (test_passed) $display("PASS smoke completed");
+else begin
+  $display("FAIL smoke completed");
+  $display("ERR: expected done=1 before timeout");
+end
+```
+
 ## Multi-suite discovery and CWD rules
 
 - Discover suites with `rg --files -g '**/tests.yaml'`.

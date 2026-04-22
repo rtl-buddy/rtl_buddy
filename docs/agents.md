@@ -73,15 +73,38 @@ All files are written relative to the directory where `rtl_buddy` is invoked.
 Each line in `rtl_buddy.log` (machine mode) is a JSON object:
 
 ```json
-{"event": "test.pass", "name": "smoke", "duration": 4.2, "seed": 31310, "msg": "smoke passed"}
-{"event": "suite.summary", "passed": 3, "failed": 0, "total": 3, "msg": "3/3 passed"}
+{"event": "sim.completed", "test": "smoke", "duration_sec": 4.2, "message": "smoke: simulation completed in 4.20s"}
+{"event": "postproc.completed", "test": "smoke", "result": "PASS", "desc": "smoke completed", "message": "smoke: post-processing completed with result PASS (smoke completed)"}
 ```
 
 Key fields:
 
-- `event`: dotted event name identifying what happened (e.g. `test.pass`, `test.fail`, `compile.error`)
-- `msg`: the human-readable message corresponding to the event
+- `event`: dotted event name identifying what happened (e.g. `sim.start`, `compile.failed`, `postproc.completed`)
+- `message`: the human-readable message corresponding to the event
 - Other fields are event-specific (name, duration, seed, exit code, etc.)
+
+## How pass/fail is detected
+
+Agents authoring tests need to follow the parser that `rtl_buddy` actually uses:
+
+- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and compares it against `max_warns` / `max_errors`.
+- Otherwise, `rtl_buddy` parses `logs/{test_name}.log` and expects one stdout line starting with `PASS` or `FAIL`.
+- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
+- If neither `PASS` nor `FAIL` appears, the test result becomes `NA`.
+- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
+
+Minimal non-UVM example:
+
+```systemverilog
+if (test_passed) begin
+  $display("PASS smoke completed");
+end else begin
+  $display("FAIL smoke completed");
+  $display("ERR: expected done=1 before timeout");
+end
+```
+
+In machine mode, the authoritative per-test outcome appears in the `postproc.completed` event's `result` and `desc` fields.
 
 ## Recommended validation workflow
 
