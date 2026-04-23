@@ -120,5 +120,5 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 
 1. Merge to `main` in this repo and tag (e.g. `v2.0.0`).
 2. The docs workflow publishes versioned MkDocs output to the `gh-pages` branch with `mike`: `main` updates the `dev` docs, release tags update the matching `v<major>` docs line, and the newest released major also moves the `latest` alias.
-3. GitHub Pages must be configured to publish from the `gh-pages` branch, and the repo must provide a `GH_PAGES_TOKEN` secret because pushes made with the default `GITHUB_TOKEN` do not trigger branch-based Pages publishing.
+3. GitHub Pages must be configured to publish from the `gh-pages` branch, and the repo must provide a `GH_PAGES_TOKEN` secret because pushes made with the default `GITHUB_TOKEN` do not trigger branch-based Pages publishing or downstream workflows from release-created tags.
 4. Update and tag any downstream integrations that track this repo.

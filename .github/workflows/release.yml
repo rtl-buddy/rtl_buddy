@@ -81,11 +81,28 @@ jobs:
           echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
           echo "Bumping ${LATEST} -> ${NEW_TAG}"
 
-      - name: Create and push tag
+      - name: Require release token
         if: steps.version.outputs.new_tag != ''
+        env:
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
+        run: |
+          test -n "$GH_PAGES_TOKEN" || {
+            echo "GH_PAGES_TOKEN is required so release-created tags trigger downstream docs publishing."
+            exit 1
+          }
+
+      - name: Configure git remote
+        if: steps.version.outputs.new_tag != ''
+        env:
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_PAGES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Create and push tag
+        if: steps.version.outputs.new_tag != ''
+        run: |
           TAG="${{ steps.version.outputs.new_tag }}"
           if git tag -l "$TAG" | grep -q "$TAG"; then
             echo "Tag $TAG already exists, skipping tag creation."
