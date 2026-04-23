@@ -32,8 +32,10 @@ src/rtl_buddy/
 - `rtl_buddy.py` owns CLI wiring, global options, and command dispatch.
 - `RootConfig` selects platform, builder, verible, and regression config from `root_config.yaml`.
 - `TestRunner` drives PRE, COMPILE, SIM, and POST with early-stop support.
-- `VlogSim` handles compile/sim command construction, log paths, seeds, and timeout behavior.
-- `VlogFilelist` handles `.f` parsing and transformations.
+- `VlogSim` captures the suite cwd once, but both compile and sim now run from per-test workspaces under `artefacts/<sanitized-test>/`; repeated runs use `artefacts/<sanitized-test>/run-0001/`, while `test.log`, `test.err`, and `test.randseed` in the suite directory remain latest-run symlinks.
+- Compile-side generated files such as `run.f`, `compile.log`, builder outputs, and relative `builder-simv` paths are resolved from the per-test artefact root, not from the suite directory.
+- `VlogFilelist` handles `.f` parsing and transformations. It resolves model entries from the real `models.yaml` location, resolves testbench entries from the suite cwd, and writes paths relative to the directory containing the generated `run.f`.
+- Nested raw coverage paths such as `artefacts/<test>/run-0001/coverage.dat` must preserve the suite-root hint during LCOV/Coverview `SF:` rewriting. When updating coverage path logic, make sure duplicate basenames still resolve against the originating suite root instead of falling back to repo-wide basename matching.
 - Hook scripts (`sweep`, `preproc`, `postproc`) are executed dynamically and should be treated as compatibility-sensitive APIs.
 
 ## Validation
