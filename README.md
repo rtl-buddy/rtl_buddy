@@ -67,8 +67,8 @@ uv run rb test basic      # run a single test
 uv run rb regression      # run the full regression
 ```
 
-For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/quickstart/).
+For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/latest/quickstart/).
 
 ## Known Issues
 
-See the [known issues page](https://rtl-buddy.github.io/rtl_buddy/known-issues/).
+See the [known issues page](https://rtl-buddy.github.io/rtl_buddy/latest/known-issues/).
