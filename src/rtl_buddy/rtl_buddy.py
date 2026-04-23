@@ -331,10 +331,11 @@ class RtlBuddy():
       suite_results.append({'test_name': test_name, 'randmode_i': run_id, 'results': test_results})
 
   def _expand_tests_with_sweep(self, test_cfg):
-    if test_cfg.get_sweep_path() is None:
+    script_path = test_cfg.get_sweep_path()
+    if script_path is None:
       return [test_cfg], None
 
-    with open(test_cfg.get_sweep_path(), 'r') as file:
+    with open(script_path, 'r') as file:
       code = file.read()
 
     ns = {
@@ -343,15 +344,16 @@ class RtlBuddy():
       "test_cfg": test_cfg,
       "root_cfg": self.root_cfg,
       "out_test_cfgs": [],
+      "__file__": os.path.abspath(script_path),
     }
     try:
       exec(code, ns)
     except Exception as e:
-      log_event(logger, logging.ERROR, "sweep.failed", test=test_cfg.name, script=test_cfg.get_sweep_path(), error=e)
+      log_event(logger, logging.ERROR, "sweep.failed", test=test_cfg.name, script=script_path, error=e)
       logger.debug("sweep traceback", exc_info=True)
       return [], f"Setup failed in sweep: {e}"
 
-    log_event(logger, logging.INFO, "sweep.completed", test=test_cfg.name, script=test_cfg.get_sweep_path(), expanded=len(ns["out_test_cfgs"]))
+    log_event(logger, logging.INFO, "sweep.completed", test=test_cfg.name, script=script_path, expanded=len(ns["out_test_cfgs"]))
     return ns["out_test_cfgs"], None
 
   def _run_test_cfg_for_run_ids(self, test_cfg, run_ids, seed_mode: SeedMode, replay_run_id, test_runner_mode):

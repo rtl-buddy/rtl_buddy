@@ -187,11 +187,12 @@ class VlogSim:
     return pd_list
     
   def pre(self):
-    if self.test_cfg.get_preproc_path() is None:
+    script_path = self.test_cfg.get_preproc_path()
+    if script_path is None:
       log_event(logger, logging.DEBUG, "preproc.skipped", test=self.test_name)
       return None
 
-    with open(self.test_cfg.get_preproc_path(), 'r') as file:
+    with open(script_path, 'r') as file:
       code = file.read()
 
     # Pass self.test_cfg to the preproc script as root_cfg
@@ -199,16 +200,17 @@ class VlogSim:
     ns = {
       "logger"   : logger, 
       "test_cfg" : self.test_cfg,
-      "root_cfg" : self.root_cfg
+      "root_cfg" : self.root_cfg,
+      "__file__" : os.path.abspath(script_path),
     }
     try:
       exec(code, ns)
     except Exception as e:
-      log_event(logger, logging.ERROR, "preproc.failed", test=self.test_name, script=self.test_cfg.get_preproc_path(), error=e)
+      log_event(logger, logging.ERROR, "preproc.failed", test=self.test_name, script=script_path, error=e)
       logger.debug("preproc traceback", exc_info=True)
       return f"Setup failed in preproc: {e}"
 
-    log_event(logger, logging.INFO, "preproc.completed", test=self.test_name, script=self.test_cfg.get_preproc_path())
+    log_event(logger, logging.INFO, "preproc.completed", test=self.test_name, script=script_path)
     return None
 
   def compile(self):
