@@ -19,7 +19,7 @@ Use GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> as a fallback refer
 
 All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL and console output is plain text.
 
-See `rtl-buddy docs show agents` or <https://rtl-buddy.github.io/rtl_buddy/agents/> for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
+See `rtl-buddy docs show agents` or <https://rtl-buddy.github.io/rtl_buddy/latest/agents/> for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
 
 ## Version check
 
