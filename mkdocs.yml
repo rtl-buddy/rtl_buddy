@@ -1,6 +1,9 @@
 site_name: RTL Buddy
 site_description: CLI tool for automating tests, regressions, and RTL workflows for Verilog/SystemVerilog codebases.
 docs_dir: docs
+site_url: https://rtl-buddy.github.io/rtl_buddy/
+remote_name: origin
+remote_branch: gh-pages
 
 theme:
   name: material
@@ -22,6 +25,8 @@ hooks:
 
 plugins:
   - search
+  - mike:
+      alias_type: redirect
 
 nav:
   - Home: index.md
@@ -40,3 +45,8 @@ nav:
   - Migrations:
       - Submodule to uv: migrations/submodule-to-uv.md
   - Known Issues: known-issues.md
+
+extra:
+  version:
+    provider: mike
+    default: latest

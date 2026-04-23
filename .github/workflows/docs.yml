@@ -3,12 +3,8 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
-      - 'scripts/gen_cli_reference.py'
-      - 'scripts/gen_docs_resource.py'
-      - 'src/rtl_buddy/**'
+    tags:
+      - 'v*.*.*'
   pull_request:
     branches: [main]
     paths:
@@ -23,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -47,23 +45,77 @@ jobs:
           args: --offline site/**/*.html
           fail: true
 
-      - name: Upload Pages artifact
-        if: github.event_name == 'push'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: site/
-
   deploy:
     if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      contents: write
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --group docs
+
+      - name: Require gh-pages token
+        env:
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
+        run: |
+          test -n "$GH_PAGES_TOKEN" || {
+            echo "GH_PAGES_TOKEN is required to push the gh-pages branch for GitHub Pages branch publishing."
+            exit 1
+          }
+
+      - name: Configure git remote
+        env:
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_PAGES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Fetch gh-pages branch if it exists
+        run: git fetch origin gh-pages --depth=1 || true
+
+      - name: Compute docs target
+        id: target
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            major="${tag%%.*}"
+            version="v${major}"
+            highest_major="$(git tag --list 'v*.*.*' | sed -E 's/^v([0-9]+)\..*/\1/' | sort -n | tail -1)"
+            update_latest=false
+            if [[ -n "${highest_major}" && "${major}" == "${highest_major}" ]]; then
+              update_latest=true
+            fi
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "update_latest=${update_latest}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev" >> "$GITHUB_OUTPUT"
+            echo "update_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy docs version
+        run: |
+          if [[ "${{ steps.target.outputs.update_latest }}" == "true" ]]; then
+            uv run mike deploy --branch gh-pages --update-aliases "${{ steps.target.outputs.version }}" latest
+          else
+            uv run mike deploy --branch gh-pages --update-aliases "${{ steps.target.outputs.version }}"
+          fi
+
+      - name: Set default docs version
+        if: steps.target.outputs.update_latest == 'true'
+        run: uv run mike set-default --branch gh-pages latest
+
+      - name: Push gh-pages
+        run: git push origin gh-pages
