@@ -246,7 +246,6 @@ class VlogSim:
     e_time = time.time()
     if result.returncode!=0:
       transcript_path = self._get_compile_transcript_path()
-      Path(transcript_path).parent.mkdir(parents=True, exist_ok=True)
       with open(transcript_path, "w") as transcript_fp:
         transcript_fp.write(f"Command: {run_str}\n\n")
         transcript_fp.write("=== stderr ===\n")

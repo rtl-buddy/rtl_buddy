@@ -123,7 +123,7 @@ def test_vlog_sim_paths_are_nested_under_suite_logs(tmp_path, monkeypatch):
   assert sim._get_cov_path(run_id=1) == str(tmp_path / "artefacts" / "basic" / "run-0001" / "coverage.dat")
 
 
-def test_vlog_sim_resolves_relative_simv_paths_against_suite_work_dir(tmp_path, monkeypatch):
+def test_vlog_sim_resolves_relative_simv_paths_against_compile_work_dir(tmp_path, monkeypatch):
   sim = _make_sim(
     tmp_path,
     monkeypatch,

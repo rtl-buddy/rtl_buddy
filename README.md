@@ -69,7 +69,7 @@ uv run rb regression      # run the full regression
 
 For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/quickstart/).
 
-Runtime artefacts are stored under `artefacts/{sanitized_test_name}/`. Single runs write files such as `test.log`, `test.err`, `test.randseed`, and `coverage.dat` there directly; repeated runs use nested directories such as `artefacts/{sanitized_test_name}/run-0001/`. The suite root keeps `test.log`, `test.err`, and `test.randseed` symlinked to the latest run for convenience.
+Runtime artefacts are stored under `artefacts/{sanitized_test_name}/`. Single runs write files such as `test.log`, `test.err`, `test.randseed`, and `coverage.dat` there directly, while repeated runs use nested directories such as `artefacts/{sanitized_test_name}/run-0001/`. The suite root always keeps `test.log`, `test.err`, and `test.randseed` symlinked to the latest run for convenience.
 
 ## Known Issues
 

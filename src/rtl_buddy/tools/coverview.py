@@ -144,6 +144,7 @@ class CoverviewPacker:
 
     The raw database may live directly under `artefacts/` or under nested
     per-test/per-run directories such as `artefacts/<test>/run-0001/`.
+    Also handles the legacy `logs/` layout for backward compatibility.
     """
     raw_dir = Path(os.path.dirname(raw_path)).resolve()
     roots: list[Path] = [raw_dir]
