@@ -44,7 +44,7 @@ class CocotbSim(VlogSim):
     libpython = _cocotb_config('--libpython')
     verilator_cpp = str(Path(share) / 'lib' / 'verilator' / 'verilator.cpp')
     ldflags = f'-Wl,-rpath,{lib_dir} {vpi_lib} {libpython}'
-    flags = ['--cc', '--exe', verilator_cpp, '--build', '--vpi', '--public-flat-rw', '--prefix', 'Vtop', '-LDFLAGS', ldflags]
+    flags = ['--cc', '--exe', verilator_cpp, '--build', '--timing', '--vpi', '--public-flat-rw', '--prefix', 'Vtop', '-LDFLAGS', ldflags]
     log_event(logger, logging.DEBUG, 'cocotb.compile_flags', test=self.test_name, flags=flags)
     return flags
 
