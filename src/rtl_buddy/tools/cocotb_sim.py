@@ -5,6 +5,7 @@
 #
 import functools
 import logging
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -55,7 +56,6 @@ class CocotbSim(VlogSim):
     return flags
 
   def _get_extra_sim_env(self, run_id=None) -> dict:
-    import os
     cocotb_cfg = self.testbench.cocotb
     modules = ','.join(cocotb_cfg.get_modules())
     results_path = self._get_cocotb_results_path(run_id=run_id)
