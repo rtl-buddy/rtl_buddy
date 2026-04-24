@@ -8,6 +8,7 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 from ..tools.vlog_sim import VlogSim
+from ..tools.cocotb_sim import CocotbSim
 from ..seed_mode import SeedMode
 from .test_results import *
 from ..errors import FilelistError
@@ -42,7 +43,8 @@ class TestRunner:
     if 'sim_to_stdout' in self.test_runner_mode:
       sim_mode['sim_to_stdout'] = self.test_runner_mode['sim_to_stdout']
 
-    return VlogSim(name=self.name+"/vlog_sim",
+    sim_class = CocotbSim if self.test_cfg.get_testbench().is_cocotb() else VlogSim
+    return sim_class(name=self.name+"/vlog_sim",
       root_cfg=self.root_cfg,
       test_cfg=self.test_cfg,
       rtl_builder_mode=self.rtl_builder_mode,

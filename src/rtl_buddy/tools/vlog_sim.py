@@ -126,6 +126,15 @@ class VlogSim:
     """
     return self.rtl_builder_cfg.get_simulator_family()
 
+  def _filter_builder_opts(self, opts: list) -> list:
+    return opts
+
+  def _get_extra_compile_flags(self) -> list:
+    return []
+
+  def _get_extra_sim_env(self, run_id=None) -> dict:
+    return {}
+
   def _get_cov_path(self, run_id=None):
     return str(Path(self._get_artifact_dir(run_id=run_id)) / "coverage.dat")
 
@@ -220,11 +229,13 @@ class VlogSim:
     
     run_cmd = [ rtl_builder_cfg.get_exe() ]
 
-    builder_opts = rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+    builder_opts = self._filter_builder_opts(rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode))
     run_cmd += builder_opts
 
     if os.path.basename(rtl_builder_cfg.get_exe()).startswith("verilator"):
       run_cmd += ["--Mdir", self._get_build_dir()]
+
+    run_cmd += self._get_extra_compile_flags()
 
     # add test plus-defines
     run_cmd += self._get_plusdefines()
@@ -344,13 +355,17 @@ class VlogSim:
 
     # subprocess pipe stderr to test.err, stdout to test.log
     with task_status(f"Running simulation {self.test_name}{'' if run_id is None else f' #{run_id:04d}'}", spinner="dots12"):
+      extra_env = self._get_extra_sim_env(run_id=run_id)
+      sim_env = {**os.environ, **extra_env} if extra_env else None
+      popen_kwargs = dict(preexec_fn=os.setpgrp, cwd=artifact_dir)
+      if sim_env is not None:
+        popen_kwargs['env'] = sim_env
       with open(err_path, "w+") as test_err_fp:
         with open(log_path, "w+") as test_out_fp:
           with subprocess.Popen(run_cmd, \
-            preexec_fn=os.setpgrp,
-            cwd=artifact_dir,
             stdout=test_out_fp,
-            stderr=test_err_fp) as process:
+            stderr=test_err_fp,
+            **popen_kwargs) as process:
               def signal_handler(_no, _frame):
                 process.send_signal(signal.SIGQUIT)
                 raise KeyboardInterrupt

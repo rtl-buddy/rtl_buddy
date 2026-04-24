@@ -187,6 +187,42 @@ tests:
 | `preproc.path` | string | Path to pre-processing script |
 | `postproc.path` | string | Path to post-processing script (parsed but not yet fully active) |
 
+### cocotb testbenches
+
+Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode (Verilator only for now). `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
+
+**Prerequisite:** `cocotb` must be installed in the active Python environment (`uv add cocotb` or `pip install cocotb`). The runner invokes `cocotb-config` at compile time; a missing binary surfaces as a `FatalRtlBuddyError` with an actionable message.
+
+```yaml
+testbenches:
+  - name: "tb_my_design"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design          # DUT top-level module name — required for cocotb
+    cocotb:
+      module: test_my_design     # Python module(s) containing @cocotb.test() coroutines
+
+  - name: "tb_multi"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design
+    cocotb:
+      module:                    # list form: all modules are loaded
+        - test_smoke
+        - test_corner_cases
+```
+
+**Pass/fail detection for cocotb testbenches:**
+
+cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/`FAIL` stdout lines. `rtl_buddy` parses this file automatically after simulation; you do not need `$display("PASS …")` in cocotb tests. The `desc` field in the result reports the first three failure messages and a `(+N more)` suffix when there are more.
+
+**Testbench field reference (cocotb-specific additions):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `toplevel` | string | Yes (cocotb only) | Top-level DUT module name passed to `COCOTB_TOPLEVEL` |
+| `cocotb.module` | string or list | Yes | Python test module(s) passed to `COCOTB_TEST_MODULES` |
+
 **Runtime effects by field:**
 
 - `testbench`: selects entry from `testbenches`; its filelist is appended to model sources for compilation.
