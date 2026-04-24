@@ -40,6 +40,7 @@ class CocotbSim(VlogSim):
     return str(Path(self._get_artifact_dir(run_id=run_id)) / 'cocotb_results.xml')
 
   def _filter_builder_opts(self, opts: list) -> list:
+    # cocotb uses --exe + verilator.cpp, not --binary's built-in main
     return [o for o in opts if o != '--binary']
 
   def _get_extra_compile_flags(self) -> list:
