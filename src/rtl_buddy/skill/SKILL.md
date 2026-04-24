@@ -36,9 +36,12 @@ rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` f
 - **`models.yaml`** — per-design. Maps model names to source/include filelists; consumed by `filelist` and referenced from `tests.yaml`.
 
 ## Test Pass/fail detection
-- `uvm:` in testbench → parses UVM Report Summary against configured thresholds.
-- `cocotb:` in testbench → parses JUnit XML from cocotb automatically; no `PASS`/`FAIL` line needed.
-- Otherwise, expects a `PASS` or `FAIL` line on stdout; emit `ERR:`/`FAT:` alongside `FAIL`. Do not rely on exit code alone.
+- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and applies the configured thresholds.
+- If the testbench has a `cocotb:` block, `rtl_buddy` parses JUnit XML written by cocotb — no `PASS`/`FAIL` line needed. See [cocotb.md](cocotb.md) for setup.
+- Otherwise, `rtl_buddy` parses `logs/<test>.log` and expects one stdout line starting with `PASS` or `FAIL`.
+- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
+- Always use the `PASS` or `FAIL` markers as otherwise the result is ambiguous and shows `NA`.
+- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
 
 ```systemverilog
 if (test_passed) $display("PASS smoke completed");
@@ -47,21 +50,6 @@ else begin
   $display("ERR: expected done=1 before timeout");
 end
 ```
-
-## cocotb testbenches (Verilator + VPI)
-
-Requires `cocotb` in the active environment (`uv add cocotb`). Add `toplevel:` (required — omitting it is a fatal config error) and `cocotb.module:` to the testbench entry:
-
-```yaml
-testbenches:
-  - name: "tb_my_design"
-    filelist: ["my_design.sv"]
-    toplevel: my_design        # required when cocotb: is present
-    cocotb:
-      module: test_my_design   # Python module with @cocotb.test() coroutines
-```
-
-See `rtl-buddy docs show reference/yaml` for the full cocotb field reference.
 
 ## Multi-suite discovery and CWD rules
 
