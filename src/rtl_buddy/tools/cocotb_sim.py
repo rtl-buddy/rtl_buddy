@@ -16,8 +16,8 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
 
-def _cocotb_share() -> str:
-  result = subprocess.run(['cocotb-config', '--share'], capture_output=True, text=True)
+def _cocotb_config(*args) -> str:
+  result = subprocess.run(['cocotb-config', *args], capture_output=True, text=True)
   if result.returncode != 0:
     raise FatalRtlBuddyError('cocotb-config not found; is cocotb installed in this environment?')
   return result.stdout.strip()
@@ -34,22 +34,47 @@ class CocotbSim(VlogSim):
   def _get_cocotb_results_path(self, run_id=None) -> str:
     return str(Path(self._get_artifact_dir(run_id=run_id)) / 'cocotb_results.xml')
 
+  def _filter_builder_opts(self, opts: list) -> list:
+    return [o for o in opts if o != '--binary']
+
   def _get_extra_compile_flags(self) -> list:
-    share = _cocotb_share()
+    share = _cocotb_config('--share')
+    lib_dir = _cocotb_config('--lib-dir')
+    vpi_lib = _cocotb_config('--lib-name-path', 'vpi', 'verilator')
+    libpython = _cocotb_config('--libpython')
     verilator_cpp = str(Path(share) / 'lib' / 'verilator' / 'verilator.cpp')
-    flags = ['--vpi', verilator_cpp]
+    ldflags = f'-Wl,-rpath,{lib_dir} {vpi_lib} {libpython}'
+    flags = ['--cc', '--exe', verilator_cpp, '--build', '--vpi', '--public-flat-rw', '--prefix', 'Vtop', '-LDFLAGS', ldflags]
     log_event(logger, logging.DEBUG, 'cocotb.compile_flags', test=self.test_name, flags=flags)
     return flags
 
   def _get_extra_sim_env(self, run_id=None) -> dict:
+    import os
     cocotb_cfg = self.testbench.cocotb
     modules = ','.join(cocotb_cfg.get_modules())
     results_path = self._get_cocotb_results_path(run_id=run_id)
+
+    lib_dir = _cocotb_config('--lib-dir')
+    libpython = _cocotb_config('--libpython')
+    libpython_dir = str(Path(libpython).parent)
+
+    # suite_work_dir so cocotb can import the test module
+    existing_pythonpath = os.environ.get('PYTHONPATH', '')
+    pythonpath_parts = [self.suite_work_dir] + ([existing_pythonpath] if existing_pythonpath else [])
+
+    # macOS: help dynamic linker find Homebrew libpython and cocotb libs
+    existing_dyld = os.environ.get('DYLD_FALLBACK_LIBRARY_PATH', '')
+    dyld_parts = [libpython_dir, lib_dir] + ([existing_dyld] if existing_dyld else [])
+
     env = {
-      'MODULE': modules,
-      'TOPLEVEL': self.testbench.toplevel,
-      'TOPLEVEL_LANG': 'verilog',
+      'COCOTB_TEST_MODULES': modules,
+      'COCOTB_TOPLEVEL': self.testbench.toplevel,
+      'COCOTB_TOPLEVEL_LANG': 'verilog',
       'COCOTB_RESULTS_FILE': results_path,
+      'PYTHONPATH': ':'.join(pythonpath_parts),
+      'DYLD_FALLBACK_LIBRARY_PATH': ':'.join(dyld_parts),
+      'LIBPYTHON_LOC': libpython,
+      'PYGPI_PYTHON_BIN': _cocotb_config('--python-bin'),
     }
     log_event(logger, logging.DEBUG, 'cocotb.sim_env', test=self.test_name, run_id=run_id,
               module=modules, toplevel=self.testbench.toplevel, results_file=results_path)

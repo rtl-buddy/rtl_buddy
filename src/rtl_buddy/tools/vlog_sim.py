@@ -126,6 +126,9 @@ class VlogSim:
     """
     return self.rtl_builder_cfg.get_simulator_family()
 
+  def _filter_builder_opts(self, opts: list) -> list:
+    return opts
+
   def _get_extra_compile_flags(self) -> list:
     return []
 
@@ -226,7 +229,7 @@ class VlogSim:
     
     run_cmd = [ rtl_builder_cfg.get_exe() ]
 
-    builder_opts = rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+    builder_opts = self._filter_builder_opts(rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode))
     run_cmd += builder_opts
 
     if os.path.basename(rtl_builder_cfg.get_exe()).startswith("verilator"):
