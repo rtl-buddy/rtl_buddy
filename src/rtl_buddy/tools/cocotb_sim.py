@@ -17,7 +17,10 @@ from ..logging_utils import log_event
 
 
 def _cocotb_config(*args) -> str:
-  result = subprocess.run(['cocotb-config', *args], capture_output=True, text=True)
+  try:
+    result = subprocess.run(['cocotb-config', *args], capture_output=True, text=True)
+  except FileNotFoundError:
+    raise FatalRtlBuddyError('cocotb-config not found; is cocotb installed in this environment?')
   if result.returncode != 0:
     raise FatalRtlBuddyError('cocotb-config not found; is cocotb installed in this environment?')
   return result.stdout.strip()
