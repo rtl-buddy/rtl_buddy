@@ -1,4 +1,4 @@
-# cocotb testbenches (Verilator + VPI)
+# cocotb testbenches (Verilator/VCS + VPI)
 
 ## Prerequisites
 
@@ -10,6 +10,8 @@ uv add cocotb
 ```
 
 The runner calls `cocotb-config` at compile time. If it is missing, `rtl_buddy` raises a `FatalRtlBuddyError` with an actionable message rather than a raw traceback.
+
+Supported simulators: **Verilator** (macOS + Linux) and **VCS** (Linux). The correct VPI library and compile/runtime flags are selected automatically based on the configured builder.
 
 ## YAML shape
 
