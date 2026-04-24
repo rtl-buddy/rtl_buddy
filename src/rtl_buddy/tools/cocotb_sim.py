@@ -7,6 +7,7 @@ import functools
 import logging
 import os
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -68,20 +69,25 @@ class CocotbSim(VlogSim):
     existing_pythonpath = os.environ.get('PYTHONPATH', '')
     pythonpath_parts = [self.suite_work_dir] + ([existing_pythonpath] if existing_pythonpath else [])
 
-    # macOS: help dynamic linker find Homebrew libpython and cocotb libs
-    existing_dyld = os.environ.get('DYLD_FALLBACK_LIBRARY_PATH', '')
-    dyld_parts = [libpython_dir, lib_dir] + ([existing_dyld] if existing_dyld else [])
-
     env = {
       'COCOTB_TEST_MODULES': modules,
       'COCOTB_TOPLEVEL': self.testbench.toplevel,
       'COCOTB_TOPLEVEL_LANG': 'verilog',
       'COCOTB_RESULTS_FILE': results_path,
       'PYTHONPATH': ':'.join(pythonpath_parts),
-      'DYLD_FALLBACK_LIBRARY_PATH': ':'.join(dyld_parts),
       'LIBPYTHON_LOC': libpython,
       'PYGPI_PYTHON_BIN': _cocotb_config('--python-bin'),
     }
+
+    # help the dynamic linker find libpython and cocotb libs
+    if sys.platform == 'darwin':
+      existing_dyld = os.environ.get('DYLD_FALLBACK_LIBRARY_PATH', '')
+      dyld_parts = [libpython_dir, lib_dir] + ([existing_dyld] if existing_dyld else [])
+      env['DYLD_FALLBACK_LIBRARY_PATH'] = ':'.join(dyld_parts)
+    else:
+      existing_ld = os.environ.get('LD_LIBRARY_PATH', '')
+      ld_parts = [libpython_dir, lib_dir] + ([existing_ld] if existing_ld else [])
+      env['LD_LIBRARY_PATH'] = ':'.join(ld_parts)
     log_event(logger, logging.DEBUG, 'cocotb.sim_env', test=self.test_name, run_id=run_id,
               module=modules, toplevel=self.testbench.toplevel, results_file=results_path)
     return env
