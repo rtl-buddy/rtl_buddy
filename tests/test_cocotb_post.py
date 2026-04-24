@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from rtl_buddy.config.test import CocotbTestbenchConfig
 from rtl_buddy.tools.cocotb_sim import CocotbSim
 
 
@@ -230,3 +231,17 @@ def test_post_truncates_desc_beyond_three_failures(sim):
   r = sim.post()
   assert r.results['result'] == 'FAIL'
   assert '+2 more' in r.results['desc']
+
+
+# ---------------------------------------------------------------------------
+# CocotbTestbenchConfig.get_modules
+# ---------------------------------------------------------------------------
+
+def test_get_modules_str_returns_single_element_list():
+  cfg = CocotbTestbenchConfig(module='test_foo')
+  assert cfg.get_modules() == ['test_foo']
+
+
+def test_get_modules_list_returns_list_unchanged():
+  cfg = CocotbTestbenchConfig(module=['test_foo', 'test_bar'])
+  assert cfg.get_modules() == ['test_foo', 'test_bar']
