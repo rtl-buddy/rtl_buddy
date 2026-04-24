@@ -59,14 +59,17 @@ This makes it reliable to parse outcomes from `rtl_buddy.log` without screen-scr
 | File | Description |
 |------|-------------|
 | `rtl_buddy.log` | Orchestration log; JSONL in machine mode, human-readable otherwise |
-| `logs/{test_name}.log` | Simulation stdout for each test |
-| `logs/{test_name}.err` | Simulation stderr for each test |
-| `logs/{test_name}.randseed` | Seed used for this test run |
+| `artefacts/{test_name}/test.log` | Simulation stdout for each test |
+| `artefacts/{test_name}/test.err` | Simulation stderr for each test |
+| `artefacts/{test_name}/test.randseed` | Seed used for this test run |
+| `artefacts/{test_name}/coverage.dat` | Coverage database (if coverage is enabled) |
+| `artefacts/{test_name}/compile.log` | Compile transcript |
+| `artefacts/{test_name}/run-NNNN/test.log` | Per-iteration output for `randtest` |
 | `test.log` | Symlink to the most recent test's log |
 | `test.err` | Symlink to the most recent test's stderr |
 | `test.randseed` | Symlink to the most recent test's seed |
 
-All files are written relative to the directory where `rtl_buddy` is invoked.
+All files are written relative to the suite directory where `rtl_buddy` is invoked.
 
 ## Machine mode log format
 
@@ -88,7 +91,7 @@ Key fields:
 Agents authoring tests need to follow the parser that `rtl_buddy` actually uses:
 
 - If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and compares it against `max_warns` / `max_errors`.
-- Otherwise, `rtl_buddy` parses `logs/{test_name}.log` and expects one stdout line starting with `PASS` or `FAIL`.
+- Otherwise, `rtl_buddy` parses `artefacts/{test_name}/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
 - When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
 - If neither `PASS` nor `FAIL` appears, the test result becomes `NA`.
 - Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
