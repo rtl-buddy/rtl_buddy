@@ -32,7 +32,7 @@ def _cocotb_config(*args) -> str:
 
 class CocotbSim(VlogSim):
   """
-  cocotb simulation — Verilator + Python testbench via VPI.
+  cocotb simulation — Verilator/VCS + Python testbench via VPI.
 
   Extends VlogSim with cocotb VPI compile flags, runtime env vars,
   and JUnit XML result parsing.
@@ -42,19 +42,37 @@ class CocotbSim(VlogSim):
     return str(Path(self._get_artifact_dir(run_id=run_id)) / 'cocotb_results.xml')
 
   def _filter_builder_opts(self, opts: list) -> list:
-    # cocotb uses --exe + verilator.cpp, not --binary's built-in main
-    return [o for o in opts if o != '--binary']
+    if self._get_simulator_family() == 'verilator':
+      # cocotb uses --exe + verilator.cpp, not --binary's built-in main
+      return [o for o in opts if o != '--binary']
+    return opts
 
   def _get_extra_compile_flags(self) -> list:
-    share = _cocotb_config('--share')
-    lib_dir = _cocotb_config('--lib-dir')
-    vpi_lib = _cocotb_config('--lib-name-path', 'vpi', 'verilator')
-    libpython = _cocotb_config('--libpython')
-    verilator_cpp = str(Path(share) / 'lib' / 'verilator' / 'verilator.cpp')
-    ldflags = f'-Wl,-rpath,{lib_dir} {vpi_lib} {libpython}'
-    flags = ['--cc', '--exe', verilator_cpp, '--build', '--timing', '--vpi', '--public-flat-rw', '--prefix', 'Vtop', '-LDFLAGS', ldflags]
+    sim_family = self._get_simulator_family()
+    if sim_family == 'verilator':
+      share = _cocotb_config('--share')
+      lib_dir = _cocotb_config('--lib-dir')
+      vpi_lib = _cocotb_config('--lib-name-path', 'vpi', 'verilator')
+      libpython = _cocotb_config('--libpython')
+      verilator_cpp = str(Path(share) / 'lib' / 'verilator' / 'verilator.cpp')
+      ldflags = f'-Wl,-rpath,{lib_dir} {vpi_lib} {libpython}'
+      flags = ['--cc', '--exe', verilator_cpp, '--build', '--timing', '--vpi', '--public-flat-rw', '--prefix', 'Vtop', '-LDFLAGS', ldflags]
+    else:
+      # VCS: enable VPI and load the cocotb PLI table at compile time
+      share = _cocotb_config('--share')
+      pli_tab = str(Path(share) / 'lib' / 'vcs' / 'pli.tab')
+      flags = ['+vpi', '-P', pli_tab, '+define+COCOTB_SIM=1']
     log_event(logger, logging.DEBUG, 'cocotb.compile_flags', test=self.test_name, flags=flags)
     return flags
+
+  def _get_extra_sim_args(self, run_id=None) -> list:
+    if self._get_simulator_family() == 'verilator':
+      return []
+    # VCS: load the cocotb VPI library at sim runtime
+    vpi_lib = _cocotb_config('--lib-name-path', 'vpi', 'vcs')
+    args = [f'-load {vpi_lib}:vlog_startup_routines_bootstrap']
+    log_event(logger, logging.DEBUG, 'cocotb.sim_args', test=self.test_name, args=args)
+    return args
 
   def _get_extra_sim_env(self, run_id=None) -> dict:
     cocotb_cfg = self.testbench.cocotb
