@@ -66,7 +66,7 @@ Use `--reg-level` and `--start-level` on the `regression` subcommand to select a
 
 ### Default transcript parsing
 
-When `uvm` is **not** set, `rtl_buddy` determines the result by parsing `logs/{test_name}.log` after simulation. Your testbench must print a result marker to **stdout** at the start of a line:
+When `uvm` is **not** set, `rtl_buddy` determines the result by parsing `artefacts/{test_name}/test.log` after simulation. Your testbench must print a result marker to **stdout** at the start of a line:
 
 - `PASS <optional detail>`
 - `FAIL <optional detail>`
@@ -133,7 +133,7 @@ rtl-buddy test --list
 
 Two seed options are available with the `test` subcommand:
 
-- `--rnd-new`: use a randomly generated seed instead of the root config seed. The seed is saved to `logs/{test_name}.randseed`.
+- `--rnd-new`: use a randomly generated seed instead of the root config seed. The seed is saved to `artefacts/{test_name}/test.randseed`.
 - `--rnd-last`: repeat the test with the seed from the last `--rnd-new` run.
 
 For running a test many times with different seeds, use `randtest`. See the [CLI reference](../reference/cli.md#randtest).
@@ -142,13 +142,18 @@ For running a test many times with different seeds, use `randtest`. See the [CLI
 
 `rtl_buddy` writes orchestration output to `rtl_buddy.log` in the directory where it is invoked.
 
-Per-test simulation output goes to:
+Per-test simulation output goes to `artefacts/{test_name}/`:
 
-- `logs/{test_name}.log` — full simulation output
-- `logs/{test_name}.err` — stderr
-- `logs/{test_name}.randseed` — the seed used
+- `test.log` — full simulation output
+- `test.err` — stderr
+- `test.randseed` — the seed used
+- `coverage.dat` — coverage database (if coverage is enabled)
+- `compile.log` — compile transcript
+- `run.f` — generated filelist
 
-The symlinks `test.log`, `test.err`, and `test.randseed` in the current directory always point to the most recent test run.
+For repeated runs (`randtest`), each iteration writes into a numbered subdirectory — `artefacts/{test_name}/run-0001/`, `run-0002/`, etc. — while compile outputs remain at the top of `artefacts/{test_name}/`.
+
+The symlinks `test.log`, `test.err`, and `test.randseed` at the suite root always point to the most recent run.
 
 For machine-readable logs (JSON Lines), use `--machine`. See [For Agents](../agents.md).
 

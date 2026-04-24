@@ -64,7 +64,7 @@ uv run rb randtest basic 5 --rnd-rpt 3
 
 `rtl_buddy` writes orchestration logs to `rtl_buddy.log` in the directory where it is run.
 
-Simulation output for each test goes to `logs/{test_name}.log`. For convenience, the symlinks `test.log`, `test.err`, and `test.randseed` always point to the latest run.
+Simulation output for each test goes to `artefacts/{test_name}/`. A single run writes `test.log`, `test.err`, `test.randseed`, and (if coverage is enabled) `coverage.dat` directly there. Repeated runs (via `randtest`) write each iteration into a numbered subdirectory: `artefacts/{test_name}/run-0001/`, `run-0002/`, and so on. For convenience, the symlinks `test.log`, `test.err`, and `test.randseed` in the suite root always point to the latest run.
 
 For machine-readable output (useful with CI or AI agents):
 
