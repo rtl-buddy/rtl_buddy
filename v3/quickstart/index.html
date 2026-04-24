@@ -801,6 +801,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrations/v2-to-v3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -966,7 +994,7 @@
 </code></pre></div>
 <h2 id="check-logs">Check logs</h2>
 <p><code>rtl_buddy</code> writes orchestration logs to <code>rtl_buddy.log</code> in the directory where it is run.</p>
-<p>Simulation output for each test goes to <code>logs/{test_name}.log</code>. For convenience, the symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> always point to the latest run.</p>
+<p>Simulation output for each test goes to <code>artefacts/{test_name}/</code>. A single run writes <code>test.log</code>, <code>test.err</code>, <code>test.randseed</code>, and (if coverage is enabled) <code>coverage.dat</code> directly there. Repeated runs (via <code>randtest</code>) write each iteration into a numbered subdirectory: <code>artefacts/{test_name}/run-0001/</code>, <code>run-0002/</code>, and so on. For convenience, the symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> in the suite root always point to the latest run.</p>
 <p>For machine-readable output (useful with CI or AI agents):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
 </code></pre></div>

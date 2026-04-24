@@ -886,6 +886,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1198,7 +1226,7 @@
 </code></pre></div>
 <p>Use <code>--reg-level</code> and <code>--start-level</code> on the <code>regression</code> subcommand to select a level range. See <a href="../regressions/">Regressions</a>.</p>
 <h3 id="default-transcript-parsing">Default transcript parsing</h3>
-<p>When <code>uvm</code> is <strong>not</strong> set, <code>rtl_buddy</code> determines the result by parsing <code>logs/{test_name}.log</code> after simulation. Your testbench must print a result marker to <strong>stdout</strong> at the start of a line:</p>
+<p>When <code>uvm</code> is <strong>not</strong> set, <code>rtl_buddy</code> determines the result by parsing <code>artefacts/{test_name}/test.log</code> after simulation. Your testbench must print a result marker to <strong>stdout</strong> at the start of a line:</p>
 <ul>
 <li><code>PASS &lt;optional detail&gt;</code></li>
 <li><code>FAIL &lt;optional detail&gt;</code></li>
@@ -1248,19 +1276,23 @@
 <h2 id="randomization">Randomization</h2>
 <p>Two seed options are available with the <code>test</code> subcommand:</p>
 <ul>
-<li><code>--rnd-new</code>: use a randomly generated seed instead of the root config seed. The seed is saved to <code>logs/{test_name}.randseed</code>.</li>
+<li><code>--rnd-new</code>: use a randomly generated seed instead of the root config seed. The seed is saved to <code>artefacts/{test_name}/test.randseed</code>.</li>
 <li><code>--rnd-last</code>: repeat the test with the seed from the last <code>--rnd-new</code> run.</li>
 </ul>
 <p>For running a test many times with different seeds, use <code>randtest</code>. See the <a href="../../reference/cli/#randtest">CLI reference</a>.</p>
 <h2 id="logging">Logging</h2>
 <p><code>rtl_buddy</code> writes orchestration output to <code>rtl_buddy.log</code> in the directory where it is invoked.</p>
-<p>Per-test simulation output goes to:</p>
+<p>Per-test simulation output goes to <code>artefacts/{test_name}/</code>:</p>
 <ul>
-<li><code>logs/{test_name}.log</code> — full simulation output</li>
-<li><code>logs/{test_name}.err</code> — stderr</li>
-<li><code>logs/{test_name}.randseed</code> — the seed used</li>
+<li><code>test.log</code> — full simulation output</li>
+<li><code>test.err</code> — stderr</li>
+<li><code>test.randseed</code> — the seed used</li>
+<li><code>coverage.dat</code> — coverage database (if coverage is enabled)</li>
+<li><code>compile.log</code> — compile transcript</li>
+<li><code>run.f</code> — generated filelist</li>
 </ul>
-<p>The symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> in the current directory always point to the most recent test run.</p>
+<p>For repeated runs (<code>randtest</code>), each iteration writes into a numbered subdirectory — <code>artefacts/{test_name}/run-0001/</code>, <code>run-0002/</code>, etc. — while compile outputs remain at the top of <code>artefacts/{test_name}/</code>.</p>
+<p>The symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root always point to the most recent run.</p>
 <p>For machine-readable logs (JSON Lines), use <code>--machine</code>. See <a href="../../agents/">For Agents</a>.</p>
 <h2 id="path-and-working-directory">Path and working directory</h2>
 <p><code>test</code> and <code>randtest</code> do <strong>not</strong> automatically change directory to the suite directory. Run them from the directory containing <code>tests.yaml</code>, or pass an explicit <code>--test-config</code> path.</p>

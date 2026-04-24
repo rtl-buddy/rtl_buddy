@@ -10,26 +10,28 @@
       
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v3/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v3/migrations/v2-to-v3/">
       
       
+        <link rel="prev" href="../submodule-to-uv/">
       
-        <link rel="next" href="install/">
+      
+        <link rel="next" href="../../known-issues/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>RTL Buddy</title>
+        <title>v2 to v3 - RTL Buddy</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
       
 
@@ -48,7 +50,7 @@
       
     
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -66,7 +68,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#rtl-buddy" class="md-skip">
+        <a href="#migrating-from-v2-to-v3" class="md-skip">
           Skip to content
         </a>
       
@@ -86,7 +88,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -106,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              v2 to v3
             
           </span>
         </div>
@@ -184,7 +186,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -199,37 +201,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="." class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -245,59 +220,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Features
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#getting-started" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Getting Started
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Reference
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -309,7 +231,7 @@
   
   
     <li class="md-nav__item">
-      <a href="install/" class="md-nav__link">
+      <a href="../../install/" class="md-nav__link">
         
   
   
@@ -336,7 +258,7 @@
   
   
     <li class="md-nav__item">
-      <a href="quickstart/" class="md-nav__link">
+      <a href="../../quickstart/" class="md-nav__link">
         
   
   
@@ -415,7 +337,7 @@
   
   
     <li class="md-nav__item">
-      <a href="concepts/root-config/" class="md-nav__link">
+      <a href="../../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -443,7 +365,7 @@
   
   
     <li class="md-nav__item">
-      <a href="concepts/tests/" class="md-nav__link">
+      <a href="../../concepts/tests/" class="md-nav__link">
         
   
   
@@ -471,7 +393,7 @@
   
   
     <li class="md-nav__item">
-      <a href="concepts/regressions/" class="md-nav__link">
+      <a href="../../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -499,7 +421,7 @@
   
   
     <li class="md-nav__item">
-      <a href="concepts/coverage/" class="md-nav__link">
+      <a href="../../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -527,7 +449,7 @@
   
   
     <li class="md-nav__item">
-      <a href="concepts/plugins/" class="md-nav__link">
+      <a href="../../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -614,7 +536,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/cli/" class="md-nav__link">
+      <a href="../../reference/cli/" class="md-nav__link">
         
   
   
@@ -642,7 +564,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/yaml/" class="md-nav__link">
+      <a href="../../reference/yaml/" class="md-nav__link">
         
   
   
@@ -677,7 +599,7 @@
   
   
     <li class="md-nav__item">
-      <a href="agents/" class="md-nav__link">
+      <a href="../../agents/" class="md-nav__link">
         
   
   
@@ -701,8 +623,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -713,11 +637,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -738,7 +662,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
@@ -756,7 +680,7 @@
   
   
     <li class="md-nav__item">
-      <a href="migrations/submodule-to-uv/" class="md-nav__link">
+      <a href="../submodule-to-uv/" class="md-nav__link">
         
   
   
@@ -781,10 +705,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="migrations/v2-to-v3/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -800,6 +751,126 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#artifact-layout-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact layout change
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Artifact layout change">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#repeated-runs-randtest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repeated runs (randtest)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#symlinks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Symlinks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-to-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gitignore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .gitignore
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI scripts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coverage-path-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage path references
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -819,7 +890,7 @@
   
   
     <li class="md-nav__item">
-      <a href="known-issues/" class="md-nav__link">
+      <a href="../../known-issues/" class="md-nav__link">
         
   
   
@@ -866,35 +937,102 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
+  <a href="#artifact-layout-change" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Features
+        Artifact layout change
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Artifact layout change">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single run
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#getting-started" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#repeated-runs-randtest" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Getting Started
+        Repeated runs (randtest)
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#reference" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#symlinks" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Reference
+        Symlinks
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-to-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gitignore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .gitignore
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI scripts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coverage-path-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage path references
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -915,30 +1053,60 @@
 
 
 
-<h1 id="rtl-buddy">RTL Buddy</h1>
-<p>RTL Buddy is a CLI tool for automating tests, regressions, and RTL workflows for Verilog/SystemVerilog codebases.</p>
-<p>It wraps simulation tools (primarily Verilator on macOS/Linux and VCS on Linux) and provides a structured, config-driven test and regression system for ASIC and FPGA projects.</p>
-<h2 id="features">Features</h2>
-<ul>
-<li>Run individual tests or full regressions from YAML config files</li>
-<li>Randomized seed testing with repeat support</li>
-<li>Plugin hooks for sweep generation, test pre-processing, and post-processing</li>
-<li>Filelist generation from <code>models.yaml</code></li>
-<li>Basic Verible command integration for lint, syntax, formatting, and preprocessing</li>
-<li>Machine-readable JSONL logging for use with AI agents and CI pipelines</li>
-</ul>
-<p><code>rtl_buddy</code> can be adapted to different project toolchains, but the primary supported flows are Verilator and VCS. Broader first-class Verible and PeakRDL workflows are on the roadmap.</p>
-<h2 id="getting-started">Getting Started</h2>
-<ul>
-<li><a href="install/">Installation</a> — how to add <code>rtl_buddy</code> to your project</li>
-<li><a href="quickstart/">Quick Start</a> — run your first test in minutes</li>
-<li><a href="concepts/root-config/">Concepts</a> — understand the config model</li>
-</ul>
-<h2 id="reference">Reference</h2>
-<ul>
-<li><a href="reference/cli/">CLI Reference</a> — all subcommands and options</li>
-<li><a href="reference/yaml/">YAML Formats</a> — full schema for all config files</li>
-</ul>
+<h1 id="migrating-from-v2-to-v3">Migrating from v2 to v3</h1>
+<h2 id="artifact-layout-change">Artifact layout change</h2>
+<p>v3 changes where test outputs are written. All per-test files now live under <code>artefacts/</code> in the suite directory instead of <code>logs/</code>.</p>
+<h3 id="single-run">Single run</h3>
+<table>
+<thead>
+<tr>
+<th>v2</th>
+<th>v3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>logs/{test_name}.log</code></td>
+<td><code>artefacts/{test_name}/test.log</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.err</code></td>
+<td><code>artefacts/{test_name}/test.err</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.randseed</code></td>
+<td><code>artefacts/{test_name}/test.randseed</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.coverage.dat</code></td>
+<td><code>artefacts/{test_name}/coverage.dat</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.compile.log</code></td>
+<td><code>artefacts/{test_name}/compile.log</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="repeated-runs-randtest">Repeated runs (<code>randtest</code>)</h3>
+<p>Each <code>randtest</code> iteration now writes into a numbered subdirectory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>artefacts/{test_name}/run-0001/test.log
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>artefacts/{test_name}/run-0001/test.err
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>artefacts/{test_name}/run-0001/test.randseed
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>artefacts/{test_name}/run-0001/coverage.dat
+</code></pre></div>
+<p>Compile outputs (<code>compile.log</code>, <code>run.f</code>) remain at <code>artefacts/{test_name}/</code> — they are shared across all iterations of the same test.</p>
+<h3 id="symlinks">Symlinks</h3>
+<p>The convenience symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root still exist and still point to the latest run.</p>
+<h2 id="what-to-update">What to update</h2>
+<h3 id="gitignore"><code>.gitignore</code></h3>
+<p>Replace any <code>logs/</code> entry with <code>artefacts/</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gd">-logs/</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gi">+artefacts/</span>
+</code></pre></div>
+<h3 id="ci-scripts">CI scripts</h3>
+<p>Update any scripts that reference <code>logs/{test_name}.*</code> paths to the new locations above.</p>
+<h3 id="coverage-path-references">Coverage path references</h3>
+<p>Scripts that process coverage files should look for <code>artefacts/{test_name}/coverage.dat</code> (single run) or <code>artefacts/{test_name}/run-*/coverage.dat</code> (randtest).</p>
 
 
 
@@ -994,10 +1162,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>

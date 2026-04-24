@@ -814,6 +814,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1200,7 +1228,8 @@
 </ul>
 <h2 id="path-semantics-and-cwd">Path semantics and cwd</h2>
 <ul>
-<li><code>rtl_buddy.log</code>, <code>logs/</code>, and the convenience symlinks (<code>test.log</code>, <code>test.err</code>, <code>test.randseed</code>) are written to the current working directory.</li>
+<li><code>rtl_buddy.log</code> and the convenience symlinks (<code>test.log</code>, <code>test.err</code>, <code>test.randseed</code>) are written to the suite root (the current working directory).</li>
+<li>Per-test artifacts are written to <code>artefacts/{test_name}/</code> under the suite root. Single runs write <code>test.log</code>, <code>test.err</code>, <code>test.randseed</code>, <code>compile.log</code>, <code>run.f</code>, and (if enabled) <code>coverage.dat</code> there directly. Repeated runs (<code>randtest</code>) write sim outputs into numbered subdirectories: <code>artefacts/{test_name}/run-0001/</code>, etc.</li>
 <li><code>test</code> and <code>randtest</code> do <strong>not</strong> automatically change into the suite directory. Run from the suite directory, or use <code>--test-config</code> with a full path.</li>
 <li><code>regression</code> does <code>chdir</code> into each suite directory before executing.</li>
 <li>For portable configs in multi-suite repos, make paths in <code>tests.yaml</code> explicit and verify they resolve correctly from the intended invocation directory.</li>
