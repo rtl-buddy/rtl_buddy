@@ -3,6 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
+import functools
 import logging
 import subprocess
 import xml.etree.ElementTree as ET
@@ -16,6 +17,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
 
+@functools.lru_cache(maxsize=None)
 def _cocotb_config(*args) -> str:
   try:
     result = subprocess.run(['cocotb-config', *args], capture_output=True, text=True)
