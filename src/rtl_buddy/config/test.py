@@ -45,6 +45,12 @@ class TestbenchConfig:
   toplevel: str | None = None
   cocotb: CocotbTestbenchConfig | None = None
 
+  def __post_init__(self):
+    if self.cocotb is not None and self.toplevel is None:
+      raise FatalRtlBuddyError(
+        f"testbench '{self.name}': toplevel is required when cocotb: is present"
+      )
+
   def is_cocotb(self) -> bool:
     return self.cocotb is not None
 
