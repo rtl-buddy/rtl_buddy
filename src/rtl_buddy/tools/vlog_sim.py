@@ -357,14 +357,15 @@ class VlogSim:
     with task_status(f"Running simulation {self.test_name}{'' if run_id is None else f' #{run_id:04d}'}", spinner="dots12"):
       extra_env = self._get_extra_sim_env(run_id=run_id)
       sim_env = {**os.environ, **extra_env} if extra_env else None
+      popen_kwargs = dict(preexec_fn=os.setpgrp, cwd=artifact_dir)
+      if sim_env is not None:
+        popen_kwargs['env'] = sim_env
       with open(err_path, "w+") as test_err_fp:
         with open(log_path, "w+") as test_out_fp:
           with subprocess.Popen(run_cmd, \
-            preexec_fn=os.setpgrp,
-            cwd=artifact_dir,
-            env=sim_env,
             stdout=test_out_fp,
-            stderr=test_err_fp) as process:
+            stderr=test_err_fp,
+            **popen_kwargs) as process:
               def signal_handler(_no, _frame):
                 process.send_signal(signal.SIGQUIT)
                 raise KeyboardInterrupt
