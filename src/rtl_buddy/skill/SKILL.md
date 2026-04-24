@@ -37,7 +37,7 @@ rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` f
 
 ## Test Pass/fail detection
 - If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and applies the configured thresholds.
-- Otherwise, `rtl_buddy` parses `logs/<test>.log` and expects one stdout line starting with `PASS` or `FAIL`.
+- Otherwise, `rtl_buddy` parses `artefacts/<test>/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
 - When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
 - Always use the `PASS` or `FAIL` markers as otherwise the result is ambiguous and shows `NA`.
 - Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
@@ -57,13 +57,14 @@ end
 - Run `regression` from the repo root.
 - Summarize results per suite, not just globally.
 
-## Log locations
+## Artefact locations
 
-- `rtl_buddy.log` — JSONL in `--machine` mode; written to the CWD you invoked from.
-- `logs/<test>.log`, `logs/<test>.err`, `logs/<test>.randseed` — per-test artifacts in the same CWD.
-- `logs/<test>.compile.log` — written only on compile failure.
-- Symlinks `test.log`, `test.err`, `test.randseed` point at the latest run.
-- For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `logs/`; report logs per suite.
+- `rtl_buddy.log` — JSONL in `--machine` mode; written to the suite root (CWD you invoked from).
+- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for a single run.
+- `artefacts/<test>/compile.log`, `run.f` — compile outputs, always at the test root (not per run-id).
+- `artefacts/<test>/run-0001/test.log` etc. — per-iteration outputs for `randtest`.
+- Symlinks `test.log`, `test.err`, `test.randseed` at the suite root point at the latest run.
+- For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `artefacts/`; report logs per suite.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
 
 ## Bugs & Improvements
