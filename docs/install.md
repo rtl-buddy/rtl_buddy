@@ -1,3 +1,7 @@
+---
+description: How to install rtl_buddy into a project using uv, including prerequisites and verification steps.
+---
+
 # Installation
 
 `rtl_buddy` is available on PyPI and installed into your project environment with `uv`.

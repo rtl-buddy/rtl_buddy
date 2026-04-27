@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import asdict, dataclass
 from functools import lru_cache
-from importlib.resources import files
-from pathlib import Path
+from importlib.resources import files as _pkg_files
 
 
-_DOCS_DATA = "docs_data.json"
-_SUMMARY_RE = re.compile(r"(.+?[.!?])(?:\s|$)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
@@ -57,38 +53,18 @@ def _slugify_heading(text: str) -> str:
   return slug
 
 
-def _first_sentence(text: str) -> str:
-  collapsed = " ".join(text.split())
-  if not collapsed:
-    return ""
-  match = _SUMMARY_RE.match(collapsed)
-  return match.group(1).strip() if match else collapsed
-
-
-def _first_paragraph(lines: list[str]) -> str:
-  paragraph: list[str] = []
-  in_code_block = False
-
-  for raw_line in lines:
-    line = raw_line.rstrip()
-    stripped = line.strip()
-
-    if stripped.startswith("```"):
-      in_code_block = not in_code_block
-      continue
-    if in_code_block:
-      continue
-    if not stripped:
-      if paragraph:
-        break
-      continue
-    if stripped.startswith("#"):
-      continue
-    if stripped.startswith(("|", "-", "*", "1.", "2.", "3.", "4.", "5.")):
-      continue
-    paragraph.append(stripped)
-
-  return " ".join(paragraph).strip()
+def _extract_frontmatter(content: str) -> dict[str, str]:
+  if not content.startswith("---\n"):
+    return {}
+  end = content.find("\n---\n", 4)
+  if end == -1:
+    return {}
+  result = {}
+  for line in content[4:end].splitlines():
+    if ":" in line and not line.startswith(" "):
+      key, _, value = line.partition(":")
+      result[key.strip()] = value.strip().strip("\"'")
+  return result
 
 
 def _extract_title(lines: list[str], fallback_slug: str) -> str:
@@ -102,8 +78,15 @@ def _extract_title(lines: list[str], fallback_slug: str) -> str:
 
 def _extract_sections(lines: list[str]) -> list[DocsSection]:
   sections: list[DocsSection] = []
+  in_code_block = False
   for line in lines:
-    match = _HEADING_RE.match(line.strip())
+    stripped = line.strip()
+    if stripped.startswith("```"):
+      in_code_block = not in_code_block
+      continue
+    if in_code_block:
+      continue
+    match = _HEADING_RE.match(stripped)
     if not match or match.group(1) != "##":
       continue
     title = _clean_heading_text(match.group(2))
@@ -111,53 +94,66 @@ def _extract_sections(lines: list[str]) -> list[DocsSection]:
   return sections
 
 
-def _slug_for_path(path: Path, docs_root: Path) -> str:
-  relpath = path.relative_to(docs_root)
-  return str(relpath.with_suffix("")).replace("\\", "/")
+def _extract_section_content(content: str, anchor: str) -> str | None:
+  lines = content.splitlines(keepends=True)
+  in_code_block = False
+  collecting = False
+  section_lines: list[str] = []
+
+  for line in lines:
+    stripped = line.strip()
+    if stripped.startswith("```"):
+      in_code_block = not in_code_block
+
+    if not in_code_block:
+      match = _HEADING_RE.match(stripped)
+      if match and match.group(1) == "##":
+        title = _clean_heading_text(match.group(2))
+        if collecting:
+          break
+        if _slugify_heading(title) == anchor:
+          collecting = True
+
+    if collecting:
+      section_lines.append(line)
+
+  if not section_lines:
+    return None
+  return "".join(section_lines).rstrip()
 
 
-def build_catalog_from_docs_root(docs_root: Path) -> list[dict]:
-  pages: list[dict] = []
-  for path in sorted(docs_root.rglob("*.md")):
-    if path.name.startswith("."):
+def _walk(node, prefix: str, results: list[tuple[str, str]]) -> None:
+  for child in node.iterdir():
+    name = child.name
+    if name.startswith("."):
       continue
-    content = path.read_text()
-    lines = content.splitlines()
-    slug = _slug_for_path(path, docs_root)
-    title = _extract_title(lines, slug)
-    summary = _first_sentence(_first_paragraph(lines))
-    sections = [asdict(section) for section in _extract_sections(lines)]
-    pages.append({
-      "slug": slug,
-      "title": title,
-      "summary": summary,
-      "sections": sections,
-      "content": content,
-    })
-  return pages
+    child_prefix = f"{prefix}/{name}" if prefix else name
+    if child.is_dir():
+      _walk(child, child_prefix, results)
+    elif name.endswith(".md"):
+      results.append((child_prefix[:-3], child.read_text()))
 
 
-def _load_catalog_payload() -> dict:
-  text = files("rtl_buddy").joinpath(_DOCS_DATA).read_text()
-  payload = json.loads(text)
-  pages = payload.get("pages")
-  if not isinstance(pages, list):
-    raise RuntimeError("docs_data.json is missing the pages array")
-  return payload
+def _iter_docs() -> list[tuple[str, str]]:
+  results: list[tuple[str, str]] = []
+  _walk(_pkg_files("rtl_buddy").joinpath("docs"), "", results)
+  return sorted(results)
 
 
 @lru_cache(maxsize=1)
 def _catalog() -> dict[str, DocsPage]:
   pages: dict[str, DocsPage] = {}
-  for item in _load_catalog_payload()["pages"]:
+  for slug, content in _iter_docs():
+    lines = content.splitlines()
+    fm = _extract_frontmatter(content)
     page = DocsPage(
-      slug=item["slug"],
-      title=item["title"],
-      summary=item["summary"],
-      sections=[DocsSection(**section) for section in item.get("sections", [])],
-      content=item["content"],
+      slug=slug,
+      title=_extract_title(lines, slug),
+      summary=fm.get("description", ""),
+      sections=_extract_sections(lines),
+      content=content,
     )
-    pages[page.slug] = page
+    pages[slug] = page
   return pages
 
 
@@ -167,3 +163,23 @@ def list_pages() -> list[DocsPage]:
 
 def get_page(slug: str) -> DocsPage | None:
   return _catalog().get(slug)
+
+
+def get_section(slug: str, anchor: str) -> dict | None:
+  page = get_page(slug)
+  if page is None:
+    return None
+  section_content = _extract_section_content(page.content, anchor)
+  if section_content is None:
+    return None
+  section_title = next(
+    (s.title for s in page.sections if s.slug == anchor),
+    anchor,
+  )
+  return {
+    "slug": slug,
+    "section": anchor,
+    "title": page.title,
+    "section_title": section_title,
+    "content": section_content,
+  }

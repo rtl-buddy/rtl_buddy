@@ -1,3 +1,7 @@
+---
+description: How to run rtl_buddy effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+---
+
 # For Agents
 
 Use this page to run `rtl_buddy` effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
