@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=80.9.0", "setuptools-scm[simple]>=9.2.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 [project]
 name = "rtl_buddy"
@@ -41,11 +41,15 @@ Source = "https://github.com/rtl-buddy/rtl_buddy"
 Documentation = "https://rtl-buddy.github.io/rtl_buddy/"
 Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
 
-[tool.setuptools_scm]
+[tool.hatch.version]
+source = "vcs"
 
-[tool.setuptools.package-data]
-"rtl_buddy.skill" = ["SKILL.md", "gitignore_snippet.txt"]
-"rtl_buddy" = ["docs/**/*.md"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/rtl_buddy"]
+exclude = ["src/rtl_buddy/docs"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"docs" = "rtl_buddy/docs"
 
 [dependency-groups]
 dev = [

@@ -106,7 +106,7 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 - Agent-facing local docs access goes through `rtl-buddy docs ...`. The wheel ships `docs/**/*.md` directly (via a symlink at `src/rtl_buddy/docs`) so docs are always in sync with the installed version.
 - Any edit to `SKILL.md` takes effect for users only after they re-run `rtl-buddy skill install`. `rtl-buddy skill status` surfaces stale installs via the `.rtl_buddy_skill_version` marker.
 - `src/rtl_buddy/skill/gitignore_snippet.txt` is printed by project-level installs and by `rtl-buddy skill print-gitignore`.
-- Package-data for the skill dir is declared in `pyproject.toml` under `[tool.setuptools.package-data]`. Adding new files to `src/rtl_buddy/skill/` requires updating that glob.
+- Files in `src/rtl_buddy/skill/` are included in the wheel automatically via hatchling's `packages = ["src/rtl_buddy"]`. Adding new files to the skill dir requires no extra config. The `docs/` directory ships via `force-include` in `pyproject.toml` and is excluded from package discovery to avoid double-inclusion.
 
 ### Install scope policy
 
