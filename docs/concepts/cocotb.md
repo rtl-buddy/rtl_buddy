@@ -1,5 +1,7 @@
 # cocotb testbenches (Verilator + VPI)
 
+Explains how `rtl_buddy` integrates [cocotb](https://www.cocotb.org) — a coroutine-based Python verification framework — to drive Verilator-compiled RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.
+
 ## Prerequisites
 
 `cocotb` must be installed in the active Python environment:
