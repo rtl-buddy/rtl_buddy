@@ -135,6 +135,9 @@ class VlogSim:
   def _get_extra_sim_env(self, run_id=None) -> dict:
     return {}
 
+  def _get_extra_sim_args(self, run_id=None) -> list:
+    return []
+
   def _get_cov_path(self, run_id=None):
     return str(Path(self._get_artifact_dir(run_id=run_id)) / "coverage.dat")
 
@@ -334,6 +337,8 @@ class VlogSim:
 
     # add test runtime args
     run_cmd += self._get_plusargs()
+
+    run_cmd += self._get_extra_sim_args(run_id=run_id)
 
     if self._coverage_enabled() and self._get_simulator_family() == "verilator":
       run_cmd += [f"+verilator+coverage+file+{self._get_cov_abspath(run_id=run_id)}"]

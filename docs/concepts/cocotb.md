@@ -2,9 +2,9 @@
 description: How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.
 ---
 
-# cocotb testbenches (Verilator + VPI)
+# cocotb testbenches (Verilator/VCS + VPI)
 
-Explains how `rtl_buddy` integrates [cocotb](https://www.cocotb.org) — a coroutine-based Python verification framework — to drive Verilator-compiled RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.
+Explains how `rtl_buddy` integrates [cocotb](https://www.cocotb.org) — a coroutine-based Python verification framework — to drive RTL via simulator's VPI, covering YAML configuration, pass/fail detection, and prerequisites. Both verilator and VCS VPI flows are supported.
 
 ## Prerequisites
 
@@ -16,6 +16,8 @@ uv add cocotb
 ```
 
 The runner calls `cocotb-config` at compile time. If it is missing, `rtl_buddy` raises a `FatalRtlBuddyError` with an actionable message rather than a raw traceback.
+
+Supported simulators: **Verilator** (macOS + Linux) and **VCS** (Linux). The correct VPI library and compile/runtime flags are selected automatically based on the configured builder.
 
 ## YAML shape
 
