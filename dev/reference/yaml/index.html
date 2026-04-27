@@ -470,6 +470,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/cocotb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cocotb
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -685,6 +713,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="tests.yaml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cocotb-testbenches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cocotb testbenches
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -1016,6 +1061,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="tests.yaml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#cocotb-testbenches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cocotb testbenches
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1294,6 +1356,53 @@
 </tr>
 </tbody>
 </table>
+<h3 id="cocotb-testbenches">cocotb testbenches</h3>
+<p>Adding a <code>cocotb:</code> block to a testbench entry switches the runner to cocotb/VPI mode (Verilator only for now). <code>toplevel:</code> is required when <code>cocotb:</code> is present; omitting it raises a fatal error at config-load time.</p>
+<p><strong>Prerequisite:</strong> <code>cocotb</code> must be installed in the active Python environment (<code>uv add cocotb</code> or <code>pip install cocotb</code>). The runner invokes <code>cocotb-config</code> at compile time; a missing binary surfaces as a <code>FatalRtlBuddyError</code> with an actionable message.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">testbenches</span><span class="p">:</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span><span class="w">          </span><span class="c1"># DUT top-level module name — required for cocotb</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_my_design</span><span class="w">     </span><span class="c1"># Python module(s) containing @cocotb.test() coroutines</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_multi&quot;</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w">                    </span><span class="c1"># list form: all modules are loaded</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_smoke</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_corner_cases</span>
+</code></pre></div>
+<p><strong>Pass/fail detection for cocotb testbenches:</strong></p>
+<p>cocotb writes a JUnit XML results file (<code>cocotb_results.xml</code>) instead of <code>PASS</code>/<code>FAIL</code> stdout lines. <code>rtl_buddy</code> parses this file automatically after simulation; you do not need <code>$display("PASS …")</code> in cocotb tests. The <code>desc</code> field in the result reports the first three failure messages and a <code>(+N more)</code> suffix when there are more.</p>
+<p><strong>Testbench field reference (cocotb-specific additions):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>toplevel</code></td>
+<td>string</td>
+<td>Yes (cocotb only)</td>
+<td>Top-level DUT module name passed to <code>COCOTB_TOPLEVEL</code></td>
+</tr>
+<tr>
+<td><code>cocotb.module</code></td>
+<td>string or list</td>
+<td>Yes</td>
+<td>Python test module(s) passed to <code>COCOTB_TEST_MODULES</code></td>
+</tr>
+</tbody>
+</table>
 <p><strong>Runtime effects by field:</strong></p>
 <ul>
 <li><code>testbench</code>: selects entry from <code>testbenches</code>; its filelist is appended to model sources for compilation.</li>
@@ -1322,8 +1431,8 @@
 <li>Add the suite path to <code>regression.yaml</code>.</li>
 <li>Run a smoke pass:</li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
 </code></pre></div>
 
 
