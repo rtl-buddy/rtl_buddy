@@ -6,17 +6,17 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.">
+        <meta name="description" content="How to migrate an rtl_buddy project from v2 to v3, covering the artifact layout change and other breaking changes.">
       
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/regressions/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/migrations/v2-to-v3/">
       
       
-        <link rel="prev" href="../tests/">
+        <link rel="prev" href="../submodule-to-uv/">
       
       
-        <link rel="next" href="../coverage/">
+        <link rel="next" href="../../known-issues/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Regressions - RTL Buddy</title>
+        <title>v2 to v3 - RTL Buddy</title>
       
     
     
@@ -68,7 +68,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#regressions" class="md-skip">
+        <a href="#migrating-from-v2-to-v3" class="md-skip">
           Skip to content
         </a>
       
@@ -108,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Regressions
+              v2 to v3
             
           </span>
         </div>
@@ -282,8 +282,6 @@
       
   
   
-    
-  
   
   
     
@@ -296,11 +294,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -321,7 +319,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -339,7 +337,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../root-config/" class="md-nav__link">
+      <a href="../../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -367,7 +365,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tests/" class="md-nav__link">
+      <a href="../../concepts/tests/" class="md-nav__link">
         
   
   
@@ -392,37 +390,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Regressions
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -438,98 +409,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#regression-config-regressionsyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression config: regressions.yaml
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running-a-regression" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running a regression
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Running a regression">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#config-resolution-order" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Config resolution order
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression levels
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#working-directory-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Working directory behavior
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full schema
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -542,7 +421,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../coverage/" class="md-nav__link">
+      <a href="../../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -570,7 +449,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../plugins/" class="md-nav__link">
+      <a href="../../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -744,8 +623,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -756,11 +637,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -781,7 +662,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
@@ -799,7 +680,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
+      <a href="../submodule-to-uv/" class="md-nav__link">
         
   
   
@@ -824,10 +705,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -843,6 +751,126 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#artifact-layout-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact layout change
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Artifact layout change">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#single-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#repeated-runs-randtest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repeated runs (randtest)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#symlinks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Symlinks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-to-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gitignore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .gitignore
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI scripts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coverage-path-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage path references
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -936,33 +964,22 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#regression-config-regressionsyaml" class="md-nav__link">
+  <a href="#artifact-layout-change" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Regression config: regressions.yaml
+        Artifact layout change
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running-a-regression" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running a regression
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Running a regression">
+    <nav class="md-nav" aria-label="Artifact layout change">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#config-resolution-order" class="md-nav__link">
+  <a href="#single-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Config resolution order
+        Single run
       
     </span>
   </a>
@@ -970,10 +987,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
+  <a href="#repeated-runs-randtest" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Regression levels
+        Repeated runs (randtest)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#symlinks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Symlinks
       
     </span>
   </a>
@@ -986,24 +1014,52 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#working-directory-behavior" class="md-nav__link">
+  <a href="#what-to-update" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Working directory behavior
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gitignore" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        .gitignore
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full schema
+        CI scripts
       
     </span>
   </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#coverage-path-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage path references
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1024,45 +1080,60 @@
 
 
 
-<h1 id="regressions">Regressions</h1>
-<p>A regression runs multiple test suites in sequence, filtering tests by regression level. It is the standard way to validate a full design before a release or merge.</p>
-<h2 id="regression-config-regressionsyaml">Regression config: <code>regressions.yaml</code></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">reg_config</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">test-configs</span><span class="p">:</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_a/verif/tests.yaml&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_b/verif/tests.yaml&quot;</span>
+<h1 id="migrating-from-v2-to-v3">Migrating from v2 to v3</h1>
+<h2 id="artifact-layout-change">Artifact layout change</h2>
+<p>v3 changes where test outputs are written. All per-test files now live under <code>artefacts/</code> in the suite directory instead of <code>logs/</code>.</p>
+<h3 id="single-run">Single run</h3>
+<table>
+<thead>
+<tr>
+<th>v2</th>
+<th>v3</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>logs/{test_name}.log</code></td>
+<td><code>artefacts/{test_name}/test.log</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.err</code></td>
+<td><code>artefacts/{test_name}/test.err</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.randseed</code></td>
+<td><code>artefacts/{test_name}/test.randseed</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.coverage.dat</code></td>
+<td><code>artefacts/{test_name}/coverage.dat</code></td>
+</tr>
+<tr>
+<td><code>logs/{test_name}.compile.log</code></td>
+<td><code>artefacts/{test_name}/compile.log</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="repeated-runs-randtest">Repeated runs (<code>randtest</code>)</h3>
+<p>Each <code>randtest</code> iteration now writes into a numbered subdirectory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>artefacts/{test_name}/run-0001/test.log
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>artefacts/{test_name}/run-0001/test.err
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>artefacts/{test_name}/run-0001/test.randseed
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>artefacts/{test_name}/run-0001/coverage.dat
 </code></pre></div>
-<p>Each entry in <code>test-configs</code> is a path to a suite's <code>tests.yaml</code>, resolved relative to the directory where <code>rtl-buddy regression</code> is invoked (usually the repo root).</p>
-<p>The default path to <code>regressions.yaml</code> is set in <code>root_config.yaml</code> under <code>cfg-rtl-reg.reg-cfg-path</code>. Override it per run with <code>--reg-config</code>.</p>
-<h2 id="running-a-regression">Running a regression</h2>
-<p>Use the default config:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rtl-buddy<span class="w"> </span>regression
+<p>Compile outputs (<code>compile.log</code>, <code>run.f</code>) remain at <code>artefacts/{test_name}/</code> — they are shared across all iterations of the same test.</p>
+<h3 id="symlinks">Symlinks</h3>
+<p>The convenience symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root still exist and still point to the latest run.</p>
+<h2 id="what-to-update">What to update</h2>
+<h3 id="gitignore"><code>.gitignore</code></h3>
+<p>Replace any <code>logs/</code> entry with <code>artefacts/</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gd">-logs/</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gi">+artefacts/</span>
 </code></pre></div>
-<p>Specify a config file explicitly:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--reg-config<span class="w"> </span>path/to/regressions.yaml
-</code></pre></div>
-<h3 id="config-resolution-order">Config resolution order</h3>
-<p>When <code>--reg-config</code> is not given, <code>rtl_buddy</code> resolves the regression config in this order:</p>
-<ol>
-<li><code>./regression.yaml</code> in the current working directory, if it exists</li>
-<li>The path set in <code>root_config.yaml</code> under <code>cfg-rtl-reg.reg-cfg-path</code></li>
-</ol>
-<p>This means you can drop a <code>regression.yaml</code> at the repo root and run <code>rtl-buddy regression</code> without any flags, even if <code>root_config.yaml</code> points elsewhere.</p>
-<h3 id="regression-levels">Regression levels</h3>
-<p><code>rtl_buddy</code> filters tests by the <code>reglvl</code> value set in each <code>tests.yaml</code>. Use <code>--reg-level</code> and <code>--start-level</code> to select a range:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Run all tests with reglvl &lt;= 2000</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--reg-level<span class="w"> </span><span class="m">2000</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Run tests with reglvl in [1000, 3000]</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
-</code></pre></div>
-<p>The default is <code>--reg-level 0</code>, which runs only tests with <code>reglvl: 0</code> (must-run sanity tests).</p>
-<h2 id="working-directory-behavior">Working directory behavior</h2>
-<p>Unlike <code>test</code>, the <code>regression</code> subcommand <strong>changes directory</strong> into each suite directory before running its tests. This means relative paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved correctly without any extra setup.</p>
-<p>Run <code>regression</code> from the repo root so that the paths in <code>regressions.yaml</code> resolve correctly.</p>
-<h2 id="full-schema">Full schema</h2>
-<p>See <a href="../../reference/yaml/#regressionyaml">YAML Formats: regressions.yaml</a> for the complete field reference.</p>
+<h3 id="ci-scripts">CI scripts</h3>
+<p>Update any scripts that reference <code>logs/{test_name}.*</code> paths to the new locations above.</p>
+<h3 id="coverage-path-references">Coverage path references</h3>
+<p>Scripts that process coverage files should look for <code>artefacts/{test_name}/coverage.dat</code> (single run) or <code>artefacts/{test_name}/run-*/coverage.dat</code> (randtest).</p>
 
 
 

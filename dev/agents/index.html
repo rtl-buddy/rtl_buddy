@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="CLI tool for automating tests, regressions, and RTL workflows for Verilog/SystemVerilog codebases.">
+        <meta name="description" content="How to run rtl_buddy effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.">
       
       
       
@@ -845,6 +845,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrations/v2-to-v3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -867,6 +895,33 @@
     
   
     Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
   
 
     
@@ -1088,16 +1143,28 @@
 <td>Orchestration log; JSONL in machine mode, human-readable otherwise</td>
 </tr>
 <tr>
-<td><code>logs/{test_name}.log</code></td>
+<td><code>artefacts/{test_name}/test.log</code></td>
 <td>Simulation stdout for each test</td>
 </tr>
 <tr>
-<td><code>logs/{test_name}.err</code></td>
+<td><code>artefacts/{test_name}/test.err</code></td>
 <td>Simulation stderr for each test</td>
 </tr>
 <tr>
-<td><code>logs/{test_name}.randseed</code></td>
+<td><code>artefacts/{test_name}/test.randseed</code></td>
 <td>Seed used for this test run</td>
+</tr>
+<tr>
+<td><code>artefacts/{test_name}/coverage.dat</code></td>
+<td>Coverage database (if coverage is enabled)</td>
+</tr>
+<tr>
+<td><code>artefacts/{test_name}/compile.log</code></td>
+<td>Compile transcript</td>
+</tr>
+<tr>
+<td><code>artefacts/{test_name}/run-NNNN/test.log</code></td>
+<td>Per-iteration output for <code>randtest</code></td>
 </tr>
 <tr>
 <td><code>test.log</code></td>
@@ -1113,7 +1180,7 @@
 </tr>
 </tbody>
 </table>
-<p>All files are written relative to the directory where <code>rtl_buddy</code> is invoked.</p>
+<p>All files are written relative to the suite directory where <code>rtl_buddy</code> is invoked.</p>
 <h2 id="machine-mode-log-format">Machine mode log format</h2>
 <p>Each line in <code>rtl_buddy.log</code> (machine mode) is a JSON object:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim.completed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;duration_sec&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">4.2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke: simulation completed in 4.20s&quot;</span><span class="p">}</span>
@@ -1129,7 +1196,7 @@
 <p>Agents authoring tests need to follow the parser that <code>rtl_buddy</code> actually uses:</p>
 <ul>
 <li>If <code>tests.yaml</code> sets <code>uvm:</code>, <code>rtl_buddy</code> parses the UVM Report Summary and compares it against <code>max_warns</code> / <code>max_errors</code>.</li>
-<li>Otherwise, <code>rtl_buddy</code> parses <code>logs/{test_name}.log</code> and expects one stdout line starting with <code>PASS</code> or <code>FAIL</code>.</li>
+<li>Otherwise, <code>rtl_buddy</code> parses <code>artefacts/{test_name}/test.log</code> and expects one stdout line starting with <code>PASS</code> or <code>FAIL</code>.</li>
 <li>When emitting <code>FAIL</code>, also print an <code>ERR:</code> or <code>FAT:</code> line because the default failure parser expects it.</li>
 <li>If neither <code>PASS</code> nor <code>FAIL</code> appears, the test result becomes <code>NA</code>.</li>
 <li>Do not rely on simulator exit code alone for non-UVM pass/fail signalling.</li>
@@ -1194,6 +1261,9 @@
 
 
 
+
+  
+  
 
 
 
