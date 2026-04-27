@@ -14,6 +14,22 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 @serde
+class CocotbTestbenchConfig:
+  """
+  cocotb-specific configuration nested under a testbench.
+
+  Attributes:
+    module (str | list[str]): Python test module(s) to load via MODULE env var.
+  """
+  module: str | list[str]
+
+  def get_modules(self) -> list[str]:
+    if isinstance(self.module, str):
+      return [self.module]
+    return list(self.module)
+
+
+@serde
 class TestbenchConfig:
   """
   Configuration for a single testbench within a test suite.
@@ -21,9 +37,22 @@ class TestbenchConfig:
   Attributes:
     name (str): Unique testbench identifier.
     filelist (list[str]): List of paths to files involved in running the testbench.
+    toplevel (str | None): Top-level DUT module name. Required for cocotb testbenches.
+    cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
   """
   name: str
   filelist: list[str]
+  toplevel: str | None = None
+  cocotb: CocotbTestbenchConfig | None = None
+
+  def __post_init__(self):
+    if self.cocotb is not None and self.toplevel is None:
+      raise FatalRtlBuddyError(
+        f"testbench '{self.name}': toplevel is required when cocotb: is present"
+      )
+
+  def is_cocotb(self) -> bool:
+    return self.cocotb is not None
 
   def get_name(self):
     """
