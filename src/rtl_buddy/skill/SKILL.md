@@ -37,6 +37,7 @@ rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` f
 
 ## Test Pass/fail detection
 - If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and applies the configured thresholds.
+- If the testbench has a `cocotb:` block, `rtl_buddy` parses JUnit XML written by cocotb — no `PASS`/`FAIL` line needed. Run `rtl-buddy docs show concepts/cocotb` for setup.
 - Otherwise, `rtl_buddy` parses `artefacts/<test>/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
 - When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
 - Always use the `PASS` or `FAIL` markers as otherwise the result is ambiguous and shows `NA`.

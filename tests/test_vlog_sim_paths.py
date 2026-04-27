@@ -66,6 +66,9 @@ class DummyTestbenchCfg:
   def get_filelist(self):
     return []
 
+  def is_cocotb(self):
+    return False
+
 
 class DummyTestCfg:
   def __init__(self, name, model_path):
