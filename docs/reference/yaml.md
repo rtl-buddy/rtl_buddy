@@ -1,3 +1,7 @@
+---
+description: Canonical reference for all rtl_buddy YAML configuration files: root_config.yaml, regression.yaml, tests.yaml, and models.yaml.
+---
+
 # YAML Formats
 
 This page is the canonical reference for all `rtl_buddy` configuration files. Use it when creating or updating configs for new designs, suites, and regressions.

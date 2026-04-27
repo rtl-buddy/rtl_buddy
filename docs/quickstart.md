@@ -1,3 +1,7 @@
+---
+description: Run your first rtl_buddy test, regression, and supporting commands in an already-installed project.
+---
+
 # Quick Start
 
 Use this guide to run your first `rtl_buddy` test, regression, and supporting commands in an already-installed project.

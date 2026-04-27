@@ -46,6 +46,7 @@ nav:
       - Submodule to uv: migrations/submodule-to-uv.md
       - v2 to v3: migrations/v2-to-v3.md
   - Known Issues: known-issues.md
+  - Contributing: CONTRIBUTING.md
 
 extra:
   version:

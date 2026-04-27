@@ -91,7 +91,7 @@ All runtime logging goes through `log_event()` in `src/rtl_buddy/logging_utils.p
 After meaningful `rtl_buddy` changes:
 
 1. **If any CLI command, flag, or help text changed**: run `python scripts/gen_cli_reference.py` and commit the updated `docs/reference/cli.md` in the same PR. The file is committed to the repo and must stay in sync — CI will catch drift via `python scripts/gen_cli_reference.py --check`.
-2. **If docs content or docs CLI behavior changed**: run `python scripts/gen_docs_resource.py` and commit the updated `src/rtl_buddy/docs_data.json` in the same PR. CI also checks drift via `python scripts/gen_docs_resource.py --check`.
+2. **If you add or edit a docs page**: ensure it has a non-empty `description:` YAML frontmatter field. CI enforces this via `python scripts/check_docs_frontmatter.py --check`. See `docs/CONTRIBUTING.md` for the required format.
 3. Update any downstream agent docs if command behavior, YAML schema, version expectations, or validation notes changed.
 4. Update downstream integrations to the intended commit as needed.
 
@@ -103,7 +103,7 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 
 - `src/rtl_buddy/skill/SKILL.md` is the single source consumed by both Claude Code (at `.claude/skills/rtl_buddy/`) and Codex (at `.agents/skills/rtl_buddy/` for project scope, `~/.codex/skills/rtl_buddy/` for user scope).
 - Keep `SKILL.md` ≤60 lines and agent-specific. Anything covered by the docs site should cite <https://rtl-buddy.github.io/rtl_buddy/>, not restate it.
-- Agent-facing local docs access now goes through `rtl-buddy docs ...`, backed by packaged metadata in `src/rtl_buddy/docs_data.json`.
+- Agent-facing local docs access goes through `rtl-buddy docs ...`. The wheel ships `docs/**/*.md` directly (via a symlink at `src/rtl_buddy/docs`) so docs are always in sync with the installed version.
 - Any edit to `SKILL.md` takes effect for users only after they re-run `rtl-buddy skill install`. `rtl-buddy skill status` surfaces stale installs via the `.rtl_buddy_skill_version` marker.
 - `src/rtl_buddy/skill/gitignore_snippet.txt` is printed by project-level installs and by `rtl-buddy skill print-gitignore`.
 - Package-data for the skill dir is declared in `pyproject.toml` under `[tool.setuptools.package-data]`. Adding new files to `src/rtl_buddy/skill/` requires updating that glob.

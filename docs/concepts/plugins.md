@@ -1,3 +1,7 @@
+---
+description: How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.
+---
+
 # Plugins
 
 `rtl_buddy` supports three Python plugin hooks that let you extend test behavior without modifying the tool itself. All hooks are specified per-test in `tests.yaml` and are executed by the tool at the appropriate point in the test flow.

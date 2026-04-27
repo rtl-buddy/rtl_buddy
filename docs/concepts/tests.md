@@ -1,3 +1,7 @@
+---
+description: How to define testbenches and tests in tests.yaml for a verification suite.
+---
+
 # Tests
 
 ## Test config: `tests.yaml`
