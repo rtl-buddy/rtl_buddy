@@ -6,32 +6,30 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to migrate an rtl_buddy project from v2 to v3, covering the artifact layout change and other breaking changes.">
+        <meta name="description" content="Guidelines for contributing to rtl_buddy documentation, including the frontmatter convention, writing style, and what is auto-generated.">
       
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v3/migrations/v2-to-v3/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v3/CONTRIBUTING/">
       
       
-        <link rel="prev" href="../submodule-to-uv/">
+        <link rel="prev" href="../known-issues/">
       
-      
-        <link rel="next" href="../../known-issues/">
       
       
         
       
       
-      <link rel="icon" href="../../assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>v2 to v3 - RTL Buddy</title>
+        <title>Contributing - RTL Buddy</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
       
 
@@ -50,7 +48,7 @@
       
     
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -68,7 +66,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#migrating-from-v2-to-v3" class="md-skip">
+        <a href="#contributing-to-docs" class="md-skip">
           Skip to content
         </a>
       
@@ -88,7 +86,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href=".." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -108,7 +106,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              v2 to v3
+              Contributing
             
           </span>
         </div>
@@ -186,7 +184,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href=".." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -204,7 +202,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -231,7 +229,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../install/" class="md-nav__link">
+      <a href="../install/" class="md-nav__link">
         
   
   
@@ -258,7 +256,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../quickstart/" class="md-nav__link">
+      <a href="../quickstart/" class="md-nav__link">
         
   
   
@@ -337,7 +335,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/root-config/" class="md-nav__link">
+      <a href="../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -365,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/tests/" class="md-nav__link">
+      <a href="../concepts/tests/" class="md-nav__link">
         
   
   
@@ -393,7 +391,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/regressions/" class="md-nav__link">
+      <a href="../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -421,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/coverage/" class="md-nav__link">
+      <a href="../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -449,7 +447,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/plugins/" class="md-nav__link">
+      <a href="../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -477,7 +475,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/cocotb/" class="md-nav__link">
+      <a href="../concepts/cocotb/" class="md-nav__link">
         
   
   
@@ -564,7 +562,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/cli/" class="md-nav__link">
+      <a href="../reference/cli/" class="md-nav__link">
         
   
   
@@ -592,7 +590,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/yaml/" class="md-nav__link">
+      <a href="../reference/yaml/" class="md-nav__link">
         
   
   
@@ -627,7 +625,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../agents/" class="md-nav__link">
+      <a href="../agents/" class="md-nav__link">
         
   
   
@@ -651,8 +649,6 @@
       
   
   
-    
-  
   
   
     
@@ -665,11 +661,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -690,7 +686,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
@@ -708,7 +704,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../submodule-to-uv/" class="md-nav__link">
+      <a href="../migrations/submodule-to-uv/" class="md-nav__link">
         
   
   
@@ -733,6 +729,68 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrations/v2-to-v3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../known-issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -752,7 +810,7 @@
   <span class="md-ellipsis">
     
   
-    v2 to v3
+    Contributing
   
 
     
@@ -770,7 +828,7 @@
   <span class="md-ellipsis">
     
   
-    v2 to v3
+    Contributing
   
 
     
@@ -796,102 +854,46 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#artifact-layout-change" class="md-nav__link">
+  <a href="#frontmatter" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Artifact layout change
+        Frontmatter
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Artifact layout change">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#single-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single run
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#repeated-runs-randtest" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Repeated runs (randtest)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#symlinks" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Symlinks
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-to-update" class="md-nav__link">
+  <a href="#writing-style" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What to update
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="What to update">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#gitignore" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        .gitignore
+        Writing style
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#ci-scripts" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#page-structure" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CI scripts
+        Page structure
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#coverage-path-references" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#auto-generated-pages" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Coverage path references
+        Auto-generated pages
       
     </span>
   </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -899,68 +901,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../known-issues/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Known Issues
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../CONTRIBUTING/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Contributing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -992,102 +932,46 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#artifact-layout-change" class="md-nav__link">
+  <a href="#frontmatter" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Artifact layout change
+        Frontmatter
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Artifact layout change">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#single-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single run
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#repeated-runs-randtest" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Repeated runs (randtest)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#symlinks" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Symlinks
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-to-update" class="md-nav__link">
+  <a href="#writing-style" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What to update
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="What to update">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#gitignore" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        .gitignore
+        Writing style
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#ci-scripts" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#page-structure" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CI scripts
+        Page structure
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#coverage-path-references" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#auto-generated-pages" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Coverage path references
+        Auto-generated pages
       
     </span>
   </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1108,60 +992,53 @@
 
 
 
-<h1 id="migrating-from-v2-to-v3">Migrating from v2 to v3</h1>
-<h2 id="artifact-layout-change">Artifact layout change</h2>
-<p>v3 changes where test outputs are written. All per-test files now live under <code>artefacts/</code> in the suite directory instead of <code>logs/</code>.</p>
-<h3 id="single-run">Single run</h3>
-<table>
-<thead>
-<tr>
-<th>v2</th>
-<th>v3</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>logs/{test_name}.log</code></td>
-<td><code>artefacts/{test_name}/test.log</code></td>
-</tr>
-<tr>
-<td><code>logs/{test_name}.err</code></td>
-<td><code>artefacts/{test_name}/test.err</code></td>
-</tr>
-<tr>
-<td><code>logs/{test_name}.randseed</code></td>
-<td><code>artefacts/{test_name}/test.randseed</code></td>
-</tr>
-<tr>
-<td><code>logs/{test_name}.coverage.dat</code></td>
-<td><code>artefacts/{test_name}/coverage.dat</code></td>
-</tr>
-<tr>
-<td><code>logs/{test_name}.compile.log</code></td>
-<td><code>artefacts/{test_name}/compile.log</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="repeated-runs-randtest">Repeated runs (<code>randtest</code>)</h3>
-<p>Each <code>randtest</code> iteration now writes into a numbered subdirectory:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>artefacts/{test_name}/run-0001/test.log
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>artefacts/{test_name}/run-0001/test.err
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>artefacts/{test_name}/run-0001/test.randseed
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>artefacts/{test_name}/run-0001/coverage.dat
+<h1 id="contributing-to-docs">Contributing to Docs</h1>
+<p>This page covers the standards for writing and maintaining <code>rtl_buddy</code> documentation.
+It applies to everyone editing files under <code>docs/</code>. It is also accessible via <code>rb docs show CONTRIBUTING</code>.</p>
+<h2 id="frontmatter">Frontmatter</h2>
+<p>Every docs page must start with a YAML frontmatter block containing a <code>description:</code> field:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>---
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gu">description: One or two sentences describing what this page covers.</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gu">---</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gh"># Page Title</span>
 </code></pre></div>
-<p>Compile outputs (<code>compile.log</code>, <code>run.f</code>) remain at <code>artefacts/{test_name}/</code> — they are shared across all iterations of the same test.</p>
-<h3 id="symlinks">Symlinks</h3>
-<p>The convenience symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root still exist and still point to the latest run.</p>
-<h2 id="what-to-update">What to update</h2>
-<h3 id="gitignore"><code>.gitignore</code></h3>
-<p>Replace any <code>logs/</code> entry with <code>artefacts/</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="gd">-logs/</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gi">+artefacts/</span>
+<p>The <code>description:</code> value is used as the page summary in <code>rb docs list</code> and <code>rb docs show --machine</code>.
+Agents read it to decide which page to fetch; make it accurate and specific.</p>
+<p>Rules:
+- Required on every page except <code>reference/cli.md</code> (auto-generated — see below)
+- One or two sentences; focus on what the page covers, not that it "explains" or "describes" something
+- CI enforces this via <code>scripts/check_docs_frontmatter.py --check</code></p>
+<h2 id="writing-style">Writing style</h2>
+<p>Write for both humans and agents:</p>
+<ul>
+<li><strong>Be concise.</strong> Agents parse these pages programmatically. Long preambles add noise.</li>
+<li><strong>Be complete.</strong> Every H2 section should stand alone. Agents may fetch a single section via <code>rb docs show slug#anchor</code>.</li>
+<li><strong>One topic per H2.</strong> If a section covers two things, split it.</li>
+<li><strong>Prose over bullets</strong> for explanations. Bullets are fine for option lists and step sequences.</li>
+</ul>
+<h2 id="page-structure">Page structure</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>---
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gu">description: ...</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="gu">---</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="gh"># Title</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>Opening sentence or short paragraph that orients the reader.
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="gu">## Section One</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>Content.
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="gu">## Section Two</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>Content.
 </code></pre></div>
-<h3 id="ci-scripts">CI scripts</h3>
-<p>Update any scripts that reference <code>logs/{test_name}.*</code> paths to the new locations above.</p>
-<h3 id="coverage-path-references">Coverage path references</h3>
-<p>Scripts that process coverage files should look for <code>artefacts/{test_name}/coverage.dat</code> (single run) or <code>artefacts/{test_name}/run-*/coverage.dat</code> (randtest).</p>
+<p>Avoid deeply nested subsections (<code>###</code> and below) when the content can be reorganized into top-level H2 sections.</p>
+<h2 id="auto-generated-pages">Auto-generated pages</h2>
+<p><code>docs/reference/cli.md</code> is generated from <code>rtl-buddy --help</code> output by <code>scripts/gen_cli_reference.py</code>.
+Do not edit it by hand — changes will be overwritten. Edit CLI help strings in <code>src/rtl_buddy/rtl_buddy.py</code> instead.</p>
+<p>CI auto-commits regenerated <code>cli.md</code> if it drifts. Its <code>description:</code> frontmatter is part of the generated output and is maintained by the generator, not by hand.</p>
 
 
 
@@ -1220,10 +1097,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>
