@@ -44,10 +44,13 @@ Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
 [tool.setuptools_scm]
 
 [tool.setuptools.package-data]
-"rtl_buddy.skill" = ["SKILL.md", "gitignore_snippet.txt", "cocotb.md"]
-"rtl_buddy" = ["docs_data.json"]
+"rtl_buddy.skill" = ["SKILL.md", "gitignore_snippet.txt"]
+"rtl_buddy" = ["docs/**/*.md"]
 
 [dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
 docs = [
   "mkdocs>=1.6.0",
   "mkdocs-material>=9.5.0",

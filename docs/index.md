@@ -1,3 +1,7 @@
+---
+description: RTL Buddy is a CLI tool for automating tests, regressions, and RTL workflows for Verilog/SystemVerilog codebases.
+---
+
 # RTL Buddy
 
 RTL Buddy is a CLI tool for automating tests, regressions, and RTL workflows for Verilog/SystemVerilog codebases.

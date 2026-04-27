@@ -11,7 +11,7 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'scripts/gen_cli_reference.py'
-      - 'scripts/gen_docs_resource.py'
+      - 'scripts/check_docs_frontmatter.py'
       - 'src/rtl_buddy/**'
 
 jobs:
@@ -35,15 +35,11 @@ jobs:
       - name: Check generated docs files are up to date
         id: generated
         continue-on-error: true
-        run: |
-          uv run python scripts/gen_cli_reference.py --check
-          uv run python scripts/gen_docs_resource.py --check
+        run: uv run python scripts/gen_cli_reference.py --check
 
       - name: Regenerate stale docs files
         if: steps.generated.outcome == 'failure'
-        run: |
-          uv run python scripts/gen_cli_reference.py
-          uv run python scripts/gen_docs_resource.py
+        run: uv run python scripts/gen_cli_reference.py
 
       - name: Commit regenerated docs files
         if: steps.generated.outcome == 'failure'
@@ -57,14 +53,23 @@ jobs:
             echo "Skipping auto-commit for forked pull request."
             exit 0
           fi
-          if git diff --quiet -- docs/reference/cli.md src/rtl_buddy/docs_data.json; then
+          if git diff --quiet -- docs/reference/cli.md; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/reference/cli.md src/rtl_buddy/docs_data.json
+          git add docs/reference/cli.md
           git commit -m "docs: regenerate generated docs artifacts"
           git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+
+      - name: Check docs frontmatter
+        run: |
+          uv run python scripts/check_docs_frontmatter.py --check || {
+            echo ""
+            echo "Fix: add a 'description:' frontmatter field to each listed file."
+            echo "See docs/CONTRIBUTING.md or run 'rb docs show CONTRIBUTING' for the required format."
+            exit 1
+          }
 
       - name: Build docs
         run: uv run mkdocs build --strict

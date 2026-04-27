@@ -1,3 +1,7 @@
+---
+description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+---
+
 # CLI Reference
 
 This page is auto-generated from `rtl-buddy --help` output.

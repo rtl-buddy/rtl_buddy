@@ -15,7 +15,7 @@ import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.model import ModelConfigLoader
-from .docs_access import get_page, list_pages
+from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
 from .logging_utils import emit_console_text, is_machine_mode, log_event, render_summary, setup_logging
 from .runner.test_results import SetupFailResults, SkipResults
@@ -564,8 +564,21 @@ class RtlBuddy():
       print(f'{page["slug"]} - {page["title"]}: {page["summary"]}')
 
   def do_docs_show(self,
-    slug: Annotated[str, typer.Argument(help="MkDocs path slug, for example concepts/root-config")],
+    slug: Annotated[str, typer.Argument(help="MkDocs path slug or slug#section-anchor, for example concepts/root-config or agents#local-docs-access")],
     ):
+    if "#" in slug:
+      page_slug, anchor = slug.split("#", 1)
+      section = get_section(page_slug, anchor)
+      if section is None:
+        if get_page(page_slug) is None:
+          raise click.ClickException(f"Unknown docs page '{page_slug}'. Run `rtl-buddy docs list` to see available slugs.")
+        raise click.ClickException(f"Unknown section '{anchor}' in page '{page_slug}'. Run `rtl-buddy docs show {page_slug}` to see available sections.")
+      if self.machine:
+        print(json.dumps(section, ensure_ascii=True))
+        return
+      print(section["content"])
+      return
+
     page = get_page(slug)
     if page is None:
       raise click.ClickException(f"Unknown docs page '{slug}'. Run `rtl-buddy docs list` to see available slugs.")

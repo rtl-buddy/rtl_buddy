@@ -1,3 +1,7 @@
+---
+description: How to migrate an rtl_buddy project from v2 to v3, covering the artifact layout change and other breaking changes.
+---
+
 # Migrating from v2 to v3
 
 ## Artifact layout change

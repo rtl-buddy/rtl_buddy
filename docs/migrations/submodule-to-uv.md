@@ -1,3 +1,7 @@
+---
+description: How to migrate an RTL project from the legacy rtl_buddy submodule flow to a pinned uv dependency.
+---
+
 # Migrating from Submodule to uv
 
 Use this page to migrate an RTL project from the legacy `rtl_buddy` submodule flow to a pinned `uv` dependency.
