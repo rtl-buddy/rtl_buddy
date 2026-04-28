@@ -39,6 +39,7 @@ nav:
       - Coverage: concepts/coverage.md
       - Plugins: concepts/plugins.md
       - cocotb: concepts/cocotb.md
+      - Spec Traceability: concepts/spec-traceability.md
   - Reference:
       - CLI: reference/cli.md
       - YAML Formats: reference/yaml.md

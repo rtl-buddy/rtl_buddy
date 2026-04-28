@@ -302,18 +302,7 @@ blocks:
 | `id` | string | Unique coverage item identifier, referenced by `covers` in `tests.yaml` |
 | `desc` | string | Human-readable description of what must be tested |
 
-**Traceability workflow:**
-
-1. Add `specs.yaml` with block definitions and coverage items under `spec/<block>/`.
-2. Add `spec: <relative-path-to-specs.yaml>` to the relevant entry in `design/<block>/models.yaml`.
-3. Add `covers: [<ID>, ...]` to each test in `verif/<block>/tests.yaml`.
-4. Check traceability:
-
-   ```bash
-   rb spec list                # discover all spec blocks
-   rb spec check-design        # verify each block has a design model
-   rb spec check-coverage      # verify each coverage item is addressed by a test
-   ```
+See [Spec Traceability](../concepts/spec-traceability.md) for the end-to-end workflow.
 
 ---
 
