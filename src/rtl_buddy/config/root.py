@@ -3,6 +3,7 @@ logger = logging.getLogger(__name__)
 import os
 import pprint
 import subprocess
+from pathlib import Path
 from typing import Literal
 
 from serde import serde, field
@@ -38,6 +39,30 @@ def _discover_root_cfg(max_levels=8) -> str:
   else:
     log_event(logger, logging.ERROR, "root_config.not_found", cwd=os.getcwd(), max_levels=max_levels)
     return None
+
+
+def discover_project_root(*, fallback_cwd: bool = False) -> Path:
+  """Return the project root directory.
+
+  Resolution order:
+    1. Directory containing root_config.yaml (walked up from cwd).
+    2. Directory containing .git (walked up from cwd).
+    3. cwd — only when fallback_cwd=True; otherwise raises FatalRtlBuddyError.
+  """
+  cfg_path = _discover_root_cfg()
+  if cfg_path is not None:
+    return Path(cfg_path).parent
+  for candidate in [Path.cwd(), *Path.cwd().parents]:
+    if (candidate / ".git").exists():
+      return candidate
+  if fallback_cwd:
+    return Path.cwd()
+  raise FatalRtlBuddyError(
+    "cannot locate project root "
+    "(no root_config.yaml or .git found above cwd). "
+    "Run from inside a project or pass an explicit path."
+  )
+
 
 @serde
 class RootRtlField:

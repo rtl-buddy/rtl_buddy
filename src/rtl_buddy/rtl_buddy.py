@@ -604,12 +604,8 @@ class RtlBuddy():
 
   def _spec_root(self) -> str:
     """Return the project root directory (where root_config.yaml lives, or CWD)."""
-    from .config.root import _discover_root_cfg
-    try:
-      root_cfg_path = _discover_root_cfg()
-      return os.path.dirname(root_cfg_path)
-    except Exception:
-      return os.getcwd()
+    from .config.root import discover_project_root
+    return str(discover_project_root(fallback_cwd=True))
 
   def do_spec_list(self,
     spec_dir: Annotated[str, typer.Option("--spec-dir", help="Directory to search for specs.yaml files")] = None,
