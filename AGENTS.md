@@ -133,14 +133,17 @@ Apply one of `version/patch`, `version/minor`, or `version/major` to the PR. On 
 
 ### Pre-release
 
-Apply both a `version/` label **and** `pre-release` to the PR. On merge:
+Pre-releases are cut from a **feature branch** via `workflow_dispatch` — never by merging to `main`. Merging to `main` with a `version/` label always produces a stable release.
 
-1. The workflow appends `rcN` to the computed base tag (PEP 440). If `v2.3.0rc1` already exists, the next is `v2.3.0rc2`.
-2. A GitHub release is created and marked **pre-release**.
-3. The wheel is published to PyPI as a pre-release version (e.g. `2.3.0rc1`). Unqualified version ranges (`>=2.2.0`) will not resolve to it.
-4. Docs are **not** published — the `latest` alias is not updated.
+To cut a pre-release:
 
-The same options are available via `workflow_dispatch` (`pre_release` boolean checkbox).
+1. Run the Release workflow on your feature branch with the desired bump type and the **Mark as pre-release** checkbox enabled.
+2. The workflow appends `rcN` to the computed base tag (PEP 440). If `v2.3.0rc1` already exists, the next is `v2.3.0rc2`.
+3. A GitHub release is created and marked **pre-release**.
+4. The wheel is published to PyPI as a pre-release version (e.g. `2.3.0rc1`). Unqualified version ranges (`>=2.2.0`) will not resolve to it.
+5. Docs are **not** published — the `latest` alias is not updated.
+
+The version is computed from the latest stable tag at dispatch time. If `main` advances and releases the same bump tier before your branch merges, the next RC will shift to the following version — that is expected and acceptable.
 
 ### Infrastructure notes
 
