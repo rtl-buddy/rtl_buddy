@@ -498,6 +498,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -738,6 +766,17 @@
     <span class="md-ellipsis">
       
         Path semantics and cwd
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#specsyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        specs.yaml
       
     </span>
   </a>
@@ -1092,6 +1131,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#specsyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        specs.yaml
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#authoring-checklist-for-new-suites" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1221,13 +1271,38 @@
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nt">models</span><span class="p">:</span>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;-F</span><span class="nv"> </span><span class="s">my_design.f&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Optional</span><span class="nv"> </span><span class="s">human-readable</span><span class="nv"> </span><span class="s">description&quot;</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;-F</span><span class="nv"> </span><span class="s">my_design.f&quot;</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../spec/my_design/specs.yaml&quot;</span>
 </code></pre></div>
+<p><strong>Optional fields:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>desc</code></td>
+<td>string</td>
+<td>Human-readable model description</td>
+</tr>
+<tr>
+<td><code>spec</code></td>
+<td>string</td>
+<td>Path to the block's <code>specs.yaml</code>, relative to this <code>models.yaml</code> file. Used by <code>rb spec check-design</code> to link the design model to its specification.</td>
+</tr>
+</tbody>
+</table>
 <p><strong>Runtime effects:</strong></p>
 <ul>
 <li><code>tests.yaml</code> references a model by <code>name</code> using the <code>model</code> and <code>model_path</code> fields.</li>
 <li>Model filelists are parsed by the filelist logic: <code>-F</code> recursion, <code>+incdir+</code>, <code>+libext+</code>, <code>-v</code>, <code>-y</code>, and plain source paths are all supported.</li>
+<li><code>spec</code> is not used at simulation time; it is only consumed by the <code>rb spec</code> traceability commands.</li>
 </ul>
 <hr />
 <h2 id="testsyaml">tests.yaml</h2>
@@ -1354,6 +1429,11 @@
 <td>string</td>
 <td>Path to post-processing script (parsed but not yet fully active)</td>
 </tr>
+<tr>
+<td><code>covers</code></td>
+<td>list of strings</td>
+<td>IDs of spec coverage items this test addresses (e.g. <code>["BLOCK-COV-01"]</code>). Used by <code>rb spec check-coverage</code>; has no effect at simulation time.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="cocotb-testbenches">cocotb testbenches</h3>
@@ -1422,6 +1502,85 @@
 <li><code>regression</code> does <code>chdir</code> into each suite directory before executing.</li>
 <li>For portable configs in multi-suite repos, make paths in <code>tests.yaml</code> explicit and verify they resolve correctly from the intended invocation directory.</li>
 </ul>
+<hr />
+<h2 id="specsyaml">specs.yaml</h2>
+<p><code>specs.yaml</code> lives in <code>spec/&lt;block&gt;/</code> and defines the functional specification for one or more design blocks. It is consumed by the <code>rb spec</code> traceability commands and has no effect on simulation.</p>
+<p><strong>Required keys:</strong></p>
+<ul>
+<li><code>rtl-buddy-filetype: spec_config</code></li>
+<li><code>blocks</code></li>
+</ul>
+<p><strong>Example:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spec_config</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="nt">blocks</span><span class="p">:</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Brief</span><span class="nv"> </span><span class="s">description</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">block&quot;</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="nt">docs</span><span class="p">:</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;README.md&quot;</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;behavior.md&quot;</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-01&quot;</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Normal</span><span class="nv"> </span><span class="s">operation</span><span class="nv"> </span><span class="s">path&quot;</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-02&quot;</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Error</span><span class="nv"> </span><span class="s">handling</span><span class="nv"> </span><span class="s">and</span><span class="nv"> </span><span class="s">recovery&quot;</span>
+</code></pre></div>
+<p><strong>Block field reference:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>Block identifier; matched against <code>ModelConfig.name</code> when resolving <code>spec:</code> links in <code>models.yaml</code>. For single-block files the name is matched unconditionally.</td>
+</tr>
+<tr>
+<td><code>desc</code></td>
+<td>string</td>
+<td>Human-readable block description</td>
+</tr>
+<tr>
+<td><code>docs</code></td>
+<td>list of strings</td>
+<td>Paths to markdown spec documents, relative to this <code>specs.yaml</code> file</td>
+</tr>
+<tr>
+<td><code>coverage-items</code></td>
+<td>list</td>
+<td>Functional coverage items for this block</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Coverage item fields:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>string</td>
+<td>Unique coverage item identifier, referenced by <code>covers</code> in <code>tests.yaml</code></td>
+</tr>
+<tr>
+<td><code>desc</code></td>
+<td>string</td>
+<td>Human-readable description of what must be tested</td>
+</tr>
+</tbody>
+</table>
+<p>See <a href="../../concepts/spec-traceability/">Spec Traceability</a> for the end-to-end workflow.</p>
+<hr />
 <h2 id="authoring-checklist-for-new-suites">Authoring checklist for new suites</h2>
 <ol>
 <li>Add or verify the model entry in <code>models.yaml</code>.</li>
@@ -1431,8 +1590,8 @@
 <li>Add the suite path to <code>regression.yaml</code>.</li>
 <li>Run a smoke pass:</li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
 </code></pre></div>
 
 

@@ -6,17 +6,17 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.">
+        <meta name="description" content="How to use specs.yaml, models.yaml spec pointers, and tests.yaml covers fields to trace functional requirements through to tests.">
       
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cocotb/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/">
       
       
-        <link rel="prev" href="../plugins/">
+        <link rel="prev" href="../cocotb/">
       
       
-        <link rel="next" href="../spec-traceability/">
+        <link rel="next" href="../../reference/cli/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>cocotb - RTL Buddy</title>
+        <title>Spec Traceability - RTL Buddy</title>
       
     
     
@@ -68,7 +68,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#cocotb-testbenches-verilator-vpi" class="md-skip">
+        <a href="#spec-traceability" class="md-skip">
           Skip to content
         </a>
       
@@ -108,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              cocotb
+              Spec Traceability
             
           </span>
         </div>
@@ -476,6 +476,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../cocotb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cocotb
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -495,7 +523,7 @@
   <span class="md-ellipsis">
     
   
-    cocotb
+    Spec Traceability
   
 
     
@@ -513,7 +541,7 @@
   <span class="md-ellipsis">
     
   
-    cocotb
+    Spec Traceability
   
 
     
@@ -539,10 +567,71 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#workflow" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        Workflow
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Workflow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-write-the-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Write the spec
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-link-the-design-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Link the design model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-annotate-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Annotate tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-check-traceability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Check traceability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#multi-block-specsyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-block specs.yaml
       
     </span>
   </a>
@@ -550,32 +639,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#yaml-shape" class="md-nav__link">
+  <a href="#command-reference" class="md-nav__link">
     <span class="md-ellipsis">
       
-        YAML shape
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#passfail-detection" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pass/fail detection
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#testbench-field-reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Testbench field reference
+        Command reference
       
     </span>
   </a>
@@ -586,34 +653,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../spec-traceability/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Spec Traceability
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -964,10 +1003,71 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#workflow" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        Workflow
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Workflow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-write-the-spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Write the spec
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-link-the-design-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Link the design model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-annotate-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Annotate tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-check-traceability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Check traceability
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#multi-block-specsyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multi-block specs.yaml
       
     </span>
   </a>
@@ -975,32 +1075,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#yaml-shape" class="md-nav__link">
+  <a href="#command-reference" class="md-nav__link">
     <span class="md-ellipsis">
       
-        YAML shape
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#passfail-detection" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pass/fail detection
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#testbench-field-reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Testbench field reference
+        Command reference
       
     </span>
   </a>
@@ -1024,69 +1102,120 @@
 
 
 
-<h1 id="cocotb-testbenches-verilator-vpi">cocotb testbenches (Verilator + VPI)</h1>
-<p>Explains how <code>rtl_buddy</code> integrates <a href="https://www.cocotb.org">cocotb</a> — a coroutine-based Python verification framework — to drive Verilator-compiled RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.</p>
-<h2 id="prerequisites">Prerequisites</h2>
-<p><code>cocotb</code> must be installed in the active Python environment:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>add<span class="w"> </span>cocotb
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># or: pip install cocotb</span>
-</code></pre></div>
-<p>The runner calls <code>cocotb-config</code> at compile time. If it is missing, <code>rtl_buddy</code> raises a <code>FatalRtlBuddyError</code> with an actionable message rather than a raw traceback.</p>
-<h2 id="yaml-shape">YAML shape</h2>
-<p>Add <code>toplevel:</code> and a <code>cocotb:</code> block to a testbench entry in <code>tests.yaml</code>. <code>toplevel:</code> is <strong>required</strong> when <code>cocotb:</code> is present — omitting it is a fatal config error caught at load time.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">testbenches</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span><span class="w">          </span><span class="c1"># required: DUT top-level module name</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_my_design</span><span class="w">     </span><span class="c1"># Python module with @cocotb.test() coroutines</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_multi&quot;</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w">                    </span><span class="c1"># list form: all modules are loaded</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_smoke</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_corner_cases</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;test_my_design&quot;</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cocotb</span><span class="nv"> </span><span class="s">test&quot;</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/block/models.yaml&quot;</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
-</code></pre></div>
-<h2 id="passfail-detection">Pass/fail detection</h2>
-<p>cocotb writes a JUnit XML results file (<code>cocotb_results.xml</code>) instead of <code>PASS</code>/<code>FAIL</code> stdout lines. <code>rtl_buddy</code> parses this file automatically — do <strong>not</strong> add <code>$display("PASS …")</code> in cocotb tests. The <code>desc</code> field reports the first three failure messages with a <code>(+N more)</code> suffix when there are more.</p>
-<h2 id="testbench-field-reference">Testbench field reference</h2>
+<h1 id="spec-traceability">Spec Traceability</h1>
+<p><code>rtl_buddy</code> provides a lightweight traceability layer that links functional specification items to design models and tests. It is driven by three files across the three-tier ownership model:</p>
 <table>
 <thead>
 <tr>
-<th>Field</th>
-<th>Type</th>
-<th>Required</th>
-<th>Description</th>
+<th>Tier</th>
+<th>File</th>
+<th>Role</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>toplevel</code></td>
-<td>string</td>
-<td>Yes (cocotb only)</td>
-<td>Top-level DUT module name → <code>COCOTB_TOPLEVEL</code></td>
+<td><code>spec/&lt;block&gt;/</code></td>
+<td><code>specs.yaml</code></td>
+<td>Defines blocks and their functional coverage items</td>
 </tr>
 <tr>
-<td><code>cocotb.module</code></td>
-<td>string or list</td>
-<td>Yes</td>
-<td>Python test module(s) → <code>COCOTB_TEST_MODULES</code></td>
+<td><code>design/&lt;block&gt;/</code></td>
+<td><code>models.yaml</code></td>
+<td>Links a design model to its spec block via <code>spec:</code></td>
+</tr>
+<tr>
+<td><code>verif/&lt;block&gt;/</code></td>
+<td><code>tests.yaml</code></td>
+<td>Declares which coverage items each test addresses via <code>covers:</code></td>
 </tr>
 </tbody>
 </table>
-<p>See <code>rtl-buddy docs show reference/yaml</code> for the full <code>tests.yaml</code> schema.</p>
+<p>None of these fields affect simulation. They are consumed only by the <code>rb spec</code> commands.</p>
+<h2 id="workflow">Workflow</h2>
+<h3 id="1-write-the-spec">1. Write the spec</h3>
+<p>Create <code>spec/&lt;block&gt;/specs.yaml</code> with one or more blocks, each listing its functional coverage items:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spec_config</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">blocks</span><span class="p">:</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_block&quot;</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Brief</span><span class="nv"> </span><span class="s">description&quot;</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">docs</span><span class="p">:</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;README.md&quot;</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;behavior.md&quot;</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-01&quot;</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Normal</span><span class="nv"> </span><span class="s">operation</span><span class="nv"> </span><span class="s">path</span><span class="nv"> </span><span class="s">verified&quot;</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-02&quot;</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Error</span><span class="nv"> </span><span class="s">handling</span><span class="nv"> </span><span class="s">and</span><span class="nv"> </span><span class="s">recovery&quot;</span>
+</code></pre></div>
+<p>Coverage item IDs are arbitrary strings; a block-prefix convention (e.g. <code>MYBLK-COV-NN</code>) keeps them unique across a multi-block project.</p>
+<h3 id="2-link-the-design-model">2. Link the design model</h3>
+<p>Add a <code>spec:</code> field to the relevant entry in <code>design/&lt;block&gt;/models.yaml</code>, pointing to the <code>specs.yaml</code> relative to that <code>models.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">models</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_block&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;-F</span><span class="nv"> </span><span class="s">my_block.f&quot;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../spec/my_block/specs.yaml&quot;</span>
+</code></pre></div>
+<p>The model <code>name</code> is matched against the block <code>name</code> in the referenced <code>specs.yaml</code>. In a single-block <code>specs.yaml</code> the match is unconditional.</p>
+<h3 id="3-annotate-tests">3. Annotate tests</h3>
+<p>Add <code>covers:</code> to each test in <code>verif/&lt;block&gt;/tests.yaml</code> listing the IDs it exercises:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">tests</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;basic&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_block&quot;</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/my_block/models.yaml&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">covers</span><span class="p">:</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-01&quot;</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-02&quot;</span>
+</code></pre></div>
+<p>A single test can cover multiple items; multiple tests can cover the same item.</p>
+<h3 id="4-check-traceability">4. Check traceability</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>spec<span class="w"> </span>list<span class="w">             </span><span class="c1"># discover all spec blocks in the project</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>spec<span class="w"> </span>check-design<span class="w">     </span><span class="c1"># which spec blocks have a linked design model</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>rb<span class="w"> </span>spec<span class="w"> </span>check-coverage<span class="w">   </span><span class="c1"># which coverage items are addressed by at least one test</span>
+</code></pre></div>
+<p><code>check-coverage</code> prints a table of all items with a <code>Covered: yes/no</code> column and calls out uncovered IDs at the end. Use <code>--machine</code> to get JSON output for programmatic consumption.</p>
+<h2 id="multi-block-specsyaml">Multi-block specs.yaml</h2>
+<p>A single <code>specs.yaml</code> can contain multiple blocks — useful when a directory holds several closely related IP:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">blocks</span><span class="p">:</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_sync&quot;</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Multi-flop</span><span class="nv"> </span><span class="s">level</span><span class="nv"> </span><span class="s">synchronizer&quot;</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDCSYNC-COV-01&quot;</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake&quot;</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Four-phase</span><span class="nv"> </span><span class="s">request/acknowledge</span><span class="nv"> </span><span class="s">CDC</span><span class="nv"> </span><span class="s">primitive&quot;</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDCHS-COV-01&quot;</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span>
+</code></pre></div>
+<p>Each design model still points to the same <code>specs.yaml</code>; the model <code>name</code> selects the correct block.</p>
+<h2 id="command-reference">Command reference</h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>What it checks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rb spec list</code></td>
+<td>Lists all spec blocks discovered under <code>spec/</code> (or <code>--spec-dir</code>)</td>
+</tr>
+<tr>
+<td><code>rb spec check-design</code></td>
+<td>For every spec block, shows whether a design model references it</td>
+</tr>
+<tr>
+<td><code>rb spec check-coverage</code></td>
+<td>For every coverage item, shows which tests cover it and flags uncovered items</td>
+</tr>
+</tbody>
+</table>
+<p>All three commands accept <code>--spec-dir</code> to target a subdirectory. <code>check-design</code> also accepts <code>--design-dir</code>; <code>check-coverage</code> accepts <code>--verif-dir</code>.</p>
 
 
 

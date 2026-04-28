@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/">
       
       
-        <link rel="prev" href="../../concepts/cocotb/">
+        <link rel="prev" href="../../concepts/spec-traceability/">
       
       
         <link rel="next" href="../yaml/">
@@ -498,6 +498,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -707,6 +735,17 @@
     <span class="md-ellipsis">
       
         docs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        spec
       
     </span>
   </a>
@@ -1067,6 +1106,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#spec" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        spec
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1127,7 +1177,8 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>│ verible     run verible cmd                                                          │
 <a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>│ skill       manage the rtl_buddy agent skill                                         │
 <a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>│ docs        browse bundled documentation                                             │
-<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>│ spec        spec traceability commands                                               │
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="test">test</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
@@ -1276,6 +1327,20 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>│ list  list bundled documentation pages                                               │
 <a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>│ show  show a bundled documentation page                                              │
 <a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="spec">spec</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...                                      
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a> spec traceability commands                                                             
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>│ --help          Show this message and exit.                                          │
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>│ list            list all spec blocks discovered in the project                       │
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>│ check-design    show which spec blocks have design models referencing them           │
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>│ check-coverage  show which spec coverage items are addressed by tests                │
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 
 
