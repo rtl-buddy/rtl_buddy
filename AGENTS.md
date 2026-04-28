@@ -127,7 +127,33 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 
 ## Release Workflow
 
-1. Merge to `main` in this repo and tag (e.g. `v2.0.0`).
-2. The docs workflow publishes versioned MkDocs output to the `gh-pages` branch with `mike`: `main` updates the `dev` docs, and the release workflow publishes the matching `v<major>` docs line for official releases while also moving the `latest` alias for the newest released major.
-3. GitHub Pages must be configured to publish from the `gh-pages` branch, and the repo must provide a `GH_PAGES_TOKEN` secret because pushes made with the default `GITHUB_TOKEN` do not trigger branch-based Pages publishing or reliable downstream docs publishing from automation-created tags.
-4. Update and tag any downstream integrations that track this repo.
+Releases are triggered by merging a PR to `main` with a `version/` label, or via `workflow_dispatch`.
+
+### Stable release
+
+Apply one of `version/patch`, `version/minor`, or `version/major` to the PR. On merge:
+
+1. The workflow computes the next `vMAJOR.MINOR.PATCH` tag, creates it, and pushes it.
+2. A GitHub release is created (not marked pre-release).
+3. The wheel is built (hatch-vcs derives the version from the tag) and published to PyPI.
+4. Docs are deployed to `gh-pages` under the matching `v{major}` alias; `latest` is updated if this is the highest major.
+
+### Pre-release
+
+Pre-releases are cut from a **feature branch** via `workflow_dispatch` — never by merging to `main`. Merging to `main` with a `version/` label always produces a stable release.
+
+To cut a pre-release:
+
+1. Run the Release workflow on your feature branch with the desired bump type and the **Mark as pre-release** checkbox enabled.
+2. The workflow appends `rcN` to the computed base tag (PEP 440). If `v2.3.0rc1` already exists, the next is `v2.3.0rc2`.
+3. A GitHub release is created and marked **pre-release**.
+4. The wheel is published to PyPI as a pre-release version (e.g. `2.3.0rc1`). Unqualified version ranges (`>=2.2.0`) will not resolve to it.
+5. Docs are **not** published — the `latest` alias is not updated.
+
+The version is computed from the latest stable tag at dispatch time. If `main` advances and releases the same bump tier before your branch merges, the next RC will shift to the following version — that is expected and acceptable.
+
+### Infrastructure notes
+
+- GitHub Pages must be configured to publish from the `gh-pages` branch.
+- A `GH_PAGES_TOKEN` secret is required because pushes made with the default `GITHUB_TOKEN` do not reliably trigger downstream docs publishing from automation-created tags.
+- Update and tag any downstream integrations that track this repo after a stable release.
