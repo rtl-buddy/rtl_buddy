@@ -498,6 +498,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/spec-traceability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -746,6 +774,17 @@
     <span class="md-ellipsis">
       
         How pass/fail is detected
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#spec-traceability-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spec traceability commands
       
     </span>
   </a>
@@ -1055,6 +1094,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#spec-traceability-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Spec traceability commands
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#recommended-validation-workflow" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1238,21 +1288,34 @@
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="k">end</span>
 </code></pre></div>
 <p>In machine mode, the authoritative per-test outcome appears in the <code>postproc.completed</code> event's <code>result</code> and <code>desc</code> fields.</p>
-<h2 id="recommended-validation-workflow">Recommended validation workflow</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># 1. Check rtl_buddy version</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rtl-buddy<span class="w"> </span>--version
+<h2 id="spec-traceability-commands">Spec traceability commands</h2>
+<p>The <code>rb spec</code> commands check the spec-to-test traceability layer. They do not affect simulation and are safe to run at any time:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># List all spec blocks discovered in the project</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>spec<span class="w"> </span>list
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># 2. Dry-run: verify pre-flight config without compiling or simulating</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic<span class="w"> </span>--early-stop<span class="w"> </span>pre
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Check which spec blocks have a linked design model (models.yaml spec: pointer)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>spec<span class="w"> </span>check-design
 <a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># 3. Run a single test</span>
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
-<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="c1"># 4. Check the log for outcome</span>
-<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>grep<span class="w"> </span><span class="s1">&#39;&quot;event&quot;&#39;</span><span class="w"> </span>rtl_buddy.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-5
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>
-<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="c1"># 5. Run a full regression</span>
-<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>design/regression.yaml
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># Check which coverage items are addressed by at least one test (tests.yaml covers:)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>spec<span class="w"> </span>check-coverage
+</code></pre></div>
+<p>In machine mode, <code>spec list</code> returns <code>{"blocks": [...]}</code> and <code>spec check-coverage</code> returns <code>{"items": [...]}</code> with a <code>"covered": true/false</code> field per item. Use these to identify uncovered items programmatically.</p>
+<p>All three commands default to searching <code>spec/</code>, <code>design/</code>, and <code>verif/</code> under the project root. Pass <code>--spec-dir</code>, <code>--design-dir</code>, or <code>--verif-dir</code> to narrow the scope.</p>
+<h2 id="recommended-validation-workflow">Recommended validation workflow</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># 1. Check rtl_buddy version</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>rtl-buddy<span class="w"> </span>--version
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># 2. Dry-run: verify pre-flight config without compiling or simulating</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic<span class="w"> </span>--early-stop<span class="w"> </span>pre
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># 3. Run a single test</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="c1"># 4. Check the log for outcome</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>grep<span class="w"> </span><span class="s1">&#39;&quot;event&quot;&#39;</span><span class="w"> </span>rtl_buddy.log<span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-5
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="c1"># 5. Run a full regression</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>design/regression.yaml
 </code></pre></div>
 <p>Use <code>--early-stop pre</code> to validate that config files, model paths, and testbench paths all resolve correctly before committing to a compile step.</p>
 <h2 id="exit-codes">Exit codes</h2>
@@ -1280,7 +1343,7 @@
 </table>
 <h2 id="version-checking">Version checking</h2>
 <p>Always verify the installed version before running, especially in CI or after dependency updates:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span>--version
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rtl-buddy<span class="w"> </span>--version
 </code></pre></div>
 <p>The version follows semantic versioning. Breaking YAML schema or CLI changes are signaled by a major version bump.</p>
 
