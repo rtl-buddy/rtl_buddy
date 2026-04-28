@@ -324,6 +324,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#installing-a-pre-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing A Pre-release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#set-up-the-agent-skill" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -967,6 +978,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#installing-a-pre-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing A Pre-release
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#set-up-the-agent-skill" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1020,13 +1042,22 @@
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>uv<span class="w"> </span>sync
 </code></pre></div>
 <p>Commit the resulting lockfile change in your project repo.</p>
+<h2 id="installing-a-pre-release">Installing A Pre-release</h2>
+<p>Pre-release versions follow PEP 440 (<code>2.3.0rc1</code>, <code>2.3.0rc2</code>, …). They are published to PyPI but excluded from the default resolver — an unqualified range like <code>&gt;=2.2.0</code> will not pull one in.</p>
+<p>To install a specific pre-release, pin it exactly:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;rtl_buddy==2.3.0rc1&quot;</span>
+</code></pre></div>
+<p>Or in <code>pyproject.toml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">dependencies</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;rtl_buddy==2.3.0rc1&quot;</span><span class="p">]</span>
+</code></pre></div>
+<p>This works without any <code>--pre</code> flag because the exact version is specified.</p>
 <h2 id="set-up-the-agent-skill">Set Up The Agent Skill</h2>
 <p><code>rtl_buddy</code> ships an agent skill for Claude Code and Codex. After installing <code>rtl_buddy</code>, run once per machine:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install
 </code></pre></div>
 <p>This writes <code>SKILL.md</code> to <code>~/.claude/skills/rtl_buddy/</code> and <code>~/.codex/skills/rtl_buddy/</code>. Agents pick it up automatically. Re-run after upgrading <code>rtl_buddy</code> to refresh the content.</p>
 <p>To install at project scope instead (overrides the user-level copy for that project):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w"> </span>--project
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w"> </span>--project
 </code></pre></div>
 <p>See <a href="../agents/">For Agents</a> for scope semantics and <code>.gitignore</code> guidance.</p>
 
