@@ -124,7 +124,7 @@ models:
 | Field | Type | Description |
 |-------|------|-------------|
 | `desc` | string | Human-readable model description |
-| `spec` | string | Path to the block's `specs.yaml`, relative to this `models.yaml` file. Used by `rb spec check-testplan` to link the design model to its specification. |
+| `spec` | string | Path to the block's `specs.yaml`, relative to this `models.yaml` file. Used by `rb spec check-design` to link the design model to its specification. |
 
 **Runtime effects:**
 
@@ -311,7 +311,7 @@ blocks:
 
    ```bash
    rb spec list                # discover all spec blocks
-   rb spec check-testplan      # verify each block has a design model
+   rb spec check-design        # verify each block has a design model
    rb spec check-coverage      # verify each coverage item is addressed by a test
    ```
 

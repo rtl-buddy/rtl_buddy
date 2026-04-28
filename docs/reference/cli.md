@@ -234,7 +234,7 @@ Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
 │ list            list all spec blocks discovered in the project                       │
-│ check-testplan  show which spec blocks have design models referencing them           │
+│ check-design    show which spec blocks have design models referencing them           │
 │ check-coverage  show which spec coverage items are addressed by tests                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

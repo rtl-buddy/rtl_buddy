@@ -79,7 +79,7 @@ class RtlBuddy():
     self.docs_app.command("show", help="show a bundled documentation page")(self.do_docs_show)
     self.app.add_typer(self.docs_app, name="docs", help="browse bundled documentation")
     self.spec_app.command("list", help="list all spec blocks discovered in the project")(self.do_spec_list)
-    self.spec_app.command("check-testplan", help="show which spec blocks have design models referencing them")(self.do_spec_check_testplan)
+    self.spec_app.command("check-design", help="show which spec blocks have design models referencing them")(self.do_spec_check_testplan)
     self.spec_app.command("check-coverage", help="show which spec coverage items are addressed by tests")(self.do_spec_check_coverage)
     self.app.add_typer(self.spec_app, name="spec", help="spec traceability commands")
 
