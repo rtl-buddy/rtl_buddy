@@ -15,6 +15,11 @@ on:
           - patch
           - minor
           - major
+      pre_release:
+        description: 'Mark as pre-release (appends rcN suffix, PEP 440)'
+        required: false
+        type: boolean
+        default: false
       description:
         description: 'Release description (optional)'
         required: false
@@ -31,6 +36,7 @@ jobs:
       contents: write
     outputs:
       new_tag: ${{ steps.version.outputs.new_tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
 
     steps:
       - name: Checkout merged commit
@@ -52,8 +58,12 @@ jobs:
           MINOR=$(echo "$VERSION" | cut -d. -f2)
           PATCH=$(echo "$VERSION" | cut -d. -f3)
 
+          IS_PRERELEASE=false
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BUMP_TYPE="${{ inputs.bump }}"
+            if [ "${{ inputs.pre_release }}" = "true" ]; then
+              IS_PRERELEASE=true
+            fi
           else
             LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
             if echo "$LABELS" | grep -qi '"version/major"'; then
@@ -67,18 +77,30 @@ jobs:
               echo "new_tag=" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            if echo "$LABELS" | grep -qi '"pre-release"'; then
+              IS_PRERELEASE=true
+            fi
           fi
 
           if [ "$BUMP_TYPE" = "major" ]; then
-            NEW_TAG="v$((MAJOR + 1)).0.0"
+            BASE_TAG="v$((MAJOR + 1)).0.0"
           elif [ "$BUMP_TYPE" = "minor" ]; then
-            NEW_TAG="v${MAJOR}.$((MINOR + 1)).0"
+            BASE_TAG="v${MAJOR}.$((MINOR + 1)).0"
           else
-            NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            BASE_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            RC_COUNT=$(git tag --list "${BASE_TAG}rc*" | wc -l | tr -d ' ')
+            RC_NUM=$((RC_COUNT + 1))
+            NEW_TAG="${BASE_TAG}rc${RC_NUM}"
+          else
+            NEW_TAG="${BASE_TAG}"
           fi
 
           echo "latest_tag=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
           echo "Bumping ${LATEST} -> ${NEW_TAG}"
 
       - name: Require release token
@@ -117,6 +139,7 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.new_tag }}
           PREV_TAG: ${{ steps.version.outputs.latest_tag }}
+          IS_PRERELEASE: ${{ steps.version.outputs.is_prerelease }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_USER: ${{ github.event.pull_request.user.login }}
@@ -128,6 +151,7 @@ jobs:
           script: |
             const tag = process.env.TAG;
             const prevTag = process.env.PREV_TAG;
+            const isPrerelease = process.env.IS_PRERELEASE === 'true';
             let body;
             if (context.eventName === 'workflow_dispatch') {
               body = process.env.DESCRIPTION || `Manual release triggered by @${process.env.ACTOR}`;
@@ -146,7 +170,7 @@ jobs:
               name: `Release ${tag}`,
               body,
               draft: false,
-              prerelease: false,
+              prerelease: isPrerelease,
             });
 
   build:
@@ -176,7 +200,7 @@ jobs:
 
   publish_docs:
     needs: release
-    if: needs.release.outputs.new_tag != ''
+    if: needs.release.outputs.new_tag != '' && needs.release.outputs.is_prerelease != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
