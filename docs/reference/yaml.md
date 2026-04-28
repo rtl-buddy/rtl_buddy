@@ -113,14 +113,24 @@ rtl-buddy-filetype: model_config
 
 models:
   - name: "my_design"
+    desc: "Optional human-readable description"
     filelist:
       - "-F my_design.f"
+    spec: "../../spec/my_design/specs.yaml"
 ```
+
+**Optional fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `desc` | string | Human-readable model description |
+| `spec` | string | Path to the block's `specs.yaml`, relative to this `models.yaml` file. Used by `rb spec check-design` to link the design model to its specification. |
 
 **Runtime effects:**
 
 - `tests.yaml` references a model by `name` using the `model` and `model_path` fields.
 - Model filelists are parsed by the filelist logic: `-F` recursion, `+incdir+`, `+libext+`, `-v`, `-y`, and plain source paths are all supported.
+- `spec` is not used at simulation time; it is only consumed by the `rb spec` traceability commands.
 
 ---
 
@@ -190,6 +200,7 @@ tests:
 | `sweep.path` | string | Path to sweep expansion script |
 | `preproc.path` | string | Path to pre-processing script |
 | `postproc.path` | string | Path to post-processing script (parsed but not yet fully active) |
+| `covers` | list of strings | IDs of spec coverage items this test addresses (e.g. `["BLOCK-COV-01"]`). Used by `rb spec check-coverage`; has no effect at simulation time. |
 
 ### cocotb testbenches
 
@@ -245,6 +256,55 @@ cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/
 - `test` and `randtest` do **not** automatically change into the suite directory. Run from the suite directory, or use `--test-config` with a full path.
 - `regression` does `chdir` into each suite directory before executing.
 - For portable configs in multi-suite repos, make paths in `tests.yaml` explicit and verify they resolve correctly from the intended invocation directory.
+
+---
+
+## specs.yaml
+
+`specs.yaml` lives in `spec/<block>/` and defines the functional specification for one or more design blocks. It is consumed by the `rb spec` traceability commands and has no effect on simulation.
+
+**Required keys:**
+
+- `rtl-buddy-filetype: spec_config`
+- `blocks`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "my_design"
+    desc: "Brief description of the block"
+    docs:
+      - "README.md"
+      - "behavior.md"
+    coverage-items:
+      - id: "MY-COV-01"
+        desc: "Normal operation path"
+      - id: "MY-COV-02"
+        desc: "Error handling and recovery"
+```
+
+**Block field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Block identifier; matched against `ModelConfig.name` when resolving `spec:` links in `models.yaml`. For single-block files the name is matched unconditionally. |
+| `desc` | string | Human-readable block description |
+| `docs` | list of strings | Paths to markdown spec documents, relative to this `specs.yaml` file |
+| `coverage-items` | list | Functional coverage items for this block |
+
+**Coverage item fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique coverage item identifier, referenced by `covers` in `tests.yaml` |
+| `desc` | string | Human-readable description of what must be tested |
+
+See [Spec Traceability](../concepts/spec-traceability.md) for the end-to-end workflow.
+
+---
 
 ## Authoring checklist for new suites
 

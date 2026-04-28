@@ -113,6 +113,7 @@ class TestConfig:
   sweep_path: str | None
   tb: TestbenchConfig
   timeout: int | None
+  covers: list[str] | None = None
   default_timeout: int = 60 #NOTE: potential for config through root config
 
   def get_name(self):
@@ -352,8 +353,9 @@ class TestConfigFile:
   sweep_path: str | None = field(rename='sweep', deserializer=lambda data: data.get('path') if data is not None else None)
   tb: str = field(rename='testbench')
   timeout: int | None = field(rename='sim_timeout')
+  covers: list[str] | None = None
 
   def initialise(self, config_dir, tbs):
     tb = tbs[self.tb]
     model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(self.model)
-    return TestConfig(self.name, self.desc, model, self._reglvl, self.pa, self.pd, self.uvm, self.preproc_path, self.postproc_path, self.sweep_path, tb, self.timeout)
+    return TestConfig(self.name, self.desc, model, self._reglvl, self.pa, self.pd, self.uvm, self.preproc_path, self.postproc_path, self.sweep_path, tb, self.timeout, covers=self.covers)

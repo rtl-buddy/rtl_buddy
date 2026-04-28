@@ -11,7 +11,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 OUTPUT = REPO_ROOT / "docs" / "reference" / "cli.md"
-SUBCOMMANDS = ["test", "randtest", "regression", "filelist", "verible", "skill", "docs"]
+SUBCOMMANDS = ["test", "randtest", "regression", "filelist", "verible", "skill", "docs", "spec"]
 
 HEADER = """\
 ---

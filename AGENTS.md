@@ -15,9 +15,16 @@ src/rtl_buddy/
 ├── logging_utils.py       # log_event(), setup_logging(), console helpers
 ├── errors.py              # FatalRtlBuddyError, FilelistError, SetupScriptError
 ├── seed_mode.py           # seed handling enum
-├── config/                # YAML-backed config classes
+├── config/
+│   ├── root.py            # discover_project_root(), RootConfig
+│   ├── model.py           # ModelConfig (models.yaml)
+│   ├── test.py            # TestConfig / TestConfigFile (tests.yaml)
+│   ├── spec.py            # SpecConfig / SpecBlock / SpecCoverageItem (specs.yaml)
+│   └── ...                # platform, rtl, verible, coverage, coverview, reg
 ├── runner/test_runner.py  # PRE -> COMP -> SIM -> POST execution
-└── tools/                 # filelist, sim, postproc, verible wrappers
+└── tools/
+    ├── spec_trace.py      # discover_spec_configs, build_coverage_map, etc.
+    └── ...                # filelist, sim, postproc, verible wrappers
 ```
 
 ## Development Rules
@@ -116,7 +123,7 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 
 ### Project root discovery
 
-`skill_install._discover_project_root()` reuses `config.root._discover_root_cfg()` (walks up for `root_config.yaml`), then falls back to walking up for `.git/`, then errors. This handles agents invoking from `verif/<suite>/` subdirs — `Path.cwd()` would be wrong.
+`config.root.discover_project_root()` is the single shared entry point for locating the project root. It walks up from `cwd` for `root_config.yaml`, then for `.git/`. Pass `fallback_cwd=True` to return `cwd` silently when neither is found (used by the spec commands); the default raises `FatalRtlBuddyError`. This handles agents invoking from `verif/<suite>/` subdirs — `Path.cwd()` alone would be wrong.
 
 ## Release Workflow
 

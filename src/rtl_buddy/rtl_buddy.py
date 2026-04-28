@@ -23,6 +23,14 @@ from .runner.test_runner import RunDepth, TestRunner
 from .seed_mode import SeedMode
 from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
+from .tools.spec_trace import (
+  all_spec_blocks,
+  build_coverage_map,
+  build_spec_to_models_map,
+  discover_model_configs,
+  discover_spec_configs,
+  discover_suite_tests,
+)
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
 
@@ -59,6 +67,7 @@ class RtlBuddy():
   def __init__(self, name):
     self.app = typer.Typer(no_args_is_help=True)
     self.docs_app = typer.Typer(help="browse bundled rtl_buddy documentation", no_args_is_help=True)
+    self.spec_app = typer.Typer(help="spec traceability commands", no_args_is_help=True)
     self.app.callback()(self.root_options)
     self.app.command("test", help="run a simple test")(self.do_cmd_test)
     self.app.command("randtest", help="repeat a test with multiple random seeds")(self.do_rand_test)
@@ -69,6 +78,10 @@ class RtlBuddy():
     self.docs_app.command("list", help="list bundled documentation pages")(self.do_docs_list)
     self.docs_app.command("show", help="show a bundled documentation page")(self.do_docs_show)
     self.app.add_typer(self.docs_app, name="docs", help="browse bundled documentation")
+    self.spec_app.command("list", help="list all spec blocks discovered in the project")(self.do_spec_list)
+    self.spec_app.command("check-design", help="show which spec blocks have design models referencing them")(self.do_spec_check_testplan)
+    self.spec_app.command("check-coverage", help="show which spec coverage items are addressed by tests")(self.do_spec_check_coverage)
+    self.app.add_typer(self.spec_app, name="spec", help="spec traceability commands")
 
     if '.' not in os.environ["PATH"].split(os.pathsep):
       os.environ["PATH"] = '.' + os.pathsep + os.environ["PATH"]
@@ -119,7 +132,7 @@ class RtlBuddy():
 
     self.machine = machine
 
-    if ctx.invoked_subcommand in {"skill", "docs"}:
+    if ctx.invoked_subcommand in {"skill", "docs", "spec"}:
       return
 
     setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
@@ -588,6 +601,164 @@ class RtlBuddy():
       return
 
     print(page.content, end="" if page.content.endswith("\n") else "\n")
+
+  def _spec_root(self) -> str:
+    """Return the project root directory (where root_config.yaml lives, or CWD)."""
+    from .config.root import discover_project_root
+    return str(discover_project_root(fallback_cwd=True))
+
+  def do_spec_list(self,
+    spec_dir: Annotated[str, typer.Option("--spec-dir", help="Directory to search for specs.yaml files")] = None,
+    ):
+    """
+    list all spec blocks discovered in the project
+    """
+    setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+    root = self._spec_root()
+    search_dir = spec_dir if spec_dir is not None else os.path.join(root, "spec")
+
+    if not os.path.isdir(search_dir):
+      emit_console_text(f"Spec directory not found: {search_dir}", style="yellow")
+      raise typer.Exit(1)
+
+    specs = discover_spec_configs(search_dir)
+    blocks = all_spec_blocks(specs)
+    if not blocks:
+      emit_console_text("No spec blocks found.", style="yellow")
+      raise typer.Exit(0)
+
+    if self.machine:
+      print(json.dumps({"blocks": [
+        {"block": b.name, "desc": b.desc, "path": cfg.get_path(), "coverage_items": len(b.coverage_items)}
+        for cfg, b in blocks
+      ]}, ensure_ascii=True))
+      raise typer.Exit(0)
+
+    rows = [
+      {"block": b.name, "desc": b.desc, "items": str(len(b.coverage_items)), "path": os.path.relpath(cfg.get_path(), root)}
+      for cfg, b in blocks
+    ]
+    render_summary(
+      title="Spec Blocks",
+      columns=[("block", "Block"), ("desc", "Description"), ("items", "Coverage Items"), ("path", "Path")],
+      rows=rows,
+      logger=logger,
+    )
+    raise typer.Exit(0)
+
+  def do_spec_check_testplan(self,
+    spec_dir: Annotated[str, typer.Option("--spec-dir", help="Directory to search for specs.yaml files")] = None,
+    design_dir: Annotated[str, typer.Option("--design-dir", help="Directory to search for models.yaml files")] = None,
+    ):
+    """
+    show which spec blocks have design models referencing them
+    """
+    setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+    root = self._spec_root()
+    search_spec = spec_dir if spec_dir is not None else os.path.join(root, "spec")
+    search_design = design_dir if design_dir is not None else os.path.join(root, "design")
+
+    specs = discover_spec_configs(search_spec) if os.path.isdir(search_spec) else []
+    models = discover_model_configs(search_design) if os.path.isdir(search_design) else []
+    blocks = all_spec_blocks(specs)
+
+    if not blocks:
+      emit_console_text("No spec blocks found.", style="yellow")
+      raise typer.Exit(0)
+
+    spec_to_models = build_spec_to_models_map(specs, models)
+
+    if self.machine:
+      print(json.dumps({"blocks": [
+        {
+          "block": b.name,
+          "has_model": bool(spec_to_models.get(f"{cfg.get_path()}::{b.name}")),
+          "models": [{"path": p, "model": m} for p, m in spec_to_models.get(f"{cfg.get_path()}::{b.name}", [])],
+        }
+        for cfg, b in blocks
+      ]}, ensure_ascii=True))
+      raise typer.Exit(0)
+
+    rows = []
+    for cfg, b in blocks:
+      key = f"{cfg.get_path()}::{b.name}"
+      linked = spec_to_models.get(key, [])
+      rows.append({
+        "block": b.name,
+        "status": "yes" if linked else "no",
+        "models": ", ".join(m for _, m in linked) if linked else "-",
+      })
+
+    render_summary(
+      title="Spec Testplan Coverage",
+      columns=[("block", "Block"), ("status", "Has Model"), ("models", "Models")],
+      rows=rows,
+      logger=logger,
+    )
+    uncovered = [b.name for cfg, b in blocks if not spec_to_models.get(f"{cfg.get_path()}::{b.name}")]
+    if uncovered:
+      emit_console_text(f"Blocks without a design model: {', '.join(uncovered)}", style="yellow")
+    raise typer.Exit(0)
+
+  def do_spec_check_coverage(self,
+    spec_dir: Annotated[str, typer.Option("--spec-dir", help="Directory to search for specs.yaml files")] = None,
+    verif_dir: Annotated[str, typer.Option("--verif-dir", help="Directory to search for tests.yaml files")] = None,
+    ):
+    """
+    show which spec coverage items are addressed by tests
+    """
+    setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+    root = self._spec_root()
+    search_spec = spec_dir if spec_dir is not None else os.path.join(root, "spec")
+    search_verif = verif_dir if verif_dir is not None else os.path.join(root, "verif")
+
+    specs = discover_spec_configs(search_spec) if os.path.isdir(search_spec) else []
+    suite_tests = discover_suite_tests(search_verif) if os.path.isdir(search_verif) else []
+    blocks = all_spec_blocks(specs)
+
+    if not blocks:
+      emit_console_text("No spec blocks found.", style="yellow")
+      raise typer.Exit(0)
+
+    cov_map = build_coverage_map(suite_tests)
+
+    if self.machine:
+      items_out = []
+      for cfg, b in blocks:
+        for item in b.coverage_items:
+          tests = cov_map.get(item.id, [])
+          items_out.append({
+            "block": b.name,
+            "id": item.id,
+            "desc": item.desc,
+            "covered": bool(tests),
+            "tests": [{"path": p, "test": t} for p, t in tests],
+          })
+      print(json.dumps({"items": items_out}, ensure_ascii=True))
+      raise typer.Exit(0)
+
+    rows = []
+    for cfg, b in blocks:
+      for item in b.coverage_items:
+        tests = cov_map.get(item.id, [])
+        rows.append({
+          "block": b.name,
+          "id": item.id,
+          "desc": item.desc,
+          "covered": "yes" if tests else "no",
+          "tests": ", ".join(t for _, t in tests) if tests else "-",
+        })
+
+    render_summary(
+      title="Spec Coverage Items",
+      columns=[("block", "Block"), ("id", "ID"), ("desc", "Description"), ("covered", "Covered"), ("tests", "Tests")],
+      rows=rows,
+      logger=logger,
+    )
+    uncovered = [row["id"] for row in rows if row["covered"] == "no"]
+    if uncovered:
+      emit_console_text(f"Uncovered items: {', '.join(uncovered)}", style="yellow")
+    raise typer.Exit(0)
 
   def do_lint(self):
     assert False, "not yet impl"
