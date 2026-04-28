@@ -49,6 +49,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ verible     run verible cmd                                                          │
 │ skill       manage the rtl_buddy agent skill                                         │
 │ docs        browse bundled documentation                                             │
+│ spec        spec traceability commands                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

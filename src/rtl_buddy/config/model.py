@@ -16,12 +16,16 @@ class ModelConfig:
 
   Attributes
     name (str): Unique model identifier.
+    desc (str|None): Human-readable model description.
     filelist (list[str]): List of paths to files associated with the model.
+    spec (str|None): Relative path from models.yaml to the block's specs.yaml.
     path (str|None): Path to the model config file. Will usually be set by the loader.
   """
   name: str
   filelist: list[str]
-  path: str|None
+  desc: str|None = None
+  spec: str|None = None
+  path: str|None = None
   
   def get_model_name(self):
     """

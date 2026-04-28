@@ -12,6 +12,7 @@ from .root import RootConfig
 from .platform import PlatformConfig
 from .rtl import RtlBuilderConfig
 from .model import ModelConfig, ModelConfigLoader
+from .spec import SpecConfig, SpecBlock, SpecCoverageItem
 from .verible import VeribleConfig
 from .coverage import CoverageConfig, CoverageConfigFile
 from .coverview import CoverviewConfig, CoverviewConfigFile
