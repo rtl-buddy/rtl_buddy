@@ -273,6 +273,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
       return f'{target or "sim"}: using timeout override {fields.get("timeout_sec")}s'
     case "postproc.completed":
       return f'{target or "postproc"}: post-processing completed with result {fields.get("result")} ({fields.get("desc")})'
+    case "postproc.no_markers":
+      return f'{fields.get("test")}: no PASS/FAIL markers found in {fields.get("log")}; result is NA'
     case "filelist.malformed_line":
       return f'{fields.get("file")}: malformed filelist line "{fields.get("line")}"'
     case "filelist.include_missing":

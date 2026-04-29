@@ -10,6 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 import re
 from ..runner.test_results import TestResults,TestPassResults
+from ..logging_utils import log_event
 
 class VlogPost:
   """
@@ -41,7 +42,9 @@ class VlogPost:
       results={'result':'FAIL', 'desc':f'{match_fail.group(1)} {match_err.group(2).strip()}'}
     if match_pass is not None:
       results={'result':'PASS', 'desc':match_pass.group(1)}
-    
+    if match_pass is None and match_fail is None:
+      log_event(logger, logging.WARNING, "postproc.no_markers", test=self.name, log=str(self.path))
+
     return TestResults(name=self.name, results=results)
 
 
