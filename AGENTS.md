@@ -102,6 +102,14 @@ After meaningful `rtl_buddy` changes:
 3. Update any downstream agent docs if command behavior, YAML schema, version expectations, or validation notes changed.
 4. Update downstream integrations to the intended commit as needed.
 
+## Developer Skills
+
+Skills committed under `.claude/skills/` in this repo are available only to maintainers working in the `rtl_buddy` checkout — they are not shipped in the wheel and do not propagate to downstream projects.
+
+- **`audit-template`** — audits `rtl-buddy-project-template` against recent `rtl_buddy` changes. Discovers what changed in `rtl_buddy` (CLI flags, YAML fields, concepts), then checks whether the template demonstrates each change clearly.
+- **`audit-bundled-skill`** — audits `src/rtl_buddy/skill/SKILL.md` for adherence to its design principles: ≤60 lines, agent-specific conventions only, docs-site citations instead of inline content.
+- **`audit-docs`** — audits the `docs/` site for readability, completeness, and structure. Covers both general review and targeted review after new features land.
+
 ## Skill Distribution
 
 The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated.
