@@ -104,7 +104,7 @@ After meaningful `rtl_buddy` changes:
 
 ## Skill Distribution
 
-The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated.
+The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated. Dev-only audit skills live under `.claude/skills/` in this repo and are not distributed.
 
 ### Rules when editing skill content
 
