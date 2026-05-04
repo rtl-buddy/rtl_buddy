@@ -15,6 +15,7 @@ from .rtl import RtlBuilderConfig
 from .verible import VeribleConfig, VeribleConfigFile
 from .coverage import CoverageConfig, CoverageConfigFile
 from .coverview import CoverviewConfig, CoverviewConfigFile
+from .surfer import SurferConfig, SurferConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -77,6 +78,7 @@ class RootConfigFile:
   veribles: list[VeribleConfigFile] = field(rename='cfg-verible', default_factory=list)
   coverages: list[CoverageConfigFile] = field(rename='cfg-coverage', default_factory=list)
   coverviews: list[CoverviewConfigFile] = field(rename='cfg-coverview', default_factory=list)
+  surfers: list[SurferConfigFile] = field(rename='cfg-surfer', default_factory=list)
 
 class RootConfig:
   """
@@ -112,6 +114,7 @@ class RootConfig:
     self.verible_cfgs = dict()
     self.coverage_cfgs = dict()
     self.coverview_cfgs = dict()
+    self.surfer_cfgs = dict()
     self.platform_cfg = None
     self.reg_cfg = None # initialise later when get_rtl_reg_cfg is called
 
@@ -138,6 +141,11 @@ class RootConfig:
       }
       self.coverview_cfgs = {
         cfg.name: cfg.initialise(self.root_cfg_path) for cfg in data.coverviews
+      }
+
+      # Populate surfer configs
+      self.surfer_cfgs = {
+        cfg.name: cfg.initialise(self.root_cfg_path) for cfg in data.surfers
       }
 
       # Initialise regression config
@@ -271,6 +279,17 @@ class RootConfig:
     """
     cfg = self.get_coverage_cfg(simulator_name)
     return False if cfg is None else cfg.get_use_lcov()
+
+  def get_surfer_cfg(self, name: str = 'surfer-default') -> 'SurferConfig | None':
+    """
+    Get Surfer configuration by name.
+
+    Args:
+      name (str): cfg-surfer entry name. Defaults to "surfer-default".
+    Returns:
+      cfg (SurferConfig|None): Matching Surfer configuration, if present.
+    """
+    return self.surfer_cfgs.get(name)
 
   def get_coverview_cfg(self, simulator_name:str):
     """

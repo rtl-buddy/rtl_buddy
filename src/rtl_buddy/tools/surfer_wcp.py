@@ -1,0 +1,280 @@
+# rtl-buddy
+# vim: set sw=2:ts=2:et:
+#
+# Copyright 2024 rtl_buddy contributors
+#
+"""
+surfer_wcp: WCP client for Surfer waveform viewer.
+
+rtl-buddy acts as the WCP client (TCP listener). Surfer connects out using
+--wcp-initiate <port>. After handshake, Surfer sends goto_declaration events
+when the user right-clicks a signal; rtl-buddy resolves the variable to a
+source file and opens it in the configured editor.
+"""
+import json
+import logging
+import os
+import re
+import socket
+import subprocess
+import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from ..config.surfer import SurferConfig
+  from ..config.test import TestConfig
+
+from ..logging_utils import log_event
+
+logger = logging.getLogger(__name__)
+
+_WCP_VERSION = "0"  # Surfer only accepts version "0"
+_RECV_BUF = 4096
+
+
+# ---------------------------------------------------------------------------
+# Frame I/O helpers
+# ---------------------------------------------------------------------------
+
+class _FrameReader:
+  """Read null-byte delimited JSON frames from a socket."""
+
+  def __init__(self, sock: socket.socket):
+    self._sock = sock
+    self._buf = b''
+
+  def read(self) -> dict:
+    while b'\x00' not in self._buf:
+      chunk = self._sock.recv(_RECV_BUF)
+      if not chunk:
+        raise ConnectionError("WCP connection closed by peer")
+      self._buf += chunk
+    frame, _, self._buf = self._buf.partition(b'\x00')
+    return json.loads(frame.decode('utf-8'))
+
+
+def _send_frame(sock: socket.socket, obj: dict) -> None:
+  data = json.dumps(obj).encode('utf-8') + b'\x00'
+  sock.sendall(data)
+
+
+# ---------------------------------------------------------------------------
+# Source resolver
+# ---------------------------------------------------------------------------
+
+class SurferSourceResolver:
+  """
+  Resolve a WCP variable path (e.g. "tb_top.i_dut_2.z_bus") to a source
+  file and line number by grepping the model's SV source files.
+
+  Source files are derived from the test's ModelConfig filelist, not from
+  root_config, so the search is scoped to the relevant design block.
+  """
+
+  def __init__(self, test_cfg: 'TestConfig', suite_dir: str):
+    self._sv_files = self._collect_sv_files(test_cfg, suite_dir)
+    log_event(logger, logging.DEBUG, "wcp.resolver_ready",
+              files=len(self._sv_files), suite=suite_dir)
+
+  def _collect_sv_files(self, test_cfg: 'TestConfig', suite_dir: str) -> list[str]:
+    from ..tools.vlog_filelist import VlogFilelist
+
+    model_cfg = test_cfg.get_model()
+    tb_cfg = test_cfg.get_testbench()
+    fl = VlogFilelist(name='wcp_resolver', model_cfg=model_cfg, output_path='/dev/null')
+
+    # Model source files (resolved from models.yaml location)
+    model_fpath = os.path.abspath(model_cfg.get_model_path() or '.')
+    model_entries = fl._extract(model_cfg.get_filelist(), unroll=True, fpath=model_fpath)
+
+    # Testbench source files (resolved from suite dir)
+    tb_fpath = os.path.join(suite_dir, 'tests.yaml')
+    tb_entries = fl._extract(tb_cfg.get_filelist(), unroll=True, fpath=tb_fpath)
+
+    sv_files = []
+    for path, opt in model_entries + tb_entries:
+      if opt is None or opt.strip() == '-v':
+        if os.path.isfile(path):
+          sv_files.append(path)
+    return sv_files
+
+  def resolve(self, variable: str) -> tuple[str, int] | None:
+    """
+    Resolve a hierarchical variable path to (filepath, lineno).
+
+    Tries the rightmost component (signal name) first, then the second-to-last
+    (instance/module component) as a fallback.
+    """
+    parts = variable.split('.')
+    candidates = [parts[-1]]
+    if len(parts) >= 2:
+      # Strip trailing digits from instance name to approximate module name
+      mod_candidate = re.sub(r'_\d+$', '', parts[-2])
+      if mod_candidate not in candidates:
+        candidates.append(mod_candidate)
+
+    for term in candidates:
+      result = self._grep(term)
+      if result:
+        filepath, lineno = result
+        log_event(logger, logging.DEBUG, "wcp.resolve_found",
+                  variable=variable, term=term, file=filepath, line=lineno)
+        return filepath, lineno
+
+    log_event(logger, logging.WARNING, "wcp.resolve_failed",
+              variable=variable, searched=len(self._sv_files))
+    return None
+
+  def _grep(self, term: str) -> tuple[str, int] | None:
+    if not self._sv_files:
+      return None
+    try:
+      result = subprocess.run(
+        ['grep', '-n', '-w', '--', term, *self._sv_files],
+        capture_output=True, text=True, timeout=5,
+      )
+      for line in result.stdout.splitlines():
+        parts = line.split(':', 2)
+        if len(parts) >= 2:
+          try:
+            return parts[0], int(parts[1])
+          except ValueError:
+            continue
+    except (subprocess.TimeoutExpired, OSError):
+      pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Editor launcher
+# ---------------------------------------------------------------------------
+
+class EditorLauncher:
+  """Open a source file at a given line in the configured editor."""
+
+  def __init__(self, surfer_cfg: 'SurferConfig'):
+    self._surfer_cfg = surfer_cfg
+
+  def open(self, filepath: str, lineno: int) -> None:
+    cmd = self._surfer_cfg.format_editor_cmd(filepath, lineno)
+    terminal = self._surfer_cfg.editor_terminal.lower()
+    log_event(logger, logging.DEBUG, "editor.open",
+              cmd=cmd, terminal=terminal, file=filepath, line=lineno)
+
+    if terminal == 'tmux':
+      self._open_tmux(cmd)
+    elif terminal == 'iterm2':
+      self._open_iterm2(cmd)
+    elif terminal == 'terminal':
+      self._open_terminal_app(cmd)
+    else:
+      subprocess.Popen(cmd, shell=True)
+
+  def _open_tmux(self, cmd: str) -> None:
+    subprocess.Popen(['tmux', 'new-window', cmd])
+
+  def _open_iterm2(self, cmd: str) -> None:
+    safe_cmd = cmd.replace('\\', '\\\\').replace('"', '\\"')
+    applescript = f'''
+      tell application "iTerm2"
+        activate
+        create window with default profile
+        tell current session of current window
+          write text "{safe_cmd}"
+        end tell
+      end tell
+    '''
+    subprocess.Popen(['osascript', '-e', applescript])
+
+  def _open_terminal_app(self, cmd: str) -> None:
+    safe_cmd = cmd.replace('"', '\\"')
+    applescript = f'''
+      tell application "Terminal"
+        activate
+        do script "{safe_cmd}"
+      end tell
+    '''
+    subprocess.Popen(['osascript', '-e', applescript])
+
+
+# ---------------------------------------------------------------------------
+# WCP listener (rtl-buddy is the WCP client; Surfer connects via --wcp-initiate)
+# ---------------------------------------------------------------------------
+
+class SurferWcpListener:
+  """
+  TCP listener that accepts a single connection from Surfer (--wcp-initiate).
+  Performs the WCP handshake then dispatches goto_declaration events to the
+  source resolver and editor launcher.
+  """
+
+  def __init__(self, surfer_cfg: 'SurferConfig', resolver: SurferSourceResolver,
+               editor: EditorLauncher):
+    self._surfer_cfg = surfer_cfg
+    self._resolver = resolver
+    self._editor = editor
+    self._stop = threading.Event()
+    self._srv: socket.socket | None = None
+
+  def bind(self) -> None:
+    """Bind the TCP socket. Call before launching Surfer."""
+    self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    self._srv.bind(('127.0.0.1', self._surfer_cfg.wcp_port))
+    self._srv.listen(1)
+    self._srv.settimeout(1.0)
+    log_event(logger, logging.INFO, "wave.wcp_listening",
+              port=self._surfer_cfg.wcp_port)
+
+  def run(self) -> None:
+    """Accept connections and handle events. Reconnects if Surfer drops."""
+    while not self._stop.is_set():
+      try:
+        conn, addr = self._srv.accept()  # type: ignore[union-attr]
+      except TimeoutError:
+        continue
+      except OSError:
+        break
+      log_event(logger, logging.INFO, "wave.wcp_connected", addr=str(addr))
+      try:
+        self._handle_connection(conn)
+      except ConnectionError as exc:
+        log_event(logger, logging.WARNING, "wcp.connection_lost", reason=str(exc))
+      finally:
+        conn.close()
+
+  def stop(self) -> None:
+    self._stop.set()
+    if self._srv:
+      try:
+        self._srv.close()
+      except OSError:
+        pass
+
+  def _handle_connection(self, conn: socket.socket) -> None:
+    reader = _FrameReader(conn)
+
+    # Send our greeting first — Surfer (WCP server) waits for the client greeting
+    # before sending its own. Surfer then sets goto_declaration capability and
+    # shows "Go to declaration" in the right-click menu.
+    _send_frame(conn, {
+      'type': 'greeting',
+      'version': _WCP_VERSION,
+      'commands': ['goto_declaration'],
+    })
+
+    # Receive Surfer's greeting in response
+    greeting = reader.read()
+    if greeting.get('type') != 'greeting':
+      raise ConnectionError(f"Expected greeting, got: {greeting.get('type')}")
+
+    # Event loop
+    while not self._stop.is_set():
+      msg = reader.read()
+      if msg.get('type') == 'event' and msg.get('event') == 'goto_declaration':
+        variable = msg.get('variable', '')
+        log_event(logger, logging.INFO, "wave.goto_declaration", variable=variable)
+        result = self._resolver.resolve(variable)
+        if result:
+          filepath, lineno = result
+          self._editor.open(filepath, lineno)
