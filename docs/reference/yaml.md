@@ -60,6 +60,13 @@ cfg-coverview:
     config:
       # inline Coverview JSON configuration values
 
+cfg-surfer:
+  - name: "surfer-default"
+    path: "surfer"              # bare name → found via PATH; or relative/absolute path
+    wcp-port: 54321
+    editor-cmd: "vim +%l %f"   # %f = file path, %l = line number
+    editor-terminal: "tmux"    # tmux | iterm2 | terminal | "" (empty = run cmd directly)
+
 cfg-rtl-reg:
   reg-cfg-path: "design/regression.yaml"
 ```
@@ -71,6 +78,7 @@ cfg-rtl-reg:
 - `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
+- `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code).
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
 
 ---

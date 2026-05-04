@@ -65,6 +65,15 @@ Defines simulation tool configurations. Each entry has:
 
 Defines Verible tool configurations for lint and syntax checks.
 
+**`cfg-surfer`** *(optional)*
+
+Configures the Surfer waveform viewer for `rb wave`. Fields:
+
+- `path`: bare executable name (resolved via PATH, e.g. `"surfer"`) or a relative/absolute path to the binary
+- `wcp-port`: TCP port rtl-buddy listens on; Surfer connects with `--wcp-initiate` (default: `54321`)
+- `editor-cmd`: command template with `%f` (file path) and `%l` (line number) placeholders — e.g. `"vim +%l %f"`, `"code --goto %f:%l"`
+- `editor-terminal`: how to open terminal editors — `tmux` (new tmux window), `iterm2`, `terminal` (macOS Terminal.app), or `""` to run the command directly (for GUI editors)
+
 **`cfg-rtl-reg`**
 
 Sets the default path to `regressions.yaml` used by `rtl-buddy regression` when `--reg-config` is not specified.
