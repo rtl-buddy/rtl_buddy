@@ -63,7 +63,7 @@ cfg-coverview:
 cfg-surfer:
   - name: "surfer-default"
     path: "surfer"              # bare name → found via PATH; or relative/absolute path
-    wcp-port: 54321
+    wcp-port: 0         # 0 = OS auto-assigns a free port
     editor-cmd: "vim +%l %f"   # %f = file path, %l = line number
     editor-terminal: "tmux"    # tmux | iterm2 | terminal | "" (empty = run cmd directly)
 

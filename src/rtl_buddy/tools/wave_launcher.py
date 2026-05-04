@@ -44,13 +44,14 @@ class WaveLauncher:
     editor = EditorLauncher(self._surfer_cfg)
     listener = SurferWcpListener(self._surfer_cfg, resolver, editor)
 
-    # Bind before launching Surfer so the port is ready when it connects
-    listener.bind()
+    # Bind before launching Surfer so the port is ready when it connects.
+    # actual_port is OS-assigned when wcp_port=0, otherwise matches wcp_port.
+    actual_port = listener.bind()
 
     cmd = [self._surfer_cfg.get_surfer_exe(), self._fst_path]
     if self._surfer_file and os.path.isfile(self._surfer_file):
       cmd += ['-c', self._surfer_file]
-    cmd += ['--wcp-initiate', str(self._surfer_cfg.wcp_port)]
+    cmd += ['--wcp-initiate', str(actual_port)]
 
     log_event(logger, logging.INFO, "wave.launched",
               test=self._test_cfg.name, fst=self._fst_path,

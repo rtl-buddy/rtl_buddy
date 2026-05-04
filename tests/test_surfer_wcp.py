@@ -21,7 +21,7 @@ from rtl_buddy.config.surfer import SurferConfig, SurferConfigFile
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_surfer_cfg(*, path='surfer', wcp_port=54321,
+def _make_surfer_cfg(*, path='surfer', wcp_port=0,
                      editor_cmd='vim +%l %f', editor_terminal='tmux',
                      root_cfg_path='/proj/root_config.yaml', available=True):
   return SurferConfig(
@@ -108,7 +108,7 @@ class TestSurferConfigFileInitialise:
 
   def test_available_true_when_bare_name_on_path(self, tmp_path):
     root_cfg = str(tmp_path / 'root_config.yaml')
-    cf = SurferConfigFile(name='s', path='surfer', wcp_port=54321,
+    cf = SurferConfigFile(name='s', path='surfer', wcp_port=0,
                           editor_cmd='vim +%l %f', editor_terminal='tmux')
     with patch('shutil.which', return_value='/usr/bin/surfer'):
       cfg = cf.initialise(root_cfg)
@@ -116,7 +116,7 @@ class TestSurferConfigFileInitialise:
 
   def test_available_false_when_bare_name_not_on_path(self, tmp_path):
     root_cfg = str(tmp_path / 'root_config.yaml')
-    cf = SurferConfigFile(name='s', path='surfer', wcp_port=54321,
+    cf = SurferConfigFile(name='s', path='surfer', wcp_port=0,
                           editor_cmd='vim +%l %f', editor_terminal='tmux')
     with patch('shutil.which', return_value=None):
       cfg = cf.initialise(root_cfg)
@@ -127,14 +127,14 @@ class TestSurferConfigFileInitialise:
     exe.parent.mkdir()
     exe.touch(mode=0o755)
     root_cfg = str(tmp_path / 'root_config.yaml')
-    cf = SurferConfigFile(name='s', path='bin/surfer', wcp_port=54321,
+    cf = SurferConfigFile(name='s', path='bin/surfer', wcp_port=0,
                           editor_cmd='vim +%l %f', editor_terminal='tmux')
     cfg = cf.initialise(root_cfg)
     assert cfg.available is True
 
   def test_available_false_when_relative_path_missing(self, tmp_path):
     root_cfg = str(tmp_path / 'root_config.yaml')
-    cf = SurferConfigFile(name='s', path='bin/surfer', wcp_port=54321,
+    cf = SurferConfigFile(name='s', path='bin/surfer', wcp_port=0,
                           editor_cmd='vim +%l %f', editor_terminal='tmux')
     cfg = cf.initialise(root_cfg)
     assert cfg.available is False

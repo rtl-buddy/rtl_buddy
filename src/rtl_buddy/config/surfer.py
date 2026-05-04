@@ -54,7 +54,7 @@ class SurferConfig:
 class SurferConfigFile:
   name: str
   path: str = 'surfer'
-  wcp_port: int = field(rename='wcp-port', default=54321)
+  wcp_port: int = field(rename='wcp-port', default=0)  # 0 = OS auto-assigns a free port
   editor_cmd: str = field(rename='editor-cmd', default='vim +%l %f')
   editor_terminal: str = field(rename='editor-terminal', default='')
 

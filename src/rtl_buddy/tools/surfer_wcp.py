@@ -216,15 +216,17 @@ class SurferWcpListener:
     self._stop = threading.Event()
     self._srv: socket.socket | None = None
 
-  def bind(self) -> None:
-    """Bind the TCP socket. Call before launching Surfer."""
+  def bind(self) -> int:
+    """Bind the TCP socket. Returns the actual port (OS-assigned when wcp_port=0).
+    Call before launching Surfer so the port is ready when Surfer connects."""
     self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self._srv.bind(('127.0.0.1', self._surfer_cfg.wcp_port))
     self._srv.listen(1)
     self._srv.settimeout(1.0)
-    log_event(logger, logging.INFO, "wave.wcp_listening",
-              port=self._surfer_cfg.wcp_port)
+    actual_port = self._srv.getsockname()[1]
+    log_event(logger, logging.INFO, "wave.wcp_listening", port=actual_port)
+    return actual_port
 
   def run(self) -> None:
     """Accept connections and handle events. Reconnects if Surfer drops."""
