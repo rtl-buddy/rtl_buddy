@@ -69,7 +69,9 @@ cfg-rtl-reg:
 - Platform is selected by matching `uname` output against `cfg-platforms[].unames`.
 - `--builder` overrides the platform-selected builder for the current run.
 - `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
-- `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
+- `cfg-coverage` is keyed by simulator family (e.g. `verilator`, `vcs`).
+- For `verilator`, `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
+- For `vcs`, merged coverage currently uses `--coverage-merge` plus `urg` over per-test `artefacts/<test>/simv.vdb` databases; `use-lcov` does not enable HTML/Coverview output for VCS in this patch.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
 

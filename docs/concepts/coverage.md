@@ -4,7 +4,7 @@ description: How to collect, merge, and report coverage for Verilator and VCS bu
 
 # Coverage
 
-`rtl_buddy` supports coverage collection, merging, and reporting for Verilator-based builds, and merged coverage report generation for VCS builds. Coverage workflows use a dedicated builder mode to compile with instrumentation, then optionally merge results across tests and export them as LCOV HTML or Coverview packages.
+`rtl_buddy` supports coverage collection, merging, and reporting for Verilator-based builds, and merged coverage report generation for VCS builds. Use this page when you need to enable coverage in a builder mode, understand which merge/report outputs exist for each simulator family, and run the right post-processing command for your backend.
 
 ## Setup
 
@@ -31,6 +31,13 @@ Run with the coverage builder mode:
 rtl-buddy --builder-mode cov test basic
 rtl-buddy --builder-mode cov regression
 ```
+
+For VCS, configure your coverage-enabled builder mode so each test run emits a coverage database at `artefacts/<test>/simv.vdb`. The exact VCS compile/run flags are project-specific, but `rtl_buddy` expects that output location when `--coverage-merge` is used.
+
+### Tool prerequisites
+
+- Verilator LCOV/HTML flows require the existing Verilator coverage toolchain described below.
+- VCS merged report generation requires `urg` on `PATH`.
 
 ### Coverage config in root_config.yaml
 
@@ -64,7 +71,7 @@ Fields:
 
 ## Coverage merge modes
 
-Three merge modes are available, selected by a mutually exclusive flag. Only one may be used per run.
+For Verilator, three merge modes are available, selected by a mutually exclusive flag. Only one may be used per run.
 
 | Flag | Merge method | Outputs |
 |------|-------------|---------|
@@ -84,6 +91,15 @@ urg -f coverage.f -dbname merged.vdb -report urgReport -lca -format both -show t
 
 The resulting `coverage.f`, `merged.vdb`, and `urgReport/` are written under `cov_dir/`.
 
+Supported commands:
+
+```bash
+rtl-buddy --builder-mode cov test basic --coverage-merge
+rtl-buddy --builder-mode cov regression --coverage-merge
+```
+
+On `test`, `rtl_buddy` merges across all selected tests in the current suite run. If only one eligible `simv.vdb` was produced, it still writes `coverage.f`, `merged.vdb`, and `urgReport/`.
+
 The following flags are not supported for VCS in this first patch:
 
 - `--coverage-merge-raw`
@@ -94,7 +110,7 @@ The following flags are not supported for VCS in this first patch:
 
 ## Generating merged output
 
-### LCOV HTML report
+### Verilator LCOV HTML report
 
 Requires `use-lcov: true` in `cfg-coverage`. Not supported with `--coverage-merge-info-process`.
 
@@ -104,7 +120,7 @@ rtl-buddy --builder-mode cov regression --coverage-merge --coverage-html
 
 Output is written to `coverage_merge.html` in the current directory.
 
-### Coverview zip
+### Verilator Coverview zip
 
 ```bash
 rtl-buddy --builder-mode cov regression --coverage-merge --coverage-coverview
