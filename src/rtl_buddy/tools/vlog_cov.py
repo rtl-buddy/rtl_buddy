@@ -1006,7 +1006,23 @@ class VlogCov:
         )
         return None
 
-      match = re.search(r"Total coverage \((\d+)/(\d+)\)\s+([0-9.]+)%", output)
+      # Verilator ≤5.042: "Total coverage (hit/total) X.XX%"
+      # Verilator ≥5.048: per-metric table "  toggle    : 63.1% ( 82/130)"
+      hit, total = None, None
+      legacy = re.search(r"Total coverage \((\d+)/(\d+)\)\s+([0-9.]+)%", output)
+      if legacy is not None:
+        hit = int(legacy.group(1))
+        total = int(legacy.group(2))
+      else:
+        per_metric = re.search(
+          r"^\s+" + re.escape(filter_type) + r"\s*:\s*[0-9.]+%\s*\(\s*(\d+)/(\d+)\)",
+          output,
+          re.MULTILINE,
+        )
+        if per_metric is not None:
+          hit = int(per_metric.group(1))
+          total = int(per_metric.group(2))
+
       if metric_name == "functional":
         manual_value = self._parse_user_annotated_summary(annotate_cwd)
         if manual_value is not None:
@@ -1021,7 +1037,7 @@ class VlogCov:
             method="annotated_user_lines",
           )
           return manual_value
-      if match is None:
+      if hit is None or total is None:
         if metric_name == "functional":
           log_event(
             logger,
@@ -1043,9 +1059,6 @@ class VlogCov:
           output=output.strip(),
         )
         return None
-
-      total = int(match.group(2))
-      hit = int(match.group(1))
       if total == 0:
         return None
       value = hit / total
