@@ -12,13 +12,13 @@ import random
 import signal
 import logging
 logger = logging.getLogger(__name__)
-import re
 from ..seed_mode import SeedMode
 
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
 from .vlog_cov import VlogCov
+from .artifact_paths import test_artifact_dir, test_build_dir_name
 
 import time
 import pprint
@@ -40,7 +40,7 @@ class VlogSim:
   """
 
   # TODO: Replace suite_cfg, test_name with test_info and testbench
-  def __init__(self, name, root_cfg, test_cfg, rtl_builder_mode, sim_mode, run_id=None, replay_run_id=None):
+  def __init__(self, name, root_cfg, test_cfg, rtl_builder_mode, sim_mode, run_id=None, replay_run_id=None, suite_dir=None):
     """
     compile and execute sim for given test
     """
@@ -56,7 +56,7 @@ class VlogSim:
     self.replay_run_id = replay_run_id
     self.testbench = self.test_cfg.get_testbench()
     self.vlog_post = None
-    self.suite_work_dir = os.path.abspath(os.getcwd())
+    self.suite_work_dir = os.path.abspath(suite_dir) if suite_dir is not None else os.path.abspath(os.getcwd())
 
     output_dir = Path(self.suite_work_dir) / "artefacts"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -67,13 +67,13 @@ class VlogSim:
     """
     Return a filesystem-safe tag derived from the test name.
     """
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", self.test_name)
+    return test_artifact_dir(self.suite_work_dir, self.test_name).name
 
   def _get_build_dir(self):
     """
     Return the simulator build directory for this test.
     """
-    return f"obj_dir_{self._get_build_tag()}"
+    return test_build_dir_name(self.test_name)
 
   def _get_compile_work_dir(self):
     return self._get_artifact_dir()
@@ -91,10 +91,7 @@ class VlogSim:
     return str(Path(self._get_compile_work_dir()) / simv_path)
 
   def _get_artifact_dir(self, run_id=None):
-    artifact_dir = Path(self.output_dir) / self._get_build_tag()
-    if run_id is not None:
-      artifact_dir /= f"run-{run_id:04d}"
-    return str(artifact_dir)
+    return str(test_artifact_dir(self.suite_work_dir, self.test_name, run_id=run_id))
 
   def _ensure_artifact_dir(self, run_id=None):
     artifact_dir = Path(self._get_artifact_dir(run_id=run_id))
@@ -210,6 +207,8 @@ class VlogSim:
       "logger"   : logger, 
       "test_cfg" : self.test_cfg,
       "root_cfg" : self.root_cfg,
+      "suite_dir": self.suite_work_dir,
+      "artifact_dir": self._get_artifact_dir(),
       "__file__" : os.path.abspath(script_path),
     }
     try:

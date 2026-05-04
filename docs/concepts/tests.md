@@ -167,6 +167,8 @@ For machine-readable logs (JSON Lines), use `--machine`. See [For Agents](../age
 
 Paths in `tests.yaml` (such as `model_path`) are resolved relative to the suite file's directory, not the invocation directory.
 
+Plusargs are passed to the simulator verbatim. If a plusarg should reference a suite-local file, resolve it explicitly in preproc using `suite_dir`. Bare output filenames can remain artifact-relative so they land under `artefacts/{test_name}/`.
+
 ## Full schema
 
 See [YAML Formats: tests.yaml](../reference/yaml.md#testsyaml) for the complete field reference.

@@ -22,7 +22,7 @@ class RunDepth(Enum):
 
 class TestRunner:
 
-  def __init__(self, name, root_cfg, test_cfg, rtl_builder_mode, test_runner_mode, run_id=None, seed_mode:SeedMode=SeedMode.DEFAULT, replay_run_id=None, run_depth=None):
+  def __init__(self, name, root_cfg, test_cfg, rtl_builder_mode, test_runner_mode, run_id=None, seed_mode:SeedMode=SeedMode.DEFAULT, replay_run_id=None, run_depth=None, suite_dir=None):
     """
     Run tests based on config
     Handles Verilog compilation
@@ -37,6 +37,7 @@ class TestRunner:
     self.run_depth = run_depth
     self.rtl_builder_mode = rtl_builder_mode
     self.test_runner_mode = test_runner_mode
+    self.suite_dir = suite_dir
 
   def _create_vlog_sim(self):
     sim_mode = {'sim_to_stdout': True}
@@ -50,7 +51,8 @@ class TestRunner:
       rtl_builder_mode=self.rtl_builder_mode,
       sim_mode=sim_mode,
       run_id=self.run_id,
-      replay_run_id=self.replay_run_id)
+      replay_run_id=self.replay_run_id,
+      suite_dir=self.suite_dir)
 
   def run(self):
     # compile simulation exe

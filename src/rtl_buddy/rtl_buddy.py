@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import json
+from pathlib import Path
 import typer
 from importlib.metadata import version
 from typing_extensions import Annotated
@@ -23,6 +24,7 @@ from .runner.test_runner import RunDepth, TestRunner
 from .seed_mode import SeedMode
 from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
+from .tools.artifact_paths import test_artifact_dir
 from .tools.spec_trace import (
   all_spec_blocks,
   build_coverage_map,
@@ -343,7 +345,7 @@ class RtlBuddy():
     for run_id in run_ids:
       suite_results.append({'test_name': test_name, 'randmode_i': run_id, 'results': test_results})
 
-  def _expand_tests_with_sweep(self, test_cfg):
+  def _expand_tests_with_sweep(self, test_cfg, suite_dir):
     script_path = test_cfg.get_sweep_path()
     if script_path is None:
       return [test_cfg], None
@@ -356,6 +358,8 @@ class RtlBuddy():
       "TestConfig": TestConfig,
       "test_cfg": test_cfg,
       "root_cfg": self.root_cfg,
+      "suite_dir": suite_dir,
+      "artifact_dir": str(test_artifact_dir(suite_dir, test_cfg.get_name())),
       "out_test_cfgs": [],
       "__file__": os.path.abspath(script_path),
     }
@@ -369,7 +373,7 @@ class RtlBuddy():
     log_event(logger, logging.INFO, "sweep.completed", test=test_cfg.name, script=script_path, expanded=len(ns["out_test_cfgs"]))
     return ns["out_test_cfgs"], None
 
-  def _run_test_cfg_for_run_ids(self, test_cfg, run_ids, seed_mode: SeedMode, replay_run_id, test_runner_mode):
+  def _run_test_cfg_for_run_ids(self, test_cfg, run_ids, seed_mode: SeedMode, replay_run_id, test_runner_mode, suite_dir):
     test_runner = TestRunner(
       name=self.name+"/testrunner",
       root_cfg=self.root_cfg,
@@ -379,7 +383,8 @@ class RtlBuddy():
       seed_mode=seed_mode,
       replay_run_id=replay_run_id,
       rtl_builder_mode=self.rtl_builder_mode,
-      run_depth=self.run_depth)
+      run_depth=self.run_depth,
+      suite_dir=suite_dir)
 
     if len(run_ids) == 1:
       return [test_runner.run()]
@@ -406,6 +411,7 @@ class RtlBuddy():
       run_ids = [None]
 
     tests = suite_cfg.get_tests(test_name)
+    suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
     suite_results = []
     for t in tests:
       t_lvl = t.get_reglvl(self.builder)
@@ -419,7 +425,7 @@ class RtlBuddy():
         self._append_skip_results(t.name, f'lvl {t_lvl} < cmd start_level {start_level}', run_ids, suite_results)
         continue
 
-      expanded_tests, sweep_error = self._expand_tests_with_sweep(t)
+      expanded_tests, sweep_error = self._expand_tests_with_sweep(t, suite_dir=suite_dir)
       if sweep_error is not None:
         self._append_setup_results(t.name, sweep_error, run_ids, suite_results)
         continue
@@ -430,7 +436,8 @@ class RtlBuddy():
           run_ids=run_ids,
           seed_mode=seed_mode,
           replay_run_id=replay_run_id,
-          test_runner_mode=test_runner_mode)
+          test_runner_mode=test_runner_mode,
+          suite_dir=suite_dir)
         self._append_results(expanded_test_cfg.name, run_ids, run_results, suite_results)
     return suite_results
 

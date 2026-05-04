@@ -3,6 +3,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from rtl_buddy.seed_mode import SeedMode
+from rtl_buddy.tools.artifact_paths import sanitize_artifact_component, test_artifact_dir, test_build_dir_name
+from rtl_buddy.tools.vlog_cov import VlogCov
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
 
 
@@ -295,3 +297,12 @@ def test_vlog_sim_multiple_runs_keep_runtime_side_files_separate(tmp_path, monke
 
   assert (tmp_path / "artefacts" / "basic" / "run-0001" / "wave.vcd").read_text() == "run=1\n"
   assert (tmp_path / "artefacts" / "basic" / "run-0002" / "wave.vcd").read_text() == "run=2\n"
+
+
+def test_artifact_path_helpers_match_existing_sanitization():
+  assert sanitize_artifact_component("basic") == "basic"
+  assert sanitize_artifact_component("with spaces/slash:punct") == "with_spaces_slash_punct"
+  assert test_artifact_dir("/tmp/suite", "with spaces/slash:punct") == Path("/tmp/suite/artefacts/with_spaces_slash_punct")
+  assert test_artifact_dir("/tmp/suite", "basic", run_id=7) == Path("/tmp/suite/artefacts/basic/run-0007")
+  assert test_build_dir_name("with spaces/slash:punct") == "obj_dir_with_spaces_slash_punct"
+  assert VlogCov(simulator_name="vcs")._sanitize_artifact_name("with spaces/slash:punct") == "with_spaces_slash_punct"

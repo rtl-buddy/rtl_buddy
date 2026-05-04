@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+from pathlib import Path
 
 from rtl_buddy.errors import FilelistError
 from rtl_buddy.logging_utils import setup_logging
@@ -58,13 +59,20 @@ class DummySweepTest:
   def get_sweep_path(self):
     return self._script_path
 
+  def get_name(self):
+    return self.name
+
 
 class DummySuiteCfg:
-  def __init__(self, tests):
+  def __init__(self, tests, path="tests.yaml"):
     self._tests = tests
+    self._path = path
 
   def get_tests(self, _test_name=None):
     return self._tests
+
+  def get_path(self):
+    return self._path
 
 
 def test_test_runner_returns_setup_fail_on_preproc_error(tmp_path, monkeypatch):
@@ -117,7 +125,10 @@ def test_sweep_failure_becomes_setup_fail_result(tmp_path):
   rb.run_depth = RunDepth.POST
   rb.rtl_builder_mode = "debug"
 
-  suite_results = rb._do_test_suite(DummySuiteCfg([DummySweepTest(str(sweep_script))]), run_ids=[None])
+  suite_results = rb._do_test_suite(
+    DummySuiteCfg([DummySweepTest(str(sweep_script))], path=str(tmp_path / "tests.yaml")),
+    run_ids=[None],
+  )
 
   assert len(suite_results) == 1
   result = suite_results[0]["results"]
@@ -277,8 +288,8 @@ def test_vlog_sim_missing_hier_seed_file_is_nonfatal(tmp_path, monkeypatch):
   returncode = sim.execute()
 
   assert returncode == 0
-  assert (tmp_path / "logs" / "basic.randseed").read_text() == "31310\n"
-  assert "hierarchical seed file missing at HierInstanceSeed.txt" in log_path.read_text()
+  assert (tmp_path / "artefacts" / "basic" / "test.randseed").read_text() == "31310\n"
+  assert "hierarchical seed file missing at" in log_path.read_text()
 
 
 def test_preproc_script_receives___file__(tmp_path, monkeypatch):
@@ -306,6 +317,33 @@ def test_preproc_script_receives___file__(tmp_path, monkeypatch):
   assert sentinel.read_text() == "my_preproc.py"
 
 
+def test_preproc_script_receives_suite_dir_and_artifact_dir(tmp_path):
+  setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+  suite_dir = tmp_path / "suite dir"
+  suite_dir.mkdir()
+  script_path = suite_dir / "my_preproc.py"
+  sentinel = tmp_path / "preproc_ctx.txt"
+  script_path.write_text(
+    "from pathlib import Path\n"
+    f"Path({str(sentinel)!r}).write_text(suite_dir + '\\n' + artifact_dir)\n"
+  )
+
+  sim = VlogSim(
+    name="rtl_buddy/vlog_sim",
+    root_cfg=DummyRootCfg(),
+    test_cfg=DummyPreprocTestCfg(str(script_path)),
+    rtl_builder_mode="reg",
+    sim_mode={"sim_to_stdout": False},
+    suite_dir=str(suite_dir),
+  )
+
+  error = sim.pre()
+
+  assert error is None
+  assert sentinel.read_text() == f"{suite_dir}\n{suite_dir / 'artefacts' / 'basic'}"
+
+
 def test_sweep_script_receives___file__(tmp_path):
   setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
   sweep_script = tmp_path / "sweep.py"
@@ -321,8 +359,67 @@ def test_sweep_script_receives___file__(tmp_path):
   rb.run_depth = RunDepth.POST
   rb.rtl_builder_mode = "debug"
 
-  test_cfgs, error = rb._expand_tests_with_sweep(DummySweepTest(str(sweep_script)))
+  test_cfgs, error = rb._expand_tests_with_sweep(DummySweepTest(str(sweep_script)), suite_dir=str(tmp_path))
 
   assert error is None
   assert len(test_cfgs) == 1
   assert test_cfgs[0] is not None
+
+
+def test_sweep_script_receives_suite_dir_and_artifact_dir(tmp_path):
+  setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+  suite_dir = tmp_path / "suite dir"
+  suite_dir.mkdir()
+  sweep_script = tmp_path / "sweep.py"
+  sentinel = tmp_path / "sweep_ctx.txt"
+  sweep_script.write_text(
+    "from pathlib import Path\n"
+    f"Path({str(sentinel)!r}).write_text(suite_dir + '\\n' + artifact_dir)\n"
+    "out_test_cfgs = [test_cfg]\n"
+  )
+
+  rb = RtlBuddy(name="rtl_buddy")
+  rb.builder = "vcs"
+  rb.root_cfg = object()
+  rb.run_depth = RunDepth.POST
+  rb.rtl_builder_mode = "debug"
+
+  test_cfgs, error = rb._expand_tests_with_sweep(DummySweepTest(str(sweep_script)), suite_dir=str(suite_dir))
+
+  assert error is None
+  assert len(test_cfgs) == 1
+  assert sentinel.read_text() == f"{suite_dir}\n{suite_dir / 'artefacts' / 'basic'}"
+
+
+def test_suite_dir_for_test_runner_comes_from_suite_cfg_path(tmp_path, monkeypatch):
+  setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+  suite_dir = tmp_path / "suite-dir"
+  suite_dir.mkdir()
+  invocation_dir = tmp_path / "invocation"
+  invocation_dir.mkdir()
+
+  captured = {}
+
+  class CapturingRunner:
+    def __init__(self, **kwargs):
+      captured["suite_dir"] = kwargs["suite_dir"]
+
+    def run(self):
+      return SetupFailResults(name="dummy", desc="captured")
+
+  monkeypatch.chdir(invocation_dir)
+  monkeypatch.setattr("rtl_buddy.rtl_buddy.TestRunner", CapturingRunner)
+
+  rb = RtlBuddy(name="rtl_buddy")
+  rb.builder = "vcs"
+  rb.root_cfg = object()
+  rb.run_depth = RunDepth.POST
+  rb.rtl_builder_mode = "debug"
+
+  suite_results = rb._do_test_suite(
+    DummySuiteCfg([DummySweepTest(None)], path=str(suite_dir / "tests.yaml")),
+    run_ids=[None],
+  )
+
+  assert len(suite_results) == 1
+  assert captured["suite_dir"] == str(suite_dir.resolve())

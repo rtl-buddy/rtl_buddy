@@ -20,6 +20,7 @@ from collections import defaultdict
 
 from ..config.root import RootConfig
 from ..logging_utils import log_event
+from .artifact_paths import sanitize_artifact_component
 
 
 def _fmt_cov(value):
@@ -102,7 +103,7 @@ class VlogCov:
     """
     Return a filesystem-safe coverage artifact name.
     """
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return sanitize_artifact_component(name)
 
   def _extract_raw_source_paths(self, raw_path):
     """
