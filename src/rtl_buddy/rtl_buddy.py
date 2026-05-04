@@ -44,7 +44,7 @@ class RtlBuddy():
   Handles cli entry into RTL Buddy
   """
 
-  _GIT_COMMANDS = {"test", "randtest", "regression", "filelist"}
+  _GIT_COMMANDS = {"test", "randtest", "regression", "filelist", "wave"}
 
   def cb_builder(value: str | None) -> str | None:
     if value is None:
@@ -74,6 +74,7 @@ class RtlBuddy():
     self.app.command("regression", help="run rtl regression")(self.do_rtl_regression)
     self.app.command("filelist", help="generate filelists using models.yaml")(self.do_gen_model_filelist)
     self.app.command("verible", help="run verible cmd")(self.do_verible)
+    self.app.command("wave", help="open waveform viewer for a test")(self.do_cmd_wave)
     self.app.add_typer(skill_app, name="skill", help="manage the rtl_buddy agent skill")
     self.docs_app.command("list", help="list bundled documentation pages")(self.do_docs_list)
     self.docs_app.command("show", help="show a bundled documentation page")(self.do_docs_show)
@@ -759,6 +760,57 @@ class RtlBuddy():
     if uncovered:
       emit_console_text(f"Uncovered items: {', '.join(uncovered)}", style="yellow")
     raise typer.Exit(0)
+
+  def do_cmd_wave(self,
+    test_name: Annotated[str, typer.Argument(help="name of test to open waveform for")],
+    test_config: Annotated[str, typer.Option("-c", "--test-config", help="tests.yaml to use")] = "tests.yaml",
+    surfer_name: Annotated[str, typer.Option("--surfer", help="cfg-surfer entry name")] = "surfer-default",
+    resim: Annotated[bool, typer.Option("--resim", help="force re-run of debug sim even if FST exists")] = False,
+    ):
+    """
+    open waveform viewer for a test
+    """
+    from .tools.wave_launcher import WaveLauncher
+
+    self.rtl_builder_mode = "debug"
+
+    surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
+    if surfer_cfg is None:
+      raise FatalRtlBuddyError(
+        f'No cfg-surfer entry named "{surfer_name}" in root_config.yaml. '
+        f'Add a cfg-surfer section to enable waveform viewing.'
+      )
+    if not surfer_cfg.available:
+      raise FatalRtlBuddyError(
+        f'Surfer not found at "{surfer_cfg.path}". '
+        f'Check cfg-surfer.path in root_config.yaml or install surfer on PATH.'
+      )
+
+    suite_cfg = SuiteConfig(path=test_config)
+    suite_dir = os.path.dirname(os.path.abspath(test_config))
+    test_cfg = suite_cfg.get_tests(test_name)[0]
+
+    fst_path = os.path.join(suite_dir, 'artefacts', test_name, 'dump.fst')
+    surfer_file = os.path.join(suite_dir, f'{test_name}.surfer')
+
+    log_event(logger, logging.INFO, "command.wave", command="wave", test=test_name, fst=fst_path)
+
+    if resim or not os.path.isfile(fst_path):
+      log_event(logger, logging.INFO, "wave.sim_required", test=test_name, fst=fst_path)
+      suite_results = self._do_test_suite(suite_cfg, test_name=test_name, run_ids=[None])
+      result = suite_results[0]['results'] if suite_results else None
+      if result is None or not result.is_pass():
+        raise FatalRtlBuddyError(f'Debug sim for "{test_name}" failed; cannot open waveform.')
+    else:
+      log_event(logger, logging.INFO, "wave.fst_found", test=test_name, fst=fst_path)
+
+    WaveLauncher(
+      test_cfg=test_cfg,
+      surfer_cfg=surfer_cfg,
+      suite_dir=suite_dir,
+      fst_path=fst_path,
+      surfer_file=surfer_file if os.path.isfile(surfer_file) else None,
+    ).launch()
 
   def do_lint(self):
     assert False, "not yet impl"

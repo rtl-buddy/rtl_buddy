@@ -295,6 +295,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
       return "verible binaries unavailable"
     case "verible.command_invalid":
       return f'verible: invalid command "{fields.get("command")}"'
+    case "wcp.resolve_failed":
+      return f'WCP: could not find source for "{fields.get("variable")}" (searched {fields.get("searched")} files)'
+    case "wcp.connection_lost":
+      return f'WCP: connection lost ({fields.get("reason")}); waiting for Surfer to reconnect'
     case "coverage.metric.failed":
       return (
         f'coverage metric "{fields.get("metric")}" failed'

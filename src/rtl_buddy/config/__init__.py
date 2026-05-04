@@ -16,3 +16,4 @@ from .spec import SpecConfig, SpecBlock, SpecCoverageItem
 from .verible import VeribleConfig
 from .coverage import CoverageConfig, CoverageConfigFile
 from .coverview import CoverviewConfig, CoverviewConfigFile
+from .surfer import SurferConfig
