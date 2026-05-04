@@ -130,7 +130,7 @@ class SurferSourceResolver:
       return None
     try:
       result = subprocess.run(
-        ['grep', '-n', '-w', '--', term, *self._sv_files],
+        ['grep', '-n', '-w', '-H', '--', term, *self._sv_files],
         capture_output=True, text=True, timeout=5,
       )
       for line in result.stdout.splitlines():
