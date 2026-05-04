@@ -47,6 +47,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ regression  run rtl regression                                                       │
 │ filelist    generate filelists using models.yaml                                     │
 │ verible     run verible cmd                                                          │
+│ wave        open waveform viewer for a test                                          │
 │ skill       manage the rtl_buddy agent skill                                         │
 │ docs        browse bundled documentation                                             │
 │ spec        spec traceability commands                                               │
