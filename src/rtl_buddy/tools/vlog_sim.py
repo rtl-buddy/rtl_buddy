@@ -115,7 +115,14 @@ class VlogSim:
 
   def _coverage_enabled(self):
     compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
-    return any(opt.startswith("--coverage") for opt in compile_opts)
+    if any(opt.startswith("--coverage") for opt in compile_opts):
+      return True
+
+    if self._get_simulator_family() == "vcs":
+      run_opts = self.rtl_builder_cfg.get_run_time_opts(self.rtl_builder_mode, seed=None)
+      return any(opt.startswith("-cm") for opt in [*compile_opts, *run_opts])
+
+    return False
 
   def _get_simulator_family(self):
     """
@@ -137,6 +144,12 @@ class VlogSim:
 
   def _get_cov_abspath(self, run_id=None):
     return str(Path(self._get_cov_path(run_id=run_id)).resolve())
+
+  def _get_vdb_path(self, run_id=None):
+    return str(Path(self._get_artifact_dir(run_id=run_id)) / "simv.vdb")
+
+  def _get_vdb_abspath(self, run_id=None):
+    return str(Path(self._get_vdb_path(run_id=run_id)).resolve())
 
   def _get_suite_symlink_path(self, name):
     return str(Path(self.suite_work_dir) / name)
@@ -436,10 +449,11 @@ class VlogSim:
     else:  
       self.vlog_post = VlogPost(name=self.test_name, path=log_path)
     results = self.vlog_post.get_results()
-    if self._coverage_enabled():
+    simulator_family = self._get_simulator_family()
+    if self._coverage_enabled() and simulator_family == "verilator":
       cov = VlogCov(
-        simulator_name=self._get_simulator_family(),
-        use_lcov=self.root_cfg.get_use_lcov(self._get_simulator_family()),
+        simulator_name=simulator_family,
+        use_lcov=self.root_cfg.get_use_lcov(simulator_family),
         root_cfg=self.root_cfg,
       )
       cov_results = cov.collect(
@@ -448,5 +462,12 @@ class VlogSim:
       )
       if cov_results is not None:
         results.results["coverage"] = cov_results.to_dict()
+    elif simulator_family == "vcs":
+      vdb_path = self._get_vdb_abspath(run_id=run_id)
+      if self._coverage_enabled() and Path(vdb_path).is_dir():
+        results.results["coverage"] = {
+          "backend": "vcs",
+          "vdb_paths": [vdb_path],
+        }
     log_event(logger, logging.INFO, "postproc.completed", test=self.test_name, run_id=run_id, result=results.results["result"], desc=results.results["desc"])
     return results

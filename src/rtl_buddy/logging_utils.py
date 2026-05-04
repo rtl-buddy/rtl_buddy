@@ -310,6 +310,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         f'coverage metric "{fields.get("metric")}" unsupported'
         f' for {fields.get("raw_path")}'
       )
+    case "coverage.vcs_merge.tool_missing":
+      return f'VCS coverage merge requires {fields.get("executable")} on PATH'
+    case "coverage.vcs_merge.no_inputs":
+      return f'no eligible VCS coverage databases found for merge in {fields.get("outdir")}'
+    case "coverage.vcs_merge.empty_file":
+      return f'generated empty VCS coverage file {fields.get("coverage_file")}'
+    case "coverage.vcs_merge.start":
+      return f'VCS coverage merge started for {fields.get("input_count")} inputs'
+    case "coverage.vcs_merge.failed":
+      return f'VCS coverage merge failed (returncode {fields.get("returncode")})'
+    case "coverage.vcs_merge.output_missing":
+      return f'VCS coverage merge outputs missing: {fields.get("missing")}'
+    case "coverage.vcs_merge.completed":
+      return f'VCS coverage merge completed for {fields.get("input_count")} inputs'
     case "filelist.inline_f_disallowed":
       return f'{fields.get("file")}: -f not allowed (line: "{fields.get("line")}")'
     # -- config / setup errors (logged at ERROR, immediately followed by FatalRtlBuddyError) --

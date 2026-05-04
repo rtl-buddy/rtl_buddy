@@ -238,6 +238,24 @@ class RtlBuddy():
       dir_summary_file=coverage_dir_summary_file,
     )
 
+  def _validate_coverage_flags(self, *, coverage_merge=False, coverage_merge_raw=False,
+                               coverage_merge_info_process=False, coverage_html=False,
+                               coverage_coverview=False, coverage_per_test=False):
+    simulator_family = self.root_cfg.get_rtl_builder_cfg().get_simulator_family()
+    if simulator_family != "vcs":
+      return
+
+    if coverage_merge_raw:
+      raise FatalRtlBuddyError("--coverage-merge-raw is only supported for Verilator; use --coverage-merge for VCS")
+    if coverage_merge_info_process:
+      raise FatalRtlBuddyError("--coverage-merge-info-process is only supported for Verilator; use --coverage-merge for VCS")
+    if coverage_html:
+      raise FatalRtlBuddyError("--coverage-html is not supported for VCS coverage merge")
+    if coverage_coverview:
+      raise FatalRtlBuddyError("--coverage-coverview is not supported for VCS coverage merge")
+    if coverage_per_test:
+      raise FatalRtlBuddyError("--coverage-per-test is not supported for VCS coverage merge")
+
   def do_cmd_test(self,
     test_config: Annotated[str, typer.Option("-c", "--test-config", help="test_config.yaml to use")] = "tests.yaml",
     test_name: Annotated[str, typer.Argument(help="name of test", show_default="run all tests")] = None,
@@ -260,6 +278,13 @@ class RtlBuddy():
       raise FatalRtlBuddyError("--coverage-merge, --coverage-merge-raw, and --coverage-merge-info-process are mutually exclusive")
     if coverage_merge_info_process and coverage_html:
       raise FatalRtlBuddyError("--coverage-html is not supported with --coverage-merge-info-process")
+    self._validate_coverage_flags(
+      coverage_merge=coverage_merge,
+      coverage_merge_raw=coverage_merge_raw,
+      coverage_merge_info_process=coverage_merge_info_process,
+      coverage_html=coverage_html,
+      coverage_coverview=coverage_coverview,
+    )
 
     self.rtl_builder_mode = "debug" if self.rtl_builder_mode is None else self.rtl_builder_mode
     self.suite_cfg = SuiteConfig(path=test_config)
@@ -462,6 +487,14 @@ class RtlBuddy():
       raise FatalRtlBuddyError("--coverage-merge, --coverage-merge-raw, and --coverage-merge-info-process are mutually exclusive")
     if coverage_merge_info_process and coverage_html:
       raise FatalRtlBuddyError("--coverage-html is not supported with --coverage-merge-info-process")
+    self._validate_coverage_flags(
+      coverage_merge=coverage_merge,
+      coverage_merge_raw=coverage_merge_raw,
+      coverage_merge_info_process=coverage_merge_info_process,
+      coverage_html=coverage_html,
+      coverage_coverview=coverage_coverview,
+      coverage_per_test=coverage_per_test,
+    )
 
     self.rtl_builder_mode = "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
     log_event(logger, logging.INFO, "command.regression", reg_config=reg_config, reg_level=reg_level, start_level=start_level)

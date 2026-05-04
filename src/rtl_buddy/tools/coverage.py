@@ -10,6 +10,7 @@ coverage module handles rtl-buddy coverage result orchestration
 import os
 
 from .coverview import CoverviewPacker
+from .vcs_cov import VcsCov
 from .vlog_cov import CoverageMetrics, VlogCov
 
 
@@ -34,6 +35,12 @@ class CoverageReporter:
       use_lcov=self.root_cfg.get_use_lcov(simulator_family),
       root_cfg=self.root_cfg,
     )
+
+  def _get_simulator_family(self):
+    return self.root_cfg.get_rtl_builder_cfg().get_simulator_family()
+
+  def _get_vcs_cov_tool(self):
+    return VcsCov()
 
   def _get_coverview_tool(self):
     """
@@ -74,6 +81,29 @@ class CoverageReporter:
         continue
       raw_paths.extend(coverage.get("raw_paths", []))
     return raw_paths
+
+  def collect_vdb_paths(self, suite_results):
+    """
+    Collect VCS coverage database directories from passing/skipped tests.
+    """
+    vdb_paths = []
+    seen = set()
+    for suite_result in suite_results:
+      result = suite_result["results"].results.get("result")
+      if result not in {"PASS", "SKIP"}:
+        continue
+      coverage = suite_result["results"].results.get("coverage")
+      if coverage is None:
+        continue
+      for vdb_path in coverage.get("vdb_paths", []):
+        if not vdb_path:
+          continue
+        resolved = os.path.abspath(vdb_path)
+        if resolved in seen or not os.path.isdir(resolved):
+          continue
+        seen.add(resolved)
+        vdb_paths.append(resolved)
+    return vdb_paths
 
   def _normalize_source_roots(self, outdir, source_roots=None, suite_name=None):
     """
@@ -199,6 +229,14 @@ class CoverageReporter:
       source_roots=self._normalize_source_roots(outdir, source_roots=source_roots),
       html_outdir=outdir,
     )
+
+  def merge_vcs(self, suite_results, outdir):
+    """
+    Merge VCS coverage databases across multiple tests and return URG artifacts.
+    """
+    vdb_paths = self.collect_vdb_paths(suite_results)
+    cov_dir = self._cov_dir(outdir)
+    return self._get_vcs_cov_tool().merge(vdb_paths=vdb_paths, outdir=cov_dir)
 
   def generate_unmerged_artifacts(self, suite_results, outdir, suite_name, coverview_output=False, source_roots=None):
     """
@@ -468,6 +506,15 @@ class CoverageReporter:
     Build summary metadata lines for merged or unmerged coverage artifacts.
     """
     metadata = []
+    simulator_family = self._get_simulator_family()
+    if simulator_family == "vcs":
+      if coverage_merge:
+        merged_cov = self.merge_vcs(suite_results, outdir=outdir)
+        metadata.append(f"Merged Coverage Inputs: {merged_cov.input_count}")
+        metadata.append(f"Merged Coverage File: {merged_cov.coverage_file}")
+        metadata.append(f"Merged VDB: {merged_cov.merged_vdb}")
+        metadata.append(f"Merged URG Report: {merged_cov.report_dir}")
+      return metadata
     if coverage_merge_raw:
       merged_cov = self.merge(
         suite_results,

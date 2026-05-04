@@ -1,10 +1,10 @@
 ---
-description: How to collect, merge, and report coverage for Verilator-based builds using rtl_buddy.
+description: How to collect, merge, and report coverage for Verilator and VCS builds using rtl_buddy.
 ---
 
 # Coverage
 
-`rtl_buddy` supports coverage collection, merging, and reporting for Verilator-based builds. Coverage workflows use a dedicated builder mode to compile with instrumentation, then optionally merge results across tests and export them as LCOV HTML or Coverview packages.
+`rtl_buddy` supports coverage collection, merging, and reporting for Verilator-based builds, and merged coverage report generation for VCS builds. Coverage workflows use a dedicated builder mode to compile with instrumentation, then optionally merge results across tests and export them as LCOV HTML or Coverview packages.
 
 ## Setup
 
@@ -73,6 +73,24 @@ Three merge modes are available, selected by a mutually exclusive flag. Only one
 | `--coverage-merge-info-process` | info-process only | summary, Coverview — HTML not supported |
 
 If none of these flags is given, no merging is done and coverage is reported per test.
+
+### VCS merge support
+
+For VCS, `rtl_buddy` currently supports only `--coverage-merge`. It discovers per-test coverage databases at `artefacts/<test>/simv.vdb`, writes `cov_dir/coverage.f`, and runs:
+
+```bash
+urg -f coverage.f -dbname merged.vdb -report urgReport -lca -format both -show tests
+```
+
+The resulting `coverage.f`, `merged.vdb`, and `urgReport/` are written under `cov_dir/`.
+
+The following flags are not supported for VCS in this first patch:
+
+- `--coverage-merge-raw`
+- `--coverage-merge-info-process`
+- `--coverage-html`
+- `--coverage-coverview`
+- `--coverage-per-test`
 
 ## Generating merged output
 
