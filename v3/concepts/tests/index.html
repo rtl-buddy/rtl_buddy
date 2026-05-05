@@ -1380,6 +1380,7 @@
 <h2 id="path-and-working-directory">Path and working directory</h2>
 <p><code>test</code> and <code>randtest</code> do <strong>not</strong> automatically change directory to the suite directory. Run them from the directory containing <code>tests.yaml</code>, or pass an explicit <code>--test-config</code> path.</p>
 <p>Paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved relative to the suite file's directory, not the invocation directory.</p>
+<p>Plusargs are passed to the simulator verbatim. If a plusarg should reference a suite-local file, resolve it explicitly in preproc using <code>suite_dir</code>. Bare output filenames can remain artifact-relative so they land under <code>artefacts/{test_name}/</code>.</p>
 <h2 id="full-schema">Full schema</h2>
 <p>See <a href="../../reference/yaml/#testsyaml">YAML Formats: tests.yaml</a> for the complete field reference.</p>
 
