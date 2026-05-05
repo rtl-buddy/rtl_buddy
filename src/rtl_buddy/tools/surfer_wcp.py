@@ -83,7 +83,15 @@ class WaveformValueReader:
       import pywellen  # type: ignore[import-untyped]  # noqa: PLC0415
       if not os.path.isfile(self._fst_path):
         raise FileNotFoundError(self._fst_path)
-      self._waveform = pywellen.Waveform(self._fst_path)
+      # pywellen emits terminal capability queries to stderr on load; suppress them
+      import sys
+      old_stderr = sys.stderr
+      sys.stderr = open(os.devnull, 'w')  # noqa: WPS515
+      try:
+        self._waveform = pywellen.Waveform(self._fst_path)
+      finally:
+        sys.stderr.close()
+        sys.stderr = old_stderr
     return self._waveform
 
   def get_value(self, variable: str, timestamp: int) -> str | None:
@@ -348,12 +356,24 @@ class EditorLauncher:
       return False
 
   @staticmethod
+  def _nvim_exec_lua(sock_path: str, lua: str) -> None:
+    """Execute a Lua chunk in a running nvim silently via --remote-expr nvim_exec2."""
+    expanded = os.path.expanduser(sock_path)
+    # Wrap in a double-quoted Vimscript string; escape \ and " for that context.
+    vs = lua.replace('\\', '\\\\').replace('"', '\\"')
+    subprocess.Popen(['nvim', '--server', expanded, '--remote-expr',
+                      f'nvim_exec2("lua {vs}", {{}})',
+                      ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+  @staticmethod
   def _nvim_remote_update(sock_path: str, filepath: str, lineno: int,
                           value: str | None) -> None:
     """Jump to filepath:lineno in a running nvim and update virtual text."""
     expanded = os.path.expanduser(sock_path)
     vim_path = filepath.replace('\\', '\\\\').replace(' ', '\\ ').replace('"', '\\"')
-    keys = f'<Esc>:e +{lineno} {vim_path}<CR>'
+    # File navigation still needs --remote-send (no expr equivalent for :e)
+    subprocess.Popen(['nvim', '--server', expanded, '--remote-send',
+                      f'<Esc>:e +{lineno} {vim_path}<CR>'])
     if value is not None:
       v = value.replace('\\', '\\\\').replace("'", "\\'")
       lua = (
@@ -365,13 +385,11 @@ class EditorLauncher:
         "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
         "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) end"
       )
-      keys += f':lua {lua}<CR>'
-    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
+      EditorLauncher._nvim_exec_lua(sock_path, lua)
 
   @staticmethod
   def _nvim_remote_value(sock_path: str, lineno: int, value: str) -> None:
     """Update virtual text for a single line in a running nvim."""
-    expanded = os.path.expanduser(sock_path)
     v = value.replace('\\', '\\\\').replace("'", "\\'")
     lua = (
       "local ns=vim.api.nvim_create_namespace('wave_value');"
@@ -382,16 +400,15 @@ class EditorLauncher:
       "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
       "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) end"
     )
-    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', f'<Esc>:lua {lua}<CR>'])
+    EditorLauncher._nvim_exec_lua(sock_path, lua)
 
   @staticmethod
   def _nvim_remote_scope(sock_path: str, annotations: list[tuple[int, str, str]]) -> None:
-    """Push virtual text for all scope signals in a single --remote-send call.
+    """Push virtual text for all scope signals silently.
 
     Each annotation is (lineno, value, filepath). Extmarks are set in the
     correct buffer for each file; lines out of range are silently skipped.
     """
-    expanded = os.path.expanduser(sock_path)
     entries = []
     for lineno, value, filepath in annotations:
       v = value.replace('\\', '\\\\').replace("'", "\\'")
@@ -413,7 +430,7 @@ class EditorLauncher:
       "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) "
       "end end end"
     )
-    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', f'<Esc>:lua {lua}<CR>'])
+    EditorLauncher._nvim_exec_lua(sock_path, lua)
 
   def _open_tmux(self, cmd: str, value: str | None = None) -> None:
     subprocess.Popen(['tmux', 'new-window', self._env_prefix(value) + cmd])
