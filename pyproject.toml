@@ -11,7 +11,8 @@ dependencies = [
   "typer >= 0.19.2",
   "click >= 8.3.0",
   "pyserde[yaml] >= 0.27.0",
-  "rich >= 14.0.0"
+  "rich >= 14.0.0",
+  "pywellen >= 0.20.0"
 ]
 
 authors = [

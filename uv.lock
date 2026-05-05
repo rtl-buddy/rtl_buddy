@@ -571,6 +571,34 @@ wheels = [
 ]
 
 [[package]]
+name = "pywellen"
+version = "0.20.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b7/1b/fa63a8fab028b1890756ef8556d3f2986e8bd8b88ed2f404684e763faf93/pywellen-0.20.5.tar.gz", hash = "sha256:87f86f4b34a8546e2a352b57ad0417524defc94fd43c036a3d77dd052160b56c", size = 99312, upload-time = "2026-04-13T15:25:12.775Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/42/4428ff7d7e508009da389ed50e72ccad45b6199c3b97b07ae328469d9ba7/pywellen-0.20.5-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:4f54e9913e8b43905805ea5691a4f2f3b86f828b25a4f11223c11509b84e9e63", size = 620632, upload-time = "2026-04-13T15:25:06.687Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/3c/5f4ff1926e8ecd63f18a614a53b7dcf3d7f1f2f2af3ee02b5bfd7638d8c3/pywellen-0.20.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:e6ee911f7b6d4448e08ab4565527e36d8ff84a175a85b49f468e749369e92fa8", size = 609948, upload-time = "2026-04-13T15:24:59.164Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/4a/de37d5bca8f59f48e8677b711184dd66f90b1f4dfac8b19a00cc23a06498/pywellen-0.20.5-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fa11d8ef2a88e16a951c9d38cc54fdf50ce6f66d0e13189bcfb80d7543d8b29e", size = 5589223, upload-time = "2026-04-13T15:24:28.49Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/95/d06eca25322b9d0cc4a78897e8f1c1b3b3e7dc443b9da304d72262e2a4ea/pywellen-0.20.5-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:df2d6c11eae38b78fb9526a44b7d08e3c1ed14b5b7281af3ca89a495190195b1", size = 6179071, upload-time = "2026-04-13T15:24:45.925Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/25/49cbd337071a2f05414f61aef78354ea8fcc5dc0f3cd806687ec547e7028/pywellen-0.20.5-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:8fa5af666a4b19bea022977e656f8c5859f0f796922ed11e621b75a285f1df4c", size = 618110, upload-time = "2026-04-13T15:25:08.194Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/79/6f88679f1147983ef4aa39f8d6ec84f83f3d4f8f2c511938a1a77fb1c9b0/pywellen-0.20.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d4e45c145261ed19b6bacbcd33f8e9fa75c04de492c03fd15d2b85d46ccc5755", size = 606484, upload-time = "2026-04-13T15:25:00.882Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/72/4a495db54c32ce285578286ce3efe42f50a9f88ac87cc39a559b8b8334f8/pywellen-0.20.5-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:524c5059db70a3eaffc15c6757b70a153f139258ce4b802264413bd58174dd54", size = 5598170, upload-time = "2026-04-13T15:24:30.335Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/15/e101b87c84176b9394f78dad37e61928f8e8eb54fd56cbeee0967fcfb31e/pywellen-0.20.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:813a98d4cc7d12f766f52a506b61e229379cc2b0db7f4c1cf0142b37c001f2e1", size = 6185629, upload-time = "2026-04-13T15:24:47.881Z" },
+    { url = "https://files.pythonhosted.org/packages/00/1d/88a02a455d44cb396c8506baffadc44a44cc449f0878d3df449b1c83b0a4/pywellen-0.20.5-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:79cbb13fb4233c69e88695df735445e43a9fbfb7316d39d1e1856b899b1ce91b", size = 617249, upload-time = "2026-04-13T15:25:09.702Z" },
+    { url = "https://files.pythonhosted.org/packages/47/8f/209b1dfe42263e6998a59a81b1e94fcb05a3bbeff22bbfeab0778c665df1/pywellen-0.20.5-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:29c13fb34b6c2f4afa7215944773d24fb5988e6c7ba1929bfbfd84d6c4feebc0", size = 605702, upload-time = "2026-04-13T15:25:02.267Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/34/6b197296bf5e1cd9add00608a6f08f0ad8567270d8d64e484c7832621e3e/pywellen-0.20.5-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:1b41bc8b4d7ad41867760a9da46e76fbb0518b24ed3acca09fa930479e4b0337", size = 5595843, upload-time = "2026-04-13T15:24:32.453Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/79/3245167249250d3d28db6a492bac2b72054952448c7cbb6aefed761900db/pywellen-0.20.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c6025aa01656f6e8b8b728ec5b7a41e11bc3de68dd7c0b566c77fb5cdf57e6e5", size = 6177161, upload-time = "2026-04-13T15:24:49.697Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/72/df4a1e64b1e6595c8fde8a9c2615437eb9a58aff4f04c33ea9eaeec3ad18/pywellen-0.20.5-cp313-cp313t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2949c5f44df2b5cba476d37f930cb8d574f8f9300713c8462f4c6568d497bd31", size = 5579225, upload-time = "2026-04-13T15:24:34.264Z" },
+    { url = "https://files.pythonhosted.org/packages/14/15/f54e164d77575a7f4612041e74804e1dffbc24859d942c0741cb8d9e5a87/pywellen-0.20.5-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:9eb12063c0c31e5c5eff52e85acf286eb4f95b997121b1431ab2be5e81547b71", size = 616703, upload-time = "2026-04-13T15:25:11.206Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/61/554ecc28d919e3cae39c3fda23225f046a28599ef9aac0d3b329f499bc40/pywellen-0.20.5-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:bf72e50f3b15c39e266f3516e9187b2f87c3af403312764bb7fda5887078111e", size = 605641, upload-time = "2026-04-13T15:25:03.77Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/7d/566cabe2dcd53c3235c4fc7fc1cda10d601dbe4a070ebf21a1ab48f83bd5/pywellen-0.20.5-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:109a905bb3115f4a8d2a08acd2bd1fee835706ea4c42238531f50ff5df931f90", size = 5576062, upload-time = "2026-04-13T15:24:36.24Z" },
+    { url = "https://files.pythonhosted.org/packages/63/3b/65e98de9ab72737a8a321a0f11eba8928c61269e31849f757770f8661893/pywellen-0.20.5-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:05a50f24c8e1ba505f33425617a4706173921f7de869916803827acfdf63b8d7", size = 6157879, upload-time = "2026-04-13T15:24:51.765Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/41/fc4eb5945df3abd4f7b652af8885aa777d81ea7572f27889bf4d3a64f719/pywellen-0.20.5-cp314-cp314t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3094c7b3ffa77888dc2f5f5196f7a1800c74bcf82e487b4e4a7b7d78debe2d14", size = 5569660, upload-time = "2026-04-13T15:24:38.025Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/d9/046b86814f0395c362f91b23e9d0e9dbc4839947afc5ecb5b5e8b3ab39c9/pywellen-0.20.5-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:acbe1f5a7de90f0c2680f7a0939952201a1d30b48009f48ca9b9f9d4c631ada9", size = 5589704, upload-time = "2026-04-13T15:24:41.961Z" },
+    { url = "https://files.pythonhosted.org/packages/88/e0/e418dc6933e02c8f300a4aff59b795a9b0629c0d09d787912851797d2742/pywellen-0.20.5-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:20c83927050d382e1bbdbe13c25f826e609fe10811f7a0935a850216302011ec", size = 6179401, upload-time = "2026-04-13T15:24:56.001Z" },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -671,6 +699,7 @@ source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "pyserde", extra = ["yaml"] },
+    { name = "pywellen" },
     { name = "rich" },
     { name = "ruamel-yaml" },
     { name = "typer" },
@@ -690,6 +719,7 @@ docs = [
 requires-dist = [
     { name = "click", specifier = ">=8.3.0" },
     { name = "pyserde", extras = ["yaml"], specifier = ">=0.27.0" },
+    { name = "pywellen", specifier = ">=0.20.0" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.15" },
     { name = "typer", specifier = ">=0.19.2" },
