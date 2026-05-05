@@ -355,30 +355,55 @@ class EditorLauncher:
     vim_path = filepath.replace('\\', '\\\\').replace(' ', '\\ ').replace('"', '\\"')
     keys = f'<Esc>:e +{lineno} {vim_path}<CR>'
     if value is not None:
-      lua_val = value.replace('\\', '\\\\').replace('"', '\\"')
-      keys += f':lua WaveValueShow("{lua_val}", {lineno})<CR>'
+      v = value.replace('\\', '\\\\').replace("'", "\\'")
+      lua = (
+        f"local ns={EditorLauncher._LUA_NS};"
+        f"{EditorLauncher._LUA_CLEAR};"
+        f"local l,v={lineno},'{v}';"
+        f"{EditorLauncher._LUA_MARK}"
+      )
+      keys += f':lua {lua}<CR>'
     subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
+
+  # Shared Lua snippet: clears the wave_value namespace and sets extmarks.
+  # Inlined into every --remote-send so no named function need exist in nvim.
+  _LUA_NS = "vim.api.nvim_create_namespace('wave_value')"
+  _LUA_CLEAR = "vim.api.nvim_buf_clear_namespace(0,ns,0,-1)"
+  _LUA_MARK = (
+    "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
+    "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'})"
+  )
 
   @staticmethod
   def _nvim_remote_value(sock_path: str, lineno: int, value: str) -> None:
-    """Update only the virtual text in a running nvim (no file navigation)."""
+    """Update virtual text for a single line in a running nvim."""
     expanded = os.path.expanduser(sock_path)
-    lua_val = value.replace('\\', '\\\\').replace('"', '\\"')
-    keys = f'<Esc>:lua WaveValueShow("{lua_val}", {lineno})<CR>'
-    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
+    v = value.replace('\\', '\\\\').replace("'", "\\'")
+    lua = (
+      f"local ns={EditorLauncher._LUA_NS};"
+      f"{EditorLauncher._LUA_CLEAR};"
+      f"local l,v={lineno},'{v}';"
+      f"{EditorLauncher._LUA_MARK}"
+    )
+    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', f'<Esc>:lua {lua}<CR>'])
 
   @staticmethod
   def _nvim_remote_scope(sock_path: str, annotations: list[tuple[int, str]]) -> None:
-    """Push virtual text for multiple lines in a single --remote-send call."""
+    """Push virtual text for all scope signals in a single --remote-send call."""
     expanded = os.path.expanduser(sock_path)
-    # Build a Lua table literal: {{line, "value"}, ...}
     entries = []
     for lineno, value in annotations:
-      lua_val = value.replace('\\', '\\\\').replace('"', '\\"')
-      entries.append(f'{{{lineno},"{lua_val}"}}')
+      v = value.replace('\\', '\\\\').replace("'", "\\'")
+      entries.append(f"{{{lineno},'{v}'}}")
     lua_table = '{' + ','.join(entries) + '}'
-    keys = f'<Esc>:lua WaveValueShowAll({lua_table})<CR>'
-    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
+    lua = (
+      f"local ns={EditorLauncher._LUA_NS};"
+      f"{EditorLauncher._LUA_CLEAR};"
+      f"for _,x in ipairs({lua_table}) do "
+      f"local l,v=x[1],x[2];"
+      f"{EditorLauncher._LUA_MARK} end"
+    )
+    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', f'<Esc>:lua {lua}<CR>'])
 
   def _open_tmux(self, cmd: str, value: str | None = None) -> None:
     subprocess.Popen(['tmux', 'new-window', self._env_prefix(value) + cmd])
