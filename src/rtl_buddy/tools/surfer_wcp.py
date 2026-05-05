@@ -648,6 +648,10 @@ class SurferWcpListener:
             elif msg.get("type") == "event" and msg.get("event") == "cursor_moved":
                 timestamp = msg.get("timestamp")
                 self._on_cursor_moved(timestamp)
+            elif msg.get("type") == "event" and msg.get("event") == "scope_changed":
+                scope = msg.get("scope", "")
+                if scope:
+                    self._on_scope_changed(scope)
 
     def _emit_value(self, variable: str, timestamp: int | None) -> str | None:
         """Log the signal value at *timestamp* to the console. Returns the display string or None."""
@@ -696,6 +700,25 @@ class SurferWcpListener:
                 sock = self._surfer_cfg.editor_sock
                 if sock and EditorLauncher._nvim_socket_alive(sock):
                     EditorLauncher._nvim_remote_value(sock, lineno, display)
+
+    def _on_scope_changed(self, scope: str) -> None:
+        """Rebuild the scope annotation cache when the user focuses a different scope in Surfer."""
+        if not self._scope_annotation or self._value_reader is None:
+            return
+        if self._scope_cache is not None and self._scope_cache.scope_path == scope:
+            return  # same scope, nothing to do
+        log_event(logger, logging.DEBUG, "wcp.scope_changed", scope=scope)
+        signals = self._value_reader.get_scope_signals(scope)
+        sv_files = self._resolver._sv_files
+        self._scope_cache = ScopeAnnotationCache(scope, signals, sv_files)
+        log_event(
+            logger,
+            logging.DEBUG,
+            "wcp.scope_cache_built",
+            scope=scope,
+            signals=len(signals),
+            mapped=len(self._scope_cache.path_map),
+        )
 
     def _push_scope_values(self, timestamp: int) -> None:
         """Look up all cached scope signals and push bulk virtual text update to nvim."""
