@@ -4,13 +4,14 @@ formatting, WCP frame I/O, and source resolver signal extraction.
 """
 import io
 import json
+import logging
 import os
 import socket
 import threading
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock, call
 
 import pytest
 
@@ -362,3 +363,310 @@ class TestWcpValueEmission:
     with patch('rtl_buddy.tools.surfer_wcp.emit_console_text', side_effect=emitted.append):
       listener._emit_value('tb_top.missing', 100)
     assert emitted == []
+
+
+# ---------------------------------------------------------------------------
+# _instance_name helper
+# ---------------------------------------------------------------------------
+
+class TestInstanceName:
+
+  def test_three_component_path_returns_middle(self):
+    from rtl_buddy.tools.surfer_wcp import _instance_name
+    assert _instance_name('tb_top.i_dut.clk') == 'i_dut'
+
+  def test_two_component_path_returns_first(self):
+    from rtl_buddy.tools.surfer_wcp import _instance_name
+    assert _instance_name('tb_top.clk') == 'tb_top'
+
+  def test_single_component_returns_itself(self):
+    from rtl_buddy.tools.surfer_wcp import _instance_name
+    assert _instance_name('clk') == 'clk'
+
+  def test_deep_path_returns_second_to_last(self):
+    from rtl_buddy.tools.surfer_wcp import _instance_name
+    assert _instance_name('tb_top.i_dut.i_sub.rst_n') == 'i_sub'
+
+
+# ---------------------------------------------------------------------------
+# ScopeAnnotationCache
+# ---------------------------------------------------------------------------
+
+class TestScopeAnnotationCache:
+
+  def test_single_signal_maps_to_correct_file_and_line(self, tmp_path):
+    from rtl_buddy.tools.surfer_wcp import ScopeAnnotationCache
+    sv = tmp_path / 'design.sv'
+    sv.write_text('module foo;\n  logic clk;\nendmodule\n')
+    signals = [('clk', 'tb_top.i_dut.clk')]
+    cache = ScopeAnnotationCache('tb_top.i_dut', signals, [str(sv)])
+    assert 'tb_top.i_dut.clk' in cache.path_map
+    filepath, lineno = cache.path_map['tb_top.i_dut.clk']
+    assert filepath == str(sv)
+    assert lineno == 2
+
+  def test_two_signals_on_same_line_both_in_path_map(self, tmp_path):
+    from rtl_buddy.tools.surfer_wcp import ScopeAnnotationCache
+    sv = tmp_path / 'design.sv'
+    sv.write_text('module foo;\n  logic a, b;\nendmodule\n')
+    signals = [('a', 'tb_top.i_dut.a'), ('b', 'tb_top.i_dut.b')]
+    cache = ScopeAnnotationCache('tb_top.i_dut', signals, [str(sv)])
+    assert 'tb_top.i_dut.a' in cache.path_map
+    assert 'tb_top.i_dut.b' in cache.path_map
+    # Both must point to the same file and line
+    assert cache.path_map['tb_top.i_dut.a'] == cache.path_map['tb_top.i_dut.b']
+
+  def test_signal_not_found_in_any_file_not_in_path_map(self, tmp_path):
+    from rtl_buddy.tools.surfer_wcp import ScopeAnnotationCache
+    sv = tmp_path / 'design.sv'
+    sv.write_text('module foo;\n  logic irrelevant;\nendmodule\n')
+    signals = [('missing_signal_xyz', 'tb_top.i_dut.missing_signal_xyz')]
+    cache = ScopeAnnotationCache('tb_top.i_dut', signals, [str(sv)])
+    assert 'tb_top.i_dut.missing_signal_xyz' not in cache.path_map
+
+  def test_empty_signals_list_gives_empty_path_map(self, tmp_path):
+    from rtl_buddy.tools.surfer_wcp import ScopeAnnotationCache
+    sv = tmp_path / 'design.sv'
+    sv.write_text('module foo;\n  logic clk;\nendmodule\n')
+    cache = ScopeAnnotationCache('tb_top.i_dut', [], [str(sv)])
+    assert cache.path_map == {}
+
+
+# ---------------------------------------------------------------------------
+# WaveformValueReader.get_values_bulk
+# ---------------------------------------------------------------------------
+
+class TestWaveformValueReaderBulk:
+
+  def _make_reader(self, fst_path: str = '/fake/dump.fst'):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    return WaveformValueReader(fst_path)
+
+  def test_returns_dict_with_found_values(self):
+    reader = self._make_reader()
+    mock_wf = SimpleNamespace(
+      get_signal_from_path=lambda path: SimpleNamespace(
+        value_at_time=lambda t: "1'b1"
+      )
+    )
+    reader._waveform = mock_wf
+    result = reader.get_values_bulk(['tb_top.i_dut.clk', 'tb_top.i_dut.rst'], 500)
+    assert result == {
+      'tb_top.i_dut.clk': "1'b1",
+      'tb_top.i_dut.rst': "1'b1",
+    }
+
+  def test_missing_signal_omitted_not_raised(self):
+    def bad_path(path):
+      if 'missing' in path:
+        raise KeyError('not in waveform')
+      return SimpleNamespace(value_at_time=lambda t: "1'b0")
+
+    reader = self._make_reader()
+    reader._waveform = SimpleNamespace(get_signal_from_path=bad_path)
+    result = reader.get_values_bulk(['tb_top.i_dut.clk', 'tb_top.i_dut.missing'], 100)
+    assert 'tb_top.i_dut.clk' in result
+    assert 'tb_top.i_dut.missing' not in result
+
+  def test_load_failure_returns_empty_dict(self):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    reader = WaveformValueReader('/nonexistent/dump.fst')
+    result = reader.get_values_bulk(['tb_top.i_dut.clk'], 100)
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# WaveformValueReader.get_scope_signals
+# ---------------------------------------------------------------------------
+
+class TestWaveformValueReaderScopeSignals:
+
+  def test_returns_empty_list_on_load_failure(self):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    reader = WaveformValueReader('/nonexistent/dump.fst')
+    result = reader.get_scope_signals('tb_top.i_dut')
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# _push_scope_values same-line grouping
+# ---------------------------------------------------------------------------
+
+class TestPushScopeValuesSameLineGrouping:
+  """Unit-test the same-line grouping logic in _push_scope_values."""
+
+  def _make_listener(self, scope_cache, value_reader):
+    from rtl_buddy.tools.surfer_wcp import (
+      SurferSourceResolver, EditorLauncher, SurferWcpListener,
+    )
+    surfer_cfg = _make_surfer_cfg(editor_sock='~/.local/share/nvim/surfer.sock',
+                                  editor_cmd='nvim +%l %f')
+    resolver = object.__new__(SurferSourceResolver)
+    resolver._sv_files = []
+    editor = object.__new__(EditorLauncher)
+    editor._surfer_cfg = surfer_cfg
+    listener = SurferWcpListener(surfer_cfg, resolver, editor, value_reader,
+                                 scope_annotation=True)
+    listener._scope_cache = scope_cache
+    return listener
+
+  def test_two_signals_on_same_line_combined_into_one_annotation(self):
+    from rtl_buddy.tools.surfer_wcp import ScopeAnnotationCache, EditorLauncher
+
+    # Build a mock scope cache whose items() returns two signals at the same line
+    fake_filepath = '/proj/foo.sv'
+    fake_lineno = 5
+    mock_cache = MagicMock(spec=ScopeAnnotationCache)
+    mock_cache.scope_path = 'tb_top.i_dut'
+    mock_cache.items.return_value = [
+      ('tb_top.i_dut.a', fake_filepath, fake_lineno),
+      ('tb_top.i_dut.b', fake_filepath, fake_lineno),
+    ]
+
+    # Value reader returns both values
+    mock_reader = MagicMock()
+    mock_reader.get_values_bulk.return_value = {
+      'tb_top.i_dut.a': "1'b0",
+      'tb_top.i_dut.b': "1'b1",
+    }
+
+    listener = self._make_listener(mock_cache, mock_reader)
+    sock = listener._surfer_cfg.editor_sock
+
+    captured_annotations = []
+
+    def fake_nvim_socket_alive(path):
+      return True
+
+    def fake_nvim_remote_scope(sock_path, annotations):
+      captured_annotations.extend(annotations)
+
+    with patch.object(EditorLauncher, '_nvim_socket_alive',
+                      staticmethod(fake_nvim_socket_alive)):
+      with patch.object(EditorLauncher, '_nvim_remote_scope',
+                        staticmethod(fake_nvim_remote_scope)):
+        listener._push_scope_values(1000)
+
+    # Both signals should be collapsed into a single annotation entry
+    assert len(captured_annotations) == 1
+    ann_lineno, ann_display, ann_filepath = captured_annotations[0]
+    assert ann_lineno == fake_lineno
+    assert ann_filepath == fake_filepath
+    # Combined display must mention both signal names
+    assert 'a=' in ann_display
+    assert 'b=' in ann_display
+
+
+# ---------------------------------------------------------------------------
+# WaveLauncher._check_nvim_plugin
+# ---------------------------------------------------------------------------
+
+class TestWaveLauncherCheckNvimPlugin:
+
+  def _make_launcher(self, surfer_cfg, tmp_plugin_path=None):
+    from rtl_buddy.tools.wave_launcher import WaveLauncher
+    test_cfg = MagicMock()
+    launcher = object.__new__(WaveLauncher)
+    launcher._surfer_cfg = surfer_cfg
+    launcher._test_cfg = test_cfg
+    launcher._suite_dir = '/fake/suite'
+    launcher._fst_path = '/fake/dump.fst'
+    launcher._surfer_file = None
+    launcher._scope_annotation = True
+    if tmp_plugin_path is not None:
+      launcher.__class__._NVIM_PLUGIN = tmp_plugin_path
+    return launcher
+
+  def test_warning_logged_when_plugin_missing(self, tmp_path):
+    from rtl_buddy.tools.wave_launcher import WaveLauncher
+    plugin_path = str(tmp_path / 'rtl_buddy_wave.lua')  # does NOT exist
+    surfer_cfg = _make_surfer_cfg(
+      editor_sock='~/.local/share/nvim/surfer.sock',
+      editor_cmd='nvim +%l %f',
+    )
+    launcher = self._make_launcher(surfer_cfg, plugin_path)
+
+    log_calls = []
+    with patch('rtl_buddy.tools.wave_launcher.log_event',
+               side_effect=lambda *a, **kw: log_calls.append((a, kw))):
+      launcher._check_nvim_plugin()
+
+    # At least one WARNING-level log_event call
+    warning_calls = [c for c in log_calls if c[0][1] == logging.WARNING]
+    assert len(warning_calls) >= 1
+
+  def test_no_warning_when_plugin_exists(self, tmp_path):
+    import logging as _logging
+    from rtl_buddy.tools.wave_launcher import WaveLauncher
+    plugin_path = str(tmp_path / 'rtl_buddy_wave.lua')
+    Path(plugin_path).touch()  # create the file
+    surfer_cfg = _make_surfer_cfg(
+      editor_sock='~/.local/share/nvim/surfer.sock',
+      editor_cmd='nvim +%l %f',
+    )
+    launcher = self._make_launcher(surfer_cfg, plugin_path)
+
+    log_calls = []
+    with patch('rtl_buddy.tools.wave_launcher.log_event',
+               side_effect=lambda *a, **kw: log_calls.append((a, kw))):
+      launcher._check_nvim_plugin()
+
+    warning_calls = [c for c in log_calls if c[0][1] == _logging.WARNING]
+    assert len(warning_calls) == 0
+
+  def test_no_warning_when_editor_sock_empty(self, tmp_path):
+    import logging as _logging
+    from rtl_buddy.tools.wave_launcher import WaveLauncher
+    plugin_path = str(tmp_path / 'rtl_buddy_wave.lua')  # does NOT exist
+    surfer_cfg = _make_surfer_cfg(
+      editor_sock='',  # no sock configured
+      editor_cmd='nvim +%l %f',
+    )
+    launcher = self._make_launcher(surfer_cfg, plugin_path)
+
+    log_calls = []
+    with patch('rtl_buddy.tools.wave_launcher.log_event',
+               side_effect=lambda *a, **kw: log_calls.append((a, kw))):
+      launcher._check_nvim_plugin()
+
+    warning_calls = [c for c in log_calls if c[0][1] == _logging.WARNING]
+    assert len(warning_calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# EditorLauncher._nvim_exec_lua
+# ---------------------------------------------------------------------------
+
+class TestEditorLauncherNvimExecLua:
+
+  def test_uses_remote_expr_not_remote_send(self):
+    from rtl_buddy.tools.surfer_wcp import EditorLauncher
+    lua = "print('hello')"
+    with patch('subprocess.Popen') as mock_popen:
+      EditorLauncher._nvim_exec_lua('/tmp/nvim.sock', lua)
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert '--remote-expr' in cmd
+    assert '--remote-send' not in cmd
+
+  def test_command_contains_nvim_exec2(self):
+    from rtl_buddy.tools.surfer_wcp import EditorLauncher
+    lua = "print('hello')"
+    with patch('subprocess.Popen') as mock_popen:
+      EditorLauncher._nvim_exec_lua('/tmp/nvim.sock', lua)
+    cmd = mock_popen.call_args[0][0]
+    # The --remote-expr argument should reference nvim_exec2
+    expr_idx = cmd.index('--remote-expr')
+    expr_val = cmd[expr_idx + 1]
+    assert 'nvim_exec2' in expr_val
+
+  def test_double_quotes_in_lua_are_escaped(self):
+    from rtl_buddy.tools.surfer_wcp import EditorLauncher
+    lua = 'local x = "hello"'
+    with patch('subprocess.Popen') as mock_popen:
+      EditorLauncher._nvim_exec_lua('/tmp/nvim.sock', lua)
+    cmd = mock_popen.call_args[0][0]
+    expr_idx = cmd.index('--remote-expr')
+    expr_val = cmd[expr_idx + 1]
+    # The double-quote must be escaped in the Vimscript string context
+    assert '\\"' in expr_val
