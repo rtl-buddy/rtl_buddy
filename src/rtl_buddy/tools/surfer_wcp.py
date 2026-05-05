@@ -357,22 +357,16 @@ class EditorLauncher:
     if value is not None:
       v = value.replace('\\', '\\\\').replace("'", "\\'")
       lua = (
-        f"local ns={EditorLauncher._LUA_NS};"
-        f"{EditorLauncher._LUA_CLEAR};"
+        "local ns=vim.api.nvim_create_namespace('wave_value');"
+        "vim.api.nvim_buf_clear_namespace(0,ns,0,-1);"
         f"local l,v={lineno},'{v}';"
-        f"{EditorLauncher._LUA_MARK}"
+        "local lc=vim.api.nvim_buf_line_count(0);"
+        "if l>=1 and l<=lc then "
+        "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
+        "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) end"
       )
       keys += f':lua {lua}<CR>'
     subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
-
-  # Shared Lua snippet: clears the wave_value namespace and sets extmarks.
-  # Inlined into every --remote-send so no named function need exist in nvim.
-  _LUA_NS = "vim.api.nvim_create_namespace('wave_value')"
-  _LUA_CLEAR = "vim.api.nvim_buf_clear_namespace(0,ns,0,-1)"
-  _LUA_MARK = (
-    "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
-    "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'})"
-  )
 
   @staticmethod
   def _nvim_remote_value(sock_path: str, lineno: int, value: str) -> None:
@@ -380,28 +374,44 @@ class EditorLauncher:
     expanded = os.path.expanduser(sock_path)
     v = value.replace('\\', '\\\\').replace("'", "\\'")
     lua = (
-      f"local ns={EditorLauncher._LUA_NS};"
-      f"{EditorLauncher._LUA_CLEAR};"
+      "local ns=vim.api.nvim_create_namespace('wave_value');"
+      "vim.api.nvim_buf_clear_namespace(0,ns,0,-1);"
       f"local l,v={lineno},'{v}';"
-      f"{EditorLauncher._LUA_MARK}"
+      "local lc=vim.api.nvim_buf_line_count(0);"
+      "if l>=1 and l<=lc then "
+      "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
+      "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) end"
     )
     subprocess.Popen(['nvim', '--server', expanded, '--remote-send', f'<Esc>:lua {lua}<CR>'])
 
   @staticmethod
-  def _nvim_remote_scope(sock_path: str, annotations: list[tuple[int, str]]) -> None:
-    """Push virtual text for all scope signals in a single --remote-send call."""
+  def _nvim_remote_scope(sock_path: str, annotations: list[tuple[int, str, str]]) -> None:
+    """Push virtual text for all scope signals in a single --remote-send call.
+
+    Each annotation is (lineno, value, filepath). Extmarks are set in the
+    correct buffer for each file; lines out of range are silently skipped.
+    """
     expanded = os.path.expanduser(sock_path)
     entries = []
-    for lineno, value in annotations:
+    for lineno, value, filepath in annotations:
       v = value.replace('\\', '\\\\').replace("'", "\\'")
-      entries.append(f"{{{lineno},'{v}'}}")
+      f = filepath.replace('\\', '\\\\').replace("'", "\\'")
+      entries.append(f"{{{lineno},'{v}','{f}'}}")
     lua_table = '{' + ','.join(entries) + '}'
     lua = (
-      f"local ns={EditorLauncher._LUA_NS};"
-      f"{EditorLauncher._LUA_CLEAR};"
+      "local ns=vim.api.nvim_create_namespace('wave_value');"
+      "for _,b in ipairs(vim.api.nvim_list_bufs()) do "
+      "if vim.api.nvim_buf_is_loaded(b) then "
+      "vim.api.nvim_buf_clear_namespace(b,ns,0,-1) end end;"
       f"for _,x in ipairs({lua_table}) do "
-      f"local l,v=x[1],x[2];"
-      f"{EditorLauncher._LUA_MARK} end"
+      "local l,v,f=x[1],x[2],x[3];"
+      "local buf=vim.fn.bufnr(f);"
+      "if buf~=-1 then "
+      "local lc=vim.api.nvim_buf_line_count(buf);"
+      "if l>=1 and l<=lc then "
+      "vim.api.nvim_buf_set_extmark(buf,ns,l-1,0,"
+      "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) "
+      "end end end"
     )
     subprocess.Popen(['nvim', '--server', expanded, '--remote-send', f'<Esc>:lua {lua}<CR>'])
 
@@ -577,10 +587,10 @@ class SurferWcpListener:
     assert self._value_reader is not None
     full_paths = [p for p, _, _ in self._scope_cache.items()]
     values = self._value_reader.get_values_bulk(full_paths, timestamp)
-    annotations: list[tuple[int, str]] = []
+    annotations: list[tuple[int, str, str]] = []
     for full_path, filepath, lineno in self._scope_cache.items():
       if full_path in values:
-        annotations.append((lineno, values[full_path]))
+        annotations.append((lineno, values[full_path], filepath))
     if not annotations:
       return
     sock = self._surfer_cfg.editor_sock
