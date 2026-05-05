@@ -393,7 +393,7 @@ class EditorLauncher:
         "local lc=vim.api.nvim_buf_line_count(0);"
         "if l>=1 and l<=lc then "
         "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
-        "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) end"
+        "{virt_text={{'▶ '..v,'WaveValue'}},virt_text_pos='eol'}) end"
       )
       EditorLauncher._nvim_exec_lua(sock_path, lua)
 
@@ -408,7 +408,7 @@ class EditorLauncher:
       "local lc=vim.api.nvim_buf_line_count(0);"
       "if l>=1 and l<=lc then "
       "vim.api.nvim_buf_set_extmark(0,ns,l-1,0,"
-      "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) end"
+      "{virt_text={{'▶ '..v,'WaveValue'}},virt_text_pos='eol'}) end"
     )
     EditorLauncher._nvim_exec_lua(sock_path, lua)
 
@@ -437,7 +437,7 @@ class EditorLauncher:
       "local lc=vim.api.nvim_buf_line_count(buf);"
       "if l>=1 and l<=lc then "
       "vim.api.nvim_buf_set_extmark(buf,ns,l-1,0,"
-      "{virt_text={{' = '..v,'WaveValue'}},virt_text_pos='eol'}) "
+      "{virt_text={{'▶ '..v,'WaveValue'}},virt_text_pos='eol'}) "
       "end end end"
     )
     EditorLauncher._nvim_exec_lua(sock_path, lua)
