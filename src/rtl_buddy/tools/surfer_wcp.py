@@ -95,6 +95,116 @@ class WaveformValueReader:
     except Exception:
       return None
 
+  def get_scope_signals(self, scope_path: str) -> list[tuple[str, str]]:
+    """Return [(signal_name, full_fst_path), ...] for all vars directly under scope_path."""
+    try:
+      wf = self._load()
+      h = wf.hierarchy
+      results = []
+      for scope in h.top_scopes():
+        results.extend(self._walk_scope(h, scope, scope_path))
+      return results
+    except Exception:
+      return []
+
+  def _walk_scope(self, h, scope, target_path: str) -> list[tuple[str, str]]:
+    try:
+      full = scope.full_name(h)
+    except Exception:
+      return []
+    if full == target_path:
+      results = []
+      try:
+        for v in scope.vars(h):
+          try:
+            results.append((v.name(h), v.full_name(h)))
+          except Exception:
+            pass
+      except Exception:
+        pass
+      return results
+    # recurse into child scopes
+    results = []
+    try:
+      for child in scope.scopes(h):
+        results.extend(self._walk_scope(h, child, target_path))
+    except Exception:
+      pass
+    return results
+
+  def get_values_bulk(self, full_paths: list[str], timestamp: int) -> dict[str, str]:
+    """Return {full_path: value} for all paths that resolve successfully."""
+    try:
+      wf = self._load()
+    except Exception:
+      return {}
+    out = {}
+    for path in full_paths:
+      try:
+        sig = wf.get_signal_from_path(path)
+        out[path] = str(sig.value_at_time(timestamp))
+      except Exception:
+        pass
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Scope annotation cache
+# ---------------------------------------------------------------------------
+
+class ScopeAnnotationCache:
+  """
+  Builds and caches a mapping of {full_fst_path → (file, lineno)} for all
+  signals in a given FST scope, using a single bulk grep.
+
+  Built once per goto_declaration event; reused on every cursor_moved.
+  """
+
+  def __init__(self, scope_path: str, signals: list[tuple[str, str]],
+               sv_files: list[str]):
+    # signals: [(name, full_fst_path), ...]
+    # path_map: {full_fst_path: (filepath, lineno)}
+    self.scope_path = scope_path
+    self.path_map: dict[str, tuple[str, int]] = {}
+    if signals and sv_files:
+      self._build(signals, sv_files)
+
+  def _build(self, signals: list[tuple[str, str]], sv_files: list[str]) -> None:
+    names = list({name for name, _ in signals})
+    if not names:
+      return
+    pattern = r'\b(' + '|'.join(re.escape(n) for n in names) + r')\b'
+    try:
+      result = subprocess.run(
+        ['grep', '-n', '-E', '-H', '--', pattern, *sv_files],
+        capture_output=True, text=True, timeout=10,
+      )
+    except (subprocess.TimeoutExpired, OSError):
+      return
+    # file:line:content → first hit per signal name wins
+    name_to_loc: dict[str, tuple[str, int]] = {}
+    for line in result.stdout.splitlines():
+      parts = line.split(':', 2)
+      if len(parts) < 3:
+        continue
+      filepath, lineno_str = parts[0], parts[1]
+      try:
+        lineno = int(lineno_str)
+      except ValueError:
+        continue
+      content = parts[2]
+      for name in names:
+        if name not in name_to_loc and re.search(r'\b' + re.escape(name) + r'\b', content):
+          name_to_loc[name] = (filepath, lineno)
+    # map full_fst_path → (filepath, lineno)
+    for name, full_path in signals:
+      if name in name_to_loc:
+        self.path_map[full_path] = name_to_loc[name]
+
+  def items(self) -> list[tuple[str, str, int]]:
+    """Return [(full_fst_path, filepath, lineno), ...]."""
+    return [(p, f, l) for p, (f, l) in self.path_map.items()]
+
 
 # ---------------------------------------------------------------------------
 # Source resolver
@@ -257,6 +367,19 @@ class EditorLauncher:
     keys = f'<Esc>:lua WaveValueShow("{lua_val}", {lineno})<CR>'
     subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
 
+  @staticmethod
+  def _nvim_remote_scope(sock_path: str, annotations: list[tuple[int, str]]) -> None:
+    """Push virtual text for multiple lines in a single --remote-send call."""
+    expanded = os.path.expanduser(sock_path)
+    # Build a Lua table literal: {{line, "value"}, ...}
+    entries = []
+    for lineno, value in annotations:
+      lua_val = value.replace('\\', '\\\\').replace('"', '\\"')
+      entries.append(f'{{{lineno},"{lua_val}"}}')
+    lua_table = '{' + ','.join(entries) + '}'
+    keys = f'<Esc>:lua WaveValueShowAll({lua_table})<CR>'
+    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
+
   def _open_tmux(self, cmd: str, value: str | None = None) -> None:
     subprocess.Popen(['tmux', 'new-window', self._env_prefix(value) + cmd])
 
@@ -307,6 +430,7 @@ class SurferWcpListener:
     self._stop = threading.Event()
     self._srv: socket.socket | None = None
     self._last_decl: tuple[str, int] | None = None  # (variable, lineno) from last goto_declaration
+    self._scope_cache: ScopeAnnotationCache | None = None
 
   def bind(self) -> int:
     """Bind the TCP socket. Returns the actual port (OS-assigned when wcp_port=0).
@@ -376,6 +500,8 @@ class SurferWcpListener:
           filepath, lineno = result
           self._last_decl = (variable, lineno)
           self._editor.open(filepath, lineno, value)
+          if self._scope_annotation and self._value_reader is not None:
+            self._build_scope_cache(variable, timestamp)
       elif msg.get('type') == 'event' and msg.get('event') == 'cursor_moved':
         timestamp = msg.get('timestamp')
         self._on_cursor_moved(timestamp)
@@ -389,17 +515,49 @@ class SurferWcpListener:
       emit_console_text(f"{variable} = {value}  @  t={timestamp}")
     return value
 
+  def _build_scope_cache(self, variable: str, timestamp: int | None) -> None:
+    """Enumerate FST signals in the variable's parent scope and bulk-grep source locations."""
+    parts = variable.split('.')
+    scope_path = '.'.join(parts[:-1]) if len(parts) > 1 else parts[0]
+    signals = self._value_reader.get_scope_signals(scope_path)  # type: ignore[union-attr]
+    sv_files = self._resolver._sv_files
+    self._scope_cache = ScopeAnnotationCache(scope_path, signals, sv_files)
+    log_event(logger, logging.DEBUG, "wcp.scope_cache_built",
+              scope=scope_path, signals=len(signals),
+              mapped=len(self._scope_cache.path_map))
+    if timestamp is not None:
+      self._push_scope_values(timestamp)
+
   def _on_cursor_moved(self, timestamp: int | None) -> None:
     """Update nvim virtual text when the Surfer time cursor moves."""
     if not self._scope_annotation:
       return
-    if self._last_decl is None or self._value_reader is None or timestamp is None:
+    if timestamp is None or self._value_reader is None:
       return
-    variable, lineno = self._last_decl
-    value = self._value_reader.get_value(variable, timestamp)
-    if value is None:
+    if self._scope_cache is not None:
+      self._push_scope_values(timestamp)
+    elif self._last_decl is not None:
+      # fallback: single-signal update until cache is ready
+      variable, lineno = self._last_decl
+      value = self._value_reader.get_value(variable, timestamp)
+      if value is not None:
+        emit_console_text(f"{variable} = {value}  @  t={timestamp}")
+        sock = self._surfer_cfg.editor_sock
+        if sock and EditorLauncher._nvim_socket_alive(sock):
+          EditorLauncher._nvim_remote_value(sock, lineno, value)
+
+  def _push_scope_values(self, timestamp: int) -> None:
+    """Look up all cached scope signals and push bulk virtual text update to nvim."""
+    assert self._scope_cache is not None
+    assert self._value_reader is not None
+    full_paths = [p for p, _, _ in self._scope_cache.items()]
+    values = self._value_reader.get_values_bulk(full_paths, timestamp)
+    annotations: list[tuple[int, str]] = []
+    for full_path, filepath, lineno in self._scope_cache.items():
+      if full_path in values:
+        annotations.append((lineno, values[full_path]))
+    if not annotations:
       return
-    emit_console_text(f"{variable} = {value}  @  t={timestamp}")
     sock = self._surfer_cfg.editor_sock
     if sock and EditorLauncher._nvim_socket_alive(sock):
-      EditorLauncher._nvim_remote_value(sock, lineno, value)
+      EditorLauncher._nvim_remote_scope(sock, annotations)
