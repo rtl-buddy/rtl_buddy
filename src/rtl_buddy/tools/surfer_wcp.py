@@ -242,12 +242,19 @@ class EditorLauncher:
                           value: str | None) -> None:
     """Jump to filepath:lineno in a running nvim and update virtual text."""
     expanded = os.path.expanduser(sock_path)
-    # Escape filepath for Vim :edit (backslash-escape spaces and special chars)
     vim_path = filepath.replace('\\', '\\\\').replace(' ', '\\ ').replace('"', '\\"')
     keys = f'<Esc>:e +{lineno} {vim_path}<CR>'
     if value is not None:
       lua_val = value.replace('\\', '\\\\').replace('"', '\\"')
       keys += f':lua WaveValueShow("{lua_val}", {lineno})<CR>'
+    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
+
+  @staticmethod
+  def _nvim_remote_value(sock_path: str, lineno: int, value: str) -> None:
+    """Update only the virtual text in a running nvim (no file navigation)."""
+    expanded = os.path.expanduser(sock_path)
+    lua_val = value.replace('\\', '\\\\').replace('"', '\\"')
+    keys = f'<Esc>:lua WaveValueShow("{lua_val}", {lineno})<CR>'
     subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
 
   def _open_tmux(self, cmd: str, value: str | None = None) -> None:
@@ -297,6 +304,7 @@ class SurferWcpListener:
     self._value_reader = value_reader
     self._stop = threading.Event()
     self._srv: socket.socket | None = None
+    self._last_decl: tuple[str, int] | None = None  # (variable, lineno) from last goto_declaration
 
   def bind(self) -> int:
     """Bind the TCP socket. Returns the actual port (OS-assigned when wcp_port=0).
@@ -364,7 +372,11 @@ class SurferWcpListener:
         result = self._resolver.resolve(variable)
         if result:
           filepath, lineno = result
+          self._last_decl = (variable, lineno)
           self._editor.open(filepath, lineno, value)
+      elif msg.get('type') == 'event' and msg.get('event') == 'cursor_moved':
+        timestamp = msg.get('timestamp')
+        self._on_cursor_moved(timestamp)
 
   def _emit_value(self, variable: str, timestamp: int | None) -> str | None:
     """Log the signal value at *timestamp* to the console. Returns the value string or None."""
@@ -374,3 +386,16 @@ class SurferWcpListener:
     if value is not None:
       emit_console_text(f"{variable} = {value}  @  t={timestamp}")
     return value
+
+  def _on_cursor_moved(self, timestamp: int | None) -> None:
+    """Update nvim virtual text when the Surfer time cursor moves."""
+    if self._last_decl is None or self._value_reader is None or timestamp is None:
+      return
+    variable, lineno = self._last_decl
+    value = self._value_reader.get_value(variable, timestamp)
+    if value is None:
+      return
+    emit_console_text(f"{variable} = {value}  @  t={timestamp}")
+    sock = self._surfer_cfg.editor_sock
+    if sock and EditorLauncher._nvim_socket_alive(sock):
+      EditorLauncher._nvim_remote_value(sock, lineno, value)
