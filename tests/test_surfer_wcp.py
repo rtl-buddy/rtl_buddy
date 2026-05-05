@@ -258,3 +258,105 @@ class TestSurferSourceResolver:
     result = resolver.resolve('clk')
     assert result is not None
     assert result[1] == 1
+
+
+# ---------------------------------------------------------------------------
+# WaveformValueReader
+# ---------------------------------------------------------------------------
+
+class TestWaveformValueReader:
+  """Test value lookup via pywellen (mocked)."""
+
+  def _make_reader(self, fst_path: str = '/fake/dump.fst'):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    return WaveformValueReader(fst_path)
+
+  def test_get_value_returns_string_from_pywellen(self):
+    reader = self._make_reader()
+    mock_sig = SimpleNamespace(value_at_time=lambda t: '1\'b1')
+    mock_wf = SimpleNamespace(get_signal_from_path=lambda path: mock_sig)
+    mock_pywellen = SimpleNamespace(Waveform=lambda path: mock_wf)
+    with patch.dict('sys.modules', {'pywellen': mock_pywellen}):
+      reader._waveform = mock_wf
+      result = reader.get_value('tb_top.clk', 1000)
+    assert result == "1'b1"
+
+  def test_get_value_returns_none_on_signal_not_found(self):
+    def bad_path(path):
+      raise KeyError('not found')
+    reader = self._make_reader()
+    reader._waveform = SimpleNamespace(get_signal_from_path=bad_path)
+    result = reader.get_value('tb_top.nonexistent', 1000)
+    assert result is None
+
+  def test_get_value_returns_none_on_load_failure(self):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    reader = WaveformValueReader('/nonexistent/dump.fst')
+    # pywellen raises when the file does not exist; get_value must catch it
+    result = reader.get_value('tb_top.clk', 1000)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SurferWcpListener._emit_value: value annotation console output
+# ---------------------------------------------------------------------------
+
+class TestWcpValueEmission:
+  """Unit-test _emit_value directly — no network, no threads."""
+
+  def _make_listener(self, value_reader=None):
+    from rtl_buddy.tools.surfer_wcp import (
+      SurferSourceResolver, EditorLauncher, SurferWcpListener,
+    )
+    surfer_cfg = _make_surfer_cfg()
+    resolver = object.__new__(SurferSourceResolver)
+    resolver._sv_files = []
+    editor = object.__new__(EditorLauncher)
+    editor._surfer_cfg = surfer_cfg
+    return SurferWcpListener(surfer_cfg, resolver, editor, value_reader)
+
+  def test_emits_value_when_reader_and_timestamp_present(self):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    reader = WaveformValueReader('/fake/dump.fst')
+    reader._waveform = SimpleNamespace(
+      get_signal_from_path=lambda path: SimpleNamespace(value_at_time=lambda t: "1'b1")
+    )
+    listener = self._make_listener(reader)
+    emitted = []
+    with patch('rtl_buddy.tools.surfer_wcp.emit_console_text', side_effect=emitted.append):
+      listener._emit_value('tb_top.clk', 500)
+    assert len(emitted) == 1
+    assert 'tb_top.clk' in emitted[0]
+    assert "1'b1" in emitted[0]
+    assert 't=500' in emitted[0]
+
+  def test_no_emit_when_timestamp_is_none(self):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    reader = WaveformValueReader('/fake/dump.fst')
+    reader._waveform = SimpleNamespace(
+      get_signal_from_path=lambda path: SimpleNamespace(value_at_time=lambda t: "1'b0")
+    )
+    listener = self._make_listener(reader)
+    emitted = []
+    with patch('rtl_buddy.tools.surfer_wcp.emit_console_text', side_effect=emitted.append):
+      listener._emit_value('tb_top.clk', None)
+    assert emitted == []
+
+  def test_no_emit_when_no_reader(self):
+    listener = self._make_listener(value_reader=None)
+    emitted = []
+    with patch('rtl_buddy.tools.surfer_wcp.emit_console_text', side_effect=emitted.append):
+      listener._emit_value('tb_top.clk', 500)
+    assert emitted == []
+
+  def test_no_emit_when_value_not_found(self):
+    from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+    reader = WaveformValueReader('/fake/dump.fst')
+    def bad_path(path):
+      raise KeyError('not in waveform')
+    reader._waveform = SimpleNamespace(get_signal_from_path=bad_path)
+    listener = self._make_listener(reader)
+    emitted = []
+    with patch('rtl_buddy.tools.surfer_wcp.emit_console_text', side_effect=emitted.append):
+      listener._emit_value('tb_top.missing', 100)
+    assert emitted == []

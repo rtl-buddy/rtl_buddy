@@ -9,7 +9,9 @@ surfer_wcp: WCP client for Surfer waveform viewer.
 rtl-buddy acts as the WCP client (TCP listener). Surfer connects out using
 --wcp-initiate <port>. After handshake, Surfer sends goto_declaration events
 when the user right-clicks a signal; rtl-buddy resolves the variable to a
-source file and opens it in the configured editor.
+source file and opens it in the configured editor. If the event includes a
+cursor timestamp, the signal value is read from the FST/VCD waveform and
+printed to the console before the editor opens.
 """
 import json
 import logging
@@ -24,7 +26,7 @@ if TYPE_CHECKING:
   from ..config.surfer import SurferConfig
   from ..config.test import TestConfig
 
-from ..logging_utils import log_event
+from ..logging_utils import emit_console_text, log_event
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,40 @@ class _FrameReader:
 def _send_frame(sock: socket.socket, obj: dict) -> None:
   data = json.dumps(obj).encode('utf-8') + b'\x00'
   sock.sendall(data)
+
+
+# ---------------------------------------------------------------------------
+# Waveform value reader
+# ---------------------------------------------------------------------------
+
+class WaveformValueReader:
+  """
+  Look up signal values at a specific FST timestamp using pywellen.
+
+  The pywellen Waveform is loaded lazily on the first query and reused.
+  Errors (file missing, signal not in waveform, etc.) return None silently.
+  """
+
+  def __init__(self, fst_path: str):
+    self._fst_path = fst_path
+    self._waveform = None
+
+  def _load(self):
+    if self._waveform is None:
+      import pywellen  # type: ignore[import-untyped]  # noqa: PLC0415
+      if not os.path.isfile(self._fst_path):
+        raise FileNotFoundError(self._fst_path)
+      self._waveform = pywellen.Waveform(self._fst_path)
+    return self._waveform
+
+  def get_value(self, variable: str, timestamp: int) -> str | None:
+    """Return the signal value string at *timestamp* (FST ticks), or None."""
+    try:
+      wf = self._load()
+      sig = wf.get_signal_from_path(variable)
+      return str(sig.value_at_time(timestamp))
+    except Exception:
+      return None
 
 
 # ---------------------------------------------------------------------------
@@ -209,10 +245,12 @@ class SurferWcpListener:
   """
 
   def __init__(self, surfer_cfg: 'SurferConfig', resolver: SurferSourceResolver,
-               editor: EditorLauncher):
+               editor: EditorLauncher,
+               value_reader: WaveformValueReader | None = None):
     self._surfer_cfg = surfer_cfg
     self._resolver = resolver
     self._editor = editor
+    self._value_reader = value_reader
     self._stop = threading.Event()
     self._srv: socket.socket | None = None
 
@@ -275,8 +313,19 @@ class SurferWcpListener:
       msg = reader.read()
       if msg.get('type') == 'event' and msg.get('event') == 'goto_declaration':
         variable = msg.get('variable', '')
-        log_event(logger, logging.INFO, "wave.goto_declaration", variable=variable)
+        timestamp: int | None = msg.get('timestamp')
+        log_event(logger, logging.INFO, "wave.goto_declaration",
+                  variable=variable, timestamp=timestamp)
+        self._emit_value(variable, timestamp)
         result = self._resolver.resolve(variable)
         if result:
           filepath, lineno = result
           self._editor.open(filepath, lineno)
+
+  def _emit_value(self, variable: str, timestamp: int | None) -> None:
+    """Log the signal value at *timestamp* to the console if available."""
+    if self._value_reader is None or timestamp is None:
+      return
+    value = self._value_reader.get_value(variable, timestamp)
+    if value is not None:
+      emit_console_text(f"{variable} = {value}  @  t={timestamp}")

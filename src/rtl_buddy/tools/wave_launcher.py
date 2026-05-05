@@ -21,7 +21,7 @@ import threading
 from ..config.surfer import SurferConfig
 from ..config.test import TestConfig
 from ..logging_utils import emit_console_text, log_event
-from .surfer_wcp import EditorLauncher, SurferSourceResolver, SurferWcpListener
+from .surfer_wcp import EditorLauncher, SurferSourceResolver, SurferWcpListener, WaveformValueReader
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,8 @@ class WaveLauncher:
   def launch(self) -> None:
     resolver = SurferSourceResolver(self._test_cfg, self._suite_dir)
     editor = EditorLauncher(self._surfer_cfg)
-    listener = SurferWcpListener(self._surfer_cfg, resolver, editor)
+    value_reader = WaveformValueReader(self._fst_path)
+    listener = SurferWcpListener(self._surfer_cfg, resolver, editor, value_reader)
 
     # Bind before launching Surfer so the port is ready when it connects.
     # actual_port is OS-assigned when wcp_port=0, otherwise matches wcp_port.
