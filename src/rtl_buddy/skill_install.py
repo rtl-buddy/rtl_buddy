@@ -6,6 +6,7 @@ copy `SKILL.md` to the Claude Code / Codex skill directories. Default scope
 is user-level; `--project` (or `--root PATH`) opts into project-level, which
 Claude Code resolves with higher precedence than user-level.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -38,9 +39,9 @@ def _bundled_skill_text() -> str:
 
 
 def _bundled_gitignore_snippet() -> str:
-    return _resource_files("rtl_buddy.skill").joinpath("gitignore_snippet.txt").read_text()
-
-
+    return (
+        _resource_files("rtl_buddy.skill").joinpath("gitignore_snippet.txt").read_text()
+    )
 
 
 def _resolve_root(project: bool, root: Optional[Path]) -> tuple[str, Path]:
@@ -57,7 +58,9 @@ def _resolve_root(project: bool, root: Optional[Path]) -> tuple[str, Path]:
     return "user", Path.home()
 
 
-def _targets(scope: str, base: Path, include_claude: bool, include_codex: bool) -> list[tuple[str, Path]]:
+def _targets(
+    scope: str, base: Path, include_claude: bool, include_codex: bool
+) -> list[tuple[str, Path]]:
     """Return the (label, dir) pairs that should receive a copy of SKILL.md."""
     if scope == "user":
         claude = base / ".claude" / "skills" / SKILL_DIRNAME
@@ -77,16 +80,21 @@ def _targets(scope: str, base: Path, include_claude: bool, include_codex: bool) 
 def _same_content(path: Path, text: str) -> bool:
     if not path.is_file():
         return False
-    return hashlib.sha256(path.read_bytes()).hexdigest() == hashlib.sha256(text.encode()).hexdigest()
+    return (
+        hashlib.sha256(path.read_bytes()).hexdigest()
+        == hashlib.sha256(text.encode()).hexdigest()
+    )
 
 
 def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> str:
     snippet_lines = snippet.strip().splitlines()
-    comment_lines = [l for l in snippet_lines if l.startswith("#")]
-    pattern_lines = [l for l in snippet_lines if l and not l.startswith("#")]
+    comment_lines = [line for line in snippet_lines if line.startswith("#")]
+    pattern_lines = [
+        line for line in snippet_lines if line and not line.startswith("#")
+    ]
 
     existing_text = gitignore_path.read_text() if gitignore_path.is_file() else ""
-    existing_lines = {l.strip() for l in existing_text.splitlines()}
+    existing_lines = {line.strip() for line in existing_text.splitlines()}
 
     missing = [p for p in pattern_lines if p.strip() not in existing_lines]
     if not missing:
@@ -114,12 +122,31 @@ def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> s
 
 @app.command("install")
 def cmd_install(
-    project: Annotated[bool, typer.Option("--project", help="install into the discovered project root instead of the user home")] = False,
-    root: Annotated[Optional[Path], typer.Option("--root", help="explicit target root (implies project-level layout)")] = None,
-    no_claude: Annotated[bool, typer.Option("--no-claude", help="skip writing the Claude Code target")] = False,
-    no_codex: Annotated[bool, typer.Option("--no-codex", help="skip writing the Codex target")] = False,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="print what would be written and exit")] = False,
-    force: Annotated[bool, typer.Option("--force", help="overwrite even when content matches")] = False,
+    project: Annotated[
+        bool,
+        typer.Option(
+            "--project",
+            help="install into the discovered project root instead of the user home",
+        ),
+    ] = False,
+    root: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--root", help="explicit target root (implies project-level layout)"
+        ),
+    ] = None,
+    no_claude: Annotated[
+        bool, typer.Option("--no-claude", help="skip writing the Claude Code target")
+    ] = False,
+    no_codex: Annotated[
+        bool, typer.Option("--no-codex", help="skip writing the Codex target")
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="print what would be written and exit")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="overwrite even when content matches")
+    ] = False,
 ):
     """Install the bundled rtl_buddy skill.
 
@@ -129,7 +156,9 @@ def cmd_install(
     over user-level when both exist.
     """
     scope, base = _resolve_root(project, root)
-    targets = _targets(scope, base, include_claude=not no_claude, include_codex=not no_codex)
+    targets = _targets(
+        scope, base, include_claude=not no_claude, include_codex=not no_codex
+    )
     if not targets:
         raise FatalRtlBuddyError("--no-claude and --no-codex leave nothing to install.")
 
@@ -147,7 +176,9 @@ def cmd_install(
         skill_path = target_dir / SKILL_FILENAME
         marker_path = target_dir / VERSION_MARKER
         content_matches = _same_content(skill_path, skill_text)
-        marker_matches = marker_path.is_file() and marker_path.read_text().strip() == ver
+        marker_matches = (
+            marker_path.is_file() and marker_path.read_text().strip() == ver
+        )
         needs_write = force or not content_matches or not marker_matches
 
         action = "write" if needs_write else "skip (up to date)"
@@ -169,20 +200,39 @@ def cmd_install(
 
     if scope == "project":
         gitignore_path = base / ".gitignore"
-        result = _update_gitignore(gitignore_path, _bundled_gitignore_snippet(), dry_run=dry_run)
+        result = _update_gitignore(
+            gitignore_path, _bundled_gitignore_snippet(), dry_run=dry_run
+        )
         typer.echo(f".gitignore: {result}")
 
 
 @app.command("uninstall")
 def cmd_uninstall(
-    project: Annotated[bool, typer.Option("--project", help="uninstall from the discovered project root instead of the user home")] = False,
-    root: Annotated[Optional[Path], typer.Option("--root", help="explicit target root (implies project-level layout)")] = None,
-    no_claude: Annotated[bool, typer.Option("--no-claude", help="skip the Claude Code target")] = False,
-    no_codex: Annotated[bool, typer.Option("--no-codex", help="skip the Codex target")] = False,
+    project: Annotated[
+        bool,
+        typer.Option(
+            "--project",
+            help="uninstall from the discovered project root instead of the user home",
+        ),
+    ] = False,
+    root: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--root", help="explicit target root (implies project-level layout)"
+        ),
+    ] = None,
+    no_claude: Annotated[
+        bool, typer.Option("--no-claude", help="skip the Claude Code target")
+    ] = False,
+    no_codex: Annotated[
+        bool, typer.Option("--no-codex", help="skip the Codex target")
+    ] = False,
 ):
     """Remove the installed rtl_buddy skill files from the selected scope."""
     scope, base = _resolve_root(project, root)
-    targets = _targets(scope, base, include_claude=not no_claude, include_codex=not no_codex)
+    targets = _targets(
+        scope, base, include_claude=not no_claude, include_codex=not no_codex
+    )
 
     removed = 0
     for label, target_dir in targets:
@@ -203,8 +253,19 @@ def cmd_uninstall(
 
 @app.command("status")
 def cmd_status(
-    project: Annotated[bool, typer.Option("--project", help="report status for the discovered project root instead of the user home")] = False,
-    root: Annotated[Optional[Path], typer.Option("--root", help="explicit target root (implies project-level layout)")] = None,
+    project: Annotated[
+        bool,
+        typer.Option(
+            "--project",
+            help="report status for the discovered project root instead of the user home",
+        ),
+    ] = False,
+    root: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--root", help="explicit target root (implies project-level layout)"
+        ),
+    ] = None,
 ):
     """Report whether the skill is installed and whether it matches the current package version."""
     scope, base = _resolve_root(project, root)
@@ -223,7 +284,11 @@ def cmd_status(
             state = "not installed"
         elif marker.is_file():
             on_disk = marker.read_text().strip()
-            state = f"installed @ {on_disk}" + ("" if on_disk == current else " (stale — re-run `rtl-buddy skill install`)")
+            state = f"installed @ {on_disk}" + (
+                ""
+                if on_disk == current
+                else " (stale — re-run `rtl-buddy skill install`)"
+            )
         else:
             state = "installed (version unknown — re-run `rtl-buddy skill install`)"
         typer.echo(f"  [{label:>6}] {target_dir}  — {state}")

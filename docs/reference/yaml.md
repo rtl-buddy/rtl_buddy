@@ -45,7 +45,7 @@ cfg-rtl-builder:
 
 cfg-verible:
   - name: "verible-macos"
-    path: "tools/verible/macos/active/bin"
+    path: "/opt/homebrew/bin"
     extra_args:
       lint:
         - "--rules=-module-filename"
@@ -81,6 +81,7 @@ cfg-rtl-reg:
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects to the same instance for subsequent "Go to declaration" and cursor-moved events. Install the bundled nvim plugin first with `rb wave-install-nvim`.
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
+- `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`.
 
 ---
 
@@ -256,7 +257,7 @@ cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/
 - `plusargs`: converted to `+KEY` (no value) or `+KEY=VALUE`.
 - `sim_timeout`: applies per test run, not per iteration in `randtest`.
 - `sweep.path`: Python script that expands one test entry into a list of `TestConfig` objects. See [Plugins](../concepts/plugins.md).
-- `preproc.path`: Python script executed before compile; can mutate `test_cfg` and `root_cfg`. See [Plugins](../concepts/plugins.md).
+- `preproc.path`: Python script executed before compile; can mutate `test_cfg` and `root_cfg`, and receives `suite_dir` plus `artifact_dir` in its execution namespace. See [Plugins](../concepts/plugins.md).
 
 ## Path semantics and cwd
 
@@ -264,6 +265,7 @@ cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/
 - Per-test artifacts are written to `artefacts/{test_name}/` under the suite root. Single runs write `test.log`, `test.err`, `test.randseed`, `compile.log`, `run.f`, and (if enabled) `coverage.dat` there directly. Repeated runs (`randtest`) write sim outputs into numbered subdirectories: `artefacts/{test_name}/run-0001/`, etc.
 - `test` and `randtest` do **not** automatically change into the suite directory. Run from the suite directory, or use `--test-config` with a full path.
 - `regression` does `chdir` into each suite directory before executing.
+- Preproc plusargs are passed to the simulator verbatim. Resolve suite-local input paths explicitly against `suite_dir`; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
 - For portable configs in multi-suite repos, make paths in `tests.yaml` explicit and verify they resolve correctly from the intended invocation directory.
 
 ---

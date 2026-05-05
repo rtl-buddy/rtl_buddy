@@ -19,304 +19,316 @@ from rich.logging import RichHandler
 
 
 def _console_handler():
-  root_logger = logging.getLogger()
-  for handler in root_logger.handlers:
-    if isinstance(handler, RichHandler):
-      return handler
-  raise AssertionError("RichHandler not configured")
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, RichHandler):
+            return handler
+    raise AssertionError("RichHandler not configured")
 
 
 def _root_handlers():
-  return list(logging.getLogger().handlers)
+    return list(logging.getLogger().handlers)
 
 
 def test_setup_logging_default_console_level(tmp_path):
-  setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
-  assert _console_handler().level == logging.WARNING
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    assert _console_handler().level == logging.WARNING
 
 
 def test_setup_logging_verbose_console_level(tmp_path):
-  setup_logging(verbose=True, color=False, log_path=tmp_path / "rtl_buddy.log")
-  assert _console_handler().level == logging.INFO
+    setup_logging(verbose=True, color=False, log_path=tmp_path / "rtl_buddy.log")
+    assert _console_handler().level == logging.INFO
 
 
 def test_setup_logging_debug_console_level(tmp_path):
-  setup_logging(debug=True, color=False, log_path=tmp_path / "rtl_buddy.log")
-  assert _console_handler().level == logging.DEBUG
+    setup_logging(debug=True, color=False, log_path=tmp_path / "rtl_buddy.log")
+    assert _console_handler().level == logging.DEBUG
 
 
 def test_setup_logging_machine_uses_plain_console_handler(tmp_path):
-  setup_logging(machine=True, log_path=tmp_path / "rtl_buddy.log")
-  assert not any(isinstance(handler, RichHandler) for handler in _root_handlers())
+    setup_logging(machine=True, log_path=tmp_path / "rtl_buddy.log")
+    assert not any(isinstance(handler, RichHandler) for handler in _root_handlers())
 
 
 def test_human_log_event_is_readable(tmp_path):
-  log_path = tmp_path / "rtl_buddy.log"
-  setup_logging(color=False, log_path=log_path)
-  logger = logging.getLogger("rtl_buddy.tests")
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
 
-  log_event(logger, logging.INFO, "compile.start", test="basic")
+    log_event(logger, logging.INFO, "compile.start", test="basic")
 
-  file_text = log_path.read_text()
-  assert "event=" not in file_text
-  assert "basic: compile started" in file_text
+    file_text = log_path.read_text()
+    assert "event=" not in file_text
+    assert "basic: compile started" in file_text
 
 
 def test_machine_log_event_is_jsonl(tmp_path):
-  log_path = tmp_path / "rtl_buddy.log"
-  setup_logging(machine=True, log_path=log_path)
-  logger = logging.getLogger("rtl_buddy.tests")
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
 
-  log_event(logger, logging.INFO, "compile.start", test="basic", run_id=1)
+    log_event(logger, logging.INFO, "compile.start", test="basic", run_id=1)
 
-  payload = json.loads(log_path.read_text().strip())
-  assert payload["event"] == "compile.start"
-  assert payload["test"] == "basic"
-  assert payload["run_id"] == 1
-  assert payload["message"] == "basic #0001: compile started"
+    payload = json.loads(log_path.read_text().strip())
+    assert payload["event"] == "compile.start"
+    assert payload["test"] == "basic"
+    assert payload["run_id"] == 1
+    assert payload["message"] == "basic #0001: compile started"
 
 
 def test_human_sim_failure_message_lists_artifacts(tmp_path):
-  log_path = tmp_path / "rtl_buddy.log"
-  setup_logging(color=False, log_path=log_path)
-  logger = logging.getLogger("rtl_buddy.tests")
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
 
-  log_event(
-    logger,
-    logging.ERROR,
-    "sim.failed",
-    test="basic",
-    run_id=1,
-    returncode=9,
-    log="artefacts/basic/run-0001/test.log",
-    err="artefacts/basic/run-0001/test.err",
-    randseed="artefacts/basic/run-0001/test.randseed",
-  )
+    log_event(
+        logger,
+        logging.ERROR,
+        "sim.failed",
+        test="basic",
+        run_id=1,
+        returncode=9,
+        log="artefacts/basic/run-0001/test.log",
+        err="artefacts/basic/run-0001/test.err",
+        randseed="artefacts/basic/run-0001/test.randseed",
+    )
 
-  file_text = log_path.read_text()
-  assert "basic #0001: simulation failed (returncode 9)" in file_text
-  assert "artefacts/basic/run-0001/test.log" in file_text
-  assert "artefacts/basic/run-0001/test.err" in file_text
-  assert "artefacts/basic/run-0001/test.randseed" in file_text
+    file_text = log_path.read_text()
+    assert "basic #0001: simulation failed (returncode 9)" in file_text
+    assert "artefacts/basic/run-0001/test.log" in file_text
+    assert "artefacts/basic/run-0001/test.err" in file_text
+    assert "artefacts/basic/run-0001/test.randseed" in file_text
 
 
 def test_render_summary_logs_plain_text_once(tmp_path, capsys):
-  log_path = tmp_path / "rtl_buddy.log"
-  setup_logging(verbose=True, color=False, log_path=log_path)
-  logger = logging.getLogger("rtl_buddy.tests")
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(verbose=True, color=False, log_path=log_path)
+    logger = logging.getLogger("rtl_buddy.tests")
 
-  render_summary(
-    title="Test Results Summary",
-    columns=[("test_name", "Test"), ("result", "Result"), ("desc", "Description")],
-    rows=[{"test_name": "basic", "result": "PASS", "desc": "ok"}],
-    logger=logger,
-    metadata=["Builder: vcs"],
-  )
+    render_summary(
+        title="Test Results Summary",
+        columns=[("test_name", "Test"), ("result", "Result"), ("desc", "Description")],
+        rows=[{"test_name": "basic", "result": "PASS", "desc": "ok"}],
+        logger=logger,
+        metadata=["Builder: vcs"],
+    )
 
-  stderr = capsys.readouterr().err
-  assert stderr.count("Test Results Summary") == 1
-  assert "basic" in stderr
+    stderr = capsys.readouterr().err
+    assert stderr.count("Test Results Summary") == 1
+    assert "basic" in stderr
 
-  file_text = log_path.read_text()
-  assert "Test Results Summary" in file_text
-  assert "Builder: vcs" in file_text
-  assert "basic" in file_text
+    file_text = log_path.read_text()
+    assert "Test Results Summary" in file_text
+    assert "Builder: vcs" in file_text
+    assert "basic" in file_text
 
 
 def test_display_path_prefers_relative_shorter_path():
-  rb = RtlBuddy(name="rtl_buddy")
-  base_dir = "/tmp/work"
-  path = os.path.join(base_dir, "design", "regression", "suite.yaml")
+    rb = RtlBuddy(name="rtl_buddy")
+    base_dir = "/tmp/work"
+    path = os.path.join(base_dir, "design", "regression", "suite.yaml")
 
-  assert rb._display_path(path, base_dir=base_dir) == os.path.join("design", "regression", "suite.yaml")
+    assert rb._display_path(path, base_dir=base_dir) == os.path.join(
+        "design", "regression", "suite.yaml"
+    )
 
 
 def test_run_returns_2_on_fatal_error(monkeypatch):
-  rb = RtlBuddy(name="rtl_buddy")
+    rb = RtlBuddy(name="rtl_buddy")
 
-  def _raise_app(*, standalone_mode=False):
-    raise FatalRtlBuddyError("boom")
+    def _raise_app(*, standalone_mode=False):
+        raise FatalRtlBuddyError("boom")
 
-  monkeypatch.setattr(rb, "app", _raise_app)
-  assert rb.run() == 2
+    monkeypatch.setattr(rb, "app", _raise_app)
+    assert rb.run() == 2
 
 
 def test_run_returns_click_usage_error_without_traceback(monkeypatch, capsys):
-  rb = RtlBuddy(name="rtl_buddy")
+    rb = RtlBuddy(name="rtl_buddy")
 
-  def _raise_app(*, standalone_mode=False):
-    raise click.UsageError("bad usage")
+    def _raise_app(*, standalone_mode=False):
+        raise click.UsageError("bad usage")
 
-  monkeypatch.setattr(rb, "app", _raise_app)
+    monkeypatch.setattr(rb, "app", _raise_app)
 
-  assert rb.run() == 2
-  captured = capsys.readouterr()
-  assert "bad usage" in captured.err
-  assert "Traceback" not in captured.err
+    assert rb.run() == 2
+    captured = capsys.readouterr()
+    assert "bad usage" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_help_outside_project_root_is_clean():
-  result = subprocess.run(
-    [sys.executable, "-m", "rtl_buddy", "test", "--help"],
-    cwd="/tmp",
-    capture_output=True,
-    text=True,
-    check=False,
-  )
+    result = subprocess.run(
+        [sys.executable, "-m", "rtl_buddy", "test", "--help"],
+        cwd="/tmp",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-  assert result.returncode == 0
-  assert "run a simple test" in result.stdout
-  assert "Traceback" not in result.stderr
+    assert result.returncode == 0
+    assert "run a simple test" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 def test_docs_help_outside_project_root_is_clean():
-  result = subprocess.run(
-    [sys.executable, "-m", "rtl_buddy", "docs", "--help"],
-    cwd="/tmp",
-    capture_output=True,
-    text=True,
-    check=False,
-  )
+    result = subprocess.run(
+        [sys.executable, "-m", "rtl_buddy", "docs", "--help"],
+        cwd="/tmp",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-  assert result.returncode == 0
-  assert "browse bundled documentation" in result.stdout
-  assert "Traceback" not in result.stderr
+    assert result.returncode == 0
+    assert "browse bundled documentation" in result.stdout
+    assert "Traceback" not in result.stderr
 
 
 def test_show_git_rev_is_best_effort(monkeypatch):
-  rb = RtlBuddy(name="rtl_buddy")
+    rb = RtlBuddy(name="rtl_buddy")
 
-  class Result:
-    def __init__(self, returncode, stdout=""):
-      self.returncode = returncode
-      self.stdout = stdout
+    class Result:
+        def __init__(self, returncode, stdout=""):
+            self.returncode = returncode
+            self.stdout = stdout
 
-  def _fake_run(*args, **kwargs):
-    return Result(1, "")
+    def _fake_run(*args, **kwargs):
+        return Result(1, "")
 
-  monkeypatch.setattr("rtl_buddy.rtl_buddy.subprocess.run", _fake_run)
-  rb.show_git_rev()
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.subprocess.run", _fake_run)
+    rb.show_git_rev()
 
 
 def test_root_options_ignores_forwarded_help_args_after_double_dash(monkeypatch):
-  rb = RtlBuddy(name="rtl_buddy")
-  fake_ctx = SimpleNamespace(resilient_parsing=False, invoked_subcommand="verible")
+    rb = RtlBuddy(name="rtl_buddy")
+    fake_ctx = SimpleNamespace(resilient_parsing=False, invoked_subcommand="verible")
 
-  class FakeRootConfig:
-    def __init__(self, name, builder_override=None):
-      self.name = name
-      self.builder_override = builder_override
+    class FakeRootConfig:
+        def __init__(self, name, builder_override=None):
+            self.name = name
+            self.builder_override = builder_override
 
-    def get_builder_name(self):
-      return "vcs"
+        def get_builder_name(self):
+            return "vcs"
 
-  monkeypatch.setattr("rtl_buddy.rtl_buddy.setup_logging", lambda **kwargs: None)
-  monkeypatch.setattr("rtl_buddy.rtl_buddy.RootConfig", FakeRootConfig)
-  monkeypatch.setattr(sys, "argv", ["rtl_buddy", "verible", "syntax", "--", "-h"])
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.setup_logging", lambda **kwargs: None)
+    monkeypatch.setattr("rtl_buddy.rtl_buddy.RootConfig", FakeRootConfig)
+    monkeypatch.setattr(sys, "argv", ["rtl_buddy", "verible", "syntax", "--", "-h"])
 
-  rb.root_options(fake_ctx)
+    rb.root_options(fake_ctx)
 
-  assert isinstance(rb.root_cfg, FakeRootConfig)
-  assert rb.builder == "vcs"
+    assert isinstance(rb.root_cfg, FakeRootConfig)
+    assert rb.builder == "vcs"
 
 
 class DummyModelCfg:
-  def __init__(self, model_path, filelist):
-    self._model_path = model_path
-    self._filelist = filelist
+    def __init__(self, model_path, filelist):
+        self._model_path = model_path
+        self._filelist = filelist
 
-  def get_model_path(self):
-    return str(self._model_path)
+    def get_model_path(self):
+        return str(self._model_path)
 
-  def get_filelist(self):
-    return list(self._filelist)
+    def get_filelist(self):
+        return list(self._filelist)
 
 
 def test_vlog_filelist_missing_source_raises_fatal(tmp_path):
-  log_path = tmp_path / "rtl_buddy.log"
-  setup_logging(color=False, log_path=log_path)
-  model_path = tmp_path / "models.yaml"
-  model_path.write_text("models: []\n")
-  model_cfg = DummyModelCfg(model_path, ["missing.sv\n"])
-  vlog_fl = VlogFilelist(name="rtl_buddy/vlog_filelist", model_cfg=model_cfg, output_path=tmp_path / "run.f")
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    model_path = tmp_path / "models.yaml"
+    model_path.write_text("models: []\n")
+    model_cfg = DummyModelCfg(model_path, ["missing.sv\n"])
+    vlog_fl = VlogFilelist(
+        name="rtl_buddy/vlog_filelist",
+        model_cfg=model_cfg,
+        output_path=tmp_path / "run.f",
+    )
 
-  with pytest.raises(FilelistError, match="file does not exist"):
-    vlog_fl.write_output()
+    with pytest.raises(FilelistError, match="file does not exist"):
+        vlog_fl.write_output()
 
-  assert "filelist source missing" in log_path.read_text()
+    assert "filelist source missing" in log_path.read_text()
 
 
 def test_vlog_filelist_entries_are_relative_to_output_dir(tmp_path):
-  model_dir = tmp_path / "design"
-  model_dir.mkdir()
-  model_path = model_dir / "models.yaml"
-  src_file = model_dir / "rtl.sv"
-  src_file.write_text("module rtl;\nendmodule\n")
-  model_path.write_text("models: []\n")
-  model_cfg = DummyModelCfg(model_path, ["rtl.sv\n"])
+    model_dir = tmp_path / "design"
+    model_dir.mkdir()
+    model_path = model_dir / "models.yaml"
+    src_file = model_dir / "rtl.sv"
+    src_file.write_text("module rtl;\nendmodule\n")
+    model_path.write_text("models: []\n")
+    model_cfg = DummyModelCfg(model_path, ["rtl.sv\n"])
 
-  output_path = tmp_path / "artefacts" / "basic" / "run.f"
-  output_path.parent.mkdir(parents=True)
-  vlog_fl = VlogFilelist(name="rtl_buddy/vlog_filelist", model_cfg=model_cfg, output_path=output_path)
+    output_path = tmp_path / "artefacts" / "basic" / "run.f"
+    output_path.parent.mkdir(parents=True)
+    vlog_fl = VlogFilelist(
+        name="rtl_buddy/vlog_filelist", model_cfg=model_cfg, output_path=output_path
+    )
 
-  vlog_fl.write_output()
+    vlog_fl.write_output()
 
-  file_text = output_path.read_text()
-  assert "../../design/rtl.sv" in file_text
+    file_text = output_path.read_text()
+    assert "../../design/rtl.sv" in file_text
 
 
 def test_vlog_filelist_nested_model_includes_resolve_from_models_yaml(tmp_path):
-  model_dir = tmp_path / "design"
-  nested_dir = model_dir / "rtl"
-  nested_dir.mkdir(parents=True)
-  model_path = model_dir / "models.yaml"
-  nested_filelist = model_dir / "nested.f"
-  src_file = nested_dir / "rtl.sv"
-  src_file.write_text("module rtl;\nendmodule\n")
-  nested_filelist.write_text("rtl/rtl.sv\n")
-  model_path.write_text("models: []\n")
-  model_cfg = DummyModelCfg(model_path, ["-F nested.f\n"])
+    model_dir = tmp_path / "design"
+    nested_dir = model_dir / "rtl"
+    nested_dir.mkdir(parents=True)
+    model_path = model_dir / "models.yaml"
+    nested_filelist = model_dir / "nested.f"
+    src_file = nested_dir / "rtl.sv"
+    src_file.write_text("module rtl;\nendmodule\n")
+    nested_filelist.write_text("rtl/rtl.sv\n")
+    model_path.write_text("models: []\n")
+    model_cfg = DummyModelCfg(model_path, ["-F nested.f\n"])
 
-  output_path = tmp_path / "artefacts" / "basic" / "run.f"
-  output_path.parent.mkdir(parents=True)
-  vlog_fl = VlogFilelist(name="rtl_buddy/vlog_filelist", model_cfg=model_cfg, output_path=output_path)
+    output_path = tmp_path / "artefacts" / "basic" / "run.f"
+    output_path.parent.mkdir(parents=True)
+    vlog_fl = VlogFilelist(
+        name="rtl_buddy/vlog_filelist", model_cfg=model_cfg, output_path=output_path
+    )
 
-  vlog_fl.write_output(unroll=True)
+    vlog_fl.write_output(unroll=True)
 
-  file_text = output_path.read_text()
-  assert "../../design/rtl/rtl.sv" in file_text
+    file_text = output_path.read_text()
+    assert "../../design/rtl/rtl.sv" in file_text
 
 
 def test_verible_path_missing_is_debug_only(tmp_path):
-  log_path = tmp_path / "rtl_buddy.log"
-  setup_logging(color=False, log_path=log_path)
-  cfg = VeribleConfigFile(name="verible", path="missing/verible", extra_args={})
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    cfg = VeribleConfigFile(name="verible", path="missing/verible", extra_args={})
 
-  result = cfg.initialise(str(tmp_path / "root_config.yaml"))
+    result = cfg.initialise(str(tmp_path / "root_config.yaml"))
 
-  assert result.available is False
-  assert "Verible disabled" not in log_path.read_text()
+    assert result.available is False
+    assert "Verible disabled" not in log_path.read_text()
 
 
 def test_verible_stdout_is_preserved_verbatim(monkeypatch):
-  class DummyCfg:
-    def get_exe_path(self, exe_name):
-      return f"/tmp/{exe_name}"
+    class DummyCfg:
+        def get_exe_path(self, exe_name):
+            return f"/tmp/{exe_name}"
 
-  class Result:
-    def __init__(self):
-      self.stdout = "module x;  \nassign y = z;\n"
-      self.stderr = ""
-      self.returncode = 0
+    class Result:
+        def __init__(self):
+            self.stdout = "module x;  \nassign y = z;\n"
+            self.stderr = ""
+            self.returncode = 0
 
-  stdout = io.StringIO()
-  stderr = io.StringIO()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
 
-  monkeypatch.setattr("rtl_buddy.tools.verible.subprocess.run", lambda *args, **kwargs: Result())
-  monkeypatch.setattr("rtl_buddy.tools.verible.sys.stdout", stdout)
-  monkeypatch.setattr("rtl_buddy.tools.verible.sys.stderr", stderr)
+    monkeypatch.setattr(
+        "rtl_buddy.tools.verible.subprocess.run", lambda *args, **kwargs: Result()
+    )
+    monkeypatch.setattr("rtl_buddy.tools.verible.sys.stdout", stdout)
+    monkeypatch.setattr("rtl_buddy.tools.verible.sys.stderr", stderr)
 
-  verible = Verible(name="rtl_buddy/verible", cfg=DummyCfg())
-  assert verible.do_exe("verible-verilog-format", []) == 0
-  assert stdout.getvalue() == "module x;  \nassign y = z;\n"
-  assert stderr.getvalue() == ""
+    verible = Verible(name="rtl_buddy/verible", cfg=DummyCfg())
+    assert verible.do_exe("verible-verilog-format", []) == 0
+    assert stdout.getvalue() == "module x;  \nassign y = z;\n"
+    assert stderr.getvalue() == ""

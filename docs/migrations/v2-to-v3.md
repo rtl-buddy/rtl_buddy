@@ -31,6 +31,8 @@ artefacts/{test_name}/run-0001/coverage.dat
 
 Compile outputs (`compile.log`, `run.f`) remain at `artefacts/{test_name}/` — they are shared across all iterations of the same test.
 
+Hook scripts that previously relied on suite-relative file paths resolving from the simulator working directory must now resolve those paths explicitly. Use the preproc hook's `suite_dir` variable for suite-local inputs; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
+
 ### Symlinks
 
 The convenience symlinks `test.log`, `test.err`, and `test.randseed` at the suite root still exist and still point to the latest run.

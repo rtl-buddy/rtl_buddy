@@ -64,6 +64,31 @@ cd design/example_block/verif
 
 If validating the dev checkout directly, install this repo into the target venv and confirm with `./venv/bin/python -m rtl_buddy --version`.
 
+## Code Quality
+
+This repo uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting. CI enforces both on every PR via `.github/workflows/lint.yml`.
+
+Install the pre-commit hook once after cloning so Ruff runs automatically on every commit:
+
+```bash
+uv tool install pre-commit
+pre-commit install
+```
+
+To run Ruff manually:
+
+```bash
+uv run ruff check          # lint
+uv run ruff format         # format in place
+uv run ruff format --check # check only (what CI does)
+```
+
+To update the pre-commit hook version:
+
+```bash
+pre-commit autoupdate
+```
+
 ## Logging Practices
 
 All runtime logging goes through `log_event()` in `src/rtl_buddy/logging_utils.py`. Do not use `logger.info(f"...")` directly — use `log_event(logger, level, "event.name", key=value, ...)` so that both human and machine modes produce correct output.

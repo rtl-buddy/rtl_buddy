@@ -1,5 +1,10 @@
 name: Release
 
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+    && format('Release ({0}{1}) from {2}', inputs.bump, inputs.pre_release == 'true' && ', pre-release' || '', github.ref_name)
+    || format('Release from PR #{0} ({1})', github.event.pull_request.number, github.head_ref) }}
+
 on:
   pull_request:
     types: [closed]
@@ -99,6 +104,12 @@ jobs:
           echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
           echo "Bumping ${LATEST} -> ${NEW_TAG}"
+
+      - name: Log release parameters
+        run: |
+          echo "Version : ${{ steps.version.outputs.new_tag || '(none — no version label on PR)' }}"
+          echo "Branch  : ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.head_ref }}"
+          echo "Trigger : ${{ github.event_name }}"
 
       - name: Require release token
         if: steps.version.outputs.new_tag != ''

@@ -1,0 +1,50 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/lint.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/lint.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'src/**/*.py'
+      - 'tests/**/*.py'
+
+jobs:
+  ruff-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install lint dependencies
+        run: uv sync --group lint
+
+      - name: Run Ruff
+        run: uv run ruff check
+
+      - name: Check Ruff formatting
+        run: uv run ruff format --check
+
+      - name: Hint — install pre-commit to catch this locally
+        if: failure()
+        run: |
+          echo ""
+          echo "Ruff check or format failed. Catch this before pushing by installing the pre-commit hook:"
+          echo ""
+          echo "  uv tool install pre-commit"
+          echo "  pre-commit install"
+          echo ""
+          echo "After that, every commit will run Ruff automatically."

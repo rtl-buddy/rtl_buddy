@@ -11,7 +11,7 @@ description: How to install rtl_buddy into a project using uv, including prerequ
 - Python 3.11 or later
 - `uv`
 - Simulation tool on `PATH`: Verilator (macOS/Linux) or VCS (Linux)
-- Optional Verible binaries if you want to use `uv run rb verible ...`
+- Optional: Verible if you want to use `uv run rb verible ...` — e.g. `brew tap chipsalliance/verible && brew install verible` on macOS, or see [Verible releases](https://github.com/chipsalliance/verible/releases) for other platforms
 - Optional system-level coverage tools:
   - `lcov` for `.info` export and HTML reports
   - Antmicro `coverview` for Coverview package generation
@@ -66,7 +66,7 @@ This works without any `--pre` flag because the exact version is specified.
 `rtl_buddy` ships an agent skill for Claude Code and Codex. After installing `rtl_buddy`, run once per machine:
 
 ```bash
-uv run rtl-buddy skill install
+uv run rb skill install
 ```
 
 This writes `SKILL.md` to `~/.claude/skills/rtl_buddy/` and `~/.codex/skills/rtl_buddy/`. Agents pick it up automatically. Re-run after upgrading `rtl_buddy` to refresh the content.
@@ -74,7 +74,7 @@ This writes `SKILL.md` to `~/.claude/skills/rtl_buddy/` and `~/.codex/skills/rtl
 To install at project scope instead (overrides the user-level copy for that project):
 
 ```bash
-uv run rtl-buddy skill install --project
+uv run rb skill install --project
 ```
 
 See [For Agents](agents.md) for scope semantics and `.gitignore` guidance.
