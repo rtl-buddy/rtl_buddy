@@ -26,6 +26,7 @@ class SurferConfig:
       editor_cmd (str): Editor command template; %f = file path, %l = line number.
       editor_terminal (str): Terminal emulator for terminal editors ("iterm2", "terminal", or "").
       editor_sock (str): Unix socket path for nvim --listen reuse. Empty string disables.
+      ctrl_sock (str): Unix socket path for the wave control server (nvim → Surfer). Empty disables.
       root_cfg_path (str): Path of root_config.yaml, used for relative path resolution.
       available (bool): True when the Surfer executable was found at initialise time.
     """
@@ -36,6 +37,7 @@ class SurferConfig:
     editor_cmd: str
     editor_terminal: str
     editor_sock: str
+    ctrl_sock: str
     root_cfg_path: str
     available: bool
 
@@ -63,6 +65,7 @@ class SurferConfigFile:
     editor_cmd: str = field(rename="editor-cmd", default="vim +%l %f")
     editor_terminal: str = field(rename="editor-terminal", default="")
     editor_sock: str = field(rename="editor-sock", default="")
+    ctrl_sock: str = field(rename="ctrl-sock", default="")
 
     def initialise(self, root_cfg_path: str) -> SurferConfig:
         cfg = SurferConfig(
@@ -72,6 +75,7 @@ class SurferConfigFile:
             editor_cmd=self.editor_cmd,
             editor_terminal=self.editor_terminal,
             editor_sock=self.editor_sock,
+            ctrl_sock=self.ctrl_sock,
             root_cfg_path=root_cfg_path,
             available=False,
         )

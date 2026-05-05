@@ -534,6 +534,85 @@ class EditorLauncher:
 
 
 # ---------------------------------------------------------------------------
+# Wave control server (nvim → rtl-buddy → Surfer)
+# ---------------------------------------------------------------------------
+
+
+class WaveControlServer:
+    """
+    Unix-domain socket server that lets external tools (e.g. nvim) send
+    commands to a running rb wave session.
+
+    Accepts newline-delimited JSON on the socket path configured by ctrl-sock.
+    Supported commands:
+      {"cmd": "add_variable", "name": "<signal_name>"}
+        — resolves the signal against the active scope cache and adds it to
+          Surfer's waveform view via the live WCP connection.
+    """
+
+    def __init__(self, sock_path: str, listener: "SurferWcpListener"):
+        self._sock_path = os.path.expanduser(sock_path)
+        self._listener = listener
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        """Bind and start serving in a daemon thread."""
+        os.makedirs(os.path.dirname(self._sock_path), exist_ok=True)
+        if os.path.exists(self._sock_path):
+            os.unlink(self._sock_path)
+        t = threading.Thread(target=self._serve, daemon=True, name="wave-ctrl")
+        t.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            os.unlink(self._sock_path)
+        except OSError:
+            pass
+
+    def _serve(self) -> None:
+        srv = _socket_mod.socket(_socket_mod.AF_UNIX, _socket_mod.SOCK_STREAM)
+        srv.bind(self._sock_path)
+        srv.listen(4)
+        srv.settimeout(1.0)
+        log_event(logger, logging.INFO, "wave.ctrl_listening", path=self._sock_path)
+        while not self._stop.is_set():
+            try:
+                conn, _ = srv.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+        srv.close()
+
+    def _handle(self, conn: _socket_mod.socket) -> None:
+        buf = b""
+        try:
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        except OSError:
+            pass
+        finally:
+            conn.close()
+        for line in buf.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if msg.get("cmd") == "add_variable":
+                name = msg.get("name", "").strip()
+                if name:
+                    self._listener.add_variable_to_surfer(name)
+
+
+# ---------------------------------------------------------------------------
 # WCP listener (rtl-buddy is the WCP client; Surfer connects via --wcp-initiate)
 # ---------------------------------------------------------------------------
 
@@ -564,6 +643,29 @@ class SurferWcpListener:
             None  # (variable, lineno) from last goto_declaration
         )
         self._scope_cache: ScopeAnnotationCache | None = None
+        self._wcp_conn: socket.socket | None = (
+            None  # live connection to Surfer for sending commands
+        )
+
+    def send_to_surfer(self, obj: dict) -> None:
+        """Send a WCP command frame to Surfer if connected."""
+        if self._wcp_conn is not None:
+            try:
+                _send_frame(self._wcp_conn, obj)
+            except OSError:
+                self._wcp_conn = None
+
+    def add_variable_to_surfer(self, name: str) -> None:
+        """Resolve *name* against the active scope cache and add it to Surfer's waveform view."""
+        if self._scope_cache is None:
+            log_event(logger, logging.WARNING, "wcp.no_scope_context", name=name)
+            return
+        # Find the full FST path for this signal name in the current scope
+        full_path = f"{self._scope_cache.scope_path}.{name}"
+        self.send_to_surfer(
+            {"type": "command", "command": "add_variables", "variables": [full_path]}
+        )
+        log_event(logger, logging.INFO, "wcp.add_variable", name=name, path=full_path)
 
     def bind(self) -> int:
         """Bind the TCP socket. Returns the actual port (OS-assigned when wcp_port=0).
@@ -605,6 +707,7 @@ class SurferWcpListener:
                 pass
 
     def _handle_connection(self, conn: socket.socket) -> None:
+        self._wcp_conn = conn
         reader = _FrameReader(conn)
 
         # Send our greeting first — Surfer (WCP server) waits for the client greeting

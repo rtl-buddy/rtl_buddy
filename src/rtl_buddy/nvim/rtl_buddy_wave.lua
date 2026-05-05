@@ -1,5 +1,5 @@
 -- rtl-buddy wave annotation plugin
--- Installed by: rb wave install-nvim
+-- Installed by: rb wave-install-nvim
 -- Source: https://rtl-buddy.github.io/rtl_buddy/
 
 local M = {}
@@ -28,5 +28,28 @@ vim.api.nvim_create_autocmd("VimEnter", {
     end)
   end,
 })
+
+-- <leader>wa — send word under cursor to Surfer via the wave control socket.
+-- Requires ctrl-sock to be configured in cfg-surfer (root_config.yaml).
+local _ctrl_sock = vim.fn.expand("~/.local/share/rtl-buddy/wave-ctrl.sock")
+
+local function wave_add_variable()
+  local name = vim.fn.expand("<cword>")
+  if name == "" then return end
+  local pipe = vim.uv.new_pipe(false)
+  pipe:connect(_ctrl_sock, function(err)
+    if err then
+      vim.schedule(function()
+        vim.notify("rb wave: ctrl-sock unavailable — is rb wave running? (" .. err .. ")", vim.log.levels.WARN)
+      end)
+      return
+    end
+    local msg = vim.json.encode({ cmd = "add_variable", name = name }) .. "\n"
+    pipe:write(msg, function() pipe:close() end)
+  end)
+end
+
+vim.keymap.set("n", "<leader>wa", wave_add_variable,
+  { desc = "wave: add signal under cursor to Surfer waveform" })
 
 return M

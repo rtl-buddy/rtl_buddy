@@ -27,6 +27,7 @@ def _make_surfer_cfg(
     editor_cmd="vim +%l %f",
     editor_terminal="tmux",
     editor_sock="",
+    ctrl_sock="",
     root_cfg_path="/proj/root_config.yaml",
     available=True,
 ):
@@ -37,6 +38,7 @@ def _make_surfer_cfg(
         editor_cmd=editor_cmd,
         editor_terminal=editor_terminal,
         editor_sock=editor_sock,
+        ctrl_sock=ctrl_sock,
         root_cfg_path=root_cfg_path,
         available=available,
     )

@@ -26,6 +26,7 @@ from .surfer_wcp import (
     EditorLauncher,
     SurferSourceResolver,
     SurferWcpListener,
+    WaveControlServer,
     WaveformValueReader,
 )
 
@@ -110,6 +111,11 @@ class WaveLauncher:
         )
         wcp_thread.start()
 
+        ctrl = None
+        if self._surfer_cfg.ctrl_sock:
+            ctrl = WaveControlServer(self._surfer_cfg.ctrl_sock, listener)
+            ctrl.start()
+
         emit_console_text(
             f"Surfer open (PID {proc.pid}). "
             f"Right-click a signal → Go to declaration. "
@@ -126,6 +132,8 @@ class WaveLauncher:
                 proc.kill()
         finally:
             listener.stop()
+            if ctrl:
+                ctrl.stop()
             wcp_thread.join(timeout=2)
 
         log_event(logger, logging.INFO, "wave.done", test=self._test_cfg.name)
