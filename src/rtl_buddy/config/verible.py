@@ -2,6 +2,7 @@ import logging
 logger = logging.getLogger(__name__)
 import pprint
 import os
+from pathlib import Path
 
 from dataclasses import dataclass
 from serde import serde, field
@@ -60,10 +61,11 @@ class VeribleConfigFile:
   path: str
   extra_args: dict[str, list[str]]
 
-  def initialise(self) -> VeribleConfig:
-    res = VeribleConfig(self.name, self.path, self.extra_args, False)
-    if not os.path.exists(self.path):
-      log_event(logger, logging.DEBUG, "verible.path_missing", name=res.get_name(), path=self.path)
+  def initialise(self, root_cfg_path: str) -> VeribleConfig:
+    resolved = str(Path(root_cfg_path).parent / self.path)
+    res = VeribleConfig(self.name, resolved, self.extra_args, False)
+    if not os.path.exists(resolved):
+      log_event(logger, logging.DEBUG, "verible.path_missing", name=res.get_name(), path=resolved)
     else:
       res.available = True
 
