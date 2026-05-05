@@ -666,20 +666,9 @@ class SurferWcpListener:
             {"type": "command", "command": "add_variables", "variables": [full_path]}
         )
         log_event(logger, logging.INFO, "wcp.add_variable", name=name, path=full_path)
-        # Annotate nvim if we have a timestamp and the signal is in the scope cache
-        if (
-            self._last_timestamp is not None
-            and self._value_reader is not None
-            and full_path in self._scope_cache.path_map
-        ):
-            filepath, lineno = self._scope_cache.path_map[full_path]
-            value = self._value_reader.get_value(full_path, self._last_timestamp)
-            if value is not None:
-                inst = self._scope_cache.scope_path.split(".")[-1]
-                display = f"{value} [{inst}]"
-                sock = self._surfer_cfg.editor_sock
-                if sock and EditorLauncher._nvim_socket_alive(sock):
-                    EditorLauncher._nvim_remote_value(sock, lineno, display)
+        # Re-annotate all scope signals so existing ones aren't wiped
+        if self._last_timestamp is not None and self._value_reader is not None:
+            self._push_scope_values(self._last_timestamp)
 
     def bind(self) -> int:
         """Bind the TCP socket. Returns the actual port (OS-assigned when wcp_port=0).
