@@ -191,26 +191,35 @@ class EditorLauncher:
   def __init__(self, surfer_cfg: 'SurferConfig'):
     self._surfer_cfg = surfer_cfg
 
-  def open(self, filepath: str, lineno: int) -> None:
+  def open(self, filepath: str, lineno: int, value: str | None = None) -> None:
     cmd = self._surfer_cfg.format_editor_cmd(filepath, lineno)
     terminal = self._surfer_cfg.editor_terminal.lower()
     log_event(logger, logging.DEBUG, "editor.open",
               cmd=cmd, terminal=terminal, file=filepath, line=lineno)
 
     if terminal == 'tmux':
-      self._open_tmux(cmd)
+      self._open_tmux(cmd, value)
     elif terminal == 'iterm2':
-      self._open_iterm2(cmd)
+      self._open_iterm2(cmd, value)
     elif terminal == 'terminal':
-      self._open_terminal_app(cmd)
+      self._open_terminal_app(cmd, value)
     else:
-      subprocess.Popen(cmd, shell=True)
+      env = {**os.environ, 'WAVE_VALUE': value} if value is not None else None
+      subprocess.Popen(cmd, shell=True, env=env)
 
-  def _open_tmux(self, cmd: str) -> None:
-    subprocess.Popen(['tmux', 'new-window', cmd])
+  @staticmethod
+  def _env_prefix(value: str | None) -> str:
+    """Shell prefix that exports WAVE_VALUE, empty string when value is None."""
+    if value is None:
+      return ''
+    import shlex
+    return f'WAVE_VALUE={shlex.quote(value)} '
 
-  def _open_iterm2(self, cmd: str) -> None:
-    safe_cmd = cmd.replace('\\', '\\\\').replace('"', '\\"')
+  def _open_tmux(self, cmd: str, value: str | None = None) -> None:
+    subprocess.Popen(['tmux', 'new-window', self._env_prefix(value) + cmd])
+
+  def _open_iterm2(self, cmd: str, value: str | None = None) -> None:
+    safe_cmd = (self._env_prefix(value) + cmd).replace('\\', '\\\\').replace('"', '\\"')
     applescript = f'''
       tell application "iTerm2"
         activate
@@ -222,8 +231,8 @@ class EditorLauncher:
     '''
     subprocess.Popen(['osascript', '-e', applescript])
 
-  def _open_terminal_app(self, cmd: str) -> None:
-    safe_cmd = cmd.replace('"', '\\"')
+  def _open_terminal_app(self, cmd: str, value: str | None = None) -> None:
+    safe_cmd = (self._env_prefix(value) + cmd).replace('"', '\\"')
     applescript = f'''
       tell application "Terminal"
         activate
@@ -316,16 +325,17 @@ class SurferWcpListener:
         timestamp: int | None = msg.get('timestamp')
         log_event(logger, logging.INFO, "wave.goto_declaration",
                   variable=variable, timestamp=timestamp)
-        self._emit_value(variable, timestamp)
+        value = self._emit_value(variable, timestamp)
         result = self._resolver.resolve(variable)
         if result:
           filepath, lineno = result
-          self._editor.open(filepath, lineno)
+          self._editor.open(filepath, lineno, value)
 
-  def _emit_value(self, variable: str, timestamp: int | None) -> None:
-    """Log the signal value at *timestamp* to the console if available."""
+  def _emit_value(self, variable: str, timestamp: int | None) -> str | None:
+    """Log the signal value at *timestamp* to the console. Returns the value string or None."""
     if self._value_reader is None or timestamp is None:
-      return
+      return None
     value = self._value_reader.get_value(variable, timestamp)
     if value is not None:
       emit_console_text(f"{variable} = {value}  @  t={timestamp}")
+    return value
