@@ -631,10 +631,24 @@ class SurferWcpListener:
         return
     full_paths = [p for p, _, _ in self._scope_cache.items()]
     values = self._value_reader.get_values_bulk(full_paths, timestamp)
-    annotations: list[tuple[int, str, str]] = []
     inst = self._scope_cache.scope_path.split('.')[-1]
+
+    # Group signals by source line; two signals on the same line are combined
+    # into a single annotation: "a=1'b0  b=1'b1 [inst]"
+    line_groups: dict[tuple[str, int], list[tuple[str, str]]] = {}
     for full_path, filepath, lineno in self._scope_cache.items():
       if full_path in values:
-        annotations.append((lineno, f"{values[full_path]} [{inst}]", filepath))
+        sig = full_path.split('.')[-1]
+        key = (filepath, lineno)
+        line_groups.setdefault(key, []).append((sig, values[full_path]))
+
+    annotations: list[tuple[int, str, str]] = []
+    for (filepath, lineno), sigs in line_groups.items():
+      if len(sigs) == 1:
+        display = f"{sigs[0][1]} [{inst}]"
+      else:
+        display = '  '.join(f"{n}={v}" for n, v in sigs) + f" [{inst}]"
+      annotations.append((lineno, display, filepath))
+
     if annotations:
       EditorLauncher._nvim_remote_scope(sock, annotations)
