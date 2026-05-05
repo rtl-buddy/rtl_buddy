@@ -811,6 +811,7 @@ class SurferWcpListener:
         if self._scope_cache is not None and self._scope_cache.scope_path == scope:
             return  # same scope, nothing to do
         log_event(logger, logging.DEBUG, "wcp.scope_changed", scope=scope)
+        emit_console_text(f"scope: {scope}")
         signals = self._value_reader.get_scope_signals(scope)
         sv_files = self._resolver._sv_files
         self._scope_cache = ScopeAnnotationCache(scope, signals, sv_files)
