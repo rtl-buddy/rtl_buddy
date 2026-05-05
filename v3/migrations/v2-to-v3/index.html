@@ -1178,7 +1178,6 @@
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>artefacts/{test_name}/run-0001/coverage.dat
 </code></pre></div>
 <p>Compile outputs (<code>compile.log</code>, <code>run.f</code>) remain at <code>artefacts/{test_name}/</code> — they are shared across all iterations of the same test.</p>
-<p>Hook scripts that previously relied on suite-relative file paths resolving from the simulator working directory must now resolve those paths explicitly. Use the preproc hook's <code>suite_dir</code> variable for suite-local inputs; keep output filenames artifact-relative when they should land under <code>artefacts/{test_name}/</code>.</p>
 <h3 id="symlinks">Symlinks</h3>
 <p>The convenience symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root still exist and still point to the latest run.</p>
 <h2 id="what-to-update">What to update</h2>
