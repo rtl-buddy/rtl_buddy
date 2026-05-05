@@ -643,6 +643,7 @@ class SurferWcpListener:
             None  # (variable, lineno) from last goto_declaration
         )
         self._scope_cache: ScopeAnnotationCache | None = None
+        self._last_timestamp: int | None = None
         self._wcp_conn: socket.socket | None = (
             None  # live connection to Surfer for sending commands
         )
@@ -656,16 +657,29 @@ class SurferWcpListener:
                 self._wcp_conn = None
 
     def add_variable_to_surfer(self, name: str) -> None:
-        """Resolve *name* against the active scope cache and add it to Surfer's waveform view."""
+        """Resolve *name* against the active scope cache, add to Surfer, and annotate nvim."""
         if self._scope_cache is None:
             log_event(logger, logging.WARNING, "wcp.no_scope_context", name=name)
             return
-        # Find the full FST path for this signal name in the current scope
         full_path = f"{self._scope_cache.scope_path}.{name}"
         self.send_to_surfer(
             {"type": "command", "command": "add_variables", "variables": [full_path]}
         )
         log_event(logger, logging.INFO, "wcp.add_variable", name=name, path=full_path)
+        # Annotate nvim if we have a timestamp and the signal is in the scope cache
+        if (
+            self._last_timestamp is not None
+            and self._value_reader is not None
+            and full_path in self._scope_cache.path_map
+        ):
+            filepath, lineno = self._scope_cache.path_map[full_path]
+            value = self._value_reader.get_value(full_path, self._last_timestamp)
+            if value is not None:
+                inst = self._scope_cache.scope_path.split(".")[-1]
+                display = f"{value} [{inst}]"
+                sock = self._surfer_cfg.editor_sock
+                if sock and EditorLauncher._nvim_socket_alive(sock):
+                    EditorLauncher._nvim_remote_value(sock, lineno, display)
 
     def bind(self) -> int:
         """Bind the TCP socket. Returns the actual port (OS-assigned when wcp_port=0).
@@ -740,6 +754,8 @@ class SurferWcpListener:
                     variable=variable,
                     timestamp=timestamp,
                 )
+                if timestamp is not None:
+                    self._last_timestamp = timestamp
                 value = self._emit_value(variable, timestamp)
                 result = self._resolver.resolve(variable)
                 if result:
@@ -750,6 +766,8 @@ class SurferWcpListener:
                         self._build_scope_cache(variable, timestamp)
             elif msg.get("type") == "event" and msg.get("event") == "cursor_moved":
                 timestamp = msg.get("timestamp")
+                if timestamp is not None:
+                    self._last_timestamp = timestamp
                 self._on_cursor_moved(timestamp)
             elif msg.get("type") == "event" and msg.get("event") == "scope_changed":
                 scope = msg.get("scope", "")
