@@ -1242,7 +1242,7 @@
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="nt">cfg-verible</span><span class="p">:</span>
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-macos&quot;</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tools/verible/macos/active/bin&quot;</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/opt/homebrew/bin&quot;</span>
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">    </span><span class="nt">extra_args</span><span class="p">:</span>
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">      </span><span class="nt">lint</span><span class="p">:</span>
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--rules=-module-filename&quot;</span>
@@ -1268,6 +1268,7 @@
 <li><code>cfg-coverage</code> is keyed by simulator family (e.g. <code>verilator</code>). <code>use-lcov: true</code> enables <code>.info</code> export and LCOV HTML generation when <code>--coverage-html</code> is used.</li>
 <li><code>cfg-coverview</code> is keyed by simulator family. <code>generate-tables</code> sets the coverage type for Coverview tables. <code>config</code> is a dict of inline Coverview JSON configuration values.</li>
 <li><code>cfg-rtl-reg.reg-cfg-path</code> is the fallback regression file for <code>rtl-buddy regression</code> when no <code>./regression.yaml</code> exists in the cwd.</li>
+<li><code>cfg-verible[].path</code> is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing <code>root_config.yaml</code>.</li>
 </ul>
 <hr />
 <h2 id="regressionyaml">regression.yaml</h2>

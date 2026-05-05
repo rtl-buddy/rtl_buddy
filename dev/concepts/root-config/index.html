@@ -1104,7 +1104,7 @@
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
 <a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="nt">cfg-verible</span><span class="p">:</span>
 <a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-macos&quot;</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tools/verible/macos/active/bin&quot;</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/opt/homebrew/bin&quot;</span>
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">    </span><span class="nt">extra_args</span><span class="p">:</span>
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">      </span><span class="nt">lint</span><span class="p">:</span>
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--rules=-module-filename&quot;</span>
@@ -1124,7 +1124,7 @@
 <li><code>builder-opts</code>: named compile-time and run-time option sets, selected by builder mode</li>
 </ul>
 <p><strong><code>cfg-verible</code></strong></p>
-<p>Defines Verible tool configurations for lint and syntax checks.</p>
+<p>Defines Verible tool configurations for lint and syntax checks. <code>path</code> is the directory containing Verible executables — absolute or relative to <code>root_config.yaml</code>.</p>
 <p><strong><code>cfg-rtl-reg</code></strong></p>
 <p>Sets the default path to <code>regressions.yaml</code> used by <code>rtl-buddy regression</code> when <code>--reg-config</code> is not specified.</p>
 <h2 id="builder-and-mode-overrides">Builder and mode overrides</h2>
