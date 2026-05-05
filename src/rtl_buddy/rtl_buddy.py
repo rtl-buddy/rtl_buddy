@@ -75,6 +75,7 @@ class RtlBuddy():
     self.app.command("filelist", help="generate filelists using models.yaml")(self.do_gen_model_filelist)
     self.app.command("verible", help="run verible cmd")(self.do_verible)
     self.app.command("wave", help="open waveform viewer for a test")(self.do_cmd_wave)
+    self.app.command("wave-install-nvim", help="install nvim plugin for rb wave annotation")(self.do_wave_install_nvim)
     self.app.add_typer(skill_app, name="skill", help="manage the rtl_buddy agent skill")
     self.docs_app.command("list", help="list bundled documentation pages")(self.do_docs_list)
     self.docs_app.command("show", help="show a bundled documentation page")(self.do_docs_show)
@@ -813,6 +814,34 @@ class RtlBuddy():
       surfer_file=surfer_file if os.path.isfile(surfer_file) else None,
       scope_annotation=not focused_signal,
     ).launch()
+
+  def do_wave_install_nvim(
+    self,
+    force: Annotated[bool, typer.Option("--force", help="overwrite existing installation")] = False,
+  ):
+    """
+    install the rtl_buddy_wave.lua plugin into ~/.local/share/nvim/site/plugin/
+
+    The plugin provides the WaveValue highlight group and VimEnter hook
+    needed for rb wave signal value annotation. It is auto-sourced by nvim
+    via runtimepath — no changes to init.lua required.
+    """
+    from importlib.resources import files as _res
+    from importlib.metadata import version as _ver
+    from pathlib import Path
+
+    dest_dir = Path(os.path.expanduser("~/.local/share/nvim/site/plugin"))
+    dest = dest_dir / "rtl_buddy_wave.lua"
+
+    if dest.exists() and not force:
+      emit_console_text(f"Already installed: {dest}  (use --force to overwrite)")
+      return
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    src = _res("rtl_buddy.nvim").joinpath("rtl_buddy_wave.lua").read_text()
+    dest.write_text(src)
+    emit_console_text(f"Installed: {dest}  (rtl-buddy {_ver('rtl-buddy')})")
+    emit_console_text("Restart nvim for the plugin to take effect.")
 
   def do_lint(self):
     assert False, "not yet impl"
