@@ -1,4 +1,5 @@
 # rtl-buddy
+# vim: set sw=2:ts=2:et:
 #
 # Copyright 2024 rtl_buddy contributors
 #
@@ -13,17 +14,18 @@ import signal
 import logging
 
 logger = logging.getLogger(__name__)
-import re
 from ..seed_mode import SeedMode
 
 from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
 from .vlog_cov import VlogCov
+from .artifact_paths import test_artifact_dir, test_build_dir_name
 
 import time
 import pprint
 import subprocess
+from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
@@ -51,6 +53,7 @@ class VlogSim:
         sim_mode,
         run_id=None,
         replay_run_id=None,
+        suite_dir=None,
     ):
         """
         compile and execute sim for given test
@@ -67,24 +70,31 @@ class VlogSim:
         self.replay_run_id = replay_run_id
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
+        self.suite_work_dir = (
+            os.path.abspath(suite_dir)
+            if suite_dir is not None
+            else os.path.abspath(os.getcwd())
+        )
 
-        output_dir = "logs"
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        output_dir = Path(self.suite_work_dir) / "artefacts"
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-        self.output_dir = output_dir
+        self.output_dir = str(output_dir)
 
     def _get_build_tag(self):
         """
         Return a filesystem-safe tag derived from the test name.
         """
-        return re.sub(r"[^A-Za-z0-9_.-]", "_", self.test_name)
+        return test_artifact_dir(self.suite_work_dir, self.test_name).name
 
     def _get_build_dir(self):
         """
         Return the simulator build directory for this test.
         """
-        return f"obj_dir_{self._get_build_tag()}"
+        return test_build_dir_name(self.test_name)
+
+    def _get_compile_work_dir(self):
+        return self._get_artifact_dir()
 
     def _get_simv_path(self):
         """
@@ -92,14 +102,38 @@ class VlogSim:
         """
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
-            return f"{self._get_build_dir()}/simv"
-        return self.rtl_builder_cfg.get_simv()
+            return str(
+                Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
+            )
+        simv_path = self.rtl_builder_cfg.get_simv()
+        if os.path.isabs(simv_path):
+            return simv_path
+        return str(Path(self._get_compile_work_dir()) / simv_path)
+
+    def _get_artifact_dir(self, run_id=None):
+        return str(
+            test_artifact_dir(self.suite_work_dir, self.test_name, run_id=run_id)
+        )
+
+    def _ensure_artifact_dir(self, run_id=None):
+        artifact_dir = Path(self._get_artifact_dir(run_id=run_id))
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        return str(artifact_dir)
+
+    def _get_compile_transcript_path(self):
+        return str(Path(self._get_compile_work_dir()) / "compile.log")
+
+    def _get_filelist_path(self):
+        return str(Path(self._get_compile_work_dir()) / "run.f")
 
     def _get_log_path(self, run_id=None):
-        log_path = f"{self.output_dir}/{self.test_name}"
-        if run_id is not None:
-            log_path += f"_{run_id:04d}"  # Append run_id if test rand
-        return log_path
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.log")
+
+    def _get_err_path(self, run_id=None):
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.err")
+
+    def _get_randseed_path(self, run_id=None):
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / "test.randseed")
 
     def _coverage_enabled(self):
         compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
@@ -111,22 +145,32 @@ class VlogSim:
         """
         return self.rtl_builder_cfg.get_simulator_family()
 
+    def _filter_builder_opts(self, opts: list) -> list:
+        return opts
+
+    def _get_extra_compile_flags(self) -> list:
+        return []
+
+    def _get_extra_sim_env(self, run_id=None) -> dict:
+        return {}
+
     def _get_cov_path(self, run_id=None):
-        cov_path = f"{self.output_dir}/{self.test_name}"
-        if run_id is not None:
-            cov_path += f"_{run_id:04d}"
-        cov_path += ".coverage.dat"
-        return cov_path
+        return str(Path(self._get_artifact_dir(run_id=run_id)) / "coverage.dat")
 
     def _get_cov_abspath(self, run_id=None):
-        return os.path.abspath(self._get_cov_path(run_id=run_id))
+        return str(Path(self._get_cov_path(run_id=run_id)).resolve())
 
-    def _append_hier_instance_seed(self, randseed_fp, *, run_cmd, test, run_id):
+    def _get_suite_symlink_path(self, name):
+        return str(Path(self.suite_work_dir) / name)
+
+    def _append_hier_instance_seed(
+        self, randseed_fp, *, artifact_dir, run_cmd, test, run_id
+    ):
         if "hier_inst_seed" not in run_cmd:
             return
 
-        hier_seed_path = "HierInstanceSeed.txt"
-        if not os.path.exists(hier_seed_path):
+        hier_seed_path = Path(artifact_dir) / "HierInstanceSeed.txt"
+        if not hier_seed_path.exists():
             log_event(
                 logger,
                 logging.WARNING,
@@ -195,16 +239,24 @@ class VlogSim:
         return pd_list
 
     def pre(self):
-        if self.test_cfg.get_preproc_path() is None:
+        script_path = self.test_cfg.get_preproc_path()
+        if script_path is None:
             log_event(logger, logging.DEBUG, "preproc.skipped", test=self.test_name)
             return None
 
-        with open(self.test_cfg.get_preproc_path(), "r") as file:
+        with open(script_path, "r") as file:
             code = file.read()
 
         # Pass self.test_cfg to the preproc script as root_cfg
         # preproc script can mutate self.test_cfg, which is used for compile and sim
-        ns = {"logger": logger, "test_cfg": self.test_cfg, "root_cfg": self.root_cfg}
+        ns = {
+            "logger": logger,
+            "test_cfg": self.test_cfg,
+            "root_cfg": self.root_cfg,
+            "suite_dir": self.suite_work_dir,
+            "artifact_dir": self._get_artifact_dir(),
+            "__file__": os.path.abspath(script_path),
+        }
         try:
             exec(code, ns)
         except Exception as e:
@@ -213,7 +265,7 @@ class VlogSim:
                 logging.ERROR,
                 "preproc.failed",
                 test=self.test_name,
-                script=self.test_cfg.get_preproc_path(),
+                script=script_path,
                 error=e,
             )
             logger.debug("preproc traceback", exc_info=True)
@@ -224,7 +276,7 @@ class VlogSim:
             logging.INFO,
             "preproc.completed",
             test=self.test_name,
-            script=self.test_cfg.get_preproc_path(),
+            script=script_path,
         )
         return None
 
@@ -237,23 +289,29 @@ class VlogSim:
             test=self.test_name,
             config=pprint.pformat(rtl_builder_cfg),
         )
+        compile_work_dir = self._ensure_artifact_dir()
 
         run_cmd = [rtl_builder_cfg.get_exe()]
 
-        builder_opts = rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+        builder_opts = self._filter_builder_opts(
+            rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+        )
         run_cmd += builder_opts
 
         if os.path.basename(rtl_builder_cfg.get_exe()).startswith("verilator"):
             run_cmd += ["--Mdir", self._get_build_dir()]
 
+        run_cmd += self._get_extra_compile_flags()
+
         # add test plus-defines
         run_cmd += self._get_plusdefines()
 
-        # generate run.f for sim
+        # Keep compile outputs in the suite work dir, but pass explicit paths so sim cwd can vary later.
+        filelist_path = self._get_filelist_path()
         self._write_filelist(
-            "run.f"
+            filelist_path
         )  # raises FilelistError on bad path; caught by TestRunner
-        run_cmd += ["-f", "run.f"]
+        run_cmd += ["-f", filelist_path]
         run_str = " ".join(run_cmd)
         log_event(
             logger,
@@ -266,7 +324,9 @@ class VlogSim:
         s_time = time.time()
         with task_status(f"Compiling {self.test_name}", spinner="dots12"):
             try:
-                result = subprocess.run(run_cmd, capture_output=True, text=True)
+                result = subprocess.run(
+                    run_cmd, capture_output=True, text=True, cwd=compile_work_dir
+                )
             except FileNotFoundError:
                 log_event(
                     logger,
@@ -279,7 +339,7 @@ class VlogSim:
 
         e_time = time.time()
         if result.returncode != 0:
-            transcript_path = f"{self.output_dir}/{self.test_name}.compile.log"
+            transcript_path = self._get_compile_transcript_path()
             with open(transcript_path, "w") as transcript_fp:
                 transcript_fp.write(f"Command: {run_str}\n\n")
                 transcript_fp.write("=== stderr ===\n")
@@ -321,33 +381,34 @@ class VlogSim:
         """
         run_id = self.run_id if run_id is None else run_id
         replay_run_id = self.replay_run_id if replay_run_id is None else replay_run_id
+        artifact_dir = self._ensure_artifact_dir(run_id=run_id)
         log_path = self._get_log_path(run_id=run_id)
+        err_path = self._get_err_path(run_id=run_id)
+        randseed_path = self._get_randseed_path(run_id=run_id)
 
         run_cmd = [self._get_simv_path()]
 
         if seed_mode == SeedMode.REPLAY:
             seed_source_run_id = replay_run_id if replay_run_id is not None else run_id
-            seed_source_path = self._get_log_path(run_id=seed_source_run_id)
+            seed_source_path = self._get_randseed_path(run_id=seed_source_run_id)
             try:
-                seed = int(open(f"{seed_source_path}.randseed").readline().strip())
+                seed = int(open(seed_source_path).readline().strip())
             except (FileNotFoundError, ValueError):
-                err_msg = (
-                    f"Replay seed missing or invalid at {seed_source_path}.randseed"
-                )
+                err_msg = f"Replay seed missing or invalid at {seed_source_path}"
                 log_event(
                     logger,
                     logging.ERROR,
                     "sim.replay_seed_missing",
                     test=self.test_name,
-                    seed_path=f"{seed_source_path}.randseed",
+                    seed_path=seed_source_path,
                 )
-                with open(f"{log_path}.log", "w+") as test_out_fp:
+                with open(log_path, "w+") as test_out_fp:
                     test_out_fp.write("FAIL replay seed missing\n")
                     test_out_fp.write(f"ERR: {err_msg}\n")
-                with open(f"{log_path}.err", "w+") as test_err_fp:
+                with open(err_path, "w+") as test_err_fp:
                     test_err_fp.write(err_msg + "\n")
-                force_symlink(f"{log_path}.err", "test.err")
-                force_symlink(f"{log_path}.log", "test.log")
+                force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+                force_symlink(log_path, self._get_suite_symlink_path("test.log"))
                 return 1
 
         elif seed_mode == SeedMode.NEW:
@@ -401,9 +462,9 @@ class VlogSim:
                 timeout_sec=timeout,
             )
         artifact_paths = {
-            "log": f"{log_path}.log",
-            "err": f"{log_path}.err",
-            "randseed": f"{log_path}.randseed",
+            "log": log_path,
+            "err": err_path,
+            "randseed": randseed_path,
         }
         log_event(
             logger,
@@ -421,13 +482,15 @@ class VlogSim:
             f"Running simulation {self.test_name}{'' if run_id is None else f' #{run_id:04d}'}",
             spinner="dots12",
         ):
-            with open(f"{log_path}.err", "w+") as test_err_fp:
-                with open(f"{log_path}.log", "w+") as test_out_fp:
+            extra_env = self._get_extra_sim_env(run_id=run_id)
+            sim_env = {**os.environ, **extra_env} if extra_env else None
+            popen_kwargs = dict(preexec_fn=os.setpgrp, cwd=artifact_dir)
+            if sim_env is not None:
+                popen_kwargs["env"] = sim_env
+            with open(err_path, "w+") as test_err_fp:
+                with open(log_path, "w+") as test_out_fp:
                     with subprocess.Popen(
-                        run_cmd,
-                        preexec_fn=os.setpgrp,
-                        stdout=test_out_fp,
-                        stderr=test_err_fp,
+                        run_cmd, stdout=test_out_fp, stderr=test_err_fp, **popen_kwargs
                     ) as process:
 
                         def signal_handler(_no, _frame):
@@ -456,15 +519,19 @@ class VlogSim:
                                 **artifact_paths,
                             )
 
-        with open(f"{log_path}.randseed", "w") as f:
+        with open(randseed_path, "w") as f:
             f.write(str(seed) + "\n")
             self._append_hier_instance_seed(
-                f, run_cmd=run_cmd, test=self.test_name, run_id=run_id
+                f,
+                artifact_dir=artifact_dir,
+                run_cmd=run_cmd,
+                test=self.test_name,
+                run_id=run_id,
             )
 
-        force_symlink(f"{log_path}.err", "test.err")
-        force_symlink(f"{log_path}.log", "test.log")
-        force_symlink(f"{log_path}.randseed", "test.randseed")
+        force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+        force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+        force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
 
         if returncode != 0:
             log_event(
@@ -501,14 +568,14 @@ class VlogSim:
         if self.test_cfg.uvm:
             self.vlog_post = UvmVlogPost(
                 name=self.test_name,
-                path=f"{log_path}.log",
+                path=log_path,
                 max_warns=self.test_cfg.uvm.max_warns,
                 max_errors=self.test_cfg.uvm.max_errors,
             )
 
         # default post-processing (VlogPost)
         else:
-            self.vlog_post = VlogPost(name=self.test_name, path=f"{log_path}.log")
+            self.vlog_post = VlogPost(name=self.test_name, path=log_path)
         results = self.vlog_post.get_results()
         if self._coverage_enabled():
             cov = VlogCov(
@@ -518,7 +585,7 @@ class VlogSim:
             )
             cov_results = cov.collect(
                 self._get_cov_abspath(run_id=run_id),
-                source_roots=[os.getcwd()],
+                source_roots=[self.suite_work_dir],
             )
             if cov_results is not None:
                 results.results["coverage"] = cov_results.to_dict()

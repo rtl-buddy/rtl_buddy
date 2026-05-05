@@ -1,4 +1,5 @@
 # rtl-buddy
+# vim: set sw=2:ts=2:et:
 #
 # Copyright 2024 rtl_buddy contributors
 #
@@ -11,6 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 import re
 from ..runner.test_results import TestResults
+from ..logging_utils import log_event
 
 
 class VlogPost:
@@ -46,6 +48,14 @@ class VlogPost:
             }
         if match_pass is not None:
             results = {"result": "PASS", "desc": match_pass.group(1)}
+        if match_pass is None and match_fail is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "postproc.no_markers",
+                test=self.name,
+                log=str(self.path),
+            )
 
         return TestResults(name=self.name, results=results)
 

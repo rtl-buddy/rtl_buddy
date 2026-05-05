@@ -5,9 +5,18 @@
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-rtl--buddy.github.io-blue)](https://rtl-buddy.github.io/rtl_buddy/)
 
-`rtl_buddy` is a CLI for running RTL tests, regressions, filelist generation, and adjacent workflow automation in Verilog and SystemVerilog projects. It is designed to work well for both humans and AI agents.
+`rtl_buddy` is a Python CLI for running Verilog and SystemVerilog RTL tests, randomized regressions, filelist generation, Verilator/VCS simulator workflows, and adjacent verification automation. It is designed to work well for both humans and AI agents.
 
 It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day verification work. The primary supported flows are Verilator and VCS-based compile, simulation, and regression workflows. Basic Verible command integration exists, while broader first-class Verible and PeakRDL workflows are on the roadmap.
+
+Typical commands look like:
+
+```bash
+uv run rb test basic
+uv run rb test smoke --repeat 20
+uv run rb regression
+uv run rb regression --coverage-merge
+```
 
 ## Why `rtl_buddy`
 
@@ -56,7 +65,7 @@ Prerequisites:
 - A simulator on `PATH`
   - Verilator is the recommended open-source starting point
   - VCS is also supported as a first-class flow
-- Optional Verible binaries if you want to use `uv run rb verible ...`
+- Optional: Verible if you want to use `uv run rb verible ...` — e.g. `brew tap chipsalliance/verible && brew install verible` on macOS, or see [Verible releases](https://github.com/chipsalliance/verible/releases) for other platforms
 - Optional system-level coverage tools:
   - `lcov` for LCOV and HTML coverage export
   - [Coverview](https://github.com/antmicro/coverview) for Coverview package generation
@@ -76,8 +85,10 @@ uv run rb test basic      # run a single test
 uv run rb regression      # run the full regression
 ```
 
-For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/quickstart/).
+For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/latest/quickstart/).
+
+Runtime artefacts are stored under `artefacts/{sanitized_test_name}/`. Single runs write files such as `test.log`, `test.err`, `test.randseed`, and `coverage.dat` there directly, while repeated runs use nested directories such as `artefacts/{sanitized_test_name}/run-0001/`. The suite root always keeps `test.log`, `test.err`, and `test.randseed` symlinked to the latest run for convenience.
 
 ## Known Issues
 
-See the [known issues page](https://rtl-buddy.github.io/rtl_buddy/known-issues/).
+See the [known issues page](https://rtl-buddy.github.io/rtl_buddy/latest/known-issues/).

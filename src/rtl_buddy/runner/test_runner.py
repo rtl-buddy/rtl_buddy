@@ -1,4 +1,5 @@
 # rtl-buddy
+# vim: set sw=2:ts=2:et:
 #
 # Copyright 2024 rtl_buddy contributors
 #
@@ -8,14 +9,9 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 from ..tools.vlog_sim import VlogSim
+from ..tools.cocotb_sim import CocotbSim
 from ..seed_mode import SeedMode
-from .test_results import (
-    CompileFailResults,
-    EarlyStopResults,
-    FilelistFailResults,
-    SetupFailResults,
-    SimTimeoutResults,
-)
+from .test_results import *
 from ..errors import FilelistError
 from ..logging_utils import log_event
 
@@ -39,6 +35,7 @@ class TestRunner:
         seed_mode: SeedMode = SeedMode.DEFAULT,
         replay_run_id=None,
         run_depth=None,
+        suite_dir=None,
     ):
         """
         Run tests based on config
@@ -61,13 +58,15 @@ class TestRunner:
         self.run_depth = run_depth
         self.rtl_builder_mode = rtl_builder_mode
         self.test_runner_mode = test_runner_mode
+        self.suite_dir = suite_dir
 
     def _create_vlog_sim(self):
         sim_mode = {"sim_to_stdout": True}
         if "sim_to_stdout" in self.test_runner_mode:
             sim_mode["sim_to_stdout"] = self.test_runner_mode["sim_to_stdout"]
 
-        return VlogSim(
+        sim_class = CocotbSim if self.test_cfg.get_testbench().is_cocotb() else VlogSim
+        return sim_class(
             name=self.name + "/vlog_sim",
             root_cfg=self.root_cfg,
             test_cfg=self.test_cfg,
@@ -75,6 +74,7 @@ class TestRunner:
             sim_mode=sim_mode,
             run_id=self.run_id,
             replay_run_id=self.replay_run_id,
+            suite_dir=self.suite_dir,
         )
 
     def run(self):

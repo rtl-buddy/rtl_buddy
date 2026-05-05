@@ -18,7 +18,7 @@ from typing import Optional
 import typer
 from typing_extensions import Annotated
 
-from .config.root import _discover_root_cfg
+from .config.root import discover_project_root
 from .errors import FatalRtlBuddyError
 
 
@@ -44,28 +44,6 @@ def _bundled_gitignore_snippet() -> str:
     )
 
 
-def _find_git_root(start: Path) -> Optional[Path]:
-    for candidate in [start, *start.parents]:
-        if (candidate / ".git").exists():
-            return candidate
-    return None
-
-
-def _discover_project_root() -> Path:
-    """Find project root via rtl_buddy's own root_config.yaml discovery, then .git."""
-    cfg_path = _discover_root_cfg()
-    if cfg_path is not None:
-        return Path(cfg_path).parent
-    git_root = _find_git_root(Path.cwd())
-    if git_root is not None:
-        return git_root
-    raise FatalRtlBuddyError(
-        "skill install --project: cannot locate project root "
-        "(no root_config.yaml or .git found above cwd). "
-        "Pass --root PATH or run from inside a project."
-    )
-
-
 def _resolve_root(project: bool, root: Optional[Path]) -> tuple[str, Path]:
     """Return (scope_label, target_root) for the requested scope.
 
@@ -76,7 +54,7 @@ def _resolve_root(project: bool, root: Optional[Path]) -> tuple[str, Path]:
     if root is not None:
         return "project", root.expanduser().resolve()
     if project:
-        return "project", _discover_project_root().resolve()
+        return "project", discover_project_root().resolve()
     return "user", Path.home()
 
 

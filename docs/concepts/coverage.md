@@ -1,3 +1,7 @@
+---
+description: How to collect, merge, and report coverage for Verilator-based builds using rtl_buddy.
+---
+
 # Coverage
 
 `rtl_buddy` supports coverage collection, merging, and reporting for Verilator-based builds. Coverage workflows use a dedicated builder mode to compile with instrumentation, then optionally merge results across tests and export them as LCOV HTML or Coverview packages.

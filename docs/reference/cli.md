@@ -1,3 +1,7 @@
+---
+description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+---
+
 # CLI Reference
 
 This page is auto-generated from `rtl-buddy --help` output.
@@ -44,6 +48,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ filelist    generate filelists using models.yaml                                     │
 │ verible     run verible cmd                                                          │
 │ skill       manage the rtl_buddy agent skill                                         │
+│ docs        browse bundled documentation                                             │
+│ spec        spec traceability commands                                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -197,5 +203,38 @@ Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...
 │ status           Report whether the skill is installed and whether it matches the    │
 │                  current package version.                                            │
 │ print-gitignore  Print the gitignore lines for project-level skill installs.         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## docs
+
+```text
+Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...                                      
+                                                                                        
+ browse bundled documentation                                                           
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ list  list bundled documentation pages                                               │
+│ show  show a bundled documentation page                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## spec
+
+```text
+Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...                                      
+                                                                                        
+ spec traceability commands                                                             
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ list            list all spec blocks discovered in the project                       │
+│ check-design    show which spec blocks have design models referencing them           │
+│ check-coverage  show which spec coverage items are addressed by tests                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

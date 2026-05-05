@@ -1,5 +1,10 @@
 name: Release
 
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+    && format('Release ({0}{1}) from {2}', inputs.bump, inputs.pre_release == 'true' && ', pre-release' || '', github.ref_name)
+    || format('Release from PR #{0} ({1})', github.event.pull_request.number, github.head_ref) }}
+
 on:
   pull_request:
     types: [closed]
@@ -15,6 +20,11 @@ on:
           - patch
           - minor
           - major
+      pre_release:
+        description: 'Mark as pre-release (appends rcN suffix, PEP 440)'
+        required: false
+        type: boolean
+        default: false
       description:
         description: 'Release description (optional)'
         required: false
@@ -22,12 +32,16 @@ on:
 
 jobs:
   release:
-    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'pull_request' && github.event.pull_request.merged == true) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: write
     outputs:
       new_tag: ${{ steps.version.outputs.new_tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
 
     steps:
       - name: Checkout merged commit
@@ -49,8 +63,12 @@ jobs:
           MINOR=$(echo "$VERSION" | cut -d. -f2)
           PATCH=$(echo "$VERSION" | cut -d. -f3)
 
+          IS_PRERELEASE=false
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BUMP_TYPE="${{ inputs.bump }}"
+            if [ "${{ inputs.pre_release }}" = "true" ]; then
+              IS_PRERELEASE=true
+            fi
           else
             LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
             if echo "$LABELS" | grep -qi '"version/major"'; then
@@ -67,25 +85,61 @@ jobs:
           fi
 
           if [ "$BUMP_TYPE" = "major" ]; then
-            NEW_TAG="v$((MAJOR + 1)).0.0"
+            BASE_TAG="v$((MAJOR + 1)).0.0"
           elif [ "$BUMP_TYPE" = "minor" ]; then
-            NEW_TAG="v${MAJOR}.$((MINOR + 1)).0"
+            BASE_TAG="v${MAJOR}.$((MINOR + 1)).0"
           else
-            NEW_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            BASE_TAG="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            RC_COUNT=$(git tag --list "${BASE_TAG}rc*" | wc -l | tr -d ' ')
+            RC_NUM=$((RC_COUNT + 1))
+            NEW_TAG="${BASE_TAG}rc${RC_NUM}"
+          else
+            NEW_TAG="${BASE_TAG}"
           fi
 
           echo "latest_tag=${LATEST}" >> "$GITHUB_OUTPUT"
           echo "new_tag=${NEW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
           echo "Bumping ${LATEST} -> ${NEW_TAG}"
+
+      - name: Log release parameters
+        run: |
+          echo "Version : ${{ steps.version.outputs.new_tag || '(none — no version label on PR)' }}"
+          echo "Branch  : ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.head_ref }}"
+          echo "Trigger : ${{ github.event_name }}"
+
+      - name: Require release token
+        if: steps.version.outputs.new_tag != ''
+        env:
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
+        run: |
+          test -n "$GH_PAGES_TOKEN" || {
+            echo "GH_PAGES_TOKEN is required so release-created tags trigger downstream docs publishing."
+            exit 1
+          }
+
+      - name: Configure git remote
+        if: steps.version.outputs.new_tag != ''
+        env:
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_PAGES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
       - name: Create and push tag
         if: steps.version.outputs.new_tag != ''
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.version.outputs.new_tag }}" \
-            -m "Release ${{ steps.version.outputs.new_tag }}"
-          git push origin "${{ steps.version.outputs.new_tag }}"
+          TAG="${{ steps.version.outputs.new_tag }}"
+          if git tag -l "$TAG" | grep -q "$TAG"; then
+            echo "Tag $TAG already exists, skipping tag creation."
+          else
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
 
       - name: Create GitHub release
         if: steps.version.outputs.new_tag != ''
@@ -93,6 +147,7 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.new_tag }}
           PREV_TAG: ${{ steps.version.outputs.latest_tag }}
+          IS_PRERELEASE: ${{ steps.version.outputs.is_prerelease }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_USER: ${{ github.event.pull_request.user.login }}
@@ -104,6 +159,7 @@ jobs:
           script: |
             const tag = process.env.TAG;
             const prevTag = process.env.PREV_TAG;
+            const isPrerelease = process.env.IS_PRERELEASE === 'true';
             let body;
             if (context.eventName === 'workflow_dispatch') {
               body = process.env.DESCRIPTION || `Manual release triggered by @${process.env.ACTOR}`;
@@ -122,7 +178,7 @@ jobs:
               name: `Release ${tag}`,
               body,
               draft: false,
-              prerelease: false,
+              prerelease: isPrerelease,
             });
 
   build:
@@ -149,6 +205,74 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  publish_docs:
+    needs: release
+    if: needs.release.outputs.new_tag != '' && needs.release.outputs.is_prerelease != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release.outputs.new_tag }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync --group docs
+
+      - name: Configure git remote
+        env:
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN }}
+        run: |
+          test -n "$GH_PAGES_TOKEN" || {
+            echo "GH_PAGES_TOKEN is required to publish release docs to the gh-pages branch."
+            exit 1
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_PAGES_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Fetch gh-pages branch if it exists
+        run: git fetch origin gh-pages --depth=1 || true
+
+      - name: Compute docs target
+        id: target
+        shell: bash
+        run: |
+          tag="${{ needs.release.outputs.new_tag }}"
+          major="${tag#v}"
+          major="${major%%.*}"
+          version="v${major}"
+          highest_major="$(git tag --list 'v*.*.*' | sed -E 's/^v([0-9]+)\..*/\1/' | sort -n | tail -1)"
+          update_latest=false
+          if [[ -n "${highest_major}" && "${major}" == "${highest_major}" ]]; then
+            update_latest=true
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "update_latest=${update_latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy docs version
+        run: |
+          if [[ "${{ steps.target.outputs.update_latest }}" == "true" ]]; then
+            uv run mike deploy --branch gh-pages --update-aliases "${{ steps.target.outputs.version }}" latest
+          else
+            uv run mike deploy --branch gh-pages --update-aliases "${{ steps.target.outputs.version }}"
+          fi
+
+      - name: Set default docs version
+        if: steps.target.outputs.update_latest == 'true'
+        run: uv run mike set-default --branch gh-pages latest
+
+      - name: Push gh-pages
+        run: git push origin gh-pages
 
   publish:
     needs: build

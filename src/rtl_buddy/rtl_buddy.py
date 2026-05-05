@@ -1,4 +1,5 @@
 # rtl-buddy
+# vim: set sw=2:ts=2:et:
 #
 # Copyright 2024 rtl_buddy contributors
 #
@@ -6,6 +7,8 @@ import logging
 import os
 import subprocess
 import sys
+import json
+from pathlib import Path
 import typer
 from importlib.metadata import version
 from typing_extensions import Annotated
@@ -13,6 +16,7 @@ import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.model import ModelConfigLoader
+from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
 from .logging_utils import (
     emit_console_text,
@@ -26,6 +30,15 @@ from .runner.test_runner import RunDepth, TestRunner
 from .seed_mode import SeedMode
 from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
+from .tools.artifact_paths import test_artifact_dir
+from .tools.spec_trace import (
+    all_spec_blocks,
+    build_coverage_map,
+    build_spec_to_models_map,
+    discover_model_configs,
+    discover_spec_configs,
+    discover_suite_tests,
+)
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
 
@@ -63,6 +76,12 @@ class RtlBuddy:
 
     def __init__(self, name):
         self.app = typer.Typer(no_args_is_help=True)
+        self.docs_app = typer.Typer(
+            help="browse bundled rtl_buddy documentation", no_args_is_help=True
+        )
+        self.spec_app = typer.Typer(
+            help="spec traceability commands", no_args_is_help=True
+        )
         self.app.callback()(self.root_options)
         self.app.command("test", help="run a simple test")(self.do_cmd_test)
         self.app.command("randtest", help="repeat a test with multiple random seeds")(
@@ -78,6 +97,29 @@ class RtlBuddy:
         self.app.add_typer(
             skill_app, name="skill", help="manage the rtl_buddy agent skill"
         )
+        self.docs_app.command("list", help="list bundled documentation pages")(
+            self.do_docs_list
+        )
+        self.docs_app.command("show", help="show a bundled documentation page")(
+            self.do_docs_show
+        )
+        self.app.add_typer(
+            self.docs_app, name="docs", help="browse bundled documentation"
+        )
+        self.spec_app.command(
+            "list", help="list all spec blocks discovered in the project"
+        )(self.do_spec_list)
+        self.spec_app.command(
+            "check-design",
+            help="show which spec blocks have design models referencing them",
+        )(self.do_spec_check_testplan)
+        self.spec_app.command(
+            "check-coverage",
+            help="show which spec coverage items are addressed by tests",
+        )(self.do_spec_check_coverage)
+        self.app.add_typer(
+            self.spec_app, name="spec", help="spec traceability commands"
+        )
 
         if "." not in os.environ["PATH"].split(os.pathsep):
             os.environ["PATH"] = "." + os.pathsep + os.environ["PATH"]
@@ -88,6 +130,7 @@ class RtlBuddy:
         self.root_cfg = None
         self.coverage = None
         self.run_depth = RunDepth.POST
+        self.machine = False
 
     def run(self):
         try:
@@ -168,7 +211,9 @@ class RtlBuddy:
         ):
             return
 
-        if ctx.invoked_subcommand == "skill":
+        self.machine = machine
+
+        if ctx.invoked_subcommand in {"skill", "docs", "spec"}:
             return
 
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
@@ -547,11 +592,12 @@ class RtlBuddy:
                 {"test_name": test_name, "randmode_i": run_id, "results": test_results}
             )
 
-    def _expand_tests_with_sweep(self, test_cfg):
-        if test_cfg.get_sweep_path() is None:
+    def _expand_tests_with_sweep(self, test_cfg, suite_dir):
+        script_path = test_cfg.get_sweep_path()
+        if script_path is None:
             return [test_cfg], None
 
-        with open(test_cfg.get_sweep_path(), "r") as file:
+        with open(script_path, "r") as file:
             code = file.read()
 
         ns = {
@@ -559,7 +605,10 @@ class RtlBuddy:
             "TestConfig": TestConfig,
             "test_cfg": test_cfg,
             "root_cfg": self.root_cfg,
+            "suite_dir": suite_dir,
+            "artifact_dir": str(test_artifact_dir(suite_dir, test_cfg.get_name())),
             "out_test_cfgs": [],
+            "__file__": os.path.abspath(script_path),
         }
         try:
             exec(code, ns)
@@ -569,7 +618,7 @@ class RtlBuddy:
                 logging.ERROR,
                 "sweep.failed",
                 test=test_cfg.name,
-                script=test_cfg.get_sweep_path(),
+                script=script_path,
                 error=e,
             )
             logger.debug("sweep traceback", exc_info=True)
@@ -580,13 +629,19 @@ class RtlBuddy:
             logging.INFO,
             "sweep.completed",
             test=test_cfg.name,
-            script=test_cfg.get_sweep_path(),
+            script=script_path,
             expanded=len(ns["out_test_cfgs"]),
         )
         return ns["out_test_cfgs"], None
 
     def _run_test_cfg_for_run_ids(
-        self, test_cfg, run_ids, seed_mode: SeedMode, replay_run_id, test_runner_mode
+        self,
+        test_cfg,
+        run_ids,
+        seed_mode: SeedMode,
+        replay_run_id,
+        test_runner_mode,
+        suite_dir,
     ):
         test_runner = TestRunner(
             name=self.name + "/testrunner",
@@ -598,6 +653,7 @@ class RtlBuddy:
             replay_run_id=replay_run_id,
             rtl_builder_mode=self.rtl_builder_mode,
             run_depth=self.run_depth,
+            suite_dir=suite_dir,
         )
 
         if len(run_ids) == 1:
@@ -629,6 +685,7 @@ class RtlBuddy:
             run_ids = [None]
 
         tests = suite_cfg.get_tests(test_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         suite_results = []
         for t in tests:
             t_lvl = t.get_reglvl(self.builder)
@@ -668,7 +725,9 @@ class RtlBuddy:
                 )
                 continue
 
-            expanded_tests, sweep_error = self._expand_tests_with_sweep(t)
+            expanded_tests, sweep_error = self._expand_tests_with_sweep(
+                t, suite_dir=suite_dir
+            )
             if sweep_error is not None:
                 self._append_setup_results(t.name, sweep_error, run_ids, suite_results)
                 continue
@@ -680,6 +739,7 @@ class RtlBuddy:
                     seed_mode=seed_mode,
                     replay_run_id=replay_run_id,
                     test_runner_mode=test_runner_mode,
+                    suite_dir=suite_dir,
                 )
                 self._append_results(
                     expanded_test_cfg.name, run_ids, run_results, suite_results
@@ -977,6 +1037,300 @@ class RtlBuddy:
         )
         return
 
+    def do_docs_list(self):
+        pages = [page.to_list_item() for page in list_pages()]
+        if self.machine:
+            print(json.dumps({"pages": pages}, ensure_ascii=True))
+            return
+
+        for page in pages:
+            print(f"{page['slug']} - {page['title']}: {page['summary']}")
+
+    def do_docs_show(
+        self,
+        slug: Annotated[
+            str,
+            typer.Argument(
+                help="MkDocs path slug or slug#section-anchor, for example concepts/root-config or agents#local-docs-access"
+            ),
+        ],
+    ):
+        if "#" in slug:
+            page_slug, anchor = slug.split("#", 1)
+            section = get_section(page_slug, anchor)
+            if section is None:
+                if get_page(page_slug) is None:
+                    raise click.ClickException(
+                        f"Unknown docs page '{page_slug}'. Run `rtl-buddy docs list` to see available slugs."
+                    )
+                raise click.ClickException(
+                    f"Unknown section '{anchor}' in page '{page_slug}'. Run `rtl-buddy docs show {page_slug}` to see available sections."
+                )
+            if self.machine:
+                print(json.dumps(section, ensure_ascii=True))
+                return
+            print(section["content"])
+            return
+
+        page = get_page(slug)
+        if page is None:
+            raise click.ClickException(
+                f"Unknown docs page '{slug}'. Run `rtl-buddy docs list` to see available slugs."
+            )
+
+        if self.machine:
+            print(json.dumps(page.to_show_payload(), ensure_ascii=True))
+            return
+
+        print(page.content, end="" if page.content.endswith("\n") else "\n")
+
+    def _spec_root(self) -> str:
+        """Return the project root directory (where root_config.yaml lives, or CWD)."""
+        from .config.root import discover_project_root
+
+        return str(discover_project_root(fallback_cwd=True))
+
+    def do_spec_list(
+        self,
+        spec_dir: Annotated[
+            str,
+            typer.Option("--spec-dir", help="Directory to search for specs.yaml files"),
+        ] = None,
+    ):
+        """
+        list all spec blocks discovered in the project
+        """
+        setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+        root = self._spec_root()
+        search_dir = spec_dir if spec_dir is not None else os.path.join(root, "spec")
+
+        if not os.path.isdir(search_dir):
+            emit_console_text(f"Spec directory not found: {search_dir}", style="yellow")
+            raise typer.Exit(1)
+
+        specs = discover_spec_configs(search_dir)
+        blocks = all_spec_blocks(specs)
+        if not blocks:
+            emit_console_text("No spec blocks found.", style="yellow")
+            raise typer.Exit(0)
+
+        if self.machine:
+            print(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                "block": b.name,
+                                "desc": b.desc,
+                                "path": cfg.get_path(),
+                                "coverage_items": len(b.coverage_items),
+                            }
+                            for cfg, b in blocks
+                        ]
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            raise typer.Exit(0)
+
+        rows = [
+            {
+                "block": b.name,
+                "desc": b.desc,
+                "items": str(len(b.coverage_items)),
+                "path": os.path.relpath(cfg.get_path(), root),
+            }
+            for cfg, b in blocks
+        ]
+        render_summary(
+            title="Spec Blocks",
+            columns=[
+                ("block", "Block"),
+                ("desc", "Description"),
+                ("items", "Coverage Items"),
+                ("path", "Path"),
+            ],
+            rows=rows,
+            logger=logger,
+        )
+        raise typer.Exit(0)
+
+    def do_spec_check_testplan(
+        self,
+        spec_dir: Annotated[
+            str,
+            typer.Option("--spec-dir", help="Directory to search for specs.yaml files"),
+        ] = None,
+        design_dir: Annotated[
+            str,
+            typer.Option(
+                "--design-dir", help="Directory to search for models.yaml files"
+            ),
+        ] = None,
+    ):
+        """
+        show which spec blocks have design models referencing them
+        """
+        setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+        root = self._spec_root()
+        search_spec = spec_dir if spec_dir is not None else os.path.join(root, "spec")
+        search_design = (
+            design_dir if design_dir is not None else os.path.join(root, "design")
+        )
+
+        specs = discover_spec_configs(search_spec) if os.path.isdir(search_spec) else []
+        models = (
+            discover_model_configs(search_design)
+            if os.path.isdir(search_design)
+            else []
+        )
+        blocks = all_spec_blocks(specs)
+
+        if not blocks:
+            emit_console_text("No spec blocks found.", style="yellow")
+            raise typer.Exit(0)
+
+        spec_to_models = build_spec_to_models_map(specs, models)
+
+        if self.machine:
+            print(
+                json.dumps(
+                    {
+                        "blocks": [
+                            {
+                                "block": b.name,
+                                "has_model": bool(
+                                    spec_to_models.get(f"{cfg.get_path()}::{b.name}")
+                                ),
+                                "models": [
+                                    {"path": p, "model": m}
+                                    for p, m in spec_to_models.get(
+                                        f"{cfg.get_path()}::{b.name}", []
+                                    )
+                                ],
+                            }
+                            for cfg, b in blocks
+                        ]
+                    },
+                    ensure_ascii=True,
+                )
+            )
+            raise typer.Exit(0)
+
+        rows = []
+        for cfg, b in blocks:
+            key = f"{cfg.get_path()}::{b.name}"
+            linked = spec_to_models.get(key, [])
+            rows.append(
+                {
+                    "block": b.name,
+                    "status": "yes" if linked else "no",
+                    "models": ", ".join(m for _, m in linked) if linked else "-",
+                }
+            )
+
+        render_summary(
+            title="Spec Testplan Coverage",
+            columns=[("block", "Block"), ("status", "Has Model"), ("models", "Models")],
+            rows=rows,
+            logger=logger,
+        )
+        uncovered = [
+            b.name
+            for cfg, b in blocks
+            if not spec_to_models.get(f"{cfg.get_path()}::{b.name}")
+        ]
+        if uncovered:
+            emit_console_text(
+                f"Blocks without a design model: {', '.join(uncovered)}", style="yellow"
+            )
+        raise typer.Exit(0)
+
+    def do_spec_check_coverage(
+        self,
+        spec_dir: Annotated[
+            str,
+            typer.Option("--spec-dir", help="Directory to search for specs.yaml files"),
+        ] = None,
+        verif_dir: Annotated[
+            str,
+            typer.Option(
+                "--verif-dir", help="Directory to search for tests.yaml files"
+            ),
+        ] = None,
+    ):
+        """
+        show which spec coverage items are addressed by tests
+        """
+        setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+        root = self._spec_root()
+        search_spec = spec_dir if spec_dir is not None else os.path.join(root, "spec")
+        search_verif = (
+            verif_dir if verif_dir is not None else os.path.join(root, "verif")
+        )
+
+        specs = discover_spec_configs(search_spec) if os.path.isdir(search_spec) else []
+        suite_tests = (
+            discover_suite_tests(search_verif) if os.path.isdir(search_verif) else []
+        )
+        blocks = all_spec_blocks(specs)
+
+        if not blocks:
+            emit_console_text("No spec blocks found.", style="yellow")
+            raise typer.Exit(0)
+
+        cov_map = build_coverage_map(suite_tests)
+
+        if self.machine:
+            items_out = []
+            for cfg, b in blocks:
+                for item in b.coverage_items:
+                    tests = cov_map.get(item.id, [])
+                    items_out.append(
+                        {
+                            "block": b.name,
+                            "id": item.id,
+                            "desc": item.desc,
+                            "covered": bool(tests),
+                            "tests": [{"path": p, "test": t} for p, t in tests],
+                        }
+                    )
+            print(json.dumps({"items": items_out}, ensure_ascii=True))
+            raise typer.Exit(0)
+
+        rows = []
+        for cfg, b in blocks:
+            for item in b.coverage_items:
+                tests = cov_map.get(item.id, [])
+                rows.append(
+                    {
+                        "block": b.name,
+                        "id": item.id,
+                        "desc": item.desc,
+                        "covered": "yes" if tests else "no",
+                        "tests": ", ".join(t for _, t in tests) if tests else "-",
+                    }
+                )
+
+        render_summary(
+            title="Spec Coverage Items",
+            columns=[
+                ("block", "Block"),
+                ("id", "ID"),
+                ("desc", "Description"),
+                ("covered", "Covered"),
+                ("tests", "Tests"),
+            ],
+            rows=rows,
+            logger=logger,
+        )
+        uncovered = [row["id"] for row in rows if row["covered"] == "no"]
+        if uncovered:
+            emit_console_text(
+                f"Uncovered items: {', '.join(uncovered)}", style="yellow"
+            )
+        raise typer.Exit(0)
+
     def do_lint(self):
         assert False, "not yet impl"
 
@@ -1033,12 +1387,8 @@ class RtlBuddy:
         status_lines = status_result.stdout.splitlines()
         git_branch = status_lines[0][3:].split("...")[0] if status_lines else "unknown"
         file_lines = status_lines[1:]
-        mod = sum(
-            1 for line in file_lines if len(line) > 1 and line[1] not in (" ", "?")
-        )
-        staged = sum(
-            1 for line in file_lines if len(line) > 0 and line[0] not in (" ", "?")
-        )
+        mod = sum(1 for ln in file_lines if len(ln) > 1 and ln[1] not in (" ", "?"))
+        staged = sum(1 for ln in file_lines if len(ln) > 0 and ln[0] not in (" ", "?"))
         git_commit = commit_result.stdout.strip()
 
         if mod > 0 or staged > 0:

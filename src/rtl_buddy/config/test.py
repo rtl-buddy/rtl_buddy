@@ -14,6 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 @serde
+class CocotbTestbenchConfig:
+    """
+    cocotb-specific configuration nested under a testbench.
+
+    Attributes:
+      module (str | list[str]): Python test module(s) to load via MODULE env var.
+    """
+
+    module: str | list[str]
+
+    def get_modules(self) -> list[str]:
+        if isinstance(self.module, str):
+            return [self.module]
+        return list(self.module)
+
+
+@serde
 class TestbenchConfig:
     """
     Configuration for a single testbench within a test suite.
@@ -21,10 +38,23 @@ class TestbenchConfig:
     Attributes:
       name (str): Unique testbench identifier.
       filelist (list[str]): List of paths to files involved in running the testbench.
+      toplevel (str | None): Top-level DUT module name. Required for cocotb testbenches.
+      cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
     """
 
     name: str
     filelist: list[str]
+    toplevel: str | None = None
+    cocotb: CocotbTestbenchConfig | None = None
+
+    def __post_init__(self):
+        if self.cocotb is not None and self.toplevel is None:
+            raise FatalRtlBuddyError(
+                f"testbench '{self.name}': toplevel is required when cocotb: is present"
+            )
+
+    def is_cocotb(self) -> bool:
+        return self.cocotb is not None
 
     def get_name(self):
         """
@@ -86,6 +116,7 @@ class TestConfig:
     sweep_path: str | None
     tb: TestbenchConfig
     timeout: int | None
+    covers: list[str] | None = None
     default_timeout: int = 60  # NOTE: potential for config through root config
 
     def get_name(self):
@@ -343,6 +374,7 @@ class TestConfigFile:
     )
     tb: str = field(rename="testbench")
     timeout: int | None = field(rename="sim_timeout")
+    covers: list[str] | None = None
 
     def initialise(self, config_dir, tbs):
         tb = tbs[self.tb]
@@ -362,4 +394,5 @@ class TestConfigFile:
             self.sweep_path,
             tb,
             self.timeout,
+            covers=self.covers,
         )

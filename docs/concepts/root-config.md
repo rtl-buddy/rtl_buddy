@@ -1,3 +1,7 @@
+---
+description: How root_config.yaml configures platform selection, builders, and simulation settings for an RTL project.
+---
+
 # Root Config
 
 The `root_config.yaml` file sits at the root of your RTL project and tells `rtl_buddy` how to build and simulate designs on the current platform.
@@ -33,7 +37,7 @@ cfg-rtl-builder:
 
 cfg-verible:
   - name: "verible-macos"
-    path: "tools/verible/macos/active/bin"
+    path: "/opt/homebrew/bin"
     extra_args:
       lint:
         - "--rules=-module-filename"
@@ -59,7 +63,7 @@ Defines simulation tool configurations. Each entry has:
 
 **`cfg-verible`**
 
-Defines Verible tool configurations for lint and syntax checks.
+Defines Verible tool configurations for lint and syntax checks. `path` is the directory containing Verible executables — absolute or relative to `root_config.yaml`.
 
 **`cfg-rtl-reg`**
 

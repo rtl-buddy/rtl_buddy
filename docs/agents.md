@@ -1,6 +1,22 @@
+---
+description: How to run rtl_buddy effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+---
+
 # For Agents
 
-This page covers how AI agents should interact with `rtl_buddy`. It describes the bundled skill, machine mode, log formats, and the recommended validation workflow.
+Use this page to run `rtl_buddy` effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+
+## Local docs access
+
+Use the bundled docs commands first when you need CLI or YAML reference:
+
+```bash
+rtl-buddy docs list
+rtl-buddy docs show agents
+rtl-buddy --machine docs show reference/yaml
+```
+
+`docs list` shows each page's slug, title, and summary. `docs show --machine` returns lightweight metadata plus the canonical Markdown for the selected page. GitHub Pages remains a convenient human-facing fallback.
 
 ## Agent Skill Install
 
@@ -47,29 +63,74 @@ This makes it reliable to parse outcomes from `rtl_buddy.log` without screen-scr
 | File | Description |
 |------|-------------|
 | `rtl_buddy.log` | Orchestration log; JSONL in machine mode, human-readable otherwise |
-| `logs/{test_name}.log` | Simulation stdout for each test |
-| `logs/{test_name}.err` | Simulation stderr for each test |
-| `logs/{test_name}.randseed` | Seed used for this test run |
+| `artefacts/{test_name}/test.log` | Simulation stdout for each test |
+| `artefacts/{test_name}/test.err` | Simulation stderr for each test |
+| `artefacts/{test_name}/test.randseed` | Seed used for this test run |
+| `artefacts/{test_name}/coverage.dat` | Coverage database (if coverage is enabled) |
+| `artefacts/{test_name}/compile.log` | Compile transcript |
+| `artefacts/{test_name}/run-NNNN/test.log` | Per-iteration output for `randtest` |
 | `test.log` | Symlink to the most recent test's log |
 | `test.err` | Symlink to the most recent test's stderr |
 | `test.randseed` | Symlink to the most recent test's seed |
 
-All files are written relative to the directory where `rtl_buddy` is invoked.
+All files are written relative to the suite directory where `rtl_buddy` is invoked.
 
 ## Machine mode log format
 
 Each line in `rtl_buddy.log` (machine mode) is a JSON object:
 
 ```json
-{"event": "test.pass", "name": "smoke", "duration": 4.2, "seed": 31310, "msg": "smoke passed"}
-{"event": "suite.summary", "passed": 3, "failed": 0, "total": 3, "msg": "3/3 passed"}
+{"event": "sim.completed", "test": "smoke", "duration_sec": 4.2, "message": "smoke: simulation completed in 4.20s"}
+{"event": "postproc.completed", "test": "smoke", "result": "PASS", "desc": "smoke completed", "message": "smoke: post-processing completed with result PASS (smoke completed)"}
 ```
 
 Key fields:
 
-- `event`: dotted event name identifying what happened (e.g. `test.pass`, `test.fail`, `compile.error`)
-- `msg`: the human-readable message corresponding to the event
+- `event`: dotted event name identifying what happened (e.g. `sim.start`, `compile.failed`, `postproc.completed`)
+- `message`: the human-readable message corresponding to the event
 - Other fields are event-specific (name, duration, seed, exit code, etc.)
+
+## How pass/fail is detected
+
+Agents authoring tests need to follow the parser that `rtl_buddy` actually uses:
+
+- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and compares it against `max_warns` / `max_errors`.
+- Otherwise, `rtl_buddy` parses `artefacts/{test_name}/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
+- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
+- If neither `PASS` nor `FAIL` appears, the test result becomes `NA`.
+- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
+
+Minimal non-UVM example:
+
+```systemverilog
+if (test_passed) begin
+  $display("PASS smoke completed");
+end else begin
+  $display("FAIL smoke completed");
+  $display("ERR: expected done=1 before timeout");
+end
+```
+
+In machine mode, the authoritative per-test outcome appears in the `postproc.completed` event's `result` and `desc` fields.
+
+## Spec traceability commands
+
+The `rb spec` commands check the spec-to-test traceability layer. They do not affect simulation and are safe to run at any time:
+
+```bash
+# List all spec blocks discovered in the project
+rtl-buddy --machine spec list
+
+# Check which spec blocks have a linked design model (models.yaml spec: pointer)
+rtl-buddy --machine spec check-design
+
+# Check which coverage items are addressed by at least one test (tests.yaml covers:)
+rtl-buddy --machine spec check-coverage
+```
+
+In machine mode, `spec list` returns `{"blocks": [...]}` and `spec check-coverage` returns `{"items": [...]}` with a `"covered": true/false` field per item. Use these to identify uncovered items programmatically.
+
+All three commands default to searching `spec/`, `design/`, and `verif/` under the project root. Pass `--spec-dir`, `--design-dir`, or `--verif-dir` to narrow the scope.
 
 ## Recommended validation workflow
 

@@ -297,6 +297,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'sim'}: using timeout override {fields.get('timeout_sec')}s"
         case "postproc.completed":
             return f"{target or 'postproc'}: post-processing completed with result {fields.get('result')} ({fields.get('desc')})"
+        case "postproc.no_markers":
+            return f"{fields.get('test')}: no PASS/FAIL markers found in {fields.get('log')}; result is NA"
         case "filelist.malformed_line":
             return (
                 f'{fields.get("file")}: malformed filelist line "{fields.get("line")}"'
@@ -377,6 +379,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'{fields.get("name")}: no platform config matches uname "{fields.get("uname")}"'
         case "project_path.missing_directory":
             return f"project path is not a directory: {fields.get('path')}"
+        case "cocotb.results_missing":
+            return f"cocotb results file not found for {target} at {fields.get('path')} — sim may have crashed before writing results"
         case "builder.mode_missing":
             return f'builder "{fields.get("builder")}": mode "{fields.get("mode")}" not in config (stage={fields.get("stage")})'
         case "builder.stage_missing":

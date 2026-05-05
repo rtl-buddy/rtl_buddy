@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from rtl_buddy.tools.coverage import CoverageReporter
+from rtl_buddy.tools.coverview import CoverviewPacker
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
 from rtl_buddy.tools.vlog_cov import CoverageMetrics, VlogCov
 
@@ -56,7 +57,7 @@ def test_vlog_cov_resolve_source_path_prefers_unique_suite_root_match(tmp_path):
 
     resolved = cov._resolve_source_path(
         "tb_top.sv",
-        base_dir=sandbox_dir / "logs",
+        base_dir=sandbox_dir / "artefacts",
         source_roots=[str(sandbox_dir)],
     )
 
@@ -108,7 +109,6 @@ def test_coverage_reporter_generate_unmerged_artifacts_passes_suite_source_root(
     assert captured["raw_path"] == "/tmp/basic.dat"
     assert captured["html_output"] is True
     assert captured["artifact_name"].endswith("tests.yaml__basic")
-    assert captured["html_outdir"] == str(tmp_path)
     assert captured["source_roots"] == [str(tmp_path / "verif" / "sandbox")]
 
 
@@ -154,7 +154,6 @@ def test_coverage_reporter_merge_passes_source_roots(monkeypatch, tmp_path):
 
     assert captured["raw_paths"] == ["/tmp/basic.dat"]
     assert captured["html_output"] is True
-    assert captured["html_outdir"] == str(tmp_path)
     assert captured["source_roots"] == [str(tmp_path / "verif" / "sandbox")]
 
 
@@ -216,7 +215,58 @@ def test_vlog_cov_build_annotate_cwd_keeps_basename_paths_in_suite_root(tmp_path
     assert copied_tb.read_text() == expected_tb.read_text()
 
 
-def test_vlog_sim_post_passes_cwd_as_coverage_source_root(monkeypatch, tmp_path):
+def test_coverview_metric_source_roots_include_suite_root_for_nested_artefacts(
+    tmp_path,
+):
+    repo_root = tmp_path / "repo"
+    suite_dir = repo_root / "verif" / "sandbox"
+    suite_dir.mkdir(parents=True)
+    raw_path = suite_dir / "artefacts" / "basic" / "run-0001" / "coverage.dat"
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text("raw")
+
+    packer = CoverviewPacker(cfg=None, project_root=str(repo_root))
+
+    assert packer._metric_source_roots_from_raw_path(str(raw_path)) == [
+        str(raw_path.parent.resolve()),
+        str(suite_dir.resolve()),
+    ]
+
+
+def test_coverview_rewrite_prefers_suite_root_for_nested_artefacts_duplicate_basenames(
+    tmp_path,
+):
+    repo_root = tmp_path / "repo"
+    suite_dir = repo_root / "verif" / "sandbox"
+    other_dir = repo_root / "verif" / "template"
+    suite_dir.mkdir(parents=True)
+    other_dir.mkdir(parents=True)
+    suite_tb = suite_dir / "tb_top.sv"
+    other_tb = other_dir / "tb_top.sv"
+    suite_tb.write_text("module tb_top;\nendmodule\n")
+    other_tb.write_text("module tb_top;\nendmodule\n")
+
+    raw_path = suite_dir / "artefacts" / "basic" / "run-0001" / "coverage.dat"
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text("raw")
+    info_path = tmp_path / "coverage_toggle.info"
+    info_path.write_text(f"SF:{suite_tb.name}\nDA:1,1\nend_of_record\n")
+
+    packer = CoverviewPacker(cfg=None, project_root=str(repo_root))
+    packer._rewrite_sf_relative_to_project_root(
+        str(info_path),
+        base_dir=str(raw_path.parent),
+        source_roots=packer._metric_source_roots_from_raw_path(str(raw_path)),
+    )
+
+    assert (
+        info_path.read_text() == "SF:verif/sandbox/tb_top.sv\nDA:1,1\nend_of_record\n"
+    )
+
+
+def test_vlog_sim_post_passes_suite_work_dir_as_coverage_source_root(
+    monkeypatch, tmp_path
+):
     captured = {}
 
     class FakeCov:
@@ -238,20 +288,22 @@ def test_vlog_sim_post_passes_cwd_as_coverage_source_root(monkeypatch, tmp_path)
     sim.root_cfg = DummyRootCfg(tmp_path)
     sim.run_id = None
     sim.vlog_post = None
+    sim.suite_work_dir = str(tmp_path / "verif" / "sandbox")
     sim._coverage_enabled = lambda: True
     sim._get_simulator_family = lambda: "verilator"
     sim._get_cov_abspath = lambda run_id=None: str(
-        tmp_path / "logs" / "basic.coverage.dat"
+        tmp_path / "artefacts" / "basic" / "coverage.dat"
     )
-    sim._get_log_path = lambda run_id=None: str(tmp_path / "logs" / "basic")
+    sim._get_log_path = lambda run_id=None: str(
+        tmp_path / "artefacts" / "basic" / "test.log"
+    )
 
     monkeypatch.setattr(vlog_sim_module, "VlogPost", FakePost)
     monkeypatch.setattr(vlog_sim_module, "VlogCov", lambda **_kwargs: FakeCov())
     (tmp_path / "verif" / "sandbox").mkdir(parents=True, exist_ok=True)
-    monkeypatch.chdir(tmp_path / "verif" / "sandbox")
 
     results = sim.post()
 
-    assert captured["raw_path"].endswith("basic.coverage.dat")
+    assert captured["raw_path"].endswith("coverage.dat")
     assert captured["source_roots"] == [str(tmp_path / "verif" / "sandbox")]
     assert results.results["coverage"]["toggle"] == 0.3

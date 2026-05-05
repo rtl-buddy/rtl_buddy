@@ -11,9 +11,22 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 OUTPUT = REPO_ROOT / "docs" / "reference" / "cli.md"
-SUBCOMMANDS = ["test", "randtest", "regression", "filelist", "verible", "skill"]
+SUBCOMMANDS = [
+    "test",
+    "randtest",
+    "regression",
+    "filelist",
+    "verible",
+    "skill",
+    "docs",
+    "spec",
+]
 
 HEADER = """\
+---
+description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+---
+
 # CLI Reference
 
 This page is auto-generated from `rtl-buddy --help` output.

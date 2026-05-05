@@ -44,7 +44,7 @@ jobs:
             --allowedTools Read,Write,Edit,Bash(git:*),mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
 
             The triggering comment and PR context are provided above.
             Perform the instructions from that comment.

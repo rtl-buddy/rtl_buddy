@@ -1,3 +1,7 @@
+---
+description: How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.
+---
+
 # Plugins
 
 `rtl_buddy` supports three Python plugin hooks that let you extend test behavior without modifying the tool itself. All hooks are specified per-test in `tests.yaml` and are executed by the tool at the appropriate point in the test flow.
@@ -27,7 +31,10 @@ The sweep hook runs before the test flow and expands a single test entry into mu
 | `logger` | Logger | Use this for all logging so output goes through `rtl_buddy`'s log system |
 | `test_cfg` | TestConfig (immutable) | The original test entry from `tests.yaml` |
 | `root_cfg` | RootConfig (mutable) | The loaded root config |
+| `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
+| `artifact_dir` | string | Artifact root for the incoming test name under `suite_dir/artefacts/` |
 | `out_test_cfgs` | list | **Assign** the expanded list of `TestConfig` objects here |
+| `__file__` | string | Absolute path to the current sweep script |
 
 Everything in `TestConfig` except `reglvl` can be mutated in the generated tests (e.g. change `name`, `plusargs`, `plusdefines`).
 
@@ -69,13 +76,21 @@ The pre-processing hook runs after sweep expansion but before the compilation st
 | `logger` | Logger | Use for all logging |
 | `test_cfg` | TestConfig (mutable) | Modify this to change compile/sim parameters |
 | `root_cfg` | RootConfig (mutable) | The loaded root config |
+| `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
+| `artifact_dir` | string | Artifact root for this test under `suite_dir/artefacts/` |
+| `__file__` | string | Absolute path to the current pre-processing script |
+
+Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against `suite_dir` in preproc. Output filenames that should land in the per-test artefact tree can remain relative to `artifact_dir`.
 
 **Example:**
 
 ```python
 # my_preproc.py
 import os
+from pathlib import Path
+
 test_cfg.plusargs["BUILD_ID"] = os.environ.get("CI_BUILD_ID", "local")
+test_cfg.plusargs["stimulus"] = str(Path(suite_dir) / "vectors" / "streaming_contract.txt")
 ```
 
 If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.

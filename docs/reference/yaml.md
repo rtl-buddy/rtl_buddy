@@ -1,3 +1,7 @@
+---
+description: Canonical reference for all rtl_buddy YAML configuration files: root_config.yaml, regression.yaml, tests.yaml, and models.yaml.
+---
+
 # YAML Formats
 
 This page is the canonical reference for all `rtl_buddy` configuration files. Use it when creating or updating configs for new designs, suites, and regressions.
@@ -41,7 +45,7 @@ cfg-rtl-builder:
 
 cfg-verible:
   - name: "verible-macos"
-    path: "tools/verible/macos/active/bin"
+    path: "/opt/homebrew/bin"
     extra_args:
       lint:
         - "--rules=-module-filename"
@@ -68,6 +72,7 @@ cfg-rtl-reg:
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
+- `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`.
 
 ---
 
@@ -109,14 +114,24 @@ rtl-buddy-filetype: model_config
 
 models:
   - name: "my_design"
+    desc: "Optional human-readable description"
     filelist:
       - "-F my_design.f"
+    spec: "../../spec/my_design/specs.yaml"
 ```
+
+**Optional fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `desc` | string | Human-readable model description |
+| `spec` | string | Path to the block's `specs.yaml`, relative to this `models.yaml` file. Used by `rb spec check-design` to link the design model to its specification. |
 
 **Runtime effects:**
 
 - `tests.yaml` references a model by `name` using the `model` and `model_path` fields.
 - Model filelists are parsed by the filelist logic: `-F` recursion, `+incdir+`, `+libext+`, `-v`, `-y`, and plain source paths are all supported.
+- `spec` is not used at simulation time; it is only consumed by the `rb spec` traceability commands.
 
 ---
 
@@ -186,6 +201,43 @@ tests:
 | `sweep.path` | string | Path to sweep expansion script |
 | `preproc.path` | string | Path to pre-processing script |
 | `postproc.path` | string | Path to post-processing script (parsed but not yet fully active) |
+| `covers` | list of strings | IDs of spec coverage items this test addresses (e.g. `["BLOCK-COV-01"]`). Used by `rb spec check-coverage`; has no effect at simulation time. |
+
+### cocotb testbenches
+
+Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode (Verilator only for now). `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
+
+**Prerequisite:** `cocotb` must be installed in the active Python environment (`uv add cocotb` or `pip install cocotb`). The runner invokes `cocotb-config` at compile time; a missing binary surfaces as a `FatalRtlBuddyError` with an actionable message.
+
+```yaml
+testbenches:
+  - name: "tb_my_design"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design          # DUT top-level module name — required for cocotb
+    cocotb:
+      module: test_my_design     # Python module(s) containing @cocotb.test() coroutines
+
+  - name: "tb_multi"
+    filelist:
+      - "my_design.sv"
+    toplevel: my_design
+    cocotb:
+      module:                    # list form: all modules are loaded
+        - test_smoke
+        - test_corner_cases
+```
+
+**Pass/fail detection for cocotb testbenches:**
+
+cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/`FAIL` stdout lines. `rtl_buddy` parses this file automatically after simulation; you do not need `$display("PASS …")` in cocotb tests. The `desc` field in the result reports the first three failure messages and a `(+N more)` suffix when there are more.
+
+**Testbench field reference (cocotb-specific additions):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `toplevel` | string | Yes (cocotb only) | Top-level DUT module name passed to `COCOTB_TOPLEVEL` |
+| `cocotb.module` | string or list | Yes | Python test module(s) passed to `COCOTB_TEST_MODULES` |
 
 **Runtime effects by field:**
 
@@ -196,14 +248,65 @@ tests:
 - `plusargs`: converted to `+KEY` (no value) or `+KEY=VALUE`.
 - `sim_timeout`: applies per test run, not per iteration in `randtest`.
 - `sweep.path`: Python script that expands one test entry into a list of `TestConfig` objects. See [Plugins](../concepts/plugins.md).
-- `preproc.path`: Python script executed before compile; can mutate `test_cfg` and `root_cfg`. See [Plugins](../concepts/plugins.md).
+- `preproc.path`: Python script executed before compile; can mutate `test_cfg` and `root_cfg`, and receives `suite_dir` plus `artifact_dir` in its execution namespace. See [Plugins](../concepts/plugins.md).
 
 ## Path semantics and cwd
 
-- `rtl_buddy.log`, `logs/`, and the convenience symlinks (`test.log`, `test.err`, `test.randseed`) are written to the current working directory.
+- `rtl_buddy.log` and the convenience symlinks (`test.log`, `test.err`, `test.randseed`) are written to the suite root (the current working directory).
+- Per-test artifacts are written to `artefacts/{test_name}/` under the suite root. Single runs write `test.log`, `test.err`, `test.randseed`, `compile.log`, `run.f`, and (if enabled) `coverage.dat` there directly. Repeated runs (`randtest`) write sim outputs into numbered subdirectories: `artefacts/{test_name}/run-0001/`, etc.
 - `test` and `randtest` do **not** automatically change into the suite directory. Run from the suite directory, or use `--test-config` with a full path.
 - `regression` does `chdir` into each suite directory before executing.
+- Preproc plusargs are passed to the simulator verbatim. Resolve suite-local input paths explicitly against `suite_dir`; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
 - For portable configs in multi-suite repos, make paths in `tests.yaml` explicit and verify they resolve correctly from the intended invocation directory.
+
+---
+
+## specs.yaml
+
+`specs.yaml` lives in `spec/<block>/` and defines the functional specification for one or more design blocks. It is consumed by the `rb spec` traceability commands and has no effect on simulation.
+
+**Required keys:**
+
+- `rtl-buddy-filetype: spec_config`
+- `blocks`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "my_design"
+    desc: "Brief description of the block"
+    docs:
+      - "README.md"
+      - "behavior.md"
+    coverage-items:
+      - id: "MY-COV-01"
+        desc: "Normal operation path"
+      - id: "MY-COV-02"
+        desc: "Error handling and recovery"
+```
+
+**Block field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Block identifier; matched against `ModelConfig.name` when resolving `spec:` links in `models.yaml`. For single-block files the name is matched unconditionally. |
+| `desc` | string | Human-readable block description |
+| `docs` | list of strings | Paths to markdown spec documents, relative to this `specs.yaml` file |
+| `coverage-items` | list | Functional coverage items for this block |
+
+**Coverage item fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique coverage item identifier, referenced by `covers` in `tests.yaml` |
+| `desc` | string | Human-readable description of what must be tested |
+
+See [Spec Traceability](../concepts/spec-traceability.md) for the end-to-end workflow.
+
+---
 
 ## Authoring checklist for new suites
 
