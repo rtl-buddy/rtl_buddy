@@ -32,6 +32,7 @@ cfg-surfer:
     editor-cmd: "nvim +%l %f"               # %f = file, %l = line
     editor-terminal: "tmux"                  # tmux | iterm2 | terminal | ""
     editor-sock: "~/.local/share/rtl-buddy/wave-nvim.sock"  # enables nvim reuse
+    ctrl-sock: "~/.local/share/rtl-buddy/wave-ctrl.sock"    # enables nvim → Surfer
 ```
 
 See [YAML Formats](../reference/yaml.md) for all fields.
@@ -56,6 +57,10 @@ logic a, b;    ▶ a=8'h0a  b=8'h05 [i_dut]
 logic clk;     ▶ 1'b0 [i_dut]
 ```
 
+### Active scope
+
+Clicking any signal in Surfer's signal list sets the **active scope** — the module instance used to resolve signal names. rtl-buddy updates the scope cache automatically via the `scope_changed` WCP event, so annotation context is always current without requiring a "Go to declaration".
+
 ### nvim setup
 
 The annotation feature requires a small nvim plugin. Install it once:
@@ -75,6 +80,18 @@ If the plugin is missing when `rb wave` starts with `editor-sock` configured, a 
 ```
 WARNING  nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations
 ```
+
+### Adding signals to Surfer from nvim
+
+With `ctrl-sock` configured, place the cursor on any signal name in nvim and press **`<Space>wa`** (`<leader>wa`) to add it to Surfer's waveform view.
+
+The signal is resolved using the active scope — click a signal in Surfer first to establish the instance context (e.g. clicking `tb_top.i_dut.clk` sets scope `tb_top.i_dut`), then add signals freely from nvim.
+
+```
+nvim: cursor on "rst"  →  <Space>wa  →  Surfer adds tb_top.i_dut.rst to waveform
+```
+
+The keymap requires `ctrl-sock` to be set in `cfg-surfer` and `rb wave` to be running. A warning is shown if the socket is unreachable.
 
 ### Single-signal mode
 
