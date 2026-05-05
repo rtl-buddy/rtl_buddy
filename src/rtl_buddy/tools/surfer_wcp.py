@@ -600,16 +600,27 @@ class SurferWcpListener:
 
   def _push_scope_values(self, timestamp: int) -> None:
     """Look up all cached scope signals and push bulk virtual text update to nvim."""
+    import time
     assert self._scope_cache is not None
     assert self._value_reader is not None
+    sock = self._surfer_cfg.editor_sock
+    if not sock:
+      return
+    # On first goto_declaration nvim is just starting; wait up to 5s for the socket.
+    if not EditorLauncher._nvim_socket_alive(sock):
+      deadline = time.monotonic() + 5.0
+      while time.monotonic() < deadline:
+        time.sleep(0.1)
+        if EditorLauncher._nvim_socket_alive(sock):
+          break
+      else:
+        log_event(logger, logging.WARNING, "wcp.nvim_socket_timeout", sock=sock)
+        return
     full_paths = [p for p, _, _ in self._scope_cache.items()]
     values = self._value_reader.get_values_bulk(full_paths, timestamp)
     annotations: list[tuple[int, str, str]] = []
     for full_path, filepath, lineno in self._scope_cache.items():
       if full_path in values:
         annotations.append((lineno, values[full_path], filepath))
-    if not annotations:
-      return
-    sock = self._surfer_cfg.editor_sock
-    if sock and EditorLauncher._nvim_socket_alive(sock):
+    if annotations:
       EditorLauncher._nvim_remote_scope(sock, annotations)
