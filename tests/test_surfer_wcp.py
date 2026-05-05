@@ -23,6 +23,7 @@ from rtl_buddy.config.surfer import SurferConfig, SurferConfigFile
 
 def _make_surfer_cfg(*, path='surfer', wcp_port=0,
                      editor_cmd='vim +%l %f', editor_terminal='tmux',
+                     editor_sock='',
                      root_cfg_path='/proj/root_config.yaml', available=True):
   return SurferConfig(
     name='surfer-default',
@@ -30,6 +31,7 @@ def _make_surfer_cfg(*, path='surfer', wcp_port=0,
     wcp_port=wcp_port,
     editor_cmd=editor_cmd,
     editor_terminal=editor_terminal,
+    editor_sock=editor_sock,
     root_cfg_path=root_cfg_path,
     available=available,
   )

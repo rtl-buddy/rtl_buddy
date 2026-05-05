@@ -25,6 +25,7 @@ class SurferConfig:
     wcp_port (int): TCP port rtl-buddy listens on; Surfer connects with --wcp-initiate.
     editor_cmd (str): Editor command template; %f = file path, %l = line number.
     editor_terminal (str): Terminal emulator for terminal editors ("iterm2", "terminal", or "").
+    editor_sock (str): Unix socket path for nvim --listen reuse. Empty string disables.
     root_cfg_path (str): Path of root_config.yaml, used for relative path resolution.
     available (bool): True when the Surfer executable was found at initialise time.
   """
@@ -33,6 +34,7 @@ class SurferConfig:
   wcp_port: int
   editor_cmd: str
   editor_terminal: str
+  editor_sock: str
   root_cfg_path: str
   available: bool
 
@@ -57,6 +59,7 @@ class SurferConfigFile:
   wcp_port: int = field(rename='wcp-port', default=0)  # 0 = OS auto-assigns a free port
   editor_cmd: str = field(rename='editor-cmd', default='vim +%l %f')
   editor_terminal: str = field(rename='editor-terminal', default='')
+  editor_sock: str = field(rename='editor-sock', default='')
 
   def initialise(self, root_cfg_path: str) -> SurferConfig:
     cfg = SurferConfig(
@@ -65,6 +68,7 @@ class SurferConfigFile:
       wcp_port=self.wcp_port,
       editor_cmd=self.editor_cmd,
       editor_terminal=self.editor_terminal,
+      editor_sock=self.editor_sock,
       root_cfg_path=root_cfg_path,
       available=False,
     )

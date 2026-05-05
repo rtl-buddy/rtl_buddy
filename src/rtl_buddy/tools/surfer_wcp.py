@@ -17,7 +17,9 @@ import json
 import logging
 import os
 import re
+import shlex
 import socket
+import socket as _socket_mod
 import subprocess
 import threading
 from typing import TYPE_CHECKING
@@ -192,10 +194,20 @@ class EditorLauncher:
     self._surfer_cfg = surfer_cfg
 
   def open(self, filepath: str, lineno: int, value: str | None = None) -> None:
-    cmd = self._surfer_cfg.format_editor_cmd(filepath, lineno)
+    sock = self._surfer_cfg.editor_sock
     terminal = self._surfer_cfg.editor_terminal.lower()
     log_event(logger, logging.DEBUG, "editor.open",
-              cmd=cmd, terminal=terminal, file=filepath, line=lineno)
+              file=filepath, line=lineno, sock=sock or '')
+
+    if sock and self._nvim_socket_alive(sock):
+      self._nvim_remote_update(sock, filepath, lineno, value)
+      return
+
+    cmd = self._surfer_cfg.format_editor_cmd(filepath, lineno)
+    if sock:
+      # First launch: tell nvim to listen so future calls can reuse it
+      os.makedirs(os.path.dirname(os.path.expanduser(sock)), exist_ok=True)
+      cmd = cmd + f' --listen {shlex.quote(os.path.expanduser(sock))}'
 
     if terminal == 'tmux':
       self._open_tmux(cmd, value)
@@ -209,11 +221,34 @@ class EditorLauncher:
 
   @staticmethod
   def _env_prefix(value: str | None) -> str:
-    """Shell prefix that exports WAVE_VALUE, empty string when value is None."""
     if value is None:
       return ''
-    import shlex
     return f'WAVE_VALUE={shlex.quote(value)} '
+
+  @staticmethod
+  def _nvim_socket_alive(sock_path: str) -> bool:
+    """Return True if a live nvim process is listening on sock_path."""
+    try:
+      s = _socket_mod.socket(_socket_mod.AF_UNIX, _socket_mod.SOCK_STREAM)
+      s.settimeout(0.3)
+      s.connect(os.path.expanduser(sock_path))
+      s.close()
+      return True
+    except OSError:
+      return False
+
+  @staticmethod
+  def _nvim_remote_update(sock_path: str, filepath: str, lineno: int,
+                          value: str | None) -> None:
+    """Jump to filepath:lineno in a running nvim and update virtual text."""
+    expanded = os.path.expanduser(sock_path)
+    # Escape filepath for Vim :edit (backslash-escape spaces and special chars)
+    vim_path = filepath.replace('\\', '\\\\').replace(' ', '\\ ').replace('"', '\\"')
+    keys = f'<Esc>:e +{lineno} {vim_path}<CR>'
+    if value is not None:
+      lua_val = value.replace('\\', '\\\\').replace('"', '\\"')
+      keys += f':lua WaveValueShow("{lua_val}", {lineno})<CR>'
+    subprocess.Popen(['nvim', '--server', expanded, '--remote-send', keys])
 
   def _open_tmux(self, cmd: str, value: str | None = None) -> None:
     subprocess.Popen(['tmux', 'new-window', self._env_prefix(value) + cmd])
