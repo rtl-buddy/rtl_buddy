@@ -15,9 +15,16 @@ src/rtl_buddy/
 ├── logging_utils.py       # log_event(), setup_logging(), console helpers
 ├── errors.py              # FatalRtlBuddyError, FilelistError, SetupScriptError
 ├── seed_mode.py           # seed handling enum
-├── config/                # YAML-backed config classes
+├── config/
+│   ├── root.py            # discover_project_root(), RootConfig
+│   ├── model.py           # ModelConfig (models.yaml)
+│   ├── test.py            # TestConfig / TestConfigFile (tests.yaml)
+│   ├── spec.py            # SpecConfig / SpecBlock / SpecCoverageItem (specs.yaml)
+│   └── ...                # platform, rtl, verible, coverage, coverview, reg
 ├── runner/test_runner.py  # PRE -> COMP -> SIM -> POST execution
-└── tools/                 # filelist, sim, postproc, verible wrappers
+└── tools/
+    ├── spec_trace.py      # discover_spec_configs, build_coverage_map, etc.
+    └── ...                # filelist, sim, postproc, verible wrappers
 ```
 
 ## Development Rules
@@ -32,8 +39,10 @@ src/rtl_buddy/
 - `rtl_buddy.py` owns CLI wiring, global options, and command dispatch.
 - `RootConfig` selects platform, builder, verible, and regression config from `root_config.yaml`.
 - `TestRunner` drives PRE, COMPILE, SIM, and POST with early-stop support.
-- `VlogSim` handles compile/sim command construction, log paths, seeds, and timeout behavior.
-- `VlogFilelist` handles `.f` parsing and transformations.
+- `VlogSim` captures the suite cwd once, but both compile and sim now run from per-test workspaces under `artefacts/<sanitized-test>/`; repeated runs use `artefacts/<sanitized-test>/run-0001/`, while `test.log`, `test.err`, and `test.randseed` in the suite directory remain latest-run symlinks.
+- Compile-side generated files such as `run.f`, `compile.log`, builder outputs, and relative `builder-simv` paths are resolved from the per-test artefact root, not from the suite directory.
+- `VlogFilelist` handles `.f` parsing and transformations. It resolves model entries from the real `models.yaml` location, resolves testbench entries from the suite cwd, and writes paths relative to the directory containing the generated `run.f`.
+- Nested raw coverage paths such as `artefacts/<test>/run-0001/coverage.dat` must preserve the suite-root hint during LCOV/Coverview `SF:` rewriting. When updating coverage path logic, make sure duplicate basenames still resolve against the originating suite root instead of falling back to repo-wide basename matching.
 - Hook scripts (`sweep`, `preproc`, `postproc`) are executed dynamically and should be treated as compatibility-sensitive APIs.
 
 ## Validation
@@ -45,6 +54,8 @@ Typical checks:
 ./venv/bin/python -m rtl_buddy regression -c regression.yaml
 ./venv/bin/python -m rtl_buddy filelist test_module -c design/example_block/src/models.yaml
 ./venv/bin/python -m rtl_buddy verible syntax design/example_block/src/test_module.sv
+./venv/bin/python -m rtl_buddy --machine docs list
+./venv/bin/python -m rtl_buddy --machine docs show agents
 
 # from a suite directory
 cd design/example_block/verif
@@ -52,6 +63,31 @@ cd design/example_block/verif
 ```
 
 If validating the dev checkout directly, install this repo into the target venv and confirm with `./venv/bin/python -m rtl_buddy --version`.
+
+## Code Quality
+
+This repo uses [Ruff](https://docs.astral.sh/ruff/) for linting and formatting. CI enforces both on every PR via `.github/workflows/lint.yml`.
+
+Install the pre-commit hook once after cloning so Ruff runs automatically on every commit:
+
+```bash
+uv tool install pre-commit
+pre-commit install
+```
+
+To run Ruff manually:
+
+```bash
+uv run ruff check          # lint
+uv run ruff format         # format in place
+uv run ruff format --check # check only (what CI does)
+```
+
+To update the pre-commit hook version:
+
+```bash
+pre-commit autoupdate
+```
 
 ## Logging Practices
 
@@ -87,20 +123,22 @@ All runtime logging goes through `log_event()` in `src/rtl_buddy/logging_utils.p
 After meaningful `rtl_buddy` changes:
 
 1. **If any CLI command, flag, or help text changed**: run `python scripts/gen_cli_reference.py` and commit the updated `docs/reference/cli.md` in the same PR. The file is committed to the repo and must stay in sync — CI will catch drift via `python scripts/gen_cli_reference.py --check`.
-2. Update any downstream agent docs if command behavior, YAML schema, version expectations, or validation notes changed.
-3. Update downstream integrations to the intended commit as needed.
+2. **If you add or edit a docs page**: ensure it has a non-empty `description:` YAML frontmatter field. CI enforces this via `python scripts/check_docs_frontmatter.py --check`. See `docs/CONTRIBUTING.md` for the required format.
+3. Update any downstream agent docs if command behavior, YAML schema, version expectations, or validation notes changed.
+4. Update downstream integrations to the intended commit as needed.
 
 ## Skill Distribution
 
-The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated.
+The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated. Dev-only audit skills live under `.claude/skills/` in this repo and are not distributed.
 
 ### Rules when editing skill content
 
 - `src/rtl_buddy/skill/SKILL.md` is the single source consumed by both Claude Code (at `.claude/skills/rtl_buddy/`) and Codex (at `.agents/skills/rtl_buddy/` for project scope, `~/.codex/skills/rtl_buddy/` for user scope).
 - Keep `SKILL.md` ≤60 lines and agent-specific. Anything covered by the docs site should cite <https://rtl-buddy.github.io/rtl_buddy/>, not restate it.
+- Agent-facing local docs access goes through `rtl-buddy docs ...`. The wheel ships `docs/**/*.md` directly (via a symlink at `src/rtl_buddy/docs`) so docs are always in sync with the installed version.
 - Any edit to `SKILL.md` takes effect for users only after they re-run `rtl-buddy skill install`. `rtl-buddy skill status` surfaces stale installs via the `.rtl_buddy_skill_version` marker.
 - `src/rtl_buddy/skill/gitignore_snippet.txt` is printed by project-level installs and by `rtl-buddy skill print-gitignore`.
-- Package-data for the skill dir is declared in `pyproject.toml` under `[tool.setuptools.package-data]`. Adding new files to `src/rtl_buddy/skill/` requires updating that glob.
+- Files in `src/rtl_buddy/skill/` are included in the wheel automatically via hatchling's `packages = ["src/rtl_buddy"]`. Adding new files to the skill dir requires no extra config. The `docs/` directory ships via `force-include` in `pyproject.toml` and is excluded from package discovery to avoid double-inclusion.
 
 ### Install scope policy
 
@@ -110,9 +148,37 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 
 ### Project root discovery
 
-`skill_install._discover_project_root()` reuses `config.root._discover_root_cfg()` (walks up for `root_config.yaml`), then falls back to walking up for `.git/`, then errors. This handles agents invoking from `verif/<suite>/` subdirs — `Path.cwd()` would be wrong.
+`config.root.discover_project_root()` is the single shared entry point for locating the project root. It walks up from `cwd` for `root_config.yaml`, then for `.git/`. Pass `fallback_cwd=True` to return `cwd` silently when neither is found (used by the spec commands); the default raises `FatalRtlBuddyError`. This handles agents invoking from `verif/<suite>/` subdirs — `Path.cwd()` alone would be wrong.
 
 ## Release Workflow
 
-1. Merge to `main` in this repo and tag (e.g. `v2.0.0`).
-2. Update and tag any downstream integrations that track this repo.
+Releases are triggered by merging a PR to `main` with a `version/` label, or via `workflow_dispatch`.
+
+### Stable release
+
+Apply one of `version/patch`, `version/minor`, or `version/major` to the PR. On merge:
+
+1. The workflow computes the next `vMAJOR.MINOR.PATCH` tag, creates it, and pushes it.
+2. A GitHub release is created (not marked pre-release).
+3. The wheel is built (hatch-vcs derives the version from the tag) and published to PyPI.
+4. Docs are deployed to `gh-pages` under the matching `v{major}` alias; `latest` is updated if this is the highest major.
+
+### Pre-release
+
+Pre-releases are cut from a **feature branch** via `workflow_dispatch` — never by merging to `main`. Merging to `main` with a `version/` label always produces a stable release.
+
+To cut a pre-release:
+
+1. Run the Release workflow on your feature branch with the desired bump type and the **Mark as pre-release** checkbox enabled.
+2. The workflow appends `rcN` to the computed base tag (PEP 440). If `v2.3.0rc1` already exists, the next is `v2.3.0rc2`.
+3. A GitHub release is created and marked **pre-release**.
+4. The wheel is published to PyPI as a pre-release version (e.g. `2.3.0rc1`). Unqualified version ranges (`>=2.2.0`) will not resolve to it.
+5. Docs are **not** published — the `latest` alias is not updated.
+
+The version is computed from the latest stable tag at dispatch time. If `main` advances and releases the same bump tier before your branch merges, the next RC will shift to the following version — that is expected and acceptable.
+
+### Infrastructure notes
+
+- GitHub Pages must be configured to publish from the `gh-pages` branch.
+- A `GH_PAGES_TOKEN` secret is required because pushes made with the default `GITHUB_TOKEN` do not reliably trigger downstream docs publishing from automation-created tags.
+- Update and tag any downstream integrations that track this repo after a stable release.
