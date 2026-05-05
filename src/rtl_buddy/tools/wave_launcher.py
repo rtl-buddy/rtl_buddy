@@ -32,18 +32,21 @@ class WaveLauncher:
   """
 
   def __init__(self, test_cfg: TestConfig, surfer_cfg: SurferConfig,
-               suite_dir: str, fst_path: str, surfer_file: str | None = None):
+               suite_dir: str, fst_path: str, surfer_file: str | None = None,
+               scope_annotation: bool = True):
     self._test_cfg = test_cfg
     self._surfer_cfg = surfer_cfg
     self._suite_dir = suite_dir
     self._fst_path = fst_path
     self._surfer_file = surfer_file
+    self._scope_annotation = scope_annotation
 
   def launch(self) -> None:
     resolver = SurferSourceResolver(self._test_cfg, self._suite_dir)
     editor = EditorLauncher(self._surfer_cfg)
     value_reader = WaveformValueReader(self._fst_path)
-    listener = SurferWcpListener(self._surfer_cfg, resolver, editor, value_reader)
+    listener = SurferWcpListener(self._surfer_cfg, resolver, editor, value_reader,
+                                 scope_annotation=self._scope_annotation)
 
     # Bind before launching Surfer so the port is ready when it connects.
     # actual_port is OS-assigned when wcp_port=0, otherwise matches wcp_port.

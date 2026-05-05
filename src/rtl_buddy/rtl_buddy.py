@@ -766,6 +766,7 @@ class RtlBuddy():
     test_config: Annotated[str, typer.Option("-c", "--test-config", help="tests.yaml to use")] = "tests.yaml",
     surfer_name: Annotated[str, typer.Option("--surfer", help="cfg-surfer entry name")] = "surfer-default",
     resim: Annotated[bool, typer.Option("--resim", help="force re-run of debug sim even if FST exists")] = False,
+    focused_signal: Annotated[bool, typer.Option("--focused-signal", help="annotate only the signal selected via Go to declaration; default annotates all signals in scope")] = False,
     ):
     """
     open waveform viewer for a test
@@ -810,6 +811,7 @@ class RtlBuddy():
       suite_dir=suite_dir,
       fst_path=fst_path,
       surfer_file=surfer_file if os.path.isfile(surfer_file) else None,
+      scope_annotation=not focused_signal,
     ).launch()
 
   def do_lint(self):

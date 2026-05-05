@@ -297,11 +297,13 @@ class SurferWcpListener:
 
   def __init__(self, surfer_cfg: 'SurferConfig', resolver: SurferSourceResolver,
                editor: EditorLauncher,
-               value_reader: WaveformValueReader | None = None):
+               value_reader: WaveformValueReader | None = None,
+               scope_annotation: bool = True):
     self._surfer_cfg = surfer_cfg
     self._resolver = resolver
     self._editor = editor
     self._value_reader = value_reader
+    self._scope_annotation = scope_annotation
     self._stop = threading.Event()
     self._srv: socket.socket | None = None
     self._last_decl: tuple[str, int] | None = None  # (variable, lineno) from last goto_declaration
@@ -389,6 +391,8 @@ class SurferWcpListener:
 
   def _on_cursor_moved(self, timestamp: int | None) -> None:
     """Update nvim virtual text when the Surfer time cursor moves."""
+    if not self._scope_annotation:
+      return
     if self._last_decl is None or self._value_reader is None or timestamp is None:
       return
     variable, lineno = self._last_decl
