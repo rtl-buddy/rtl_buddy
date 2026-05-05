@@ -5,9 +5,18 @@
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-rtl--buddy.github.io-blue)](https://rtl-buddy.github.io/rtl_buddy/)
 
-`rtl_buddy` is a CLI for running RTL tests, regressions, filelist generation, and adjacent workflow automation in Verilog and SystemVerilog projects. It is designed to work well for both humans and AI agents.
+`rtl_buddy` is a Python CLI for running Verilog and SystemVerilog RTL tests, randomized regressions, filelist generation, Verilator/VCS simulator workflows, and adjacent verification automation. It is designed to work well for both humans and AI agents.
 
 It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day verification work. The primary supported flows are Verilator and VCS-based compile, simulation, and regression workflows. Basic Verible command integration exists, while broader first-class Verible and PeakRDL workflows are on the roadmap.
+
+Typical commands look like:
+
+```bash
+uv run rb test basic
+uv run rb test smoke --repeat 20
+uv run rb regression
+uv run rb regression --coverage-merge
+```
 
 ## Why `rtl_buddy`
 

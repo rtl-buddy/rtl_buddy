@@ -1,5 +1,8 @@
 site_name: RTL Buddy
-site_description: CLI tool for automating tests, regressions, and RTL workflows for Verilog/SystemVerilog codebases.
+site_description: Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, RTL test automation, coverage, and YAML-based verification flows.
+site_author: RTL Buddy contributors
+repo_url: https://github.com/rtl-buddy/rtl_buddy
+repo_name: rtl-buddy/rtl_buddy
 docs_dir: docs
 site_url: https://rtl-buddy.github.io/rtl_buddy/
 remote_name: origin

@@ -19,11 +19,23 @@ authors = [
   { name = "Xie Jiacheng"}
 ]
 
-description = "RTL Buddy is a build-system with testplan, regression, workflow support for Verilog RTL codebases."
+description = "Python CLI for Verilog and SystemVerilog RTL testing, randomized regressions, coverage, and simulator workflow automation."
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
-keywords = [ "SystemVerilog", "Verilog", "ASIC", "FPGA" ]
+keywords = [
+  "SystemVerilog",
+  "Verilog",
+  "RTL",
+  "ASIC",
+  "FPGA",
+  "EDA",
+  "Verilator",
+  "VCS",
+  "regression testing",
+  "verification",
+  "coverage",
+]
 
 classifiers = [
   "Development Status :: 4 - Beta",
