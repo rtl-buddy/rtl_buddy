@@ -1228,15 +1228,8 @@
 <a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="w">    </span><span class="nt">config</span><span class="p">:</span>
 <a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="w">      </span><span class="c1"># inline Coverview JSON configuration values</span>
 <a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>
-<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
-<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-default&quot;</span>
-<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer&quot;</span><span class="w">              </span><span class="c1"># bare name → found via PATH; or relative/absolute path</span>
-<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a><span class="w">    </span><span class="nt">wcp-port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">         </span><span class="c1"># 0 = OS auto-assigns a free port</span>
-<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vim</span><span class="nv"> </span><span class="s">+%l</span><span class="nv"> </span><span class="s">%f&quot;</span><span class="w">   </span><span class="c1"># %f = file path, %l = line number</span>
-<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a><span class="w">    </span><span class="nt">editor-terminal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tmux&quot;</span><span class="w">    </span><span class="c1"># tmux | iterm2 | terminal | &quot;&quot; (empty = run cmd directly)</span>
-<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>
-<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
-<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
 </code></pre></div>
 <p><strong>Runtime effects:</strong></p>
 <ul>
@@ -1245,7 +1238,6 @@
 <li><code>--builder-mode</code> selects which named <code>builder-opts</code> entry to use for compile-time and run-time flags.</li>
 <li><code>cfg-coverage</code> is keyed by simulator family (e.g. <code>verilator</code>). <code>use-lcov: true</code> enables <code>.info</code> export and LCOV HTML generation when <code>--coverage-html</code> is used.</li>
 <li><code>cfg-coverview</code> is keyed by simulator family. <code>generate-tables</code> sets the coverage type for Coverview tables. <code>config</code> is a dict of inline Coverview JSON configuration values.</li>
-<li><code>cfg-surfer</code> configures the Surfer waveform viewer used by <code>rb wave</code>. <code>path</code> is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. <code>editor-cmd</code> supports <code>%f</code> (file path) and <code>%l</code> (line number) placeholders. <code>editor-terminal</code> controls how the editor is launched: <code>tmux</code> opens a new tmux window, <code>iterm2</code> and <code>terminal</code> use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code).</li>
 <li><code>cfg-rtl-reg.reg-cfg-path</code> is the fallback regression file for <code>rtl-buddy regression</code> when no <code>./regression.yaml</code> exists in the cwd.</li>
 </ul>
 <hr />
@@ -1500,7 +1492,7 @@
 <li><code>plusargs</code>: converted to <code>+KEY</code> (no value) or <code>+KEY=VALUE</code>.</li>
 <li><code>sim_timeout</code>: applies per test run, not per iteration in <code>randtest</code>.</li>
 <li><code>sweep.path</code>: Python script that expands one test entry into a list of <code>TestConfig</code> objects. See <a href="../../concepts/plugins/">Plugins</a>.</li>
-<li><code>preproc.path</code>: Python script executed before compile; can mutate <code>test_cfg</code> and <code>root_cfg</code>. See <a href="../../concepts/plugins/">Plugins</a>.</li>
+<li><code>preproc.path</code>: Python script executed before compile; can mutate <code>test_cfg</code> and <code>root_cfg</code>, and receives <code>suite_dir</code> plus <code>artifact_dir</code> in its execution namespace. See <a href="../../concepts/plugins/">Plugins</a>.</li>
 </ul>
 <h2 id="path-semantics-and-cwd">Path semantics and cwd</h2>
 <ul>
@@ -1508,6 +1500,7 @@
 <li>Per-test artifacts are written to <code>artefacts/{test_name}/</code> under the suite root. Single runs write <code>test.log</code>, <code>test.err</code>, <code>test.randseed</code>, <code>compile.log</code>, <code>run.f</code>, and (if enabled) <code>coverage.dat</code> there directly. Repeated runs (<code>randtest</code>) write sim outputs into numbered subdirectories: <code>artefacts/{test_name}/run-0001/</code>, etc.</li>
 <li><code>test</code> and <code>randtest</code> do <strong>not</strong> automatically change into the suite directory. Run from the suite directory, or use <code>--test-config</code> with a full path.</li>
 <li><code>regression</code> does <code>chdir</code> into each suite directory before executing.</li>
+<li>Preproc plusargs are passed to the simulator verbatim. Resolve suite-local input paths explicitly against <code>suite_dir</code>; keep output filenames artifact-relative when they should land under <code>artefacts/{test_name}/</code>.</li>
 <li>For portable configs in multi-suite repos, make paths in <code>tests.yaml</code> explicit and verify they resolve correctly from the intended invocation directory.</li>
 </ul>
 <hr />
