@@ -160,6 +160,16 @@ class WaveformValueReader:
 # Scope annotation cache
 # ---------------------------------------------------------------------------
 
+def _instance_name(variable: str) -> str:
+  """Return the instance/scope component of a hierarchical signal path.
+
+  'tb_top.i_prog_mon.clk' → 'i_prog_mon'
+  'tb_top.clk'            → 'tb_top'
+  """
+  parts = variable.split('.')
+  return parts[-2] if len(parts) >= 2 else parts[0]
+
+
 class ScopeAnnotationCache:
   """
   Builds and caches a mapping of {full_fst_path → (file, lineno)} for all
@@ -559,13 +569,15 @@ class SurferWcpListener:
         self._on_cursor_moved(timestamp)
 
   def _emit_value(self, variable: str, timestamp: int | None) -> str | None:
-    """Log the signal value at *timestamp* to the console. Returns the value string or None."""
+    """Log the signal value at *timestamp* to the console. Returns the display string or None."""
     if self._value_reader is None or timestamp is None:
       return None
-    value = self._value_reader.get_value(variable, timestamp)
-    if value is not None:
-      emit_console_text(f"{variable} = {value}  @  t={timestamp}")
-    return value
+    raw = self._value_reader.get_value(variable, timestamp)
+    if raw is not None:
+      display = f"{raw} [{_instance_name(variable)}]"
+      emit_console_text(f"{variable} = {display}  @  t={timestamp}")
+      return display
+    return None
 
   def _build_scope_cache(self, variable: str, timestamp: int | None) -> None:
     """Enumerate FST signals in the variable's parent scope and bulk-grep source locations."""
@@ -591,12 +603,13 @@ class SurferWcpListener:
     elif self._last_decl is not None:
       # fallback: single-signal update until cache is ready
       variable, lineno = self._last_decl
-      value = self._value_reader.get_value(variable, timestamp)
-      if value is not None:
-        emit_console_text(f"{variable} = {value}  @  t={timestamp}")
+      raw = self._value_reader.get_value(variable, timestamp)
+      if raw is not None:
+        display = f"{raw} [{_instance_name(variable)}]"
+        emit_console_text(f"{variable} = {display}  @  t={timestamp}")
         sock = self._surfer_cfg.editor_sock
         if sock and EditorLauncher._nvim_socket_alive(sock):
-          EditorLauncher._nvim_remote_value(sock, lineno, value)
+          EditorLauncher._nvim_remote_value(sock, lineno, display)
 
   def _push_scope_values(self, timestamp: int) -> None:
     """Look up all cached scope signals and push bulk virtual text update to nvim."""
@@ -619,8 +632,9 @@ class SurferWcpListener:
     full_paths = [p for p, _, _ in self._scope_cache.items()]
     values = self._value_reader.get_values_bulk(full_paths, timestamp)
     annotations: list[tuple[int, str, str]] = []
+    inst = self._scope_cache.scope_path.split('.')[-1]
     for full_path, filepath, lineno in self._scope_cache.items():
       if full_path in values:
-        annotations.append((lineno, values[full_path], filepath))
+        annotations.append((lineno, f"{values[full_path]} [{inst}]", filepath))
     if annotations:
       EditorLauncher._nvim_remote_scope(sock, annotations)
