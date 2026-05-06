@@ -47,6 +47,23 @@ class SurferConfig:
             return os.path.join(os.path.dirname(self.root_cfg_path), self.path)
         return shutil.which(self.path) or self.path
 
+    def _resolve_sock(self, sock: str) -> str:
+        """Resolve a socket path: expand ~, and resolve relative paths from root_config.yaml."""
+        if not sock:
+            return sock
+        sock = os.path.expanduser(sock)
+        if not os.path.isabs(sock):
+            sock = os.path.join(os.path.dirname(self.root_cfg_path), sock)
+        return sock
+
+    @property
+    def resolved_editor_sock(self) -> str:
+        return self._resolve_sock(self.editor_sock)
+
+    @property
+    def resolved_ctrl_sock(self) -> str:
+        return self._resolve_sock(self.ctrl_sock)
+
     def format_editor_cmd(self, filepath: str, lineno: int) -> str:
         """Substitute %f and %l placeholders in editor_cmd."""
         return self.editor_cmd.replace("%f", filepath).replace("%l", str(lineno))

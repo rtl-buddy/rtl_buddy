@@ -358,7 +358,7 @@ class EditorLauncher:
         self._surfer_cfg = surfer_cfg
 
     def open(self, filepath: str, lineno: int, value: str | None = None) -> None:
-        sock = self._surfer_cfg.editor_sock
+        sock = self._surfer_cfg.resolved_editor_sock
         terminal = self._surfer_cfg.editor_terminal.lower()
         log_event(
             logger,
@@ -374,26 +374,36 @@ class EditorLauncher:
             return
 
         cmd = self._surfer_cfg.format_editor_cmd(filepath, lineno)
+        ctrl_sock = self._surfer_cfg.resolved_ctrl_sock
         if sock:
             # First launch: tell nvim to listen so future calls can reuse it
-            os.makedirs(os.path.dirname(os.path.expanduser(sock)), exist_ok=True)
-            cmd = cmd + f" --listen {shlex.quote(os.path.expanduser(sock))}"
+            os.makedirs(os.path.dirname(sock), exist_ok=True)
+            cmd = cmd + f" --listen {shlex.quote(sock)}"
 
         if terminal == "tmux":
-            self._open_tmux(cmd, value)
+            self._open_tmux(cmd, value, ctrl_sock)
         elif terminal == "iterm2":
-            self._open_iterm2(cmd, value)
+            self._open_iterm2(cmd, value, ctrl_sock)
         elif terminal == "terminal":
-            self._open_terminal_app(cmd, value)
+            self._open_terminal_app(cmd, value, ctrl_sock)
         else:
-            env = {**os.environ, "WAVE_VALUE": value} if value is not None else None
-            subprocess.Popen(cmd, shell=True, env=env)
+            env = {**os.environ}
+            if value is not None:
+                env["WAVE_VALUE"] = value
+            if ctrl_sock:
+                env["WAVE_CTRL_SOCK"] = ctrl_sock
+            subprocess.Popen(
+                cmd, shell=True, env=env if len(env) > len(os.environ) else None
+            )
 
     @staticmethod
-    def _env_prefix(value: str | None) -> str:
-        if value is None:
-            return ""
-        return f"WAVE_VALUE={shlex.quote(value)} "
+    def _env_prefix(value: str | None, ctrl_sock: str | None = None) -> str:
+        parts = []
+        if value is not None:
+            parts.append(f"WAVE_VALUE={shlex.quote(value)}")
+        if ctrl_sock:
+            parts.append(f"WAVE_CTRL_SOCK={shlex.quote(ctrl_sock)}")
+        return (" ".join(parts) + " ") if parts else ""
 
     @staticmethod
     def _nvim_socket_alive(sock_path: str) -> bool:
@@ -504,12 +514,20 @@ class EditorLauncher:
         )
         EditorLauncher._nvim_exec_lua(sock_path, lua)
 
-    def _open_tmux(self, cmd: str, value: str | None = None) -> None:
-        subprocess.Popen(["tmux", "new-window", self._env_prefix(value) + cmd])
+    def _open_tmux(
+        self, cmd: str, value: str | None = None, ctrl_sock: str | None = None
+    ) -> None:
+        subprocess.Popen(
+            ["tmux", "new-window", self._env_prefix(value, ctrl_sock) + cmd]
+        )
 
-    def _open_iterm2(self, cmd: str, value: str | None = None) -> None:
+    def _open_iterm2(
+        self, cmd: str, value: str | None = None, ctrl_sock: str | None = None
+    ) -> None:
         safe_cmd = (
-            (self._env_prefix(value) + cmd).replace("\\", "\\\\").replace('"', '\\"')
+            (self._env_prefix(value, ctrl_sock) + cmd)
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
         )
         applescript = f'''
       tell application "iTerm2"
@@ -522,8 +540,10 @@ class EditorLauncher:
     '''
         subprocess.Popen(["osascript", "-e", applescript])
 
-    def _open_terminal_app(self, cmd: str, value: str | None = None) -> None:
-        safe_cmd = (self._env_prefix(value) + cmd).replace('"', '\\"')
+    def _open_terminal_app(
+        self, cmd: str, value: str | None = None, ctrl_sock: str | None = None
+    ) -> None:
+        safe_cmd = (self._env_prefix(value, ctrl_sock) + cmd).replace('"', '\\"')
         applescript = f'''
       tell application "Terminal"
         activate
@@ -807,7 +827,7 @@ class SurferWcpListener:
             if raw is not None:
                 display = f"{raw} [{_instance_name(variable)}]"
                 emit_console_text(f"{variable} = {display}  @  t={timestamp}")
-                sock = self._surfer_cfg.editor_sock
+                sock = self._surfer_cfg.resolved_editor_sock
                 if sock and EditorLauncher._nvim_socket_alive(sock):
                     EditorLauncher._nvim_remote_value(sock, lineno, display)
 
@@ -837,7 +857,7 @@ class SurferWcpListener:
 
         assert self._scope_cache is not None
         assert self._value_reader is not None
-        sock = self._surfer_cfg.editor_sock
+        sock = self._surfer_cfg.resolved_editor_sock
         if not sock:
             return
         # On first goto_declaration nvim is just starting; wait up to 5s for the socket.

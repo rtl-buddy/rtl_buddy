@@ -60,7 +60,7 @@ class WaveLauncher:
 
     def _check_nvim_plugin(self) -> None:
         """Warn if editor-sock is configured but the nvim plugin is not installed."""
-        if not self._surfer_cfg.editor_sock:
+        if not self._surfer_cfg.resolved_editor_sock:
             return
         cmd = self._surfer_cfg.editor_cmd.strip()
         if not (cmd.startswith("nvim") or "/nvim" in cmd):
@@ -112,8 +112,8 @@ class WaveLauncher:
         wcp_thread.start()
 
         ctrl = None
-        if self._surfer_cfg.ctrl_sock:
-            ctrl = WaveControlServer(self._surfer_cfg.ctrl_sock, listener)
+        if self._surfer_cfg.resolved_ctrl_sock:
+            ctrl = WaveControlServer(self._surfer_cfg.resolved_ctrl_sock, listener)
             ctrl.start()
 
         emit_console_text(

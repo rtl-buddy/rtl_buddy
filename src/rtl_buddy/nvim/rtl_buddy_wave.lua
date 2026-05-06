@@ -31,7 +31,8 @@ vim.api.nvim_create_autocmd("VimEnter", {
 
 -- <leader>wa — send word under cursor to Surfer via the wave control socket.
 -- Requires ctrl-sock to be configured in cfg-surfer (root_config.yaml).
-local _ctrl_sock = vim.fn.expand("~/.local/share/rtl-buddy/wave-ctrl.sock")
+-- Path is passed via WAVE_CTRL_SOCK env var set by rb wave on launch.
+local _ctrl_sock = vim.fn.getenv("WAVE_CTRL_SOCK")
 
 local function wave_add_variable()
   local name = vim.fn.expand("<cword>")
