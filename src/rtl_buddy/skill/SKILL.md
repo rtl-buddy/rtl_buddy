@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, and regression.yaml.
+description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis flows, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, or synth_regression.yaml.
 ---
 
 # rtl_buddy
@@ -26,10 +26,12 @@ This skill ships with the CLI, so its content matches the installed major. Surfa
 
 Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 
-- **`root_config.yaml`** — project root, platform/build defaults, regression default path.
+- **`root_config.yaml`** — project root, platform/build defaults, regression default path, synthesis tool defaults (`cfg-synth-tools`).
 - **`regression.yaml`** — repo-level suite list for `regression`.
 - **`tests.yaml`** — suite-level tests/testbenches; run `test` and `randtest` from this directory.
-- **`models.yaml`** — design source filelists referenced by `tests.yaml`.
+- **`models.yaml`** — design source filelists referenced by `tests.yaml` and `synth.yaml`.
+- **`synth.yaml`** — synthesis runs; `model` name is the top; `tool` selects `cfg-synth-tools` entry; `params`/`defines`/`tool_overrides` for per-run customization.
+- **`synth_regression.yaml`** — repo-level synthesis suite list for `synth-regression`.
 - **`specs.yaml`** — spec traceability data; consumed by `rtl-buddy spec`.
 
 ## Pass/fail detection
