@@ -26,7 +26,7 @@ class SynthPassResults(SynthResults):
         *,
         area_um2: float | None = None,
         gate_count: int | None = None,
-        crit_path_ps: float | None = None,
+        wns_ps: float | None = None,
     ):
         super().__init__(
             name=name,
@@ -36,8 +36,8 @@ class SynthPassResults(SynthResults):
             self.results["area_um2"] = area_um2
         if gate_count is not None:
             self.results["gate_count"] = gate_count
-        if crit_path_ps is not None:
-            self.results["crit_path_ps"] = crit_path_ps
+        if wns_ps is not None:
+            self.results["wns_ps"] = wns_ps
 
 
 class SynthFailResults(SynthResults):

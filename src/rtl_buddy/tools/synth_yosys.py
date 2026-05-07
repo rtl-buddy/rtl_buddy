@@ -38,6 +38,7 @@ class YosysSynth:
         artefact_root = Path(suite_dir) / "artefacts" / synth_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
+        self._period_ps: int | None = None
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.f")
@@ -190,6 +191,7 @@ class YosysSynth:
                         synth=self.synth_cfg.get_name(),
                         sdc=constraints,
                     )
+            self._period_ps = period_ps
 
             abc_script = (
                 _ABC_SCRIPT_WITH_TIMING
@@ -294,6 +296,11 @@ class YosysSynth:
         area_um2 = self._parse_area_um2(log_text)
         gate_count = self._parse_gate_count(log_text)
         crit_path_ps = self._parse_critical_path_ps(log_text)
+        wns_ps = (
+            self._period_ps - crit_path_ps
+            if self._period_ps is not None and crit_path_ps is not None
+            else None
+        )
 
         log_event(
             logger,
@@ -302,12 +309,12 @@ class YosysSynth:
             synth=self.synth_cfg.get_name(),
             area_um2=area_um2,
             gate_count=gate_count,
-            crit_path_ps=crit_path_ps,
+            wns_ps=wns_ps,
             log=log_path,
         )
         return SynthPassResults(
             name=self.name + "/results",
             area_um2=area_um2,
             gate_count=gate_count,
-            crit_path_ps=crit_path_ps,
+            wns_ps=wns_ps,
         )

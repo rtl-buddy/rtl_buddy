@@ -1348,7 +1348,7 @@ class RtlBuddy:
     def _render_synth_summary(self, title, synth_results, *, metadata=None):
         has_gates = any("gate_count" in r["results"].results for r in synth_results)
         has_area = any("area_um2" in r["results"].results for r in synth_results)
-        has_timing = any("crit_path_ps" in r["results"].results for r in synth_results)
+        has_timing = any("wns_ps" in r["results"].results for r in synth_results)
         rows = []
         for r in synth_results:
             res = r["results"].results
@@ -1364,8 +1364,11 @@ class RtlBuddy:
                 area = res.get("area_um2")
                 row["area"] = f"{area:.2f} µm²" if area is not None else "-"
             if has_timing:
-                cp = res.get("crit_path_ps")
-                row["crit_path"] = f"{cp / 1000:.3f} ns" if cp is not None else "-"
+                wns = res.get("wns_ps")
+                if wns is not None:
+                    row["wns"] = f"{'+' if wns >= 0 else ''}{wns / 1000:.3f} ns"
+                else:
+                    row["wns"] = "-"
             rows.append(row)
 
         columns = [
@@ -1378,7 +1381,7 @@ class RtlBuddy:
         if has_area:
             columns.append(("area", "Area"))
         if has_timing:
-            columns.append(("crit_path", "Crit Path"))
+            columns.append(("wns", "WNS"))
         render_summary(
             title=title,
             columns=columns,
