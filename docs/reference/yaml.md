@@ -1,5 +1,5 @@
 ---
-description: Canonical reference for all rtl_buddy YAML configuration files: root_config.yaml, regression.yaml, tests.yaml, and models.yaml.
+description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, and synth_regression.yaml.
 ---
 
 # YAML Formats
@@ -8,7 +8,7 @@ This page is the canonical reference for all `rtl_buddy` configuration files. Us
 
 ## root_config.yaml
 
-The root config lives at the project root. It defines platforms, builders, Verible, and the default regression config path.
+The root config lives at the project root. It defines platforms, builders, Verible, coverage, synthesis tools, synthesis libraries, and the default regression config path.
 
 **Required keys:**
 
@@ -60,6 +60,17 @@ cfg-coverview:
     config:
       # inline Coverview JSON configuration values
 
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"
+    opts:
+      synth-args: ""
+      abc-args: ""
+
+cfg-synth-libs:
+  - name: "sky130hd_tt"
+    path: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
+
 cfg-rtl-reg:
   reg-cfg-path: "design/regression.yaml"
 ```
@@ -71,6 +82,8 @@ cfg-rtl-reg:
 - `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
+- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the executable name on `PATH`; `opts.synth-args` are appended to the Yosys `synth` command, and `opts.abc-args` are used by the unmapped ABC step.
+- `cfg-synth-libs` defines named Liberty files for technology-mapped synthesis. Relative paths are resolved from the directory containing `root_config.yaml`.
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
 - `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`.
 
@@ -258,6 +271,97 @@ cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/
 - `regression` does `chdir` into each suite directory before executing.
 - Preproc plusargs are passed to the simulator verbatim. Resolve suite-local input paths explicitly against `suite_dir`; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
 - For portable configs in multi-suite repos, make paths in `tests.yaml` explicit and verify they resolve correctly from the intended invocation directory.
+
+---
+
+## synth.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: synth_config`
+- `syntheses`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: synth_config
+
+syntheses:
+  - name: "smoke_synth"
+    desc: "Synthesize my_design with the default Yosys flow"
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    tool: "yosys"
+    reglvl: 0
+
+  - name: "sky130_synth"
+    desc: "Technology-mapped synthesis for SKY130"
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    tool: "yosys"
+    constraints: "constraints.sdc"
+    libraries:
+      - "sky130hd_tt"
+    params:
+      WIDTH: 32
+    defines:
+      TARGET_SYNTH: 1
+    reglvl:
+      default: 0
+      dc: 1000
+    tool_overrides:
+      yosys:
+        synth_args: "-flatten"
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Synthesis identifier; used on the CLI and in `artefacts/{name}/` |
+| `desc` | string | Human-readable synthesis description |
+| `model` | string | Model name from `models.yaml`; also used as the Yosys top module |
+| `model_path` | string | Path to `models.yaml`, resolved relative to the `synth.yaml` file |
+| `tool` | string | Synthesis tool name from `root_config.yaml` `cfg-synth-tools` |
+| `constraints` | string | Optional SDC file path, resolved relative to the `synth.yaml` file |
+| `params` | dict | Optional top-level parameter overrides passed through Yosys `chparam -set` |
+| `defines` | dict | Optional Verilog defines passed to `read_verilog` as `-D KEY=VALUE` |
+| `libraries` | list of strings | Optional Liberty library names from `cfg-synth-libs`; enables technology mapping |
+| `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
+| `tool_overrides` | dict | Optional per-tool overrides for `synth_args` and `abc_args`, keyed by synthesis tool name |
+
+**Runtime effects:**
+
+- `rtl-buddy synth` loads `synth.yaml`, generates `artefacts/{synth_name}/synth.f`, writes a Yosys script to `synth.ys`, captures output in `synth.log`, and emits either `synth.rtlil` or a mapped `synth_netlist.v`.
+- Without `libraries`, the Yosys backend runs a technology-independent flow and writes RTLIL.
+- With `libraries`, the backend reads Liberty files from `cfg-synth-libs`, runs `dfflibmap` and `abc -liberty`, writes a Verilog netlist, and reports area when Yosys prints a chip-area line.
+- If `constraints` contains one or more `create_clock -period` entries, the backend passes the minimum period to ABC as `-D <period_ps>` and reports WNS when ABC timing is available.
+- A run passes only when the tool exits with code 0 and `synth.log` contains no lines starting with `ERROR:`.
+
+---
+
+## synth_regression.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: synth_reg_config`
+- `synth-configs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: synth_reg_config
+
+synth-configs:
+  - "design/example_block_a/synth/synth.yaml"
+  - "design/example_block_b/synth/synth.yaml"
+```
+
+**Runtime effects:**
+
+- `rtl-buddy synth-regression` iterates each listed `synth.yaml` file and filters syntheses by `--reg-level`.
+- Paths in `synth-configs` are resolved relative to the `synth_regression.yaml` file.
+- `synth-regression` changes directory into each synthesis suite directory before executing its entries.
 
 ---
 
