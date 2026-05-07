@@ -7,19 +7,15 @@ description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, r
 
 You are running rtl_buddy a Verilog/SV build and regression helper configured with YAML.
 
-This skill covers agent-specific conventions. Use local docs if you need help:
-
-- `rtl-buddy docs list`
-- `rtl-buddy docs show agents`
-- `rtl-buddy --machine docs show reference/yaml`
-
-Use GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> as a fallback reference.
+This skill covers agent-specific conventions. Use bundled docs first:
+`rtl-buddy docs list`, `rtl-buddy docs show agents`, `rtl-buddy --machine docs show reference/yaml`.
+Use <https://rtl-buddy.github.io/rtl_buddy/> only as a fallback reference.
 
 ## Always use `--machine`
 
 All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL and console output is plain text.
 
-See `rtl-buddy docs show agents` or <https://rtl-buddy.github.io/rtl_buddy/latest/agents/> for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
+See `rtl-buddy docs show agents` for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
 
 ## Version check
 
@@ -28,28 +24,20 @@ This skill ships with the CLI, so its content matches the installed major. Surfa
 
 ## YAML types
 
-rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` for exact schemas.
+Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 
-- **`root_config.yaml`** — project root. Selects platform, builders, builder modes, verible path, coverage config, and the default `regression.yaml` path. Discovered by walking up from the invocation directory.
-- **`regression.yaml`** — lists the suite `tests.yaml` paths and reg-levels that `regression` iterates over.
-- **`tests.yaml`** — per-suite. Declares `testbenches` (TB filelists) and `tests` that map test names to a model, model_path, and testbench. Lives in each verification suite dir.
-- **`models.yaml`** — per-design. Maps model names to source/include filelists; consumed by `filelist` and referenced from `tests.yaml`.
+- **`root_config.yaml`** — project root, platform/build defaults, regression default path.
+- **`regression.yaml`** — repo-level suite list for `regression`.
+- **`tests.yaml`** — suite-level tests/testbenches; run `test` and `randtest` from this directory.
+- **`models.yaml`** — design source filelists referenced by `tests.yaml`.
+- **`specs.yaml`** — spec traceability data; consumed by `rtl-buddy spec`.
 
-## Test Pass/fail detection
-- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and applies the configured thresholds.
-- If the testbench has a `cocotb:` block, `rtl_buddy` parses JUnit XML written by cocotb — no `PASS`/`FAIL` line needed. Run `rtl-buddy docs show concepts/cocotb` for setup.
-- Otherwise, `rtl_buddy` parses `artefacts/<test>/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
-- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
-- Always use the `PASS` or `FAIL` markers as otherwise the result is ambiguous and shows `NA`.
-- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
+## Pass/fail detection
 
-```systemverilog
-if (test_passed) $display("PASS smoke completed");
-else begin
-  $display("FAIL smoke completed");
-  $display("ERR: expected done=1 before timeout");
-end
-```
+- UVM tests use configured report thresholds; cocotb testbenches use JUnit XML.
+- Otherwise, `artefacts/<test>/test.log` must contain stdout starting with `PASS` or `FAIL`.
+- When emitting `FAIL`, also print an `ERR:` or `FAT:` line. Missing markers report `NA`; simulator exit code alone is not authoritative.
+- See `rtl-buddy docs show agents` and `rtl-buddy docs show concepts/cocotb`.
 
 ## Multi-suite discovery and CWD rules
 
@@ -60,13 +48,10 @@ end
 
 ## Artefact locations
 
-- `rtl_buddy.log` — JSONL in `--machine` mode; written to the suite root (CWD you invoked from).
-- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for a single run.
-- `artefacts/<test>/compile.log`, `run.f` — compile outputs, always at the test root (not per run-id).
-- `artefacts/<test>/run-0001/test.log` etc. — per-iteration outputs for `randtest`.
-- Symlinks `test.log`, `test.err`, `test.randseed` at the suite root point at the latest run.
-- For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `artefacts/`; report logs per suite.
-- Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
+- `rtl_buddy.log` is JSONL in `--machine` mode and is written to the invocation/suite directory.
+- Single-run outputs live under `artefacts/<test>/`; `randtest` iterations use `artefacts/<test>/run-0001/` etc.
+- Suite-root `test.log`, `test.err`, and `test.randseed` symlink to the latest run.
+- Multi-suite runs have separate `rtl_buddy.log` and `artefacts/` per suite; summarize results per suite.
 
 ## Bugs & Improvements
 If you discover a rtl_buddy bug or potential improvement, you can post an issue on GitHub <https://github.com/rtl-buddy/rtl_buddy/> documenting your findings, with permission from your user.
