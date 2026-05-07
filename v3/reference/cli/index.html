@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v3/reference/cli/">
       
       
-        <link rel="prev" href="../../concepts/spec-traceability/">
+        <link rel="prev" href="../../concepts/synthesis/">
       
       
         <link rel="next" href="../yaml/">
@@ -539,6 +539,34 @@
     
   
     Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
   
 
     
@@ -1199,15 +1227,17 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>│                                                              exit.                   │
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>│ test        run a simple test                                                        │
-<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>│ randtest    repeat a test with multiple random seeds                                 │
-<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>│ regression  run rtl regression                                                       │
-<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>│ filelist    generate filelists using models.yaml                                     │
-<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>│ verible     run verible cmd                                                          │
-<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>│ skill       manage the rtl_buddy agent skill                                         │
-<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>│ docs        browse bundled documentation                                             │
-<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>│ spec        spec traceability commands                                               │
-<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>│ test              run a simple test                                                  │
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>│ randtest          repeat a test with multiple random seeds                           │
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>│ regression        run rtl regression                                                 │
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>│ filelist          generate filelists using models.yaml                               │
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>│ verible           run verible cmd                                                    │
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>│ synth             run synthesis                                                      │
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>│ synth-regression  run synthesis regression                                           │
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>│ skill             manage the rtl_buddy agent skill                                   │
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>│ docs              browse bundled documentation                                       │
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>│ spec              spec traceability commands                                         │
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="test">test</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
