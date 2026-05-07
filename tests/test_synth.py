@@ -691,6 +691,16 @@ def test_parse_clock_period_ps_fractional(tmp_path):
     assert ys._parse_clock_period_ps(str(sdc)) == 3333
 
 
+def test_parse_clock_period_ps_multi_clock_returns_minimum(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text(
+        "create_clock -period 10.0 [get_ports clk_fast]\n"
+        "create_clock -period 40.0 [get_ports clk_slow]\n"
+    )
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 10000
+
+
 def test_parse_clock_period_ps_no_clock_returns_none(tmp_path):
     sdc = tmp_path / "c.sdc"
     sdc.write_text("set_input_delay 2.0 -clock clk [all_inputs]\n")

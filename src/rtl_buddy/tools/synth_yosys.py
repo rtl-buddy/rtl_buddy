@@ -76,16 +76,34 @@ class YosysSynth:
         return paths
 
     def _parse_clock_period_ps(self, sdc_path: str) -> int | None:
-        """Extract the first create_clock period (ns) and return it in picoseconds."""
+        """Extract create_clock periods from SDC and return the minimum in picoseconds.
+
+        ABC -D takes a single timing window; for multi-clock designs this is a
+        workaround — the minimum period is used, which over-constrains slower domains.
+        """
+        periods = []
         try:
             with open(sdc_path) as f:
                 for line in f:
                     m = re.search(r"create_clock\s+.*-period\s+([\d.]+)", line)
                     if m:
-                        return int(float(m.group(1)) * 1000)
+                        periods.append(float(m.group(1)))
         except OSError:
-            pass
-        return None
+            return None
+        if not periods:
+            return None
+        if len(periods) > 1:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.sdc_multi_clock",
+                synth=self.synth_cfg.get_name(),
+                clocks=len(periods),
+                periods_ns=periods,
+                used_ns=min(periods),
+                sdc=sdc_path,
+            )
+        return int(min(periods) * 1000)
 
     def _resolve_lib_paths(self) -> list[str]:
         libraries = self.synth_cfg.get_libraries()
