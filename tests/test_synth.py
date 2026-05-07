@@ -673,6 +673,57 @@ def test_resolve_lib_paths_unknown_name_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# SDC clock period parsing
+# ---------------------------------------------------------------------------
+
+
+def test_parse_clock_period_ps_basic(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -period 10.0 [get_ports clk]\n")
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 10000
+
+
+def test_parse_clock_period_ps_fractional(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -period 3.333 [get_ports clk]\n")
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) == 3333
+
+
+def test_parse_clock_period_ps_no_clock_returns_none(tmp_path):
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("set_input_delay 2.0 -clock clk [all_inputs]\n")
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(sdc)) is None
+
+
+def test_parse_clock_period_ps_missing_file_returns_none(tmp_path):
+    ys = _make_yosys(tmp_path)
+    assert ys._parse_clock_period_ps(str(tmp_path / "missing.sdc")) is None
+
+
+def test_write_script_lib_flow_with_sdc_adds_D_flag(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -period 5.0 [get_ports clk]\n")
+
+    root_cfg = _FakeRootCfg({"mylib": str(lib)})
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(libraries=["mylib"], constraints=str(sdc)),
+        root_cfg=root_cfg,
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"abc -liberty {lib} -D 5000" in script
+
+
+# ---------------------------------------------------------------------------
 # VlogFilelist strip=True fix
 # ---------------------------------------------------------------------------
 

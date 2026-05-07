@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -74,6 +75,18 @@ class YosysSynth:
                 paths.append(os.path.normpath(os.path.join(fl_dir, line)))
         return paths
 
+    def _parse_clock_period_ps(self, sdc_path: str) -> int | None:
+        """Extract the first create_clock period (ns) and return it in picoseconds."""
+        try:
+            with open(sdc_path) as f:
+                for line in f:
+                    m = re.search(r"create_clock\s+.*-period\s+([\d.]+)", line)
+                    if m:
+                        return int(float(m.group(1)) * 1000)
+        except OSError:
+            pass
+        return None
+
     def _resolve_lib_paths(self) -> list[str]:
         libraries = self.synth_cfg.get_libraries()
         if not libraries or self.root_cfg is None:
@@ -113,7 +126,29 @@ class YosysSynth:
         if mapped:
             for lib in lib_paths:
                 lines.append(f"dfflibmap -liberty {lib}")
-            lines.append(f"abc -liberty {lib_paths[0]}")
+            abc_cmd = f"abc -liberty {lib_paths[0]}"
+            constraints = self.synth_cfg.get_constraints()
+            if constraints:
+                period_ps = self._parse_clock_period_ps(constraints)
+                if period_ps is not None:
+                    abc_cmd += f" -D {period_ps}"
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "synth.sdc_period",
+                        synth=self.synth_cfg.get_name(),
+                        period_ps=period_ps,
+                        sdc=constraints,
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "synth.sdc_no_clock",
+                        synth=self.synth_cfg.get_name(),
+                        sdc=constraints,
+                    )
+            lines.append(abc_cmd)
             lines.append(f"write_verilog {self._netlist_path(mapped=True)}")
         else:
             if opts.abc_args:
