@@ -126,7 +126,7 @@ class YosysSynth:
 
     def _parse_gate_count(self, log_text: str) -> int | None:
         matches = re.findall(
-            r"^\s+(\d+)\s+(?:[\d.]+\s+)?cells$", log_text, re.MULTILINE
+            r"^\s+(\d+)\s+(?:[\d.]+(?:[Ee][+-]?\d+)?\s+)?cells$", log_text, re.MULTILINE
         )
         return int(matches[-1]) if matches else None
 
