@@ -1,7 +1,7 @@
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
 
+from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.seed_mode import SeedMode
 from rtl_buddy.tools.artifact_paths import (
     sanitize_artifact_component,
@@ -188,12 +188,12 @@ def test_vlog_sim_compile_uses_explicit_filelist_path_and_suite_cwd(
     def _fake_run(cmd, capture_output, text, cwd):
         captured["cmd"] = list(cmd)
         captured["cwd"] = cwd
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return ManagedProcessResult(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(
         vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
     )
-    monkeypatch.setattr(vlog_sim_module.subprocess, "run", _fake_run)
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
 
     assert sim.compile() == 0
     assert captured["cwd"] == str(tmp_path / "artefacts" / "basic")
@@ -210,35 +210,24 @@ def test_vlog_sim_execute_runs_in_artifact_dir_and_updates_symlinks(
     captured = {}
     sim = _make_sim(tmp_path, monkeypatch, builder_cfg=DummyBuilderCfg(simv="bin/simv"))
 
-    class FakeProcess:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def wait(self, timeout):
-            captured["timeout"] = timeout
-            return 0
-
-        def send_signal(self, _signal):
-            captured["signal_sent"] = True
-
-    def _fake_popen(cmd, preexec_fn, cwd, stdout, stderr):
+    def _fake_run(cmd, cwd, stdout, stderr, timeout, terminate_signal, **kwargs):
         captured["cmd"] = list(cmd)
         captured["cwd"] = cwd
+        captured["timeout"] = timeout
+        captured["terminate_signal"] = terminate_signal
         stdout.write("PASS basic\n")
         stderr.write("")
-        return FakeProcess()
+        return ManagedProcessResult(returncode=0)
 
     monkeypatch.setattr(
         vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
     )
-    monkeypatch.setattr(vlog_sim_module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
 
     assert sim.execute(run_id=1) == 0
     assert captured["cmd"][0] == str(tmp_path / "artefacts" / "basic" / "bin" / "simv")
     assert captured["cwd"] == str(tmp_path / "artefacts" / "basic" / "run-0001")
+    assert captured["terminate_signal"] == vlog_sim_module.signal.SIGQUIT
     assert (
         Path(tmp_path / "test.log").resolve()
         == Path(sim._get_log_path(run_id=1)).resolve()
@@ -259,27 +248,14 @@ def test_vlog_sim_execute_reads_replay_seed_from_nested_run_dir(tmp_path, monkey
     Path(sim._ensure_artifact_dir(run_id=3)).mkdir(parents=True, exist_ok=True)
     Path(sim._get_randseed_path(run_id=3)).write_text("4242\n")
 
-    class FakeProcess:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def wait(self, timeout):
-            return 0
-
-        def send_signal(self, _signal):
-            captured["signal_sent"] = True
-
-    def _fake_popen(cmd, preexec_fn, cwd, stdout, stderr):
+    def _fake_run(cmd, **kwargs):
         captured["cmd"] = list(cmd)
-        return FakeProcess()
+        return ManagedProcessResult(returncode=0)
 
     monkeypatch.setattr(
         vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
     )
-    monkeypatch.setattr(vlog_sim_module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
 
     assert sim.execute(run_id=5, seed_mode=SeedMode.REPLAY, replay_run_id=3) == 0
     assert "+seed=4242" in captured["cmd"]
@@ -290,30 +266,14 @@ def test_vlog_sim_execute_reads_hier_seed_from_artifact_dir(tmp_path, monkeypatc
         tmp_path, monkeypatch, builder_cfg=DummyBuilderCfg(run_opts=["hier_inst_seed"])
     )
 
-    class FakeProcess:
-        def __init__(self, cwd):
-            self.cwd = Path(cwd)
-
-        def __enter__(self):
-            (self.cwd / "HierInstanceSeed.txt").write_text("instance_seed=99\n")
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def wait(self, timeout):
-            return 0
-
-        def send_signal(self, _signal):
-            pass
-
-    def _fake_popen(cmd, preexec_fn, cwd, stdout, stderr):
-        return FakeProcess(cwd)
+    def _fake_run(cmd, cwd, **kwargs):
+        Path(cwd, "HierInstanceSeed.txt").write_text("instance_seed=99\n")
+        return ManagedProcessResult(returncode=0)
 
     monkeypatch.setattr(
         vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
     )
-    monkeypatch.setattr(vlog_sim_module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
 
     assert sim.execute(run_id=1) == 0
     randseed_text = Path(sim._get_randseed_path(run_id=1)).read_text()
@@ -325,31 +285,15 @@ def test_vlog_sim_multiple_runs_keep_runtime_side_files_separate(tmp_path, monke
     sim = _make_sim(tmp_path, monkeypatch)
     counter = {"value": 0}
 
-    class FakeProcess:
-        def __init__(self, cwd):
-            self.cwd = Path(cwd)
-
-        def __enter__(self):
-            counter["value"] += 1
-            (self.cwd / "wave.vcd").write_text(f"run={counter['value']}\n")
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def wait(self, timeout):
-            return 0
-
-        def send_signal(self, _signal):
-            pass
-
-    def _fake_popen(cmd, preexec_fn, cwd, stdout, stderr):
-        return FakeProcess(cwd)
+    def _fake_run(cmd, cwd, **kwargs):
+        counter["value"] += 1
+        Path(cwd, "wave.vcd").write_text(f"run={counter['value']}\n")
+        return ManagedProcessResult(returncode=0)
 
     monkeypatch.setattr(
         vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
     )
-    monkeypatch.setattr(vlog_sim_module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
 
     assert sim.execute(run_id=1) == 0
     assert sim.execute(run_id=2) == 0

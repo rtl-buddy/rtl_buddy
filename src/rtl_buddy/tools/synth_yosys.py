@@ -10,6 +10,7 @@ from .vlog_filelist import VlogFilelist
 from ..config.synth import SynthConfig, SynthToolConfig
 from ..errors import FilelistError
 from ..logging_utils import log_event, task_status
+from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
 # Default ABC script for liberty without timing constraint
@@ -251,11 +252,10 @@ class YosysSynth:
 
         with task_status(f"synth {self.synth_cfg.get_name()}"):
             with open(log_path, "w") as log_f:
-                result = subprocess.run(
+                result = run_managed_process(
                     cmd,
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
-                    check=False,
                 )
 
         if result.returncode != 0:

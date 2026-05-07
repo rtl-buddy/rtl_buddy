@@ -18,6 +18,7 @@ from rtl_buddy.runner.synth_results import (
     SynthPassResults,
     SynthSkipResults,
 )
+from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.tools import synth_yosys as synth_yosys_module
 from rtl_buddy.tools.synth_yosys import YosysSynth
 from rtl_buddy.tools.vlog_filelist import VlogFilelist
@@ -462,14 +463,16 @@ def test_write_script_tool_overrides_applied(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _fake_subprocess_run(returncode=0, write_log=None):
+def _fake_managed_process(returncode=0, write_log=None, calls=None):
+    calls = calls if calls is not None else []
 
-    def _run(cmd, stdout, stderr, check):
+    def _run_managed_process(cmd, stdout, stderr, **kwargs):
+        calls.append({"cmd": cmd, "stdout": stdout, "stderr": stderr, **kwargs})
         if write_log:
             stdout.write(write_log)
-        return type("R", (), {"returncode": returncode})()
+        return ManagedProcessResult(returncode=returncode)
 
-    return _run
+    return _run_managed_process
 
 
 def _setup_run(tmp_path):
@@ -513,7 +516,7 @@ def test_run_returns_pass_on_clean_exit(tmp_path, monkeypatch):
         synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
     )
     monkeypatch.setattr(
-        synth_yosys_module.subprocess, "run", _fake_subprocess_run(returncode=0)
+        synth_yosys_module, "run_managed_process", _fake_managed_process(returncode=0)
     )
     result = ys.run()
     assert isinstance(result, SynthPassResults)
@@ -540,7 +543,7 @@ def test_run_returns_fail_on_nonzero_exit(tmp_path, monkeypatch):
         synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
     )
     monkeypatch.setattr(
-        synth_yosys_module.subprocess, "run", _fake_subprocess_run(returncode=1)
+        synth_yosys_module, "run_managed_process", _fake_managed_process(returncode=1)
     )
     result = ys.run()
     assert isinstance(result, SynthFailResults)
@@ -568,13 +571,47 @@ def test_run_returns_fail_on_error_in_log(tmp_path, monkeypatch):
         synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
     )
     monkeypatch.setattr(
-        synth_yosys_module.subprocess,
-        "run",
-        _fake_subprocess_run(returncode=0, write_log="ERROR: something went wrong\n"),
+        synth_yosys_module,
+        "run_managed_process",
+        _fake_managed_process(returncode=0, write_log="ERROR: something went wrong\n"),
     )
     result = ys.run()
     assert isinstance(result, SynthFailResults)
     assert "ERROR" in result.results["desc"]
+
+
+def test_run_uses_managed_process_for_yosys(tmp_path, monkeypatch):
+    model = _setup_run(tmp_path)
+    synth_cfg = SynthConfig(
+        name="s",
+        desc="",
+        model=model,
+        tool="yosys",
+        constraints=None,
+        params=None,
+        defines=None,
+        libraries=None,
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    ys = YosysSynth(
+        "t", synth_cfg=synth_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+    monkeypatch.setattr(
+        synth_yosys_module, "task_status", lambda *a, **kw: nullcontext()
+    )
+    calls = []
+    monkeypatch.setattr(
+        synth_yosys_module,
+        "run_managed_process",
+        _fake_managed_process(returncode=0, calls=calls),
+    )
+
+    result = ys.run()
+
+    assert isinstance(result, SynthPassResults)
+    assert calls
+    assert calls[0]["stderr"] == synth_yosys_module.subprocess.STDOUT
 
 
 # ---------------------------------------------------------------------------

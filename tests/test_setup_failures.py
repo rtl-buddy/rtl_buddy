@@ -2,6 +2,7 @@ from contextlib import nullcontext
 
 from rtl_buddy.errors import FilelistError
 from rtl_buddy.logging_utils import setup_logging
+from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.test_results import (
     FilelistFailResults,
@@ -265,20 +266,6 @@ class DummyPreprocTestCfg(DummyExecuteTestCfg):
         return self._script_path
 
 
-class DummyProcess:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def wait(self, _timeout):
-        return 0
-
-    def send_signal(self, _sig):
-        return None
-
-
 def test_vlog_sim_missing_hier_seed_file_is_nonfatal(tmp_path, monkeypatch):
     log_path = tmp_path / "rtl_buddy.log"
     setup_logging(color=False, log_path=log_path)
@@ -287,12 +274,8 @@ def test_vlog_sim_missing_hier_seed_file_is_nonfatal(tmp_path, monkeypatch):
         "rtl_buddy.tools.vlog_sim.task_status", lambda *args, **kwargs: nullcontext()
     )
     monkeypatch.setattr(
-        "rtl_buddy.tools.vlog_sim.signal.signal", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr("rtl_buddy.tools.vlog_sim.os.setpgrp", lambda: None)
-    monkeypatch.setattr(
-        "rtl_buddy.tools.vlog_sim.subprocess.Popen",
-        lambda *args, **kwargs: DummyProcess(),
+        "rtl_buddy.tools.vlog_sim.run_managed_process",
+        lambda *args, **kwargs: ManagedProcessResult(returncode=0),
     )
 
     sim = VlogSim(
