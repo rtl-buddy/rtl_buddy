@@ -31,5 +31,6 @@ class SynthRunner:
             synth_cfg=self.synth_cfg,
             tool_cfg=tool_cfg,
             suite_dir=self.suite_dir,
+            root_cfg=self.root_cfg,
         )
         return backend.run()

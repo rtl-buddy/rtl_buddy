@@ -52,6 +52,7 @@ def _make_synth_cfg(
     constraints=None,
     params=None,
     defines=None,
+    libraries=None,
     reglvl=None,
     tool_overrides=None,
 ):
@@ -66,12 +67,13 @@ def _make_synth_cfg(
         constraints=constraints,
         params=params,
         defines=defines,
+        libraries=libraries,
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
     )
 
 
-def _make_yosys(tmp_path, synth_cfg=None, tool_cfg=None):
+def _make_yosys(tmp_path, synth_cfg=None, tool_cfg=None, root_cfg=None):
     synth_cfg = synth_cfg or _make_synth_cfg()
     tool_cfg = tool_cfg or _tool_cfg()
     return YosysSynth(
@@ -79,6 +81,7 @@ def _make_yosys(tmp_path, synth_cfg=None, tool_cfg=None):
         synth_cfg=synth_cfg,
         tool_cfg=tool_cfg,
         suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
     )
 
 
@@ -499,6 +502,7 @@ def test_run_returns_pass_on_clean_exit(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
+        libraries=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -525,6 +529,7 @@ def test_run_returns_fail_on_nonzero_exit(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
+        libraries=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -552,6 +557,7 @@ def test_run_returns_fail_on_error_in_log(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
+        libraries=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -569,6 +575,101 @@ def test_run_returns_fail_on_error_in_log(tmp_path, monkeypatch):
     result = ys.run()
     assert isinstance(result, SynthFailResults)
     assert "ERROR" in result.results["desc"]
+
+
+# ---------------------------------------------------------------------------
+# YosysSynth — library-mapped flow
+# ---------------------------------------------------------------------------
+
+
+class _FakeLibCfg:
+    def __init__(self, path):
+        self._path = path
+
+    def get_path(self):
+        return self._path
+
+
+class _FakeRootCfg:
+    def __init__(self, lib_map):
+        self._lib_map = lib_map
+
+    def get_synth_lib_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+
+        if name not in self._lib_map:
+            raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
+        return _FakeLibCfg(self._lib_map[name])
+
+
+def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    root_cfg = _FakeRootCfg({"mylib": str(lib)})
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        root_cfg=root_cfg,
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert f"read_liberty -lib {lib}" in script
+    assert f"dfflibmap -liberty {lib}" in script
+    assert f"abc -liberty {lib}" in script
+    assert "write_verilog" in script
+    assert "write_rtlil" not in script
+
+
+def test_write_script_lib_flow_no_standalone_abc(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    root_cfg = _FakeRootCfg({"mylib": str(lib)})
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        tool_cfg=_tool_cfg(abc_args="-fast"),
+        root_cfg=root_cfg,
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "\nabc -fast" not in script
+
+
+def test_write_script_no_lib_flow_unchanged(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(libraries=None))
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert "read_liberty" not in script
+    assert "dfflibmap" not in script
+    assert "write_rtlil" in script
+    assert "write_verilog" not in script
+
+
+def test_resolve_lib_paths_unknown_name_raises(tmp_path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    root_cfg = _FakeRootCfg({})
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(libraries=["unknown_lib"]),
+        root_cfg=root_cfg,
+    )
+    with pytest.raises(FatalRtlBuddyError, match="not found"):
+        ys._resolve_lib_paths()
 
 
 # ---------------------------------------------------------------------------

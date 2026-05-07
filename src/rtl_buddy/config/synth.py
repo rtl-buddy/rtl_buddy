@@ -14,6 +14,26 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 
+@serde
+class SynthLibConfigFile:
+    name: str
+    path: str
+
+
+class SynthLibConfig:
+    def __init__(self, cfg: SynthLibConfigFile, root_cfg_path: str):
+        self._name = cfg.name
+        self._path = os.path.normpath(
+            os.path.join(os.path.dirname(root_cfg_path), cfg.path)
+        )
+
+    def get_name(self) -> str:
+        return self._name
+
+    def get_path(self) -> str:
+        return self._path
+
+
 @dataclass
 class SynthToolOpts:
     synth_args: str = ""
@@ -62,6 +82,7 @@ class SynthConfigFile:
     constraints: str | None = None
     params: dict | None = None
     defines: dict | None = None
+    libraries: list[str] | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
 
@@ -82,6 +103,7 @@ class SynthConfigFile:
             constraints=constraints,
             params=self.params,
             defines=self.defines,
+            libraries=self.libraries,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
         )
@@ -96,6 +118,7 @@ class SynthConfig:
     constraints: str | None
     params: dict | None
     defines: dict | None
+    libraries: list[str] | None
     _reglvl: int | dict | None
     tool_overrides: dict | None
 
@@ -116,6 +139,9 @@ class SynthConfig:
 
     def get_defines(self) -> dict | None:
         return self.defines
+
+    def get_libraries(self) -> list[str] | None:
+        return self.libraries
 
     def get_tool_name(self) -> str:
         return self.tool

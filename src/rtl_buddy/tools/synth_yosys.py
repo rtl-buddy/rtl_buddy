@@ -19,10 +19,12 @@ class YosysSynth:
         synth_cfg: SynthConfig,
         tool_cfg: SynthToolConfig,
         suite_dir: str,
+        root_cfg=None,
     ):
         self.name = name
         self.synth_cfg = synth_cfg
         self.tool_cfg = tool_cfg
+        self.root_cfg = root_cfg
 
         artefact_root = Path(suite_dir) / "artefacts" / synth_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -37,7 +39,9 @@ class YosysSynth:
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "synth.log")
 
-    def _netlist_path(self) -> str:
+    def _netlist_path(self, mapped: bool = False) -> str:
+        if mapped:
+            return os.path.join(self.artefact_dir, "synth_netlist.v")
         return os.path.join(self.artefact_dir, "synth.rtlil")
 
     def _write_filelist(self) -> str:
@@ -70,19 +74,30 @@ class YosysSynth:
                 paths.append(os.path.normpath(os.path.join(fl_dir, line)))
         return paths
 
+    def _resolve_lib_paths(self) -> list[str]:
+        libraries = self.synth_cfg.get_libraries()
+        if not libraries or self.root_cfg is None:
+            return []
+        return [self.root_cfg.get_synth_lib_cfg(name).get_path() for name in libraries]
+
     def _write_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
         overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         opts = self.tool_cfg.get_opts(overrides)
         params = self.synth_cfg.get_params()
+        lib_paths = self._resolve_lib_paths()
+        mapped = bool(lib_paths)
 
         defines = self.synth_cfg.get_defines()
         define_flags = ""
         if defines:
             define_flags = " " + " ".join(f"-D {k}={v}" for k, v in defines.items())
 
-        source_files = self._source_files_from_filelist(fl_path)
         lines = []
+        for lib in lib_paths:
+            lines.append(f"read_liberty -lib {lib}")
+
+        source_files = self._source_files_from_filelist(fl_path)
         for src in source_files:
             lines.append(f"read_verilog -sv -defer{define_flags} {src}")
 
@@ -95,10 +110,15 @@ class YosysSynth:
             synth_cmd += f" {opts.synth_args}"
         lines.append(synth_cmd)
 
-        if opts.abc_args:
-            lines.append(f"abc {opts.abc_args}")
-
-        lines.append(f"write_rtlil {self._netlist_path()}")
+        if mapped:
+            for lib in lib_paths:
+                lines.append(f"dfflibmap -liberty {lib}")
+            lines.append(f"abc -liberty {lib_paths[0]}")
+            lines.append(f"write_verilog {self._netlist_path(mapped=True)}")
+        else:
+            if opts.abc_args:
+                lines.append(f"abc {opts.abc_args}")
+            lines.append(f"write_rtlil {self._netlist_path()}")
 
         script = "\n".join(lines) + "\n"
         script_path = self._script_path()
