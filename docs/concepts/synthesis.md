@@ -11,23 +11,15 @@ description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-syn
 `rtl_buddy` uses the [rtl-buddy fork of Yosys](https://github.com/rtl-buddy/yosys), which tracks upstream with rtl-buddy-specific patches. Build from source:
 
 ```bash
-git clone https://github.com/rtl-buddy/yosys.git
-cd yosys
-git submodule update --init
-make config-clang   # or config-gcc on Linux
-make -j$(nproc)
-sudo make install   # installs to /usr/local/bin/yosys
-```
-
-On macOS with Homebrew dependencies:
-
-```bash
+# Install deps with brew. Adjust to your package manager as needed.
 brew install cmake python tcl-tk libffi readline
-git clone https://github.com/rtl-buddy/yosys.git
+
+# Clone, build and install
+git clone --recursive https://github.com/rtl-buddy/yosys.git
 cd yosys
-make config-clang
-make -j$(sysctl -n hw.logicalcpu)
-sudo make install
+make config-clang   # or `make config-gcc` on Linux
+make -j 8           # adjust to no. of CPU cores if needed
+make install        # installs to /usr/local/bin/yosys
 ```
 
 Verify the install:
