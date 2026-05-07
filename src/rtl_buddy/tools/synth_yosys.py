@@ -47,8 +47,28 @@ class YosysSynth:
             model_cfg=self.synth_cfg.get_model(),
             output_path=fl_path,
         )
-        vlog_fl.write_output(output_filepath=fl_path, unroll=True)
+        vlog_fl.write_output(
+            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+        )
         return fl_path
+
+    def _source_files_from_filelist(self, fl_path: str) -> list[str]:
+        """Return absolute source file paths from a (possibly stripped) filelist."""
+        fl_dir = os.path.dirname(os.path.abspath(fl_path))
+        _SKIP = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+        _SOURCE_PREFIX = "-v "
+        paths = []
+        with open(fl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("//"):
+                    continue
+                if any(line.startswith(opt) for opt in _SKIP):
+                    continue
+                if line.startswith(_SOURCE_PREFIX):
+                    line = line[len(_SOURCE_PREFIX):]
+                paths.append(os.path.normpath(os.path.join(fl_dir, line)))
+        return paths
 
     def _write_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
@@ -61,8 +81,10 @@ class YosysSynth:
         if defines:
             define_flags = " " + " ".join(f"-D {k}={v}" for k, v in defines.items())
 
+        source_files = self._source_files_from_filelist(fl_path)
         lines = []
-        lines.append(f"read_verilog -sv{define_flags} -f {fl_path}")
+        for src in source_files:
+            lines.append(f"read_verilog -sv -defer{define_flags} {src}")
 
         if params:
             for key, value in params.items():

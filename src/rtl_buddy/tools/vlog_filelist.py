@@ -165,14 +165,14 @@ class VlogFilelist:
             if flatten:
                 line_path = os.path.basename(line_path)
 
+            if strip:
+                line_option = ""
+
             line = f"{line_option}{line_path}\n" if line_option else f"{line_path}\n"
             if deduplicate:
                 if line in out_lines:
                     # logger.info(f'Duplicate detected, discarding: "{line_option or ""}{line_path}"')
                     continue
-
-            if strip:
-                line_option = ""
 
             # logger.debug(f'Post-proc: "{line_option}{line_path}"')
             out_lines.append(line)
