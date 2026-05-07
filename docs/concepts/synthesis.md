@@ -13,6 +13,7 @@ description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-syn
 ```bash
 git clone https://github.com/rtl-buddy/yosys.git
 cd yosys
+git submodule update --init
 make config-clang   # or config-gcc on Linux
 make -j$(nproc)
 sudo make install   # installs to /usr/local/bin/yosys
