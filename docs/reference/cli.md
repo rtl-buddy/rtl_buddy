@@ -42,14 +42,16 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │                                                              exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-│ test        run a simple test                                                        │
-│ randtest    repeat a test with multiple random seeds                                 │
-│ regression  run rtl regression                                                       │
-│ filelist    generate filelists using models.yaml                                     │
-│ verible     run verible cmd                                                          │
-│ skill       manage the rtl_buddy agent skill                                         │
-│ docs        browse bundled documentation                                             │
-│ spec        spec traceability commands                                               │
+│ test              run a simple test                                                  │
+│ randtest          repeat a test with multiple random seeds                           │
+│ regression        run rtl regression                                                 │
+│ filelist          generate filelists using models.yaml                               │
+│ verible           run verible cmd                                                    │
+│ synth             run synthesis                                                      │
+│ synth-regression  run synthesis regression                                           │
+│ skill             manage the rtl_buddy agent skill                                   │
+│ docs              browse bundled documentation                                       │
+│ spec              spec traceability commands                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
