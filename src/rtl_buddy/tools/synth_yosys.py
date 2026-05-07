@@ -66,7 +66,7 @@ class YosysSynth:
                 if any(line.startswith(opt) for opt in _SKIP):
                     continue
                 if line.startswith(_SOURCE_PREFIX):
-                    line = line[len(_SOURCE_PREFIX):]
+                    line = line[len(_SOURCE_PREFIX) :]
                 paths.append(os.path.normpath(os.path.join(fl_dir, line)))
         return paths
 
