@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="RTL Buddy is a Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, coverage, and YAML-based RTL verification automation.">
+        <meta name="description" content="RTL Buddy is a Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, Yosys synthesis flows, coverage, and YAML-based RTL automation.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -314,6 +314,17 @@
     <span class="md-ellipsis">
       
         Verilator and VCS Simulation Workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#yosys-synthesis-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Yosys Synthesis Workflows
       
     </span>
   </a>
@@ -639,6 +650,34 @@
     
   
     Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="concepts/synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
   
 
     
@@ -1030,6 +1069,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#yosys-synthesis-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Yosys Synthesis Workflows
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#getting-started" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1072,23 +1122,26 @@
 
 
 <h1 id="rtl-buddy">RTL Buddy</h1>
-<p>RTL Buddy is a Python CLI for Verilog and SystemVerilog RTL verification workflows, including test execution, randomized regression testing, Verilator and VCS simulation, coverage collection, and YAML-based automation.</p>
-<p>It wraps simulation tools and project scripts to provide a structured, config-driven test and regression system for ASIC and FPGA projects. The primary supported flows are Verilator on macOS/Linux and VCS on Linux.</p>
+<p>RTL Buddy is a Python CLI for Verilog and SystemVerilog RTL workflows, including test execution, randomized regression testing, Verilator and VCS simulation, Yosys synthesis, coverage collection, and YAML-based automation.</p>
+<p>It wraps simulation, synthesis, and project scripts to provide a structured, config-driven test, regression, and synthesis system for ASIC and FPGA projects. The primary supported simulation flows are Verilator on macOS/Linux and VCS on Linux.</p>
 <h2 id="features">Features</h2>
 <ul>
 <li>Run individual Verilog/SystemVerilog tests or full regressions from YAML config files</li>
 <li>Randomized seed testing with repeat and replay support</li>
 <li>Plugin hooks for sweep generation, test pre-processing, and post-processing</li>
 <li>Filelist generation from <code>models.yaml</code></li>
+<li>Yosys synthesis runs and synthesis regressions from <code>synth.yaml</code></li>
 <li>Verilator coverage collection, merge, summary, and export workflows</li>
 <li>Basic Verible command integration for lint, syntax, formatting, and preprocessing</li>
 <li>Machine-readable JSONL logging for use with AI agents and CI pipelines</li>
 </ul>
-<p><code>rtl_buddy</code> can be adapted to different project toolchains, but the primary supported flows are Verilator and VCS. Broader first-class Verible and PeakRDL workflows are on the roadmap.</p>
+<p><code>rtl_buddy</code> can be adapted to different project toolchains, but the primary supported simulation flows are Verilator and VCS, and synthesis through Yosys. Broader first-class Verible and PeakRDL workflows are on the roadmap.</p>
 <h2 id="systemverilog-regression-testing">SystemVerilog Regression Testing</h2>
 <p>RTL Buddy keeps simulator invocation, seeds, logs, result handling, and regression selection consistent across repeated verification runs. Projects describe suites, tests, platforms, builders, and models in readable YAML files instead of scattering that logic across ad hoc shell scripts.</p>
 <h2 id="verilator-and-vcs-simulation-workflows">Verilator and VCS Simulation Workflows</h2>
 <p>The CLI gives RTL projects one command surface for open-source Verilator flows and Linux VCS flows, with optional hooks for project-specific compile, simulation, sweep, and post-processing behavior.</p>
+<h2 id="yosys-synthesis-workflows">Yosys Synthesis Workflows</h2>
+<p>Synthesis configs use the same YAML-driven style as tests and regressions. Projects can define technology-independent or Liberty-mapped Yosys runs, capture synthesis artefacts, and run synthesis regressions from one command surface.</p>
 <h2 id="getting-started">Getting Started</h2>
 <ul>
 <li><a href="install/">Installation</a> — how to add <code>rtl_buddy</code> to your project</li>
