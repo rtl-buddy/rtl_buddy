@@ -1346,6 +1346,7 @@ class RtlBuddy:
         raise typer.Exit(0)
 
     def _render_synth_summary(self, title, synth_results, *, metadata=None):
+        has_gates = any("gate_count" in r["results"].results for r in synth_results)
         has_area = any("area_um2" in r["results"].results for r in synth_results)
         has_timing = any("crit_path_ps" in r["results"].results for r in synth_results)
         rows = []
@@ -1356,6 +1357,9 @@ class RtlBuddy:
                 "result": res["result"],
                 "desc": res["desc"],
             }
+            if has_gates:
+                gc = res.get("gate_count")
+                row["gates"] = str(gc) if gc is not None else "-"
             if has_area:
                 area = res.get("area_um2")
                 row["area"] = f"{area:.2f} µm²" if area is not None else "-"
@@ -1369,6 +1373,8 @@ class RtlBuddy:
             ("result", "Result"),
             ("desc", "Description"),
         ]
+        if has_gates:
+            columns.append(("gates", "Gates"))
         if has_area:
             columns.append(("area", "Area"))
         if has_timing:

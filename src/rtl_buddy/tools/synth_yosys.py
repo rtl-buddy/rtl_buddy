@@ -123,6 +123,12 @@ class YosysSynth:
         m = re.search(r"Chip area for module[^:]*:\s*([\d.]+)", log_text)
         return float(m.group(1)) if m else None
 
+    def _parse_gate_count(self, log_text: str) -> int | None:
+        matches = re.findall(
+            r"^\s+(\d+)\s+(?:[\d.]+\s+)?cells$", log_text, re.MULTILINE
+        )
+        return int(matches[-1]) if matches else None
+
     def _parse_critical_path_ps(self, log_text: str) -> float | None:
         m = re.search(r"Delay\s*=\s*([\d.]+)\s*ps", log_text)
         return float(m.group(1)) if m else None
@@ -286,6 +292,7 @@ class YosysSynth:
             )
 
         area_um2 = self._parse_area_um2(log_text)
+        gate_count = self._parse_gate_count(log_text)
         crit_path_ps = self._parse_critical_path_ps(log_text)
 
         log_event(
@@ -294,11 +301,13 @@ class YosysSynth:
             "synth.passed",
             synth=self.synth_cfg.get_name(),
             area_um2=area_um2,
+            gate_count=gate_count,
             crit_path_ps=crit_path_ps,
             log=log_path,
         )
         return SynthPassResults(
             name=self.name + "/results",
             area_um2=area_um2,
+            gate_count=gate_count,
             crit_path_ps=crit_path_ps,
         )
