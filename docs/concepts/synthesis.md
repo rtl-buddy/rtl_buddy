@@ -6,6 +6,37 @@ description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-syn
 
 `rtl_buddy` provides a tool-agnostic synthesis flow that mirrors the simulation workflow. Synthesis runs are described in `synth.yaml` files; tool-specific defaults live in `root_config.yaml` under `cfg-synth-tools`.
 
+## Installing Yosys
+
+`rtl_buddy` uses the [rtl-buddy fork of Yosys](https://github.com/rtl-buddy/yosys), which tracks upstream with rtl-buddy-specific patches. Build from source:
+
+```bash
+git clone https://github.com/rtl-buddy/yosys.git
+cd yosys
+make config-clang   # or config-gcc on Linux
+make -j$(nproc)
+sudo make install   # installs to /usr/local/bin/yosys
+```
+
+On macOS with Homebrew dependencies:
+
+```bash
+brew install cmake python tcl-tk libffi readline
+git clone https://github.com/rtl-buddy/yosys.git
+cd yosys
+make config-clang
+make -j$(sysctl -n hw.logicalcpu)
+sudo make install
+```
+
+Verify the install:
+
+```bash
+yosys --version
+```
+
+The `yosys` binary must be on `PATH` when `rb synth` is invoked.
+
 ## Synthesis config: `synth.yaml`
 
 A `synth.yaml` file defines one or more synthesis runs for a block.
