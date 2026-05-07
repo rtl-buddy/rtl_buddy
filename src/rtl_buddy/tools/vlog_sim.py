@@ -24,11 +24,11 @@ from .artifact_paths import test_artifact_dir, test_build_dir_name
 
 import time
 import pprint
-import subprocess
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
+from ..process_utils import run_managed_process
 
 
 def force_symlink(target, link_name):
@@ -324,7 +324,7 @@ class VlogSim:
         s_time = time.time()
         with task_status(f"Compiling {self.test_name}", spinner="dots12"):
             try:
-                result = subprocess.run(
+                result = run_managed_process(
                     run_cmd, capture_output=True, text=True, cwd=compile_work_dir
                 )
             except FileNotFoundError:
@@ -484,40 +484,31 @@ class VlogSim:
         ):
             extra_env = self._get_extra_sim_env(run_id=run_id)
             sim_env = {**os.environ, **extra_env} if extra_env else None
-            popen_kwargs = dict(preexec_fn=os.setpgrp, cwd=artifact_dir)
-            if sim_env is not None:
-                popen_kwargs["env"] = sim_env
             with open(err_path, "w+") as test_err_fp:
                 with open(log_path, "w+") as test_out_fp:
-                    with subprocess.Popen(
-                        run_cmd, stdout=test_out_fp, stderr=test_err_fp, **popen_kwargs
-                    ) as process:
+                    result = run_managed_process(
+                        run_cmd,
+                        stdout=test_out_fp,
+                        stderr=test_err_fp,
+                        cwd=artifact_dir,
+                        env=sim_env,
+                        timeout=timeout,
+                        timeout_returncode=4444,
+                        terminate_signal=signal.SIGQUIT,
+                    )
+                    returncode = result.returncode
 
-                        def signal_handler(_no, _frame):
-                            process.send_signal(signal.SIGQUIT)
-                            raise KeyboardInterrupt
-
-                        signal.signal(signal.SIGINT, signal_handler)
-
-                        returncode = None
-                        try:
-                            returncode = process.wait(timeout)
-                        except subprocess.TimeoutExpired:
-                            pass
-
-                        t_time = time.time() - s_time
-                        if returncode is None:
-                            process.send_signal(signal.SIGQUIT)
-                            returncode = 4444
-                            log_event(
-                                logger,
-                                logging.ERROR,
-                                "sim.timeout",
-                                test=self.test_name,
-                                run_id=run_id,
-                                timeout_sec=timeout,
-                                **artifact_paths,
-                            )
+                    t_time = time.time() - s_time
+                    if result.timed_out:
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "sim.timeout",
+                            test=self.test_name,
+                            run_id=run_id,
+                            timeout_sec=timeout,
+                            **artifact_paths,
+                        )
 
         with open(randseed_path, "w") as f:
             f.write(str(seed) + "\n")
