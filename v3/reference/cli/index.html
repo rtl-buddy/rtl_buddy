@@ -559,6 +559,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../concepts/wave/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../concepts/synthesis/" class="md-nav__link">
         
   
@@ -767,6 +795,28 @@
     <span class="md-ellipsis">
       
         verible
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wave" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        wave
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wave-install-nvim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        wave-install-nvim
       
     </span>
   </a>
@@ -1139,6 +1189,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#wave" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        wave
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wave-install-nvim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        wave-install-nvim
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skill" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1227,17 +1299,19 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>│                                                              exit.                   │
 <a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>│ test              run a simple test                                                  │
-<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>│ randtest          repeat a test with multiple random seeds                           │
-<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>│ regression        run rtl regression                                                 │
-<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>│ filelist          generate filelists using models.yaml                               │
-<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>│ verible           run verible cmd                                                    │
-<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>│ synth             run synthesis                                                      │
-<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>│ synth-regression  run synthesis regression                                           │
-<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>│ skill             manage the rtl_buddy agent skill                                   │
-<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>│ docs              browse bundled documentation                                       │
-<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>│ spec              spec traceability commands                                         │
-<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>│ test               run a simple test                                                 │
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>│ randtest           repeat a test with multiple random seeds                          │
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>│ regression         run rtl regression                                                │
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>│ filelist           generate filelists using models.yaml                              │
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>│ verible            run verible cmd                                                   │
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>│ wave               open waveform viewer for a test                                   │
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>│ wave-install-nvim  install nvim plugin for rb wave annotation                        │
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>│ synth              run synthesis                                                     │
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>│ synth-regression   run synthesis regression                                          │
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>│ skill              manage the rtl_buddy agent skill                                  │
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>│ docs               browse bundled documentation                                      │
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>│ spec               spec traceability commands                                        │
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="test">test</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
@@ -1358,48 +1432,75 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>│ --help          Show this message and exit.                                          │
 <a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
-<h2 id="skill">skill</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...                                     
+<h2 id="wave">wave</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Usage: rtl-buddy wave [OPTIONS] TEST_NAME                                              
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a> manage the rtl_buddy agent skill                                                       
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a> open waveform viewer for a test                                                        
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>│ --help          Show this message and exit.                                          │
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>│ *    test_name      TEXT  name of test to open waveform for [required]               │
 <a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>│ install          Install the bundled rtl_buddy skill.                                │
-<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>│ uninstall        Remove the installed rtl_buddy skill files from the selected scope. │
-<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>│ status           Report whether the skill is installed and whether it matches the    │
-<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>│                  current package version.                                            │
-<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>│ print-gitignore  Print the gitignore lines for project-level skill installs.         │
-<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>│ --test-config     -c      TEXT  tests.yaml to use [default: tests.yaml]              │
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>│ --surfer                  TEXT  cfg-surfer entry name [default: surfer-default]      │
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>│ --resim                         force re-run of debug sim even if FST exists         │
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>│ --focused-signal                annotate only the signal selected via Go to          │
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>│                                 declaration; default annotates all signals in scope  │
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>│ --help                          Show this message and exit.                          │
+<a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
-<h2 id="docs">docs</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...                                      
+<h2 id="wave-install-nvim">wave-install-nvim</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>Usage: rtl-buddy wave-install-nvim [OPTIONS]                                           
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a> browse bundled documentation                                                           
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a> install nvim plugin for rb wave annotation                                             
 <a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>
 <a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>│ --help          Show this message and exit.                                          │
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>│ list  list bundled documentation pages                                               │
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>│ show  show a bundled documentation page                                              │
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>│ --force          overwrite existing installation                                     │
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>│ --help           Show this message and exit.                                         │
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
-<h2 id="spec">spec</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...                                      
+<h2 id="skill">skill</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...                                     
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a> spec traceability commands                                                             
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a> manage the rtl_buddy agent skill                                                       
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
 <a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>│ --help          Show this message and exit.                                          │
 <a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>│ list            list all spec blocks discovered in the project                       │
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>│ check-design    show which spec blocks have design models referencing them           │
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>│ check-coverage  show which spec coverage items are addressed by tests                │
-<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>│ install          Install the bundled rtl_buddy skill.                                │
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>│ uninstall        Remove the installed rtl_buddy skill files from the selected scope. │
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>│ status           Report whether the skill is installed and whether it matches the    │
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>│                  current package version.                                            │
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>│ print-gitignore  Print the gitignore lines for project-level skill installs.         │
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="docs">docs</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>Usage: rtl-buddy docs [OPTIONS] COMMAND [ARGS]...                                      
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a> browse bundled documentation                                                           
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>│ --help          Show this message and exit.                                          │
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>│ list  list bundled documentation pages                                               │
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>│ show  show a bundled documentation page                                              │
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="spec">spec</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>Usage: rtl-buddy spec [OPTIONS] COMMAND [ARGS]...                                      
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a> spec traceability commands                                                             
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>│ --help          Show this message and exit.                                          │
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>│ list            list all spec blocks discovered in the project                       │
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>│ check-design    show which spec blocks have design models referencing them           │
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>│ check-coverage  show which spec coverage items are addressed by tests                │
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 
 

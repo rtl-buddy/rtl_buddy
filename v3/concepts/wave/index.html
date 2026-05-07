@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to run multiple test suites in sequence using regression.yaml, filtering tests by regression level.">
+        <meta name="description" content="How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v3/concepts/regressions/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v3/concepts/wave/">
       
       
-        <link rel="prev" href="../tests/">
+        <link rel="prev" href="../spec-traceability/">
       
       
-        <link rel="next" href="../coverage/">
+        <link rel="next" href="../synthesis/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Regressions - RTL Buddy</title>
+        <title>Waveform Viewer - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#regressions" class="md-skip">
+        <a href="#waveform-viewer-rb-wave" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Regressions
+              Waveform Viewer
             
           </span>
         </div>
@@ -418,37 +418,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Regressions
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../regressions/" class="md-nav__link">
         
   
   
@@ -464,98 +437,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#regression-config-regressionsyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression config: regressions.yaml
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running-a-regression" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running a regression
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Running a regression">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#config-resolution-order" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Config resolution order
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Regression levels
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#working-directory-behavior" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Working directory behavior
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full schema
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -677,10 +558,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../wave/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -696,6 +604,142 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#basic-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Basic usage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#signal-value-annotation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signal value annotation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Signal value annotation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-it-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How it works
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#active-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Active scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nvim-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        nvim setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding signals to Surfer from nvim
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#single-signal-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single-signal mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#editor-socket-reuse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editor socket reuse
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#surfer-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Surfer build
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1074,10 +1118,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#regression-config-regressionsyaml" class="md-nav__link">
+  <a href="#basic-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Regression config: regressions.yaml
+        Basic usage
       
     </span>
   </a>
@@ -1085,22 +1129,33 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-a-regression" class="md-nav__link">
+  <a href="#configuration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running a regression
+        Configuration
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Running a regression">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#signal-value-annotation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signal value annotation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Signal value annotation">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#config-resolution-order" class="md-nav__link">
+  <a href="#how-it-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Config resolution order
+        How it works
       
     </span>
   </a>
@@ -1108,10 +1163,54 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#regression-levels" class="md-nav__link">
+  <a href="#active-scope" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Regression levels
+        Active scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#nvim-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        nvim setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding signals to Surfer from nvim
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#single-signal-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single-signal mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#editor-socket-reuse" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editor socket reuse
       
     </span>
   </a>
@@ -1124,21 +1223,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#working-directory-behavior" class="md-nav__link">
+  <a href="#surfer-build" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Working directory behavior
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full schema
+        Surfer build
       
     </span>
   </a>
@@ -1165,45 +1253,77 @@
   
 
 
-<h1 id="regressions">Regressions</h1>
-<p>A regression runs multiple test suites in sequence, filtering tests by regression level. It is the standard way to validate a full design before a release or merge.</p>
-<h2 id="regression-config-regressionsyaml">Regression config: <code>regressions.yaml</code></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">reg_config</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">test-configs</span><span class="p">:</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_a/verif/tests.yaml&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_b/verif/tests.yaml&quot;</span>
-</code></pre></div>
-<p>Each entry in <code>test-configs</code> is a path to a suite's <code>tests.yaml</code>, resolved relative to the directory where <code>rtl-buddy regression</code> is invoked (usually the repo root).</p>
-<p>The default path to <code>regressions.yaml</code> is set in <code>root_config.yaml</code> under <code>cfg-rtl-reg.reg-cfg-path</code>. Override it per run with <code>--reg-config</code>.</p>
-<h2 id="running-a-regression">Running a regression</h2>
-<p>Use the default config:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rtl-buddy<span class="w"> </span>regression
-</code></pre></div>
-<p>Specify a config file explicitly:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--reg-config<span class="w"> </span>path/to/regressions.yaml
-</code></pre></div>
-<h3 id="config-resolution-order">Config resolution order</h3>
-<p>When <code>--reg-config</code> is not given, <code>rtl_buddy</code> resolves the regression config in this order:</p>
+<h1 id="waveform-viewer-rb-wave">Waveform Viewer (<code>rb wave</code>)</h1>
+<p><code>rb wave</code> opens the <a href="https://surfer-project.org/">Surfer</a> waveform viewer for a test and connects it to your editor via the <strong>WCP</strong> (Waveform Client Protocol). When you right-click a signal in Surfer and choose <strong>Go to declaration</strong>, rtl-buddy:</p>
 <ol>
-<li><code>./regression.yaml</code> in the current working directory, if it exists</li>
-<li>The path set in <code>root_config.yaml</code> under <code>cfg-rtl-reg.reg-cfg-path</code></li>
+<li>Resolves the signal to its source file and line number</li>
+<li>Opens (or reuses) your editor at that location</li>
+<li>Annotates the signal's waveform value at the current cursor position as inline virtual text</li>
 </ol>
-<p>This means you can drop a <code>regression.yaml</code> at the repo root and run <code>rtl-buddy regression</code> without any flags, even if <code>root_config.yaml</code> points elsewhere.</p>
-<h3 id="regression-levels">Regression levels</h3>
-<p><code>rtl_buddy</code> filters tests by the <code>reglvl</code> value set in each <code>tests.yaml</code>. Use <code>--reg-level</code> and <code>--start-level</code> to select a range:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Run all tests with reglvl &lt;= 2000</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--reg-level<span class="w"> </span><span class="m">2000</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Run tests with reglvl in [1000, 3000]</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
+<h2 id="basic-usage">Basic usage</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>verif/sandbox
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w">          </span><span class="c1"># runs debug sim if no FST exists, then opens Surfer</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--resim<span class="w">  </span><span class="c1"># force re-run of debug sim</span>
 </code></pre></div>
-<p>The default is <code>--reg-level 0</code>, which runs only tests with <code>reglvl: 0</code> (must-run sanity tests).</p>
-<h2 id="working-directory-behavior">Working directory behavior</h2>
-<p>Unlike <code>test</code>, the <code>regression</code> subcommand <strong>changes directory</strong> into each suite directory before running its tests. This means relative paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved correctly without any extra setup.</p>
-<p>Run <code>regression</code> from the repo root so that the paths in <code>regressions.yaml</code> resolve correctly.</p>
-<h2 id="full-schema">Full schema</h2>
-<p>See <a href="../../reference/yaml/#regressionyaml">YAML Formats: regressions.yaml</a> for the complete field reference.</p>
+<p>Signal layout files are loaded automatically: if <code>basic.surfer</code> exists next to <code>tests.yaml</code>, Surfer opens with those signals pre-loaded.</p>
+<h2 id="configuration">Configuration</h2>
+<p>Add a <code>cfg-surfer</code> section to <code>root_config.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-default&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../surfer/target/release/surfer&quot;</span><span class="w">  </span><span class="c1"># or bare name on PATH</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">wcp-port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">                              </span><span class="c1"># 0 = OS assigns a free port</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nvim</span><span class="nv"> </span><span class="s">+%l</span><span class="nv"> </span><span class="s">%f&quot;</span><span class="w">               </span><span class="c1"># %f = file, %l = line</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">editor-terminal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tmux&quot;</span><span class="w">                  </span><span class="c1"># tmux | iterm2 | terminal | &quot;&quot;</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">editor-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-nvim.sock&quot;</span><span class="w">  </span><span class="c1"># enables nvim reuse</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">ctrl-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-ctrl.sock&quot;</span><span class="w">    </span><span class="c1"># enables nvim → Surfer</span>
+</code></pre></div>
+<p>See <a href="../../reference/yaml/">YAML Formats</a> for all fields.</p>
+<h2 id="signal-value-annotation">Signal value annotation</h2>
+<h3 id="how-it-works">How it works</h3>
+<p>When a <code>goto_declaration</code> event arrives from Surfer, rtl-buddy:</p>
+<ol>
+<li>Reads the signal value at the cursor timestamp from the FST via <strong>pywellen</strong></li>
+<li>Enumerates all other signals in the same module scope using the FST hierarchy</li>
+<li>Runs a <strong>single bulk grep</strong> across the SV source files to map every signal to its declaration line (result cached for the session)</li>
+<li>Pushes all values to the editor as EOL virtual text</li>
+</ol>
+<p>Moving the Surfer time cursor fires a <code>cursor_moved</code> WCP event, which re-reads all scope signal values and updates the annotations live — no interaction required.</p>
+<p>Two signals declared on the same source line are combined into one annotation:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kt">logic</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">;</span><span class="w">    </span><span class="err">▶</span><span class="w"> </span><span class="n">a</span><span class="o">=</span><span class="mh">8&#39;h0a</span><span class="w">  </span><span class="n">b</span><span class="o">=</span><span class="mh">8&#39;h05</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kt">logic</span><span class="w"> </span><span class="n">clk</span><span class="p">;</span><span class="w">     </span><span class="err">▶</span><span class="w"> </span><span class="mb">1&#39;b0</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
+</code></pre></div>
+<h3 id="active-scope">Active scope</h3>
+<p>Clicking any signal in Surfer's signal list sets the <strong>active scope</strong> — the module instance used to resolve signal names. rtl-buddy updates the scope cache automatically via the <code>scope_changed</code> WCP event, so annotation context is always current without requiring a "Go to declaration".</p>
+<h3 id="nvim-setup">nvim setup</h3>
+<p>The annotation feature requires a small nvim plugin. Install it once:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>wave-install-nvim
+</code></pre></div>
+<p>This copies <code>rtl_buddy_wave.lua</code> to <code>~/.local/share/nvim/site/plugin/</code>, which nvim auto-sources at startup. No <code>init.lua</code> changes are needed. Reinstall after rtl-buddy upgrades with <code>--force</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>wave-install-nvim<span class="w"> </span>--force
+</code></pre></div>
+<p>If the plugin is missing when <code>rb wave</code> starts with <code>editor-sock</code> configured, a warning is shown:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING  nvim plugin not installed — run &quot;rb wave-install-nvim&quot; to enable wave annotations
+</code></pre></div>
+<h3 id="adding-signals-to-surfer-from-nvim">Adding signals to Surfer from nvim</h3>
+<p>With <code>ctrl-sock</code> configured, place the cursor on any signal name in nvim and press <strong><code>&lt;Space&gt;wa</code></strong> (<code>&lt;leader&gt;wa</code>) to add it to Surfer's waveform view.</p>
+<p>The signal is resolved using the active scope — click a signal in Surfer first to establish the instance context (e.g. clicking <code>tb_top.i_dut.clk</code> sets scope <code>tb_top.i_dut</code>), then add signals freely from nvim.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>nvim: cursor on &quot;rst&quot;  →  &lt;Space&gt;wa  →  Surfer adds tb_top.i_dut.rst to waveform
+</code></pre></div>
+<p>The keymap requires <code>ctrl-sock</code> to be set in <code>cfg-surfer</code> and <code>rb wave</code> to be running. A warning is shown if the socket is unreachable.</p>
+<h3 id="single-signal-mode">Single-signal mode</h3>
+<p>To annotate only the signal you right-clicked (not the whole scope):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--focused-signal
+</code></pre></div>
+<h3 id="editor-socket-reuse">Editor socket reuse</h3>
+<p>When <code>editor-sock</code> is set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use. Subsequent <code>goto_declaration</code> and <code>cursor_moved</code> events reuse the running instance via <code>--remote-expr nvim_exec2(...)</code> — no new windows, no command-line flicker.</p>
+<p>The socket is probed with a 300 ms timeout. If the socket is stale (nvim has been closed), the next <code>goto_declaration</code> opens a fresh nvim window.</p>
+<h2 id="surfer-build">Surfer build</h2>
+<p>The annotation features require Surfer built from the <code>rtl-buddy</code> branch:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nb">cd</span><span class="w"> </span>../surfer<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>rtl-buddy
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release
+</code></pre></div>
+<p>Point <code>cfg-surfer.path</code> at <code>../surfer/target/release/surfer</code> (relative to <code>root_config.yaml</code>) or install the binary on <code>PATH</code>.</p>
 
 
 
