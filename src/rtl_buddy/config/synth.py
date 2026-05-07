@@ -18,14 +18,17 @@ logger = logging.getLogger(__name__)
 class SynthLibConfigFile:
     name: str
     path: str
+    lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
 
 
 class SynthLibConfig:
     def __init__(self, cfg: SynthLibConfigFile, root_cfg_path: str):
         self._name = cfg.name
-        self._path = os.path.normpath(
-            os.path.join(os.path.dirname(root_cfg_path), cfg.path)
-        )
+        _cfg_dir = os.path.dirname(root_cfg_path)
+        self._path = os.path.normpath(os.path.join(_cfg_dir, cfg.path))
+        self._lef_paths = [
+            os.path.normpath(os.path.join(_cfg_dir, p)) for p in cfg.lef_paths
+        ]
 
     def get_name(self) -> str:
         return self._name
@@ -33,17 +36,22 @@ class SynthLibConfig:
     def get_path(self) -> str:
         return self._path
 
+    def get_lef_paths(self) -> list[str]:
+        return self._lef_paths
+
 
 @dataclass
 class SynthToolOpts:
     synth_args: str = ""
     abc_args: str = ""
+    strategy: str = ""
 
 
 @serde
 class SynthToolOptsFile:
     synth_args: str = field(rename="synth-args", default="")
     abc_args: str = field(rename="abc-args", default="")
+    strategy: str = field(default="")
 
 
 @serde
@@ -66,10 +74,14 @@ class SynthToolConfig:
     def get_opts(self, overrides: dict | None = None) -> SynthToolOpts:
         synth_args = self._cfg.opts.synth_args
         abc_args = self._cfg.opts.abc_args
+        strategy = self._cfg.opts.strategy
         if overrides:
             synth_args = overrides.get("synth_args", synth_args)
             abc_args = overrides.get("abc_args", abc_args)
-        return SynthToolOpts(synth_args=synth_args, abc_args=abc_args)
+            strategy = overrides.get("strategy", strategy)
+        return SynthToolOpts(
+            synth_args=synth_args, abc_args=abc_args, strategy=strategy
+        )
 
 
 @serde

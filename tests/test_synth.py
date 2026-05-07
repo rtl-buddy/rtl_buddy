@@ -776,3 +776,317 @@ def test_vlog_filelist_strip_false_keeps_option_prefix(tmp_path):
         ln for ln in out.read_text().splitlines() if ln and not ln.startswith("//")
     ]
     assert any(ln.startswith("-v ") for ln in lines), f"Expected -v prefix: {lines}"
+
+
+# ---------------------------------------------------------------------------
+# SynthPassResults — tns_ps field
+# ---------------------------------------------------------------------------
+
+
+def test_synth_pass_results_tns_stored():
+    r = SynthPassResults("r", tns_ps=-500.0)
+    assert r.results["tns_ps"] == -500.0
+    assert r.is_pass()
+
+
+def test_synth_pass_results_tns_absent_when_none():
+    r = SynthPassResults("r")
+    assert "tns_ps" not in r.results
+
+
+def test_synth_pass_results_all_fields():
+    r = SynthPassResults(
+        "r", area_um2=100.0, gate_count=42, wns_ps=200.0, tns_ps=-100.0
+    )
+    assert r.results["area_um2"] == 100.0
+    assert r.results["gate_count"] == 42
+    assert r.results["wns_ps"] == 200.0
+    assert r.results["tns_ps"] == -100.0
+
+
+# ---------------------------------------------------------------------------
+# SynthToolConfig — strategy opt
+# ---------------------------------------------------------------------------
+
+
+def test_synth_tool_config_strategy_default_empty():
+    cfg = _tool_cfg()
+    assert cfg.get_opts().strategy == ""
+
+
+def test_synth_tool_config_strategy_override():
+    from rtl_buddy.config.synth import SynthToolConfigFile, SynthToolOptsFile
+
+    opts_file = SynthToolOptsFile(synth_args="", abc_args="", strategy="TIMING")
+    cfg_file = SynthToolConfigFile(name="openroad", tool="openroad", opts=opts_file)
+    cfg = SynthToolConfig(cfg_file)
+    assert cfg.get_opts().strategy == "TIMING"
+
+
+def test_synth_tool_config_strategy_via_override_dict():
+    cfg = _tool_cfg()
+    opts = cfg.get_opts({"strategy": "AREA"})
+    assert opts.strategy == "AREA"
+
+
+# ---------------------------------------------------------------------------
+# SynthLibConfig — lef_paths field
+# ---------------------------------------------------------------------------
+
+
+def test_synth_lib_config_lef_paths_empty_by_default(tmp_path):
+    from rtl_buddy.config.synth import SynthLibConfigFile, SynthLibConfig
+
+    root_cfg_path = str(tmp_path / "root_config.yaml")
+    lib_file = SynthLibConfigFile(name="mylib", path="lib/cells.lib", lef_paths=[])
+    cfg = SynthLibConfig(lib_file, root_cfg_path)
+    assert cfg.get_lef_paths() == []
+
+
+def test_synth_lib_config_lef_paths_resolved(tmp_path):
+    from rtl_buddy.config.synth import SynthLibConfigFile, SynthLibConfig
+
+    root_cfg_path = str(tmp_path / "root_config.yaml")
+    lib_file = SynthLibConfigFile(
+        name="mylib", path="lib/cells.lib", lef_paths=["lef/cells.lef"]
+    )
+    cfg = SynthLibConfig(lib_file, root_cfg_path)
+    assert cfg.get_lef_paths() == [str(tmp_path / "lef" / "cells.lef")]
+
+
+# ---------------------------------------------------------------------------
+# OpenRoadSynth — artefact paths and script generation
+# ---------------------------------------------------------------------------
+
+
+class _FakeLibCfgWithLef:
+    def __init__(self, path, lef_paths=None):
+        self._path = path
+        self._lef_paths = lef_paths or []
+
+    def get_path(self):
+        return self._path
+
+    def get_lef_paths(self):
+        return self._lef_paths
+
+
+class _FakeRootCfgOR:
+    def __init__(self, lib_map, lef_map=None):
+        self._lib_map = lib_map
+        self._lef_map = lef_map or {}
+
+    def get_synth_lib_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+
+        if name not in self._lib_map:
+            raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
+        lef_paths = self._lef_map.get(name, [])
+        return _FakeLibCfgWithLef(self._lib_map[name], lef_paths)
+
+    def get_synth_tool_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+
+        raise FatalRtlBuddyError(f"tool '{name}' not found")
+
+
+def _make_or_tool_cfg(strategy=""):
+    from rtl_buddy.config.synth import SynthToolConfigFile, SynthToolOptsFile
+
+    opts_file = SynthToolOptsFile(synth_args="", abc_args="", strategy=strategy)
+    cfg_file = SynthToolConfigFile(name="openroad", tool="openroad", opts=opts_file)
+    return SynthToolConfig(cfg_file)
+
+
+def _make_openroad(tmp_path, synth_cfg=None, tool_cfg=None, root_cfg=None):
+    from rtl_buddy.tools.synth_openroad import OpenRoadSynth
+
+    synth_cfg = synth_cfg or _make_synth_cfg()
+    tool_cfg = tool_cfg or _make_or_tool_cfg()
+    return OpenRoadSynth(
+        name="test/openroad",
+        synth_cfg=synth_cfg,
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+        root_cfg=root_cfg,
+        yosys_executable="yosys",
+    )
+
+
+def test_openroad_synth_artefact_dir_created(tmp_path):
+
+    or_synth = _make_openroad(tmp_path)
+    assert Path(or_synth.artefact_dir).is_dir()
+    assert Path(or_synth.artefact_dir).name == "test_synth"
+
+
+def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", libraries=["mylib"]),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert f"read_liberty -lib {lib}" in script
+    assert f"dfflibmap -liberty {lib}" in script
+    assert f"abc -liberty {lib}" in script
+    assert "write_verilog" in script
+    assert "write_rtlil" not in script
+
+
+def test_openroad_or_script_has_lef_liberty_verilog_sdc(tmp_path):
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -period 10.0 [get_ports clk]\n")
+
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top", libraries=["mylib"], constraints=str(sdc)
+        ),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+
+    assert f"read_lef {lef}" in script
+    assert f"read_liberty {lib}" in script
+    assert "read_verilog" in script
+    assert "link_design top" in script
+    assert f"read_sdc {sdc}" in script
+    assert "report_design_area" in script
+    assert "report_checks -path_delay max" in script
+    assert "report_tns" in script
+
+
+def test_openroad_or_script_no_sdc_omits_timing_reports(tmp_path):
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top", libraries=["mylib"], constraints=None
+        ),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+
+    assert "read_sdc" not in script
+    assert "report_wns" not in script
+    assert "report_tns" not in script
+    assert "report_design_area" in script
+
+
+def test_openroad_or_script_timing_strategy_adds_resynth(tmp_path):
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "cells.lef"
+    lef.write_text("")
+    sdc = tmp_path / "c.sdc"
+    sdc.write_text("create_clock -period 10.0 [get_ports clk]\n")
+
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top", libraries=["mylib"], constraints=str(sdc)
+        ),
+        tool_cfg=_make_or_tool_cfg(strategy="TIMING"),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+    assert "resynth_annealing" in script
+
+
+# ---------------------------------------------------------------------------
+# OpenRoadSynth — output parsing
+# ---------------------------------------------------------------------------
+
+
+def test_openroad_parse_area():
+
+    or_synth = _make_openroad(Path("/tmp"))
+    log = "Design area 179 um^2 100% utilization.\n"
+    assert or_synth._parse_or_area_um2(log) == 179.0
+
+
+def test_openroad_parse_wns_met():
+
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_wns_ns(
+        "            6.754   slack (MET)\n"
+    ) == pytest.approx(6.754)
+
+
+def test_openroad_parse_wns_violated():
+
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_wns_ns(
+        "           -0.431   slack (VIOLATED)\n"
+    ) == pytest.approx(-0.431)
+
+
+def test_openroad_parse_tns_with_corner():
+
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_tns_ns("tns max -3.964\n") == pytest.approx(-3.964)
+
+
+def test_openroad_parse_area_missing_returns_none():
+
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_area_um2("no area here\n") is None
+
+
+# ---------------------------------------------------------------------------
+# OpenRoadSynth — run() returns fail when no library / no lef
+# ---------------------------------------------------------------------------
+
+
+def test_openroad_run_fails_without_library(tmp_path, monkeypatch):
+
+    or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(libraries=None))
+    result = or_synth.run()
+    assert isinstance(result, SynthFailResults)
+    assert "library" in result.results["desc"].lower()
+
+
+def test_openroad_run_fails_without_lef(tmp_path, monkeypatch):
+
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)}, lef_map={})
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        root_cfg=root_cfg,
+    )
+    result = or_synth.run()
+    assert isinstance(result, SynthFailResults)
+    assert "lef" in result.results["desc"].lower()

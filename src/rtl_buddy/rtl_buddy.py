@@ -1356,6 +1356,7 @@ class RtlBuddy:
         has_gates = any("gate_count" in r["results"].results for r in synth_results)
         has_area = any("area_um2" in r["results"].results for r in synth_results)
         has_timing = any("wns_ps" in r["results"].results for r in synth_results)
+        has_tns = any("tns_ps" in r["results"].results for r in synth_results)
         rows = []
         for r in synth_results:
             res = r["results"].results
@@ -1376,6 +1377,12 @@ class RtlBuddy:
                     row["wns"] = f"{'+' if wns >= 0 else ''}{wns / 1000:.3f} ns"
                 else:
                     row["wns"] = "-"
+            if has_tns:
+                tns = res.get("tns_ps")
+                if tns is not None:
+                    row["tns"] = f"{'+' if tns >= 0 else ''}{tns / 1000:.3f} ns"
+                else:
+                    row["tns"] = "-"
             rows.append(row)
 
         columns = [
@@ -1389,6 +1396,8 @@ class RtlBuddy:
             columns.append(("area", "Area"))
         if has_timing:
             columns.append(("wns", "WNS"))
+        if has_tns:
+            columns.append(("tns", "TNS"))
         render_summary(
             title=title,
             columns=columns,

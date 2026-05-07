@@ -340,6 +340,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
+        case "synth.openroad.no_lef":
+            return (
+                f'OpenROAD synthesis "{fields.get("synth")}" requires lef-paths in cfg-synth-libs; '
+                "add LEF files for the technology library"
+            )
+        case "synth.openroad.no_library":
+            return (
+                f'OpenROAD synthesis "{fields.get("synth")}" requires a mapped library; '
+                "add libraries: [...] and lef-paths: [...] to cfg-synth-libs"
+            )
         case "coverage.metric.failed":
             return (
                 f'coverage metric "{fields.get("metric")}" failed'

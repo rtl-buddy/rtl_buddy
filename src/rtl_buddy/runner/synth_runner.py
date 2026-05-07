@@ -3,8 +3,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 from ..config.synth import SynthConfig
+from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..runner.synth_results import SynthResults
+from ..tools.synth_openroad import OpenRoadSynth
 from ..tools.synth_yosys import YosysSynth
 
 
@@ -26,11 +28,27 @@ class SynthRunner:
         tool_name = self.synth_cfg.get_tool_name()
         tool_cfg = self.root_cfg.get_synth_tool_cfg(tool_name)
 
-        backend = YosysSynth(
-            name=self.name + "/yosys",
-            synth_cfg=self.synth_cfg,
-            tool_cfg=tool_cfg,
-            suite_dir=self.suite_dir,
-            root_cfg=self.root_cfg,
-        )
+        if tool_name == "openroad":
+            yosys_exe = "yosys"
+            try:
+                yosys_tool = self.root_cfg.get_synth_tool_cfg("yosys")
+                yosys_exe = yosys_tool.get_executable()
+            except FatalRtlBuddyError:
+                pass
+            backend = OpenRoadSynth(
+                name=self.name + "/openroad",
+                synth_cfg=self.synth_cfg,
+                tool_cfg=tool_cfg,
+                suite_dir=self.suite_dir,
+                root_cfg=self.root_cfg,
+                yosys_executable=yosys_exe,
+            )
+        else:
+            backend = YosysSynth(
+                name=self.name + "/yosys",
+                synth_cfg=self.synth_cfg,
+                tool_cfg=tool_cfg,
+                suite_dir=self.suite_dir,
+                root_cfg=self.root_cfg,
+            )
         return backend.run()
