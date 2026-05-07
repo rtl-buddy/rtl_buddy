@@ -1346,21 +1346,36 @@ class RtlBuddy:
         raise typer.Exit(0)
 
     def _render_synth_summary(self, title, synth_results, *, metadata=None):
-        rows = [
-            {
+        has_area = any("area_um2" in r["results"].results for r in synth_results)
+        has_timing = any("crit_path_ps" in r["results"].results for r in synth_results)
+        rows = []
+        for r in synth_results:
+            res = r["results"].results
+            row = {
                 "synth_name": r["synth_name"],
-                "result": r["results"].results["result"],
-                "desc": r["results"].results["desc"],
+                "result": res["result"],
+                "desc": res["desc"],
             }
-            for r in synth_results
+            if has_area:
+                area = res.get("area_um2")
+                row["area"] = f"{area:.2f} µm²" if area is not None else "-"
+            if has_timing:
+                cp = res.get("crit_path_ps")
+                row["crit_path"] = f"{cp / 1000:.3f} ns" if cp is not None else "-"
+            rows.append(row)
+
+        columns = [
+            ("synth_name", "Synthesis"),
+            ("result", "Result"),
+            ("desc", "Description"),
         ]
+        if has_area:
+            columns.append(("area", "Area"))
+        if has_timing:
+            columns.append(("crit_path", "Crit Path"))
         render_summary(
             title=title,
-            columns=[
-                ("synth_name", "Synthesis"),
-                ("result", "Result"),
-                ("desc", "Description"),
-            ],
+            columns=columns,
             rows=rows,
             logger=logger,
             metadata=metadata,

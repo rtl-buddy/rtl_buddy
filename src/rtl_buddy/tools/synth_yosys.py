@@ -12,6 +12,14 @@ from ..errors import FilelistError
 from ..logging_utils import log_event, task_status
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
+# Default ABC script for liberty without timing constraint
+_ABC_SCRIPT_NO_TIMING = (
+    "strash; &get -n; &fraig -x; &put; scorr; dc2; dretime; strash; "
+    "&get -n; &dch -f; &nf {D}; &put"
+)
+# Same but with stime -p appended to report critical-path delay
+_ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
+
 
 class YosysSynth:
     def __init__(
@@ -111,6 +119,14 @@ class YosysSynth:
             return []
         return [self.root_cfg.get_synth_lib_cfg(name).get_path() for name in libraries]
 
+    def _parse_area_um2(self, log_text: str) -> float | None:
+        m = re.search(r"Chip area for module[^:]*:\s*([\d.]+)", log_text)
+        return float(m.group(1)) if m else None
+
+    def _parse_critical_path_ps(self, log_text: str) -> float | None:
+        m = re.search(r"Delay\s*=\s*([\d.]+)\s*ps", log_text)
+        return float(m.group(1)) if m else None
+
     def _write_script(self, fl_path: str) -> str:
         top = self.synth_cfg.get_top()
         overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
@@ -144,8 +160,10 @@ class YosysSynth:
         if mapped:
             for lib in lib_paths:
                 lines.append(f"dfflibmap -liberty {lib}")
+
             abc_cmd = f"abc -liberty {lib_paths[0]}"
             constraints = self.synth_cfg.get_constraints()
+            period_ps = None
             if constraints:
                 period_ps = self._parse_clock_period_ps(constraints)
                 if period_ps is not None:
@@ -166,8 +184,16 @@ class YosysSynth:
                         synth=self.synth_cfg.get_name(),
                         sdc=constraints,
                     )
+
+            abc_script = (
+                _ABC_SCRIPT_WITH_TIMING
+                if period_ps is not None
+                else _ABC_SCRIPT_NO_TIMING
+            )
+            abc_cmd += f' -script "+{abc_script}"'
             lines.append(abc_cmd)
             lines.append(f"write_verilog {self._netlist_path(mapped=True)}")
+            lines.append(f"stat -liberty {lib_paths[0]}")
         else:
             if opts.abc_args:
                 lines.append(f"abc {opts.abc_args}")
@@ -259,11 +285,20 @@ class YosysSynth:
                 desc=f"{len(error_lines)} ERROR(s) in synthesis log",
             )
 
+        area_um2 = self._parse_area_um2(log_text)
+        crit_path_ps = self._parse_critical_path_ps(log_text)
+
         log_event(
             logger,
             logging.INFO,
             "synth.passed",
             synth=self.synth_cfg.get_name(),
+            area_um2=area_um2,
+            crit_path_ps=crit_path_ps,
             log=log_path,
         )
-        return SynthPassResults(name=self.name + "/results")
+        return SynthPassResults(
+            name=self.name + "/results",
+            area_um2=area_um2,
+            crit_path_ps=crit_path_ps,
+        )
