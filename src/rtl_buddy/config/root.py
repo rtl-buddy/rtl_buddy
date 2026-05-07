@@ -16,6 +16,7 @@ from .rtl import RtlBuilderConfig
 from .verible import VeribleConfigFile
 from .coverage import CoverageConfigFile
 from .coverview import CoverviewConfigFile
+from .synth import SynthToolConfig, SynthToolConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -92,6 +93,9 @@ class RootConfigFile:
     coverviews: list[CoverviewConfigFile] = field(
         rename="cfg-coverview", default_factory=list
     )
+    synth_tools: list[SynthToolConfigFile] = field(
+        rename="cfg-synth-tools", default_factory=list
+    )
 
 
 class RootConfig:
@@ -133,6 +137,7 @@ class RootConfig:
         self.verible_cfgs = dict()
         self.coverage_cfgs = dict()
         self.coverview_cfgs = dict()
+        self.synth_tool_cfgs = dict()
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -167,6 +172,11 @@ class RootConfig:
             self.coverage_cfgs = {cfg.name: cfg.initialise() for cfg in data.coverages}
             self.coverview_cfgs = {
                 cfg.name: cfg.initialise(self.root_cfg_path) for cfg in data.coverviews
+            }
+
+            # Populate synth tool configs
+            self.synth_tool_cfgs = {
+                cfg.name: SynthToolConfig(cfg) for cfg in data.synth_tools
             }
 
             # Initialise regression config
@@ -337,6 +347,24 @@ class RootConfig:
           cfg (CoverviewConfig|None): Matching Coverview configuration, if present.
         """
         return self.coverview_cfgs.get(simulator_name)
+
+    def get_synth_tool_cfg(self, name: str):
+        """
+        Get synthesis tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-synth-tools.
+        Returns:
+          cfg (SynthToolConfig): Matching synthesis tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.synth_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"synthesis tool '{name}' not found in cfg-synth-tools"
+            )
+        return cfg
 
     def get_project_rootdir(self):
         """

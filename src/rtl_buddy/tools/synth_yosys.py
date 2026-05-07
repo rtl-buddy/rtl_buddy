@@ -1,0 +1,174 @@
+import logging
+import os
+import subprocess
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+from .vlog_filelist import VlogFilelist
+from ..config.synth import SynthConfig, SynthToolConfig
+from ..errors import FilelistError
+from ..logging_utils import log_event, task_status
+from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
+
+
+class YosysSynth:
+    def __init__(
+        self,
+        name: str,
+        synth_cfg: SynthConfig,
+        tool_cfg: SynthToolConfig,
+        suite_dir: str,
+    ):
+        self.name = name
+        self.synth_cfg = synth_cfg
+        self.tool_cfg = tool_cfg
+
+        artefact_root = Path(suite_dir) / "artefacts" / synth_cfg.get_name()
+        artefact_root.mkdir(parents=True, exist_ok=True)
+        self.artefact_dir = str(artefact_root)
+
+    def _filelist_path(self) -> str:
+        return os.path.join(self.artefact_dir, "synth.f")
+
+    def _script_path(self) -> str:
+        return os.path.join(self.artefact_dir, "synth.ys")
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "synth.log")
+
+    def _netlist_path(self) -> str:
+        return os.path.join(self.artefact_dir, "synth.rtlil")
+
+    def _write_filelist(self) -> str:
+        fl_path = self._filelist_path()
+        vlog_fl = VlogFilelist(
+            name=self.name + "/filelist",
+            model_cfg=self.synth_cfg.get_model(),
+            output_path=fl_path,
+        )
+        vlog_fl.write_output(output_filepath=fl_path, unroll=True)
+        return fl_path
+
+    def _write_script(self, fl_path: str) -> str:
+        top = self.synth_cfg.get_top()
+        overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+        opts = self.tool_cfg.get_opts(overrides)
+        params = self.synth_cfg.get_params()
+
+        defines = self.synth_cfg.get_defines()
+        define_flags = ""
+        if defines:
+            define_flags = " " + " ".join(f"-D {k}={v}" for k, v in defines.items())
+
+        lines = []
+        lines.append(f"read_verilog -sv{define_flags} -f {fl_path}")
+
+        if params:
+            for key, value in params.items():
+                lines.append(f"chparam -set {key} {value} {top}")
+
+        synth_cmd = f"synth -top {top}"
+        if opts.synth_args:
+            synth_cmd += f" {opts.synth_args}"
+        lines.append(synth_cmd)
+
+        if opts.abc_args:
+            lines.append(f"abc {opts.abc_args}")
+
+        lines.append(f"write_rtlil {self._netlist_path()}")
+
+        script = "\n".join(lines) + "\n"
+        script_path = self._script_path()
+        with open(script_path, "w") as f:
+            f.write(script)
+        return script_path
+
+    def run(self) -> SynthResults:
+        log_event(
+            logger,
+            logging.INFO,
+            "synth.start",
+            synth=self.synth_cfg.get_name(),
+            tool=self.tool_cfg.get_executable(),
+            top=self.synth_cfg.get_top(),
+        )
+
+        try:
+            fl_path = self._write_filelist()
+        except FilelistError as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "synth.filelist_failed",
+                synth=self.synth_cfg.get_name(),
+                error=str(e),
+            )
+            return SynthFailResults(
+                name=self.name + "/results", desc=f"Filelist error: {e}"
+            )
+
+        script_path = self._write_script(fl_path)
+        log_path = self._log_path()
+
+        cmd = [self.tool_cfg.get_executable(), "-s", script_path]
+        log_event(
+            logger,
+            logging.DEBUG,
+            "synth.run_cmd",
+            synth=self.synth_cfg.get_name(),
+            cmd=" ".join(cmd),
+        )
+
+        with task_status(f"synth {self.synth_cfg.get_name()}"):
+            with open(log_path, "w") as log_f:
+                result = subprocess.run(
+                    cmd,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+
+        if result.returncode != 0:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.failed",
+                synth=self.synth_cfg.get_name(),
+                returncode=result.returncode,
+                log=log_path,
+            )
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=f"Tool exited with code {result.returncode}",
+            )
+
+        try:
+            with open(log_path, "r") as f:
+                log_text = f.read()
+        except OSError:
+            log_text = ""
+
+        error_lines = [ln for ln in log_text.splitlines() if ln.startswith("ERROR:")]
+        if error_lines:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.errors_in_log",
+                synth=self.synth_cfg.get_name(),
+                count=len(error_lines),
+                log=log_path,
+            )
+            return SynthFailResults(
+                name=self.name + "/results",
+                desc=f"{len(error_lines)} ERROR(s) in synthesis log",
+            )
+
+        log_event(
+            logger,
+            logging.INFO,
+            "synth.passed",
+            synth=self.synth_cfg.get_name(),
+            log=log_path,
+        )
+        return SynthPassResults(name=self.name + "/results")
