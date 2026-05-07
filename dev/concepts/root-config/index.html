@@ -455,6 +455,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Key fields">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#signal-value-annotation-with-nvim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signal value annotation with nvim
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -643,6 +660,34 @@
     
   
     Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wave/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
   
 
     
@@ -1059,6 +1104,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Key fields">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#signal-value-annotation-with-nvim" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Signal value annotation with nvim
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1153,6 +1215,29 @@
 </ul>
 <p><strong><code>cfg-verible</code></strong></p>
 <p>Defines Verible tool configurations for lint and syntax checks. <code>path</code> is the directory containing Verible executables — absolute or relative to <code>root_config.yaml</code>.</p>
+<p><strong><code>cfg-surfer</code></strong> <em>(optional)</em></p>
+<p>Configures the Surfer waveform viewer for <code>rb wave</code>. Fields:</p>
+<ul>
+<li><code>path</code>: bare executable name (resolved via PATH, e.g. <code>"surfer"</code>) or a relative/absolute path to the binary</li>
+<li><code>wcp-port</code>: TCP port rtl-buddy listens on; Surfer connects with <code>--wcp-initiate</code> (default: <code>0</code> — OS auto-assigns a free port)</li>
+<li><code>editor-cmd</code>: command template with <code>%f</code> (file path) and <code>%l</code> (line number) placeholders — e.g. <code>"vim +%l %f"</code>, <code>"code --goto %f:%l"</code></li>
+<li><code>editor-terminal</code>: how to open terminal editors — <code>tmux</code> (new tmux window), <code>iterm2</code>, <code>terminal</code> (macOS Terminal.app), or <code>""</code> to run the command directly (for GUI editors)</li>
+<li><code>editor-sock</code>: path to a Unix socket for nvim remote reuse (e.g. <code>"/tmp/nvim-rb.sock"</code>). When set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use and reuses the already-running instance for subsequent "Go to declaration" and cursor-moved events. Omit this field if you do not use nvim or do not want remote reuse.</li>
+</ul>
+<p><code>rb wave &lt;test&gt;</code> looks for a signal layout file at <code>&lt;test&gt;.surfer</code> in the same directory as <code>tests.yaml</code> (e.g. <code>verif/sandbox/basic.surfer</code>). If found it is passed to Surfer via <code>-c</code>; if not, Surfer opens with no pre-loaded signals. If no FST exists for the test, <code>rb wave</code> runs a debug sim automatically before launching Surfer.</p>
+<h3 id="signal-value-annotation-with-nvim">Signal value annotation with nvim</h3>
+<p>When <code>editor-sock</code> is set and the nvim plugin is installed, <code>rb wave</code> annotates signal values as end-of-line virtual text in nvim:</p>
+<ul>
+<li>Right-click a signal in Surfer and choose "Go to declaration": nvim opens at the signal's declaration and all signals in the same module scope are annotated with their waveform values (<code>▶ value [instance]</code> style, black text on a lemon-chiffon background using the <code>WaveValue</code> highlight group).</li>
+<li>Moving the Surfer time cursor updates all annotations in real time.</li>
+<li>Two signals that share a source line are combined into a single annotation: <code>▶ a=val  b=val [inst]</code>.</li>
+<li>Pass <code>--focused-signal</code> to <code>rb wave</code> to annotate only the signal explicitly selected via "Go to declaration" instead of the full module scope.</li>
+</ul>
+<p><strong>Installing the nvim plugin:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>wave-install-nvim<span class="w">          </span><span class="c1"># installs rtl_buddy_wave.lua to ~/.local/share/nvim/site/plugin/</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>wave-install-nvim<span class="w"> </span>--force<span class="w">  </span><span class="c1"># overwrite an existing installation</span>
+</code></pre></div>
+<p>The plugin provides the <code>WaveValue</code> highlight group and a <code>VimEnter</code> hook required for annotation to work.</p>
 <p><strong><code>cfg-rtl-reg</code></strong></p>
 <p>Sets the default path to <code>regressions.yaml</code> used by <code>rtl-buddy regression</code> when <code>--reg-config</code> is not specified.</p>
 <h2 id="builder-and-mode-overrides">Builder and mode overrides</h2>
