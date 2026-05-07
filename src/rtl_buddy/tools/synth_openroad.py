@@ -213,6 +213,41 @@ class OpenRoadSynth:
     # Stage 2: OpenROAD — timing analysis with native multi-clock SDC
     # ------------------------------------------------------------------
 
+    def _write_or_blackbox_stubs(self) -> list[str]:
+        """Write OpenROAD-compatible copies of Yosys blackbox stub files.
+
+        Yosys omits blackbox module definitions from write_verilog output.
+        OpenROAD link_design fails if it encounters an instance whose module is
+        undefined. We find source files containing (* blackbox *), strip that
+        Yosys-specific attribute (which OpenROAD's reader rejects), and write
+        cleaned copies into the artefact directory for use in the OR Tcl script.
+        Returns the list of cleaned stub paths.
+        """
+        try:
+            candidates = self._source_files_from_filelist(self._filelist_path())
+        except OSError:
+            return []
+        result = []
+        for src in candidates:
+            try:
+                with open(src) as f:
+                    content = f.read()
+                if "(* blackbox *)" not in content:
+                    continue
+                # OpenROAD's gate-level reader does not accept SV `logic`;
+                # replace with `wire` for port declarations.
+                cleaned = content.replace("(* blackbox *)", "")
+                cleaned = cleaned.replace("  input  logic ", "  input  wire  ")
+                cleaned = cleaned.replace("  output logic ", "  output wire  ")
+                stub_name = os.path.basename(src)
+                stub_path = os.path.join(self.artefact_dir, f"or_{stub_name}")
+                with open(stub_path, "w") as f:
+                    f.write(cleaned)
+                result.append(stub_path)
+            except OSError:
+                pass
+        return result
+
     def _write_or_script(self, lef_paths: list[str], lib_paths: list[str]) -> str:
         top = self.synth_cfg.get_top()
         constraints = self.synth_cfg.get_constraints()
@@ -226,6 +261,9 @@ class OpenRoadSynth:
         for lib in lib_paths:
             lines.append(f"read_liberty {lib}")
         lines.append(f"read_verilog {self._yosys_netlist_path()}")
+        # Read cleaned blackbox stubs so OpenROAD link_design can resolve them
+        for bb_stub in self._write_or_blackbox_stubs():
+            lines.append(f"read_verilog {bb_stub}")
         lines.append(f"link_design {top}")
 
         if constraints:
