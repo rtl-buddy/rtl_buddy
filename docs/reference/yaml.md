@@ -75,10 +75,16 @@ cfg-synth-tools:
     opts:
       synth-args: ""
       abc-args: ""
+  - name: "openroad"
+    tool: "openroad"
+    opts:
+      strategy: "AREA"   # AREA | TIMING | TIMING_ANNEAL | TIMING_GENETIC
 
 cfg-synth-libs:
   - name: "sky130hd_tt"
     path: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
+    lef-paths:           # required for OpenROAD backend
+      - "pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef"
 
 cfg-rtl-reg:
   reg-cfg-path: "design/regression.yaml"
@@ -92,8 +98,8 @@ cfg-rtl-reg:
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the bundled nvim plugin first with `rb wave-install-nvim`.
-- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the executable name on `PATH`; `opts.synth-args` are appended to the Yosys `synth` command, and `opts.abc-args` are used by the unmapped ABC step.
-- `cfg-synth-libs` defines named Liberty files for technology-mapped synthesis. Relative paths are resolved from the directory containing `root_config.yaml`.
+- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the executable name on `PATH`. For the Yosys backend, `opts.synth-args` are appended to the `synth` command and `opts.abc-args` are used by the unmapped ABC step. For the OpenROAD backend, `opts.strategy` controls optional resynthesis (`AREA` = none, `TIMING`/`TIMING_ANNEAL` = `resynth_annealing`, `TIMING_GENETIC` = `resynth_genetic`).
+- `cfg-synth-libs` defines named Liberty files for technology-mapped synthesis. `path` is resolved relative to `root_config.yaml`. The optional `lef-paths` list specifies LEF files required by the OpenROAD backend for technology loading; ignored by the Yosys backend.
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
 - `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`.
 
@@ -305,7 +311,7 @@ syntheses:
     reglvl: 0
 
   - name: "sky130_synth"
-    desc: "Technology-mapped synthesis for SKY130"
+    desc: "Technology-mapped synthesis for SKY130 (Yosys)"
     model: "my_design"
     model_path: "../src/models.yaml"
     tool: "yosys"
@@ -322,6 +328,16 @@ syntheses:
     tool_overrides:
       yosys:
         synth_args: "-flatten"
+
+  - name: "sky130_openroad"
+    desc: "Technology-mapped synthesis with OpenROAD timing analysis"
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    tool: "openroad"
+    constraints: "constraints.sdc"
+    libraries:
+      - "sky130hd_tt"
+    reglvl: 0
 ```
 
 **Field reference:**
@@ -338,15 +354,14 @@ syntheses:
 | `defines` | dict | Optional Verilog defines passed to `read_verilog` as `-D KEY=VALUE` |
 | `libraries` | list of strings | Optional Liberty library names from `cfg-synth-libs`; enables technology mapping |
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
-| `tool_overrides` | dict | Optional per-tool overrides for `synth_args` and `abc_args`, keyed by synthesis tool name |
+| `tool_overrides` | dict | Optional per-tool overrides for `synth_args`, `abc_args`, or `strategy`, keyed by synthesis tool name |
 
 **Runtime effects:**
 
-- `rtl-buddy synth` loads `synth.yaml`, generates `artefacts/{synth_name}/synth.f`, writes a Yosys script to `synth.ys`, captures output in `synth.log`, and emits either `synth.rtlil` or a mapped `synth_netlist.v`.
-- Without `libraries`, the Yosys backend runs a technology-independent flow and writes RTLIL.
-- With `libraries`, the backend reads Liberty files from `cfg-synth-libs`, runs `dfflibmap` and `abc -liberty`, writes a Verilog netlist, and reports area when Yosys prints a chip-area line.
-- If `constraints` contains one or more `create_clock -period` entries, the backend passes the minimum period to ABC as `-D <period_ps>` and reports WNS when ABC timing is available.
-- A run passes only when the tool exits with code 0 and `synth.log` contains no lines starting with `ERROR:`.
+- `rtl-buddy synth` loads `synth.yaml`, resolves sources via `models.yaml`, and dispatches to the backend selected by `tool`.
+- **Yosys backend** (`tool: "yosys"`): writes `synth.f` and `synth.ys`, runs Yosys, captures output in `synth.log`. Without `libraries`, emits RTLIL; with `libraries`, runs `dfflibmap` + `abc -liberty` and emits `synth_netlist.v`. Reports Gates, Area (lib-mapped only), and WNS (lib-mapped with SDC). Passes when exit code is 0 and `synth.log` has no `ERROR:` lines.
+- **OpenROAD backend** (`tool: "openroad"`): requires `libraries` with `lef-paths` configured in `cfg-synth-libs`. Stage 1 runs Yosys to produce `synth_netlist.v` (logged to `synth_yosys.log`). Stage 2 runs OpenROAD with `synth.tcl` which calls `read_lef`, `read_liberty`, `read_verilog`, `link_design`, `read_sdc` (native multi-clock), and reports area/timing; output in `synth.log`. Reports Gates, Area, WNS (from `report_checks -path_delay max`), and TNS (from `report_tns`). Passes when both stages exit with code 0 and neither log contains errors.
+- If `constraints` contains `create_clock` entries, the Yosys backend uses the minimum period as ABC's `-D` constraint (multi-clock workaround). The OpenROAD backend passes the full SDC to `read_sdc` without modification.
 
 ---
 
