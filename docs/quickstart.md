@@ -1,10 +1,10 @@
 ---
-description: Run your first rtl_buddy test, regression, and supporting commands in an already-installed project.
+description: Run your first rtl_buddy test, regression, synthesis, and supporting commands in an already-installed project.
 ---
 
 # Quick Start
 
-Use this guide to run your first `rtl_buddy` test, regression, and supporting commands in an already-installed project.
+Use this guide to run your first `rtl_buddy` test, regression, synthesis, and supporting commands in an already-installed project.
 
 ## Run a test
 
@@ -44,6 +44,22 @@ This uses the regression config path from `root_config.yaml`. To specify a diffe
 uv run rb regression --reg-config path/to/regressions.yaml
 ```
 
+## Run synthesis
+
+List synthesis entries in a config:
+
+```bash
+uv run rb synth --list --synth-config path/to/synth.yaml
+```
+
+Run a synthesis entry:
+
+```bash
+uv run rb synth smoke_synth --synth-config path/to/synth.yaml
+```
+
+See [Synthesis](concepts/synthesis.md) for `synth.yaml`, tool, and library configuration.
+
 ## Run with randomization
 
 Run a test once with a new random seed:
@@ -82,4 +98,5 @@ In machine mode, `rtl_buddy.log` is written as JSON Lines and console output is 
 
 - [Concepts: Tests](concepts/tests.md) — understand the test config model
 - [Concepts: Regressions](concepts/regressions.md) — run multi-suite regressions
+- [Concepts: Synthesis](concepts/synthesis.md) — run Yosys synthesis flows
 - [YAML Formats](reference/yaml.md) — full config file reference

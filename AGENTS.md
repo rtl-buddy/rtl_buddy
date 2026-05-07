@@ -19,10 +19,14 @@ src/rtl_buddy/
 │   ├── root.py            # discover_project_root(), RootConfig
 │   ├── model.py           # ModelConfig (models.yaml)
 │   ├── test.py            # TestConfig / TestConfigFile (tests.yaml)
+│   ├── synth.py           # SynthConfig, SynthSuiteConfig, SynthRegConfig, SynthToolConfig (synth.yaml)
 │   ├── spec.py            # SpecConfig / SpecBlock / SpecCoverageItem (specs.yaml)
 │   └── ...                # platform, rtl, verible, coverage, coverview, reg
 ├── runner/test_runner.py  # PRE -> COMP -> SIM -> POST execution
+├── runner/synth_runner.py # synthesis dispatch; resolves tool config and invokes backend
+├── runner/synth_results.py # SynthResults / SynthPassResults / SynthFailResults / SynthSkipResults
 └── tools/
+    ├── synth_yosys.py     # Yosys backend: filelist → synth.ys script → yosys invocation
     ├── spec_trace.py      # discover_spec_configs, build_coverage_map, etc.
     └── ...                # filelist, sim, postproc, verible wrappers
 ```
@@ -44,6 +48,8 @@ src/rtl_buddy/
 - `VlogFilelist` handles `.f` parsing and transformations. It resolves model entries from the real `models.yaml` location, resolves testbench entries from the suite cwd, and writes paths relative to the directory containing the generated `run.f`.
 - Nested raw coverage paths such as `artefacts/<test>/run-0001/coverage.dat` must preserve the suite-root hint during LCOV/Coverview `SF:` rewriting. When updating coverage path logic, make sure duplicate basenames still resolve against the originating suite root instead of falling back to repo-wide basename matching.
 - Hook scripts (`sweep`, `preproc`, `postproc`) are executed dynamically and should be treated as compatibility-sensitive APIs.
+- `SynthRunner` resolves a `SynthToolConfig` from `root_cfg.get_synth_tool_cfg(tool_name)`, merges any `tool_overrides` from the `SynthConfig`, then dispatches to `YosysSynth`. Opts resolution: root-config `opts` are the baseline; per-run `tool_overrides.<tool>` keys overwrite matching fields.
+- `YosysSynth` writes `synth.f` via `VlogFilelist` (with `unroll=True, strip=True, deduplicate=True`), then generates `synth.ys`. Source files are emitted as individual `read_verilog -sv -defer` commands (not `-f filelist`) so Yosys only elaborates the top hierarchy. Pass/fail is determined by exit code then `ERROR:` line scan.
 
 ## Validation
 

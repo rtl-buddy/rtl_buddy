@@ -5,9 +5,9 @@
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-rtl--buddy.github.io-blue)](https://rtl-buddy.github.io/rtl_buddy/)
 
-`rtl_buddy` is a Python CLI for running Verilog and SystemVerilog RTL tests, randomized regressions, filelist generation, Verilator/VCS simulator workflows, and adjacent verification automation. It is designed to work well for both humans and AI agents.
+`rtl_buddy` is a Python CLI for running Verilog and SystemVerilog RTL tests, randomized regressions, filelist generation, Verilator/VCS simulator workflows, Yosys synthesis flows, coverage, and adjacent verification automation. It is designed to work well for both humans and AI agents.
 
-It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day verification work. The primary supported flows are Verilator and VCS-based compile, simulation, and regression workflows. Basic Verible command integration exists, while broader first-class Verible and PeakRDL workflows are on the roadmap.
+It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day verification work. The primary supported simulation flows are Verilator and VCS-based compile, simulation, test, regression, as well as Yosys-based synthesis. Basic Verible command integration exists, while broader first-class Verible and PeakRDL workflows are on the roadmap.
 
 Typical commands look like:
 
@@ -34,6 +34,7 @@ uv run rb regression --coverage-merge
 - **Randomized testing support**: create new seeds, repeat runs, and replay previous randomized iterations
 - **Structured config model**: describe suites, regressions, platforms, builders, and models in readable YAML
 - **Filelist generation**: build simulator-ready filelists from `models.yaml`
+- **Synthesis flows**: run Yosys synthesis from `synth.yaml`, including optional Liberty-mapped runs and synthesis regressions
 - **Coverage workflows**: collect, merge, summarize, and export Verilator coverage
 - **Hookable execution flow**: plug in your own sweep generation, test preprocessing, and postprocessing scripts
 - **Verible integration**: invoke lint, syntax, formatting, and preprocessing commands through the same project config
@@ -65,6 +66,7 @@ Prerequisites:
 - A simulator on `PATH`
   - Verilator is the recommended open-source starting point
   - VCS is also supported as a first-class flow
+- Optional: the [rtl-buddy fork of Yosys](https://github.com/rtl-buddy/yosys) if you want to use `uv run rb synth ...`
 - Optional: Verible if you want to use `uv run rb verible ...` — e.g. `brew tap chipsalliance/verible && brew install verible` on macOS, or see [Verible releases](https://github.com/chipsalliance/verible/releases) for other platforms
 - Optional system-level coverage tools:
   - `lcov` for LCOV and HTML coverage export
@@ -83,6 +85,7 @@ Once you have a project set up, the basic commands are:
 ```bash
 uv run rb test basic      # run a single test
 uv run rb regression      # run the full regression
+uv run rb synth -c synth/sandbox/synth.yaml
 ```
 
 For full usage, see the [Quick Start guide](https://rtl-buddy.github.io/rtl_buddy/latest/quickstart/).

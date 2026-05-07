@@ -17,6 +17,12 @@ from .verible import VeribleConfigFile
 from .coverage import CoverageConfigFile
 from .coverview import CoverviewConfigFile
 from .surfer import SurferConfig, SurferConfigFile
+from .synth import (
+    SynthToolConfig,
+    SynthToolConfigFile,
+    SynthLibConfig,
+    SynthLibConfigFile,
+)
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -94,6 +100,12 @@ class RootConfigFile:
         rename="cfg-coverview", default_factory=list
     )
     surfers: list[SurferConfigFile] = field(rename="cfg-surfer", default_factory=list)
+    synth_tools: list[SynthToolConfigFile] = field(
+        rename="cfg-synth-tools", default_factory=list
+    )
+    synth_libs: list[SynthLibConfigFile] = field(
+        rename="cfg-synth-libs", default_factory=list
+    )
 
 
 class RootConfig:
@@ -136,6 +148,8 @@ class RootConfig:
         self.coverage_cfgs = dict()
         self.coverview_cfgs = dict()
         self.surfer_cfgs: dict = {}
+        self.synth_tool_cfgs = dict()
+        self.synth_lib_cfgs = dict()
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -173,6 +187,17 @@ class RootConfig:
             }
             self.surfer_cfgs = {
                 cfg.name: cfg.initialise(self.root_cfg_path) for cfg in data.surfers
+            }
+
+            # Populate synth tool configs
+            self.synth_tool_cfgs = {
+                cfg.name: SynthToolConfig(cfg) for cfg in data.synth_tools
+            }
+
+            # Populate synth lib configs
+            self.synth_lib_cfgs = {
+                cfg.name: SynthLibConfig(cfg, self.root_cfg_path)
+                for cfg in data.synth_libs
             }
 
             # Initialise regression config
@@ -354,6 +379,42 @@ class RootConfig:
           cfg (SurferConfig|None): Matching Surfer configuration, if present.
         """
         return self.surfer_cfgs.get(name)
+
+    def get_synth_tool_cfg(self, name: str):
+        """
+        Get synthesis tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-synth-tools.
+        Returns:
+          cfg (SynthToolConfig): Matching synthesis tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.synth_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"synthesis tool '{name}' not found in cfg-synth-tools"
+            )
+        return cfg
+
+    def get_synth_lib_cfg(self, name: str):
+        """
+        Get synthesis library configuration by name.
+
+        Args:
+          name (str): Library name as defined in cfg-synth-libs.
+        Returns:
+          cfg (SynthLibConfig): Matching synthesis library configuration.
+        Raises:
+          FatalRtlBuddyError: If no library with that name is configured.
+        """
+        cfg = self.synth_lib_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"synthesis library '{name}' not found in cfg-synth-libs"
+            )
+        return cfg
 
     def get_project_rootdir(self):
         """

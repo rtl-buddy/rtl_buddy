@@ -16,6 +16,13 @@ from .verible import VeribleConfig
 from .coverage import CoverageConfig, CoverageConfigFile
 from .coverview import CoverviewConfig, CoverviewConfigFile
 from .surfer import SurferConfig
+from .synth import (
+    SynthConfig,
+    SynthSuiteConfig,
+    SynthRegConfig,
+    SynthToolConfig,
+    SynthLibConfig,
+)
 
 __all__ = [
     "TestConfig",
@@ -36,4 +43,9 @@ __all__ = [
     "SpecBlock",
     "SpecCoverageItem",
     "SurferConfig",
+    "SynthConfig",
+    "SynthSuiteConfig",
+    "SynthRegConfig",
+    "SynthToolConfig",
+    "SynthLibConfig",
 ]

@@ -330,6 +330,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'WCP: could not find source for "{fields.get("variable")}" (searched {fields.get("searched")} files)'
         case "wcp.connection_lost":
             return f"WCP: connection lost ({fields.get('reason')}); waiting for Surfer to reconnect"
+        case "synth.sdc_multi_clock":
+            periods = fields.get("periods_ns", [])
+            used = fields.get("used_ns")
+            return (
+                f"multi-clock SDC ({len(periods)} clocks: {periods} ns) — "
+                f"abc constraint set to minimum {used} ns as a workaround; "
+                "consider separate synth entries per clock domain"
+            )
+        case "synth.sdc_no_clock":
+            return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "coverage.metric.failed":
             return (
                 f'coverage metric "{fields.get("metric")}" failed'

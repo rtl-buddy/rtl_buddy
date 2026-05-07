@@ -1,25 +1,21 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, and regression.yaml.
+description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis flows, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, or synth_regression.yaml.
 ---
 
 # rtl_buddy
 
 You are running rtl_buddy a Verilog/SV build and regression helper configured with YAML.
 
-This skill covers agent-specific conventions. Use local docs if you need help:
-
-- `rtl-buddy docs list`
-- `rtl-buddy docs show agents`
-- `rtl-buddy --machine docs show reference/yaml`
-
-Use GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> as a fallback reference.
+This skill covers agent-specific conventions. Use bundled docs first:
+`rtl-buddy docs list`, `rtl-buddy docs show agents`, `rtl-buddy --machine docs show reference/yaml`.
+Use <https://rtl-buddy.github.io/rtl_buddy/> only as a fallback reference.
 
 ## Always use `--machine`
 
 All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL and console output is plain text.
 
-See `rtl-buddy docs show agents` or <https://rtl-buddy.github.io/rtl_buddy/latest/agents/> for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
+See `rtl-buddy docs show agents` for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
 
 ## Version check
 
@@ -28,28 +24,22 @@ This skill ships with the CLI, so its content matches the installed major. Surfa
 
 ## YAML types
 
-rtl_buddy reads four YAML file types. See `rtl-buddy docs show reference/yaml` for exact schemas.
+Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 
-- **`root_config.yaml`** — project root. Selects platform, builders, builder modes, verible path, coverage config, and the default `regression.yaml` path. Discovered by walking up from the invocation directory.
-- **`regression.yaml`** — lists the suite `tests.yaml` paths and reg-levels that `regression` iterates over.
-- **`tests.yaml`** — per-suite. Declares `testbenches` (TB filelists) and `tests` that map test names to a model, model_path, and testbench. Lives in each verification suite dir.
-- **`models.yaml`** — per-design. Maps model names to source/include filelists; consumed by `filelist` and referenced from `tests.yaml`.
+- **`root_config.yaml`** — project root, platform/build defaults, regression default path, synthesis tool defaults (`cfg-synth-tools`).
+- **`regression.yaml`** — repo-level suite list for `regression`.
+- **`tests.yaml`** — suite-level tests/testbenches; run `test` and `randtest` from this directory.
+- **`models.yaml`** — design source filelists referenced by `tests.yaml` and `synth.yaml`.
+- **`synth.yaml`** — synthesis runs; `model` name is the top; `tool` selects `cfg-synth-tools` entry; `params`/`defines`/`tool_overrides` for per-run customization.
+- **`synth_regression.yaml`** — repo-level synthesis suite list for `synth-regression`.
+- **`specs.yaml`** — spec traceability data; consumed by `rtl-buddy spec`.
 
-## Test Pass/fail detection
-- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and applies the configured thresholds.
-- If the testbench has a `cocotb:` block, `rtl_buddy` parses JUnit XML written by cocotb — no `PASS`/`FAIL` line needed. Run `rtl-buddy docs show concepts/cocotb` for setup.
-- Otherwise, `rtl_buddy` parses `artefacts/<test>/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
-- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
-- Always use the `PASS` or `FAIL` markers as otherwise the result is ambiguous and shows `NA`.
-- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
+## Pass/fail detection
 
-```systemverilog
-if (test_passed) $display("PASS smoke completed");
-else begin
-  $display("FAIL smoke completed");
-  $display("ERR: expected done=1 before timeout");
-end
-```
+- UVM tests use configured report thresholds; cocotb testbenches use JUnit XML.
+- Otherwise, `artefacts/<test>/test.log` must contain stdout starting with `PASS` or `FAIL`.
+- When emitting `FAIL`, also print an `ERR:` or `FAT:` line. Missing markers report `NA`; simulator exit code alone is not authoritative.
+- See `rtl-buddy docs show agents` and `rtl-buddy docs show concepts/cocotb`.
 
 ## Multi-suite discovery and CWD rules
 

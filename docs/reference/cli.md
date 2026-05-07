@@ -49,6 +49,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ verible            run verible cmd                                                   │
 │ wave               open waveform viewer for a test                                   │
 │ wave-install-nvim  install nvim plugin for rb wave annotation                        │
+│ synth              run synthesis                                                     │
+│ synth-regression   run synthesis regression                                          │
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
 │ spec               spec traceability commands                                        │

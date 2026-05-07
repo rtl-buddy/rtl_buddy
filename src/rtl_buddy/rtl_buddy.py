@@ -16,6 +16,7 @@ import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.model import ModelConfigLoader
+from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
 from .logging_utils import (
@@ -27,6 +28,8 @@ from .logging_utils import (
 )
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
+from .runner.synth_runner import SynthRunner
+from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
 from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
@@ -52,7 +55,15 @@ class RtlBuddy:
     Handles cli entry into RTL Buddy
     """
 
-    _GIT_COMMANDS = {"test", "randtest", "regression", "filelist", "wave"}
+    _GIT_COMMANDS = {
+        "test",
+        "randtest",
+        "regression",
+        "filelist",
+        "wave",
+        "synth",
+        "synth-regression",
+    }
 
     def cb_builder(value: str | None) -> str | None:
         if value is None:
@@ -100,6 +111,10 @@ class RtlBuddy:
         self.app.command(
             "wave-install-nvim", help="install nvim plugin for rb wave annotation"
         )(self.do_wave_install_nvim)
+        self.app.command("synth", help="run synthesis")(self.do_cmd_synth)
+        self.app.command("synth-regression", help="run synthesis regression")(
+            self.do_synth_regression
+        )
         self.app.add_typer(
             skill_app, name="skill", help="manage the rtl_buddy agent skill"
         )
@@ -1336,6 +1351,203 @@ class RtlBuddy:
                 f"Uncovered items: {', '.join(uncovered)}", style="yellow"
             )
         raise typer.Exit(0)
+
+    def _render_synth_summary(self, title, synth_results, *, metadata=None):
+        has_gates = any("gate_count" in r["results"].results for r in synth_results)
+        has_area = any("area_um2" in r["results"].results for r in synth_results)
+        has_timing = any("wns_ps" in r["results"].results for r in synth_results)
+        rows = []
+        for r in synth_results:
+            res = r["results"].results
+            row = {
+                "synth_name": r["synth_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+            }
+            if has_gates:
+                gc = res.get("gate_count")
+                row["gates"] = str(gc) if gc is not None else "-"
+            if has_area:
+                area = res.get("area_um2")
+                row["area"] = f"{area:.2f} µm²" if area is not None else "-"
+            if has_timing:
+                wns = res.get("wns_ps")
+                if wns is not None:
+                    row["wns"] = f"{'+' if wns >= 0 else ''}{wns / 1000:.3f} ns"
+                else:
+                    row["wns"] = "-"
+            rows.append(row)
+
+        columns = [
+            ("synth_name", "Synthesis"),
+            ("result", "Result"),
+            ("desc", "Description"),
+        ]
+        if has_gates:
+            columns.append(("gates", "Gates"))
+        if has_area:
+            columns.append(("area", "Area"))
+        if has_timing:
+            columns.append(("wns", "WNS"))
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _exit_code_from_synth_results(self, synth_results):
+        return 0 if all(r["results"].is_pass() for r in synth_results) else 1
+
+    def _do_synth_suite(self, suite_cfg, synth_name=None, reg_level=None):
+        syntheses = suite_cfg.get_syntheses(synth_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for s in syntheses:
+            tool_name = s.get_tool_name()
+            t_lvl = s.get_reglvl(tool_name)
+            if reg_level is not None and t_lvl > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "synth_suite.skip",
+                    synth=s.get_name(),
+                    reason="above_regression_level",
+                    synth_level=t_lvl,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "synth_name": s.get_name(),
+                        "results": SynthSkipResults(
+                            name=s.get_name() + "/results",
+                            desc=f"lvl {t_lvl} > cmd reg_level {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = SynthRunner(
+                name=self.name + "/synth_runner",
+                root_cfg=self.root_cfg,
+                synth_cfg=s,
+                suite_dir=suite_dir,
+            )
+            results.append({"synth_name": s.get_name(), "results": runner.run()})
+        return results
+
+    def do_cmd_synth(
+        self,
+        synth_config: Annotated[
+            str,
+            typer.Option("-c", "--synth-config", help="synth.yaml to use"),
+        ] = "synth.yaml",
+        synth_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of synthesis to run", show_default="run all syntheses"
+            ),
+        ] = None,
+        list_synths: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list syntheses in the selected config and exit"
+            ),
+        ] = False,
+    ):
+        """
+        run synthesis
+        """
+        suite_cfg = SynthSuiteConfig(path=synth_config)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.synth",
+            command="synth",
+            synth=synth_name or "all",
+            synth_config=synth_config,
+        )
+
+        if list_synths:
+            emit_console_text("  ".join(suite_cfg.get_synth_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        synth_results = self._do_synth_suite(suite_cfg, synth_name=synth_name)
+        self._render_synth_summary("Synthesis Results Summary", synth_results)
+        raise typer.Exit(self._exit_code_from_synth_results(synth_results))
+
+    def do_synth_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to synth_regression.yaml",
+                show_default="Use ./synth_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l", "--reg-level", help="synthesis regression level to stop at"
+            ),
+        ] = 0,
+    ):
+        """
+        run synthesis regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.synth_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        start_dir = os.getcwd()
+        if reg_config is not None:
+            reg_cfg_path = os.path.join(start_dir, reg_config)
+        else:
+            local = os.path.join(start_dir, "synth_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "synth_regression.yaml not found; pass -c to specify a path"
+                )
+
+        synth_reg = SynthRegConfig(
+            name=self.name + "/synth_reg_config", path=reg_cfg_path
+        )
+        emit_console_text(
+            f"Running synthesis regression from {os.path.dirname(reg_cfg_path)}",
+            style="cyan",
+        )
+
+        all_results = []
+        try:
+            for suite_cfg in synth_reg.get_suite_configs():
+                suite_dir = os.path.dirname(suite_cfg.get_path())
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "synth_regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                )
+                os.chdir(suite_dir)
+                suite_results = self._do_synth_suite(
+                    suite_cfg, synth_name=None, reg_level=reg_level
+                )
+                all_results.extend(suite_results)
+        finally:
+            os.chdir(start_dir)
+
+        self._render_synth_summary(
+            "Synthesis Regression Summary",
+            all_results,
+            metadata=[f"Reg Level: {reg_level}"],
+        )
+        raise typer.Exit(self._exit_code_from_synth_results(all_results))
 
     def do_cmd_wave(
         self,
