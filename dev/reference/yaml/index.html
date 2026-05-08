@@ -1320,13 +1320,19 @@
 <a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
 <a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a><span class="w">      </span><span class="nt">synth-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
 <a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a><span class="w">      </span><span class="nt">abc-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
-<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>
-<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a><span class="nt">cfg-synth-libs</span><span class="p">:</span>
-<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sky130hd_tt&quot;</span>
-<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib&quot;</span>
+<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
+<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
+<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a><span class="w">      </span><span class="nt">strategy</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;AREA&quot;</span><span class="w">   </span><span class="c1"># AREA | TIMING | TIMING_ANNEAL | TIMING_GENETIC</span>
 <a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>
-<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
-<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
+<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a><span class="nt">cfg-synth-libs</span><span class="p">:</span>
+<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sky130hd_tt&quot;</span>
+<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib&quot;</span>
+<a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a><span class="w">    </span><span class="nt">lef-paths</span><span class="p">:</span><span class="w">           </span><span class="c1"># required for OpenROAD backend</span>
+<a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef&quot;</span>
+<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>
+<a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
+<a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
 </code></pre></div>
 <p><strong>Runtime effects:</strong></p>
 <ul>
@@ -1336,8 +1342,8 @@
 <li><code>cfg-coverage</code> is keyed by simulator family (e.g. <code>verilator</code>). <code>use-lcov: true</code> enables <code>.info</code> export and LCOV HTML generation when <code>--coverage-html</code> is used.</li>
 <li><code>cfg-coverview</code> is keyed by simulator family. <code>generate-tables</code> sets the coverage type for Coverview tables. <code>config</code> is a dict of inline Coverview JSON configuration values.</li>
 <li><code>cfg-surfer</code> configures the Surfer waveform viewer used by <code>rb wave</code>. <code>path</code> is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. <code>editor-cmd</code> supports <code>%f</code> (file path) and <code>%l</code> (line number) placeholders. <code>editor-terminal</code> controls how the editor is launched: <code>tmux</code> opens a new tmux window, <code>iterm2</code> and <code>terminal</code> use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). <code>editor-sock</code> is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use and reconnects for subsequent events. <code>ctrl-sock</code> is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press <code>&lt;Space&gt;wa</code> (or your <code>&lt;leader&gt;wa</code>) on a signal name to add it to the waveform view. Install the bundled nvim plugin first with <code>rb wave-install-nvim</code>.</li>
-<li><code>cfg-synth-tools</code> defines synthesis tool entries selected by <code>synth.yaml</code> <code>tool</code> fields. <code>tool</code> is the executable name on <code>PATH</code>; <code>opts.synth-args</code> are appended to the Yosys <code>synth</code> command, and <code>opts.abc-args</code> are used by the unmapped ABC step.</li>
-<li><code>cfg-synth-libs</code> defines named Liberty files for technology-mapped synthesis. Relative paths are resolved from the directory containing <code>root_config.yaml</code>.</li>
+<li><code>cfg-synth-tools</code> defines synthesis tool entries selected by <code>synth.yaml</code> <code>tool</code> fields. <code>tool</code> is the executable name on <code>PATH</code>. For the Yosys backend, <code>opts.synth-args</code> are appended to the <code>synth</code> command and <code>opts.abc-args</code> are used by the unmapped ABC step. For the OpenROAD backend, <code>opts.strategy</code> controls optional resynthesis (<code>AREA</code> = none, <code>TIMING</code>/<code>TIMING_ANNEAL</code> = <code>resynth_annealing</code>, <code>TIMING_GENETIC</code> = <code>resynth_genetic</code>).</li>
+<li><code>cfg-synth-libs</code> defines named Liberty files for technology-mapped synthesis. <code>path</code> is resolved relative to <code>root_config.yaml</code>. The optional <code>lef-paths</code> list specifies LEF files required by the OpenROAD backend for technology loading; ignored by the Yosys backend.</li>
 <li><code>cfg-rtl-reg.reg-cfg-path</code> is the fallback regression file for <code>rtl-buddy regression</code> when no <code>./regression.yaml</code> exists in the cwd.</li>
 <li><code>cfg-verible[].path</code> is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing <code>root_config.yaml</code>.</li>
 </ul>
@@ -1623,7 +1629,7 @@
 <a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 <a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
 <a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sky130_synth&quot;</span>
-<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Technology-mapped</span><span class="nv"> </span><span class="s">synthesis</span><span class="nv"> </span><span class="s">for</span><span class="nv"> </span><span class="s">SKY130&quot;</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Technology-mapped</span><span class="nv"> </span><span class="s">synthesis</span><span class="nv"> </span><span class="s">for</span><span class="nv"> </span><span class="s">SKY130</span><span class="nv"> </span><span class="s">(Yosys)&quot;</span>
 <a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
 <a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
 <a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;yosys&quot;</span>
@@ -1640,6 +1646,16 @@
 <a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
 <a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a><span class="w">      </span><span class="nt">yosys</span><span class="p">:</span>
 <a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a><span class="w">        </span><span class="nt">synth_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;-flatten&quot;</span>
+<a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>
+<a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sky130_openroad&quot;</span>
+<a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Technology-mapped</span><span class="nv"> </span><span class="s">synthesis</span><span class="nv"> </span><span class="s">with</span><span class="nv"> </span><span class="s">OpenROAD</span><span class="nv"> </span><span class="s">timing</span><span class="nv"> </span><span class="s">analysis&quot;</span>
+<a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
+<a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
+<a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
+<a id="__codelineno-5-35" name="__codelineno-5-35" href="#__codelineno-5-35"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;constraints.sdc&quot;</span>
+<a id="__codelineno-5-36" name="__codelineno-5-36" href="#__codelineno-5-36"></a><span class="w">    </span><span class="nt">libraries</span><span class="p">:</span>
+<a id="__codelineno-5-37" name="__codelineno-5-37" href="#__codelineno-5-37"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;sky130hd_tt&quot;</span>
+<a id="__codelineno-5-38" name="__codelineno-5-38" href="#__codelineno-5-38"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 </code></pre></div>
 <p><strong>Field reference:</strong></p>
 <table>
@@ -1704,17 +1720,16 @@
 <tr>
 <td><code>tool_overrides</code></td>
 <td>dict</td>
-<td>Optional per-tool overrides for <code>synth_args</code> and <code>abc_args</code>, keyed by synthesis tool name</td>
+<td>Optional per-tool overrides for <code>synth_args</code>, <code>abc_args</code>, or <code>strategy</code>, keyed by synthesis tool name</td>
 </tr>
 </tbody>
 </table>
 <p><strong>Runtime effects:</strong></p>
 <ul>
-<li><code>rtl-buddy synth</code> loads <code>synth.yaml</code>, generates <code>artefacts/{synth_name}/synth.f</code>, writes a Yosys script to <code>synth.ys</code>, captures output in <code>synth.log</code>, and emits either <code>synth.rtlil</code> or a mapped <code>synth_netlist.v</code>.</li>
-<li>Without <code>libraries</code>, the Yosys backend runs a technology-independent flow and writes RTLIL.</li>
-<li>With <code>libraries</code>, the backend reads Liberty files from <code>cfg-synth-libs</code>, runs <code>dfflibmap</code> and <code>abc -liberty</code>, writes a Verilog netlist, and reports area when Yosys prints a chip-area line.</li>
-<li>If <code>constraints</code> contains one or more <code>create_clock -period</code> entries, the backend passes the minimum period to ABC as <code>-D &lt;period_ps&gt;</code> and reports WNS when ABC timing is available.</li>
-<li>A run passes only when the tool exits with code 0 and <code>synth.log</code> contains no lines starting with <code>ERROR:</code>.</li>
+<li><code>rtl-buddy synth</code> loads <code>synth.yaml</code>, resolves sources via <code>models.yaml</code>, and dispatches to the backend selected by <code>tool</code>.</li>
+<li><strong>Yosys backend</strong> (<code>tool: "yosys"</code>): writes <code>synth.f</code> and <code>synth.ys</code>, runs Yosys, captures output in <code>synth.log</code>. Without <code>libraries</code>, emits RTLIL; with <code>libraries</code>, runs <code>dfflibmap</code> + <code>abc -liberty</code> and emits <code>synth_netlist.v</code>. Reports Gates, Area (lib-mapped only), and WNS (lib-mapped with SDC). Passes when exit code is 0 and <code>synth.log</code> has no <code>ERROR:</code> lines.</li>
+<li><strong>OpenROAD backend</strong> (<code>tool: "openroad"</code>): requires <code>libraries</code> with <code>lef-paths</code> configured in <code>cfg-synth-libs</code>. Stage 1 runs Yosys to produce <code>synth_netlist.v</code> (logged to <code>synth_yosys.log</code>). Stage 2 runs OpenROAD with <code>synth.tcl</code> which calls <code>read_lef</code>, <code>read_liberty</code>, <code>read_verilog</code>, <code>link_design</code>, <code>read_sdc</code> (native multi-clock), and reports area/timing; output in <code>synth.log</code>. Reports Gates, Area, WNS (from <code>report_checks -path_delay max</code>), and TNS (from <code>report_tns</code>). Passes when both stages exit with code 0 and neither log contains errors.</li>
+<li>If <code>constraints</code> contains <code>create_clock</code> entries, the Yosys backend uses the minimum period as ABC's <code>-D</code> constraint (multi-clock workaround). The OpenROAD backend passes the full SDC to <code>read_sdc</code> without modification.</li>
 </ul>
 <hr />
 <h2 id="synth_regressionyaml">synth_regression.yaml</h2>
