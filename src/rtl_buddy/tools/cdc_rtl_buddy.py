@@ -138,6 +138,8 @@ class RtlBuddyCdc:
         ]
         if waivers_path is not None:
             cmd_text += ["--waivers", waivers_path]
+        if opts.sync_depth is not None:
+            cmd_text += ["--sync-depth", str(opts.sync_depth)]
         if opts.extra_args:
             cmd_text += opts.extra_args.split()
         cmd_text += sources
@@ -156,6 +158,8 @@ class RtlBuddyCdc:
         ]
         if waivers_path is not None:
             cmd_json += ["--waivers", waivers_path]
+        if opts.sync_depth is not None:
+            cmd_json += ["--sync-depth", str(opts.sync_depth)]
         if opts.extra_args:
             cmd_json += opts.extra_args.split()
         cmd_json += sources
