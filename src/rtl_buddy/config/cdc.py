@@ -82,9 +82,9 @@ class CdcConfigFile:
     tool_overrides: dict | None = None
 
     def initialise(self, config_dir: str) -> "CdcConfig":
-        model = ModelConfigLoader(
-            os.path.join(config_dir, self.model_path)
-        ).get_model(self.model)
+        model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
+            self.model
+        )
         constraints = os.path.join(config_dir, self.constraints)
         waivers = (
             os.path.join(config_dir, self.waivers) if self.waivers is not None else None

@@ -1694,9 +1694,7 @@ class RtlBuddy:
         ] = None,
         reg_level: Annotated[
             int,
-            typer.Option(
-                "-l", "--reg-level", help="CDC regression level to stop at"
-            ),
+            typer.Option("-l", "--reg-level", help="CDC regression level to stop at"),
         ] = 0,
     ):
         """

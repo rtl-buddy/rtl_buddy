@@ -421,9 +421,7 @@ class RootConfig:
         """
         cfg = self.cdc_tool_cfgs.get(name)
         if cfg is None:
-            raise FatalRtlBuddyError(
-                f"CDC tool '{name}' not found in cfg-cdc-tools"
-            )
+            raise FatalRtlBuddyError(f"CDC tool '{name}' not found in cfg-cdc-tools")
         return cfg
 
     def get_synth_lib_cfg(self, name: str):
