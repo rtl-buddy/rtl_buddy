@@ -210,6 +210,9 @@ jobs:
     needs: release
     if: needs.release.outputs.new_tag != '' && needs.release.outputs.is_prerelease != 'true'
     runs-on: ubuntu-latest
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
     permissions:
       contents: write
 
