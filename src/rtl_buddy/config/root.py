@@ -23,6 +23,7 @@ from .synth import (
     SynthLibConfig,
     SynthLibConfigFile,
 )
+from .cdc import CdcToolConfig, CdcToolConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -106,6 +107,9 @@ class RootConfigFile:
     synth_libs: list[SynthLibConfigFile] = field(
         rename="cfg-synth-libs", default_factory=list
     )
+    cdc_tools: list[CdcToolConfigFile] = field(
+        rename="cfg-cdc-tools", default_factory=list
+    )
 
 
 class RootConfig:
@@ -150,6 +154,7 @@ class RootConfig:
         self.surfer_cfgs: dict = {}
         self.synth_tool_cfgs = dict()
         self.synth_lib_cfgs = dict()
+        self.cdc_tool_cfgs: dict = {}
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -198,6 +203,11 @@ class RootConfig:
             self.synth_lib_cfgs = {
                 cfg.name: SynthLibConfig(cfg, self.root_cfg_path)
                 for cfg in data.synth_libs
+            }
+
+            # Populate CDC tool configs
+            self.cdc_tool_cfgs = {
+                cfg.name: CdcToolConfig(cfg) for cfg in data.cdc_tools
             }
 
             # Initialise regression config
@@ -396,6 +406,22 @@ class RootConfig:
             raise FatalRtlBuddyError(
                 f"synthesis tool '{name}' not found in cfg-synth-tools"
             )
+        return cfg
+
+    def get_cdc_tool_cfg(self, name: str):
+        """
+        Get CDC tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-cdc-tools.
+        Returns:
+          cfg (CdcToolConfig): Matching CDC tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.cdc_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(f"CDC tool '{name}' not found in cfg-cdc-tools")
         return cfg
 
     def get_synth_lib_cfg(self, name: str):

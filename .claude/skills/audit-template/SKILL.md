@@ -27,18 +27,24 @@ Focus on user-visible changes. Skip internal refactors that don't affect behavio
 For each user-visible change identified:
 
 1. Search `rtl-buddy-project-template/` for whether the feature appears in any config file, SV file, plugin script, or README.
-2. If it appears, assess:
+2. Classify the intended role of the example:
+   - **sandbox flow**: part of the integrated reference design. It should connect to the same DUT/spec/model/test/regression story and demonstrate a continuous workflow, not a disconnected side demo.
+   - **template demo**: a minimal isolated feature example. It may be disjoint from sandbox, but should stay small, readable, and focused on one rtl_buddy capability.
+3. If it appears, assess:
    - Is it **isolated** — can a reader find and read it without wading through unrelated content?
+   - Is it **integrated/minimal** — for sandbox, does it participate in the continuous workflow; for template, is it a small feature demo?
    - Is it **explained** — does a comment, README section, or inline annotation say what it does and when to use it?
    - Is it **runnable** — is there a concrete `uv run rb ...` command a reader can copy and run?
-3. If it does not appear, flag it as a gap.
+4. If it does not appear, flag it as a gap.
+
+Flag any feature placed in sandbox that behaves like a disconnected template demo, and any template example that is too large or entangled to serve as a minimal reference.
 
 ## Step 3 — Report
 
 Output a table:
 
-| Feature / Change | rtl_buddy commit | Template location | Isolated | Explained | Runnable | Action needed |
-|------------------|------------------|-------------------|----------|-----------|----------|---------------|
+| Feature / Change | rtl_buddy commit | Intended role | Template location | Isolated | Integrated/Minimal | Explained | Runnable | Action needed |
+|------------------|------------------|---------------|-------------------|----------|--------------------|-----------|----------|---------------|
 
 Mark each cell ✅ / ❌ / ⚠️ (partial). After the table, emit a **Gap Summary** with one recommended action per ❌ or ⚠️ row.
 
