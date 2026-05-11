@@ -122,7 +122,9 @@ class RtlBuddyCdc:
         log_path = self._log_path()
 
         executable = self.tool_cfg.get_executable() or "rtl-buddy-cdc"
-        opts = self.tool_cfg.get_opts(self.cdc_cfg.get_tool_overrides())
+        opts = self.tool_cfg.get_opts(
+            self.cdc_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+        )
 
         cmd_text = [
             executable,

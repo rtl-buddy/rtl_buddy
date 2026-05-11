@@ -133,21 +133,32 @@ class CdcConfig:
     def get_tool_name(self) -> str:
         return self.tool
 
-    def get_tool_overrides(self) -> dict | None:
-        return self.tool_overrides
+    def get_tool_overrides_for(self, tool_name: str) -> dict | None:
+        if self.tool_overrides is None:
+            return None
+        return self.tool_overrides.get(tool_name)
 
-    def get_reglvl(self, _tool_name: str) -> int:
-        # CDC reglvl is a flat int for now; we accept the same dict-by-tool
-        # form as synth purely so users can mix-and-match without surprise.
-        rl = self._reglvl
-        if rl is None:
-            return 0
-        if isinstance(rl, int):
-            return rl
-        if isinstance(rl, dict):
-            v = rl.get(_tool_name)
-            return int(v) if v is not None else 0
-        return 0
+    def get_reglvl(self, tool_name: str) -> int:
+        match self._reglvl:
+            case int() as lvl:
+                return lvl
+            case dict() if tool_name in self._reglvl:
+                return self._reglvl[tool_name]
+            case dict() if "default" in self._reglvl:
+                return self._reglvl["default"]
+            case None:
+                return 0
+            case _:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "cdc_config.reglvl_malformed",
+                    cdc=self.name,
+                    tool=tool_name,
+                )
+                raise FatalRtlBuddyError(
+                    f"Malformed cdc.yaml, specify reglvl for {self.name} with {tool_name} or default"
+                )
 
     def __str__(self):
         return pprint.pformat(self)
