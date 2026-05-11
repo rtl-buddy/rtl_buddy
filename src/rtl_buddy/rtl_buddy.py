@@ -15,6 +15,7 @@ from typing_extensions import Annotated
 import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
+from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.model import ModelConfigLoader
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
@@ -26,6 +27,8 @@ from .logging_utils import (
     render_summary,
     setup_logging,
 )
+from .runner.cdc_runner import CdcRunner
+from .runner.cdc_results import CdcSkipResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.synth_runner import SynthRunner
@@ -63,6 +66,8 @@ class RtlBuddy:
         "wave",
         "synth",
         "synth-regression",
+        "cdc",
+        "cdc-regression",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -114,6 +119,10 @@ class RtlBuddy:
         self.app.command("synth", help="run synthesis")(self.do_cmd_synth)
         self.app.command("synth-regression", help="run synthesis regression")(
             self.do_synth_regression
+        )
+        self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
+        self.app.command("cdc-regression", help="run CDC lint regression")(
+            self.do_cdc_regression
         )
         self.app.add_typer(
             skill_app, name="skill", help="manage the rtl_buddy agent skill"
@@ -1557,6 +1566,189 @@ class RtlBuddy:
             metadata=[f"Reg Level: {reg_level}"],
         )
         raise typer.Exit(self._exit_code_from_synth_results(all_results))
+
+    # --- CDC subcommands ----------------------------------------------------
+
+    def _render_cdc_summary(self, title, cdc_results, *, metadata=None):
+        rows = []
+        for r in cdc_results:
+            res = r["results"].results
+            row = {
+                "cdc_name": r["cdc_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+                "violations": str(res.get("violations", "-")),
+                "suppressed": str(res.get("suppressed", "-")),
+            }
+            crossings = res.get("crossings")
+            row["crossings"] = str(crossings) if crossings is not None else "-"
+            rows.append(row)
+
+        columns = [
+            ("cdc_name", "CDC Analysis"),
+            ("result", "Result"),
+            ("desc", "Description"),
+            ("violations", "Violations"),
+            ("suppressed", "Suppressed"),
+            ("crossings", "Crossings"),
+        ]
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _exit_code_from_cdc_results(self, cdc_results):
+        return 0 if all(r["results"].is_pass() for r in cdc_results) else 1
+
+    def _do_cdc_suite(self, suite_cfg, cdc_name=None, reg_level=None):
+        analyses = suite_cfg.get_analyses(cdc_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for a in analyses:
+            tool_name = a.get_tool_name()
+            t_lvl = a.get_reglvl(tool_name)
+            if reg_level is not None and t_lvl > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "cdc_suite.skip",
+                    cdc=a.get_name(),
+                    reason="above_regression_level",
+                    cdc_level=t_lvl,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "cdc_name": a.get_name(),
+                        "results": CdcSkipResults(
+                            name=a.get_name() + "/results",
+                            desc=f"lvl {t_lvl} > cmd reg_level {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = CdcRunner(
+                name=self.name + "/cdc_runner",
+                root_cfg=self.root_cfg,
+                cdc_cfg=a,
+                suite_dir=suite_dir,
+            )
+            results.append({"cdc_name": a.get_name(), "results": runner.run()})
+        return results
+
+    def do_cmd_cdc(
+        self,
+        cdc_config: Annotated[
+            str,
+            typer.Option("-c", "--cdc-config", help="cdc.yaml to use"),
+        ] = "cdc.yaml",
+        cdc_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of CDC analysis to run", show_default="run all analyses"
+            ),
+        ] = None,
+        list_cdcs: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list analyses in the selected config and exit"
+            ),
+        ] = False,
+    ):
+        """
+        run CDC lint
+        """
+        suite_cfg = CdcSuiteConfig(path=cdc_config)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.cdc",
+            command="cdc",
+            cdc=cdc_name or "all",
+            cdc_config=cdc_config,
+        )
+
+        if list_cdcs:
+            emit_console_text(
+                "  ".join(suite_cfg.get_analysis_names()), stream="stdout"
+            )
+            raise typer.Exit(0)
+
+        cdc_results = self._do_cdc_suite(suite_cfg, cdc_name=cdc_name)
+        self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
+        raise typer.Exit(self._exit_code_from_cdc_results(cdc_results))
+
+    def do_cdc_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to cdc_regression.yaml",
+                show_default="Use ./cdc_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="CDC regression level to stop at"),
+        ] = 0,
+    ):
+        """
+        run CDC lint regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.cdc_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        start_dir = os.getcwd()
+        if reg_config is not None:
+            reg_cfg_path = os.path.join(start_dir, reg_config)
+        else:
+            local = os.path.join(start_dir, "cdc_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "cdc_regression.yaml not found; pass -c to specify a path"
+                )
+
+        cdc_reg = CdcRegConfig(name=self.name + "/cdc_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running CDC regression from {os.path.dirname(reg_cfg_path)}",
+            style="cyan",
+        )
+
+        all_results = []
+        try:
+            for suite_cfg in cdc_reg.get_suite_configs():
+                suite_dir = os.path.dirname(suite_cfg.get_path())
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "cdc_regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                )
+                os.chdir(suite_dir)
+                suite_results = self._do_cdc_suite(
+                    suite_cfg, cdc_name=None, reg_level=reg_level
+                )
+                all_results.extend(suite_results)
+        finally:
+            os.chdir(start_dir)
+
+        self._render_cdc_summary(
+            "CDC Regression Summary",
+            all_results,
+            metadata=[f"Reg Level: {reg_level}"],
+        )
+        raise typer.Exit(self._exit_code_from_cdc_results(all_results))
 
     def do_cmd_wave(
         self,

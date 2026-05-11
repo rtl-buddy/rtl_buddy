@@ -1,40 +1,63 @@
 ---
-description: How to migrate an RTL project from the legacy rtl_buddy submodule flow to a pinned uv dependency.
+description: How to migrate an RTL project from the legacy rtl_buddy submodule flow to a uv-managed PyPI dependency.
 ---
 
 # Migrating from Submodule to uv
 
-Use this page to migrate an RTL project from the legacy `rtl_buddy` submodule flow to a pinned `uv` dependency.
+Use this page to migrate an RTL project from the legacy `rtl_buddy` submodule flow to a `uv`-managed PyPI dependency.
 
-## Current state
+## Existing state before migration
 
 `rtl_buddy` is currently distributed as a git submodule under `tools/rtl_buddy` in your RTL project. Installation is via `pip install -r requirements.txt` where `requirements.txt` contains `-e tools/rtl_buddy`.
 
-## Planned state
+## New state after migration
 
-The target distribution mechanism is `uv` with a pinned git reference:
+The target distribution mechanism is a normal Python project environment managed by `uv`, with `rtl_buddy` installed from PyPI:
 
 ```toml
 # pyproject.toml
-[tool.uv.sources]
-rtl_buddy = { git = "<repo-url>", tag = "v2.0.0" }
+[project]
+name = "your-rtl-project"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "rtl_buddy",
+]
 ```
 
-or equivalently:
+Then run `rtl_buddy` through that environment:
 
 ```bash
-uv add "rtl_buddy @ git+<repo-url>@v2.0.0"
+uv run rb --version
+uv run rb test basic
 ```
 
-This eliminates the submodule and replaces it with a locked dependency in `uv.lock`.
+This eliminates the submodule and replaces it with a package dependency recorded in `pyproject.toml` and locked in `uv.lock`.
 
 ## Migration guide
 
-This section will be updated when the `uv` distribution path is released. The migration will involve:
+Many legacy RTL repositories are not already Python projects. If your project does not have a `pyproject.toml`, create one first:
 
-1. Removing the `tools/rtl_buddy` submodule from your project.
-2. Adding a `pyproject.toml` or `uv` config pointing to the `rtl_buddy` git repo at a pinned tag.
-3. Running `uv sync` to install.
-4. Updating CI scripts that reference `tools/rtl_buddy` paths.
+```bash
+uv init --bare
+```
 
-Watch the `rtl_buddy` release notes for the release that ships the `uv`-compatible package.
+Then add `rtl_buddy`:
+
+```bash
+uv add rtl_buddy
+uv run rb --version
+```
+
+After the package install is working:
+
+1. Remove the `tools/rtl_buddy` submodule from your project.
+2. Remove `requirements.txt` if you have one, migrating the entries to `pyproject.toml` under dependencies.
+3. Update local scripts and CI jobs from `tools/rtl_buddy/...` or `python -m rtl_buddy` inside the submodule checkout to `uv run rb ...`.
+4. Commit `pyproject.toml` and `uv.lock` so other users and CI resolve the same environment.
+
+If you need to hold a project on a specific release, pin the package version:
+
+```bash
+uv add "rtl_buddy==2.3.0"
+```
