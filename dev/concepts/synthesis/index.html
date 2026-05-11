@@ -1465,7 +1465,7 @@
 </code></pre></div>
 <p>The <code>yosys</code> binary must be on <code>PATH</code> when <code>rb synth</code> is invoked.</p>
 <h2 id="installing-openroad">Installing OpenROAD</h2>
-<p>OpenROAD is required only for the <code>openroad</code> backend. It must be built from source on macOS — no official binaries are published. See the build notes in your project's <code>tools/openroad/BUILD_OSX.md</code> for the full procedure. After building, symlink the binary to a directory on <code>PATH</code>:</p>
+<p>OpenROAD is required only for the <code>openroad</code> backend. It must be built from source on macOS — no official binaries are published. See the build notes in your project's <code>tools/openroad/SETUP_OSX.md</code> (the starter template uses that filename) for the full procedure. After building, symlink the binary to a directory on <code>PATH</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>ln<span class="w"> </span>-s<span class="w"> </span>/path/to/OpenROAD/build/bin/openroad<span class="w"> </span>/usr/local/bin/openroad
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>openroad<span class="w"> </span>-version
 </code></pre></div>
