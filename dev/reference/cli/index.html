@@ -856,6 +856,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#synth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        synth
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#synth-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        synth-regression
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1243,6 +1265,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#synth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        synth
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#synth-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        synth-regression
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1503,6 +1547,37 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>│ check-design    show which spec blocks have design models referencing them           │
 <a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>│ check-coverage  show which spec coverage items are addressed by tests                │
 <a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="synth">synth</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>Usage: rtl-buddy synth [OPTIONS] [SYNTH_NAME]                                          
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a> run synthesis                                                                          
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>│   synth_name      [SYNTH_NAME]  name of synthesis to run                             │
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>│                                 [default: (run all syntheses)]                       │
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>│ --synth-config  -c      TEXT  synth.yaml to use [default: synth.yaml]                │
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>│ --list                        list syntheses in the selected config and exit         │
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>│ --effort                TEXT  override synthesis effort (must match                  │
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>│                               cfg-synth-efforts entry)                               │
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>│ --help                        Show this message and exit.                            │
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="synth-regression">synth-regression</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>Usage: rtl-buddy synth-regression [OPTIONS]                                            
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a> run synthesis regression                                                               
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>│ --reg-config  -c      TEXT     path to synth_regression.yaml                         │
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>│                                [default: (Use ./synth_regression.yaml if present)]   │
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>│ --reg-level   -l      INTEGER  synthesis regression level to stop at [default: 0]    │
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>│ --effort              TEXT     override synthesis effort (must match                 │
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>│                                cfg-synth-efforts entry)                              │
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>│ --help                         Show this message and exit.                           │
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 
 

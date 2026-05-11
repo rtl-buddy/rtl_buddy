@@ -737,6 +737,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#effort-levels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Effort levels
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -759,6 +770,28 @@
     <span class="md-ellipsis">
       
         Synthesis tool configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synthesis-effort-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synthesis effort configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-quick-standard-accurate-on-sky130" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: quick / standard / accurate on SKY130
       
     </span>
   </a>
@@ -1289,6 +1322,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#effort-levels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Effort levels
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1311,6 +1355,28 @@
     <span class="md-ellipsis">
       
         Synthesis tool configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#synthesis-effort-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Synthesis effort configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example-quick-standard-accurate-on-sky130" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: quick / standard / accurate on SKY130
       
     </span>
   </a>
@@ -1591,20 +1657,39 @@
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">synth_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;-flatten</span><span class="nv"> </span><span class="s">-nordff&quot;</span>
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="nt">abc_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;-fast&quot;</span>
 </code></pre></div>
+<h3 id="effort-levels">Effort levels</h3>
+<p>A synthesis can select a named <strong>effort level</strong> that controls how much work the flow does. Efforts are defined once in <code>root_config.yaml</code> under <code>cfg-synth-efforts</code> (see <a href="#synthesis-effort-configuration">below</a>) and referenced per synthesis:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">syntheses</span><span class="p">:</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sandbox_quick&quot;</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fast</span><span class="nv"> </span><span class="s">iteration</span><span class="nv"> </span><span class="s">build</span><span class="nv"> </span><span class="s">—</span><span class="nv"> </span><span class="s">Yosys-only,</span><span class="nv"> </span><span class="s">no</span><span class="nv"> </span><span class="s">STA&quot;</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;test_module&quot;</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/sandbox/models.yaml&quot;</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="nt">libraries</span><span class="p">:</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;sky130hd_tt&quot;</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;constraints.sdc&quot;</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">    </span><span class="nt">effort</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;quick&quot;</span><span class="w">      </span><span class="c1"># references a cfg-synth-efforts entry</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+</code></pre></div>
+<p>When <code>effort:</code> is omitted, a built-in <code>standard</code> effort with all defaults is used — equivalent to the pre-effort behaviour. The <code>--effort &lt;name&gt;</code> CLI flag overrides the per-synthesis setting at runtime:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rb<span class="w"> </span>synth<span class="w"> </span>sandbox_openroad<span class="w"> </span>--effort<span class="w"> </span>quick<span class="w">     </span><span class="c1"># force the quick path</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>rb<span class="w"> </span>synth-regression<span class="w"> </span>--effort<span class="w"> </span>accurate<span class="w">        </span><span class="c1"># apply across a whole regression</span>
+</code></pre></div>
+<p>Precedence for the same knob: per-synthesis <code>tool_overrides</code> &gt; <code>cfg-synth-efforts</code> &gt; <code>cfg-synth-tools</code>.</p>
 <h2 id="root-config-root_configyaml">Root config: <code>root_config.yaml</code></h2>
 <h3 id="synthesis-tool-configuration">Synthesis tool configuration</h3>
 <p>Synthesis tool defaults live under <code>cfg-synth-tools</code>. Multiple tools can be listed; the <code>tool</code> field in <code>synth.yaml</code> selects which entry to use:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">cfg-synth-tools</span><span class="p">:</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;yosys&quot;</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;yosys&quot;</span><span class="w">        </span><span class="c1"># executable name (must be on PATH)</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">      </span><span class="nt">synth-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">      </span><span class="nt">abc-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span><span class="w">     </span><span class="c1"># executable name (must be on PATH)</span>
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">      </span><span class="nt">strategy</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;AREA&quot;</span><span class="w">   </span><span class="c1"># AREA (default) | TIMING | TIMING_ANNEAL | TIMING_GENETIC</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">cfg-synth-tools</span><span class="p">:</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;yosys&quot;</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;yosys&quot;</span><span class="w">        </span><span class="c1"># executable name (must be on PATH)</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">      </span><span class="nt">synth-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">      </span><span class="nt">abc-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span><span class="w">     </span><span class="c1"># executable name (must be on PATH)</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">      </span><span class="nt">strategy</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;AREA&quot;</span><span class="w">   </span><span class="c1"># AREA (default) | TIMING | TIMING_ANNEAL | TIMING_GENETIC</span>
 </code></pre></div>
 <p>The <code>strategy</code> option controls optional OpenROAD resynthesis after timing analysis:</p>
 <table>
@@ -1629,13 +1714,119 @@
 </tr>
 </tbody>
 </table>
+<h3 id="synthesis-effort-configuration">Synthesis effort configuration</h3>
+<p><code>cfg-synth-efforts</code> defines named levels that shape both the Yosys stage and the OpenROAD stage. Reference an entry from <code>synth.yaml</code> <code>effort:</code> or <code>rb synth --effort &lt;name&gt;</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">cfg-synth-efforts</span><span class="p">:</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;quick&quot;</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="c1"># Yosys-only fast path; skips OpenROAD entirely.</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="c1"># Returns gate count + area only. No LEF/STA needed.</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">yosys</span><span class="p">:</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">      </span><span class="nt">synth-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;-flatten&quot;</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">      </span><span class="nt">abc-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;-fast&quot;</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">    </span><span class="nt">openroad</span><span class="p">:</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">      </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;standard&quot;</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">    </span><span class="c1"># Default behaviour: Yosys + OpenROAD STA with ideal wires (zero RC).</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="nt">openroad</span><span class="p">:</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">      </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;accurate&quot;</span>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="w">    </span><span class="c1"># Apply the Liberty default_wire_load model for RC-aware pre-layout</span>
+<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a><span class="w">    </span><span class="c1"># timing without needing a tech LEF + floorplan. Swap pre-sta-tcl</span>
+<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="w">    </span><span class="c1"># for initialize_floorplan + global_placement + estimate_parasitics</span>
+<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a><span class="w">    </span><span class="c1"># once a tech LEF is available.</span>
+<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="w">    </span><span class="nt">openroad</span><span class="p">:</span>
+<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a><span class="w">      </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a><span class="w">      </span><span class="nt">pre-sta-tcl</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
+<a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a><span class="w">        </span><span class="no">set_wire_load_mode top</span>
+<a id="__codelineno-10-25" name="__codelineno-10-25" href="#__codelineno-10-25"></a><span class="w">        </span><span class="no">set_wire_load_model -name Small</span>
+</code></pre></div>
+<p>Effort schema:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>Unique effort identifier; referenced from <code>synth.yaml</code> or <code>--effort</code></td>
+</tr>
+<tr>
+<td><code>yosys.synth-args</code></td>
+<td>string</td>
+<td>Appended to the <code>synth -top</code> command in both backends</td>
+</tr>
+<tr>
+<td><code>yosys.abc-args</code></td>
+<td>string</td>
+<td>Used by the unmapped ABC step (Yosys backend without <code>libraries</code>)</td>
+</tr>
+<tr>
+<td><code>openroad.run</code></td>
+<td>bool</td>
+<td>When <code>false</code>, a <code>tool: openroad</code> synthesis falls back to the Yosys-only backend (no LEF/STA required) — the recommended quick-look path</td>
+</tr>
+<tr>
+<td><code>openroad.pre-sta-tcl</code></td>
+<td>string</td>
+<td>Raw Tcl snippet injected into <code>synth.tcl</code> between <code>read_sdc</code> and <code>report_checks</code> — use for floorplan/placement/parasitic-estimation before timing analysis</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Built-in fallback:</strong> when <code>cfg-synth-efforts</code> is not configured (or the synthesis omits <code>effort:</code> and no override is passed), an internal <code>standard</code> effort with all defaults is used. Existing projects therefore need no migration.</p>
+<p><strong>Tradeoff:</strong> <code>pre-sta-tcl</code> is a raw snippet — powerful, but errors in it surface only at OpenROAD runtime. Test new snippets against a small design before adopting them in a regression.</p>
+</blockquote>
+<h3 id="example-quick-standard-accurate-on-sky130">Example: quick / standard / accurate on SKY130</h3>
+<p>Running the same DMA design at all three levels (ip_dma, sky130hd_tt, 5-clock SDC):</p>
+<table>
+<thead>
+<tr>
+<th>Effort</th>
+<th>Gates</th>
+<th>WNS</th>
+<th>TNS</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>quick</code></td>
+<td>213</td>
+<td>+3.314 ns</td>
+<td>—</td>
+<td>Yosys-only with <code>-flatten</code> / <code>-fast</code>; aggressive optimisation; no STA</td>
+</tr>
+<tr>
+<td><code>standard</code></td>
+<td>10218</td>
+<td>−1.172 ns</td>
+<td>−7835.2 ns</td>
+<td>OpenROAD STA with ideal wires (zero RC)</td>
+</tr>
+<tr>
+<td><code>accurate</code></td>
+<td>10218</td>
+<td>−1.347 ns</td>
+<td>−8418.4 ns</td>
+<td>OpenROAD STA + Liberty wire-load model</td>
+</tr>
+</tbody>
+</table>
+<p>The pessimization between <code>standard</code> and <code>accurate</code> (−1.347 vs −1.172 ns WNS) shows the wire-load model adding parasitic RC; the gate count is unchanged because the Yosys stage runs identically.</p>
 <h3 id="pdk-library-configuration">PDK library configuration</h3>
 <p>Liberty files for technology mapping are registered under <code>cfg-synth-libs</code>. Paths are resolved relative to <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">cfg-synth-libs</span><span class="p">:</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sky130hd_tt&quot;</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib&quot;</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="nt">lef-paths</span><span class="p">:</span><span class="w">                                          </span><span class="c1"># required for OpenROAD backend</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">cfg-synth-libs</span><span class="p">:</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sky130hd_tt&quot;</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib&quot;</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="nt">lef-paths</span><span class="p">:</span><span class="w">                                          </span><span class="c1"># required for OpenROAD backend</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef&quot;</span>
 </code></pre></div>
 <p>The <code>libraries</code> list in <code>synth.yaml</code> references entries by name.</p>
 <ul>
@@ -1643,44 +1834,44 @@
 <li><strong>OpenROAD backend:</strong> requires both <code>path</code> (liberty) for timing and <code>lef-paths</code> (LEF) for technology loading. Without <code>lef-paths</code> the run fails immediately with an actionable error.</li>
 </ul>
 <p>PDK files are typically large and should be gitignored. Provide a download script:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># pdk/download_pdk.sh</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>curl<span class="w"> </span>-fL<span class="w"> </span>&lt;liberty-url&gt;<span class="w"> </span>-o<span class="w"> </span>pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>curl<span class="w"> </span>-fL<span class="w"> </span>&lt;lef-url&gt;<span class="w">     </span>-o<span class="w"> </span>pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># pdk/download_pdk.sh</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>curl<span class="w"> </span>-fL<span class="w"> </span>&lt;liberty-url&gt;<span class="w"> </span>-o<span class="w"> </span>pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>curl<span class="w"> </span>-fL<span class="w"> </span>&lt;lef-url&gt;<span class="w">     </span>-o<span class="w"> </span>pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef
 </code></pre></div>
 <h2 id="synthesis-regression-synth_regressionyaml">Synthesis regression: <code>synth_regression.yaml</code></h2>
 <p><code>synth_regression.yaml</code> lists the <code>synth.yaml</code> files to include in a synthesis regression:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">synth_reg_config</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="nt">synth-configs</span><span class="p">:</span>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;synth/sandbox/synth.yaml&quot;</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;synth/dma/synth.yaml&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">synth_reg_config</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="nt">synth-configs</span><span class="p">:</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;synth/sandbox/synth.yaml&quot;</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;synth/dma/synth.yaml&quot;</span>
 </code></pre></div>
 <p>Paths are resolved relative to <code>synth_regression.yaml</code>.</p>
 <h2 id="running-synthesis">Running synthesis</h2>
 <p>Run all syntheses in a config:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>rtl-buddy<span class="w"> </span>synth<span class="w"> </span>-c<span class="w"> </span>synth/sandbox/synth.yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>rtl-buddy<span class="w"> </span>synth<span class="w"> </span>-c<span class="w"> </span>synth/sandbox/synth.yaml
 </code></pre></div></p>
 <p>Run a named synthesis:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>rtl-buddy<span class="w"> </span>synth<span class="w"> </span>sandbox_sky130<span class="w"> </span>-c<span class="w"> </span>synth/sandbox/synth.yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>rtl-buddy<span class="w"> </span>synth<span class="w"> </span>sandbox_sky130<span class="w"> </span>-c<span class="w"> </span>synth/sandbox/synth.yaml
 </code></pre></div></p>
 <p>List syntheses without running:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>rtl-buddy<span class="w"> </span>synth<span class="w"> </span>--list<span class="w"> </span>-c<span class="w"> </span>synth/sandbox/synth.yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>rtl-buddy<span class="w"> </span>synth<span class="w"> </span>--list<span class="w"> </span>-c<span class="w"> </span>synth/sandbox/synth.yaml
 </code></pre></div></p>
 <p>Run a synthesis regression:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>rtl-buddy<span class="w"> </span>synth-regression<span class="w"> </span>-c<span class="w"> </span>synth_regression.yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>rtl-buddy<span class="w"> </span>synth-regression<span class="w"> </span>-c<span class="w"> </span>synth_regression.yaml
 </code></pre></div></p>
 <p>Run only up to regression level 0:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>rtl-buddy<span class="w"> </span>synth-regression<span class="w"> </span>-c<span class="w"> </span>synth_regression.yaml<span class="w"> </span>--reg-level<span class="w"> </span><span class="m">0</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>rtl-buddy<span class="w"> </span>synth-regression<span class="w"> </span>-c<span class="w"> </span>synth_regression.yaml<span class="w"> </span>--reg-level<span class="w"> </span><span class="m">0</span>
 </code></pre></div></p>
 <h2 id="results-table">Results table</h2>
 <p><code>rb synth</code> prints a results table after each run. Columns appear conditionally:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┓
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>┃ Synthesis        ┃ Result ┃ Description      ┃ Gates ┃ Area       ┃ WNS       ┃ TNS       ┃
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━┩
-<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>│ sandbox_synth    │ PASS   │ Synthesis passed │ 18    │ -          │ -         │ -         │
-<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>│ sandbox_sky130   │ PASS   │ Synthesis passed │ 18    │ 178.92 µm² │ +8.882 ns │ -         │
-<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>│ sandbox_openroad │ PASS   │ Synthesis passed │ 18    │ 179.00 µm² │ +6.754 ns │ +0.000 ns │
-<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>└──────────────────┴────────┴──────────────────┴───────┴────────────┴───────────┴───────────┘
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┓
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>┃ Synthesis        ┃ Result ┃ Description      ┃ Gates ┃ Area       ┃ WNS       ┃ TNS       ┃
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━┩
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a>│ sandbox_synth    │ PASS   │ Synthesis passed │ 18    │ -          │ -         │ -         │
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a>│ sandbox_sky130   │ PASS   │ Synthesis passed │ 18    │ 178.92 µm² │ +8.882 ns │ -         │
+<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a>│ sandbox_openroad │ PASS   │ Synthesis passed │ 18    │ 179.00 µm² │ +6.754 ns │ +0.000 ns │
+<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a>└──────────────────┴────────┴──────────────────┴───────┴────────────┴───────────┴───────────┘
 </code></pre></div>
 <table>
 <thead>
