@@ -55,6 +55,53 @@ class SynthToolOptsFile:
 
 
 @serde
+class SynthEffortYosysFile:
+    synth_args: str = field(rename="synth-args", default="")
+    abc_args: str = field(rename="abc-args", default="")
+
+
+@serde
+class SynthEffortOpenroadFile:
+    run: bool = True
+    pre_sta_tcl: str = field(rename="pre-sta-tcl", default="")
+
+
+@serde
+class SynthEffortConfigFile:
+    name: str
+    yosys: SynthEffortYosysFile = field(default_factory=SynthEffortYosysFile)
+    openroad: SynthEffortOpenroadFile = field(default_factory=SynthEffortOpenroadFile)
+
+
+class SynthEffortConfig:
+    def __init__(self, cfg: SynthEffortConfigFile):
+        self._cfg = cfg
+
+    def get_name(self) -> str:
+        return self._cfg.name
+
+    def get_yosys_synth_args(self) -> str:
+        return self._cfg.yosys.synth_args
+
+    def get_yosys_abc_args(self) -> str:
+        return self._cfg.yosys.abc_args
+
+    def get_openroad_run(self) -> bool:
+        return self._cfg.openroad.run
+
+    def get_openroad_pre_sta_tcl(self) -> str:
+        return self._cfg.openroad.pre_sta_tcl
+
+
+_DEFAULT_EFFORT_NAME = "standard"
+
+
+def default_effort_config() -> SynthEffortConfig:
+    """Built-in fallback when root-config defines no cfg-synth-efforts."""
+    return SynthEffortConfig(SynthEffortConfigFile(name=_DEFAULT_EFFORT_NAME))
+
+
+@serde
 class SynthToolConfigFile:
     name: str
     tool: str
@@ -97,6 +144,7 @@ class SynthConfigFile:
     libraries: list[str] | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    effort: str | None = None
 
     def initialise(self, config_dir: str) -> "SynthConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -118,6 +166,7 @@ class SynthConfigFile:
             libraries=self.libraries,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            effort=self.effort,
         )
 
 
@@ -133,6 +182,10 @@ class SynthConfig:
     libraries: list[str] | None
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    effort: str | None = None
+
+    def get_effort_name(self) -> str | None:
+        return self.effort
 
     def get_name(self) -> str:
         return self.name

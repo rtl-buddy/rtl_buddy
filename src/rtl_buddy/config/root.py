@@ -22,6 +22,9 @@ from .synth import (
     SynthToolConfigFile,
     SynthLibConfig,
     SynthLibConfigFile,
+    SynthEffortConfig,
+    SynthEffortConfigFile,
+    default_effort_config,
 )
 from .cdc import CdcToolConfig, CdcToolConfigFile
 from ..errors import FatalRtlBuddyError
@@ -110,6 +113,9 @@ class RootConfigFile:
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
     )
+    synth_efforts: list[SynthEffortConfigFile] = field(
+        rename="cfg-synth-efforts", default_factory=list
+    )
 
 
 class RootConfig:
@@ -155,6 +161,7 @@ class RootConfig:
         self.synth_tool_cfgs = dict()
         self.synth_lib_cfgs = dict()
         self.cdc_tool_cfgs: dict = {}
+        self.synth_effort_cfgs: dict = {}
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -208,6 +215,11 @@ class RootConfig:
             # Populate CDC tool configs
             self.cdc_tool_cfgs = {
                 cfg.name: CdcToolConfig(cfg) for cfg in data.cdc_tools
+            }
+
+            # Populate synth effort configs
+            self.synth_effort_cfgs = {
+                cfg.name: SynthEffortConfig(cfg) for cfg in data.synth_efforts
             }
 
             # Initialise regression config
@@ -439,6 +451,29 @@ class RootConfig:
         if cfg is None:
             raise FatalRtlBuddyError(
                 f"synthesis library '{name}' not found in cfg-synth-libs"
+            )
+        return cfg
+
+    def get_synth_effort_cfg(self, name: str | None):
+        """
+        Get synthesis effort configuration by name.
+
+        When name is None or no efforts are configured, returns a built-in
+        default-standard effort with all knobs at their defaults.
+
+        Args:
+          name (str | None): Effort name as defined in cfg-synth-efforts.
+        Returns:
+          cfg (SynthEffortConfig): Matching effort configuration.
+        Raises:
+          FatalRtlBuddyError: If name is given but not configured.
+        """
+        if name is None:
+            return default_effort_config()
+        cfg = self.synth_effort_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"synthesis effort '{name}' not found in cfg-synth-efforts"
             )
         return cfg
 

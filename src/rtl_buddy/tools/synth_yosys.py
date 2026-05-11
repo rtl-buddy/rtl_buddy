@@ -7,7 +7,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .vlog_filelist import VlogFilelist
-from ..config.synth import SynthConfig, SynthToolConfig
+from ..config.synth import SynthConfig, SynthToolConfig, SynthEffortConfig, default_effort_config
 from ..errors import FilelistError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
@@ -30,11 +30,13 @@ class YosysSynth:
         tool_cfg: SynthToolConfig,
         suite_dir: str,
         root_cfg=None,
+        effort_cfg: SynthEffortConfig | None = None,
     ):
         self.name = name
         self.synth_cfg = synth_cfg
         self.tool_cfg = tool_cfg
         self.root_cfg = root_cfg
+        self.effort_cfg = effort_cfg or default_effort_config()
 
         artefact_root = Path(suite_dir) / "artefacts" / synth_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -139,6 +141,16 @@ class YosysSynth:
         top = self.synth_cfg.get_top()
         overrides = self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         opts = self.tool_cfg.get_opts(overrides)
+        # Effort-level knobs take precedence over tool-level defaults but are
+        # outranked by per-synthesis tool_overrides (already applied above).
+        if not overrides or "synth_args" not in overrides:
+            eff_synth = self.effort_cfg.get_yosys_synth_args()
+            if eff_synth:
+                opts.synth_args = eff_synth
+        if not overrides or "abc_args" not in overrides:
+            eff_abc = self.effort_cfg.get_yosys_abc_args()
+            if eff_abc:
+                opts.abc_args = eff_abc
         params = self.synth_cfg.get_params()
         lib_paths = self._resolve_lib_paths()
         mapped = bool(lib_paths)

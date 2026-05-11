@@ -7,7 +7,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .vlog_filelist import VlogFilelist
-from ..config.synth import SynthConfig, SynthToolConfig
+from ..config.synth import SynthConfig, SynthToolConfig, SynthEffortConfig, default_effort_config
 from ..errors import FilelistError
 from ..logging_utils import log_event, task_status
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
@@ -36,12 +36,14 @@ class OpenRoadSynth:
         suite_dir: str,
         root_cfg=None,
         yosys_executable: str = "yosys",
+        effort_cfg: SynthEffortConfig | None = None,
     ):
         self.name = name
         self.synth_cfg = synth_cfg
         self.tool_cfg = tool_cfg
         self.root_cfg = root_cfg
         self.yosys_executable = yosys_executable
+        self.effort_cfg = effort_cfg or default_effort_config()
 
         artefact_root = Path(suite_dir) / "artefacts" / synth_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -131,7 +133,11 @@ class OpenRoadSynth:
             for key, value in params.items():
                 lines.append(f"chparam -set {key} {value} {top}")
 
-        lines.append(f"synth -top {top}")
+        synth_cmd = f"synth -top {top}"
+        eff_synth = self.effort_cfg.get_yosys_synth_args()
+        if eff_synth:
+            synth_cmd += f" {eff_synth}"
+        lines.append(synth_cmd)
 
         if lib_paths:
             for lib in lib_paths:
@@ -268,6 +274,12 @@ class OpenRoadSynth:
 
         if constraints:
             lines.append(f"read_sdc {constraints}")
+
+        # Effort-defined pre-STA Tcl snippet (e.g. floorplan + global_placement
+        # + estimate_parasitics for more realistic pre-layout RC numbers).
+        pre_sta_tcl = self.effort_cfg.get_openroad_pre_sta_tcl()
+        if pre_sta_tcl:
+            lines.append(pre_sta_tcl.rstrip())
 
         if opts.strategy.upper() in ("TIMING", "TIMING_ANNEAL"):
             lines.append("resynth_annealing")

@@ -22,6 +22,8 @@ SUBCOMMANDS = [
     "skill",
     "docs",
     "spec",
+    "synth",
+    "synth-regression",
 ]
 
 HEADER = """\

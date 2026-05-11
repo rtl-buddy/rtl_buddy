@@ -1418,7 +1418,9 @@ class RtlBuddy:
     def _exit_code_from_synth_results(self, synth_results):
         return 0 if all(r["results"].is_pass() for r in synth_results) else 1
 
-    def _do_synth_suite(self, suite_cfg, synth_name=None, reg_level=None):
+    def _do_synth_suite(
+        self, suite_cfg, synth_name=None, reg_level=None, effort_override=None
+    ):
         syntheses = suite_cfg.get_syntheses(synth_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         results = []
@@ -1450,6 +1452,7 @@ class RtlBuddy:
                 root_cfg=self.root_cfg,
                 synth_cfg=s,
                 suite_dir=suite_dir,
+                effort_override=effort_override,
             )
             results.append({"synth_name": s.get_name(), "results": runner.run()})
         return results
@@ -1472,6 +1475,13 @@ class RtlBuddy:
                 "--list", help="list syntheses in the selected config and exit"
             ),
         ] = False,
+        effort: Annotated[
+            str,
+            typer.Option(
+                "--effort",
+                help="override synthesis effort (must match cfg-synth-efforts entry)",
+            ),
+        ] = None,
     ):
         """
         run synthesis
@@ -1484,13 +1494,16 @@ class RtlBuddy:
             command="synth",
             synth=synth_name or "all",
             synth_config=synth_config,
+            effort=effort,
         )
 
         if list_synths:
             emit_console_text("  ".join(suite_cfg.get_synth_names()), stream="stdout")
             raise typer.Exit(0)
 
-        synth_results = self._do_synth_suite(suite_cfg, synth_name=synth_name)
+        synth_results = self._do_synth_suite(
+            suite_cfg, synth_name=synth_name, effort_override=effort
+        )
         self._render_synth_summary("Synthesis Results Summary", synth_results)
         raise typer.Exit(self._exit_code_from_synth_results(synth_results))
 
@@ -1511,6 +1524,13 @@ class RtlBuddy:
                 "-l", "--reg-level", help="synthesis regression level to stop at"
             ),
         ] = 0,
+        effort: Annotated[
+            str,
+            typer.Option(
+                "--effort",
+                help="override synthesis effort (must match cfg-synth-efforts entry)",
+            ),
+        ] = None,
     ):
         """
         run synthesis regression
@@ -1521,6 +1541,7 @@ class RtlBuddy:
             "command.synth_regression",
             reg_config=reg_config,
             reg_level=reg_level,
+            effort=effort,
         )
 
         start_dir = os.getcwd()
@@ -1554,7 +1575,10 @@ class RtlBuddy:
                 )
                 os.chdir(suite_dir)
                 suite_results = self._do_synth_suite(
-                    suite_cfg, synth_name=None, reg_level=reg_level
+                    suite_cfg,
+                    synth_name=None,
+                    reg_level=reg_level,
+                    effort_override=effort,
                 )
                 all_results.extend(suite_results)
         finally:
