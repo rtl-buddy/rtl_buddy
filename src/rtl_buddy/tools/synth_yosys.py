@@ -7,7 +7,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .vlog_filelist import VlogFilelist
-from ..config.synth import SynthConfig, SynthToolConfig, SynthEffortConfig, default_effort_config
+from ..config.synth import (
+    SynthConfig,
+    SynthToolConfig,
+    SynthEffortConfig,
+    default_effort_config,
+)
 from ..errors import FilelistError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
