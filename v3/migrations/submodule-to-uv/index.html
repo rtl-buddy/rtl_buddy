@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to migrate an RTL project from the legacy rtl_buddy submodule flow to a pinned uv dependency.">
+        <meta name="description" content="How to migrate an RTL project from the legacy rtl_buddy submodule flow to a uv-managed PyPI dependency.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -878,10 +878,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#current-state" class="md-nav__link">
+  <a href="#existing-state-before-migration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Current state
+        Existing state before migration
       
     </span>
   </a>
@@ -889,10 +889,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#planned-state" class="md-nav__link">
+  <a href="#new-state-after-migration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Planned state
+        New state after migration
       
     </span>
   </a>
@@ -1035,10 +1035,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#current-state" class="md-nav__link">
+  <a href="#existing-state-before-migration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Current state
+        Existing state before migration
       
     </span>
   </a>
@@ -1046,10 +1046,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#planned-state" class="md-nav__link">
+  <a href="#new-state-after-migration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Planned state
+        New state after migration
       
     </span>
   </a>
@@ -1088,28 +1088,43 @@
 
 
 <h1 id="migrating-from-submodule-to-uv">Migrating from Submodule to uv</h1>
-<p>Use this page to migrate an RTL project from the legacy <code>rtl_buddy</code> submodule flow to a pinned <code>uv</code> dependency.</p>
-<h2 id="current-state">Current state</h2>
+<p>Use this page to migrate an RTL project from the legacy <code>rtl_buddy</code> submodule flow to a <code>uv</code>-managed PyPI dependency.</p>
+<h2 id="existing-state-before-migration">Existing state before migration</h2>
 <p><code>rtl_buddy</code> is currently distributed as a git submodule under <code>tools/rtl_buddy</code> in your RTL project. Installation is via <code>pip install -r requirements.txt</code> where <code>requirements.txt</code> contains <code>-e tools/rtl_buddy</code>.</p>
-<h2 id="planned-state">Planned state</h2>
-<p>The target distribution mechanism is <code>uv</code> with a pinned git reference:</p>
+<h2 id="new-state-after-migration">New state after migration</h2>
+<p>The target distribution mechanism is a normal Python project environment managed by <code>uv</code>, with <code>rtl_buddy</code> installed from PyPI:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># pyproject.toml</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">[tool.uv.sources]</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">rtl_buddy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;&lt;repo-url&gt;&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v2.0.0&quot;</span><span class="w"> </span><span class="p">}</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">[project]</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;your-rtl-project&quot;</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.1.0&quot;</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">requires-python</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&gt;=3.11&quot;</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">dependencies</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="s2">&quot;rtl_buddy&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">]</span>
 </code></pre></div>
-<p>or equivalently:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;rtl_buddy @ git+&lt;repo-url&gt;@v2.0.0&quot;</span>
+<p>Then run <code>rtl_buddy</code> through that environment:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>--version
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
 </code></pre></div>
-<p>This eliminates the submodule and replaces it with a locked dependency in <code>uv.lock</code>.</p>
+<p>This eliminates the submodule and replaces it with a package dependency recorded in <code>pyproject.toml</code> and locked in <code>uv.lock</code>.</p>
 <h2 id="migration-guide">Migration guide</h2>
-<p>This section will be updated when the <code>uv</code> distribution path is released. The migration will involve:</p>
+<p>Many legacy RTL repositories are not already Python projects. If your project does not have a <code>pyproject.toml</code>, create one first:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>init<span class="w"> </span>--bare
+</code></pre></div>
+<p>Then add <code>rtl_buddy</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>add<span class="w"> </span>rtl_buddy
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>--version
+</code></pre></div>
+<p>After the package install is working:</p>
 <ol>
-<li>Removing the <code>tools/rtl_buddy</code> submodule from your project.</li>
-<li>Adding a <code>pyproject.toml</code> or <code>uv</code> config pointing to the <code>rtl_buddy</code> git repo at a pinned tag.</li>
-<li>Running <code>uv sync</code> to install.</li>
-<li>Updating CI scripts that reference <code>tools/rtl_buddy</code> paths.</li>
+<li>Remove the <code>tools/rtl_buddy</code> submodule from your project.</li>
+<li>Remove <code>requirements.txt</code> if you have one, migrating the entries to <code>pyproject.toml</code> under dependencies.</li>
+<li>Update local scripts and CI jobs from <code>tools/rtl_buddy/...</code> or <code>python -m rtl_buddy</code> inside the submodule checkout to <code>uv run rb ...</code>.</li>
+<li>Commit <code>pyproject.toml</code> and <code>uv.lock</code> so other users and CI resolve the same environment.</li>
 </ol>
-<p>Watch the <code>rtl_buddy</code> release notes for the release that ships the <code>uv</code>-compatible package.</p>
+<p>If you need to hold a project on a specific release, pin the package version:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;rtl_buddy==2.3.0&quot;</span>
+</code></pre></div>
 
 
 

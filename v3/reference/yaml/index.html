@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, and synth_regression.yaml.">
+        <meta name="description" content="Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, and cdc_regression.yaml.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -858,6 +858,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cdcyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cdc.yaml
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cdc_regressionyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cdc_regression.yaml
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#specsyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1212,6 +1234,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cdcyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cdc.yaml
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cdc_regressionyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cdc_regression.yaml
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#specsyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1331,8 +1375,15 @@
 <a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a><span class="w">    </span><span class="nt">lef-paths</span><span class="p">:</span><span class="w">           </span><span class="c1"># required for OpenROAD backend</span>
 <a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef&quot;</span>
 <a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a>
-<a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
-<a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
+<a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a><span class="nt">cfg-cdc-tools</span><span class="p">:</span>
+<a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a><span class="w">      </span><span class="nt">sync-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">          </span><span class="c1"># forwarded as `--sync-depth N` (CDC-002 required depth)</span>
+<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">         </span><span class="c1"># appended verbatim to every invocation</span>
+<a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a>
+<a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
+<a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
 </code></pre></div>
 <p><strong>Runtime effects:</strong></p>
 <ul>
@@ -1344,6 +1395,7 @@
 <li><code>cfg-surfer</code> configures the Surfer waveform viewer used by <code>rb wave</code>. <code>path</code> is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. <code>editor-cmd</code> supports <code>%f</code> (file path) and <code>%l</code> (line number) placeholders. <code>editor-terminal</code> controls how the editor is launched: <code>tmux</code> opens a new tmux window, <code>iterm2</code> and <code>terminal</code> use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). <code>editor-sock</code> is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use and reconnects for subsequent events. <code>ctrl-sock</code> is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press <code>&lt;Space&gt;wa</code> (or your <code>&lt;leader&gt;wa</code>) on a signal name to add it to the waveform view. Install the bundled nvim plugin first with <code>rb wave-install-nvim</code>.</li>
 <li><code>cfg-synth-tools</code> defines synthesis tool entries selected by <code>synth.yaml</code> <code>tool</code> fields. <code>tool</code> is the executable name on <code>PATH</code>. For the Yosys backend, <code>opts.synth-args</code> are appended to the <code>synth</code> command and <code>opts.abc-args</code> are used by the unmapped ABC step. For the OpenROAD backend, <code>opts.strategy</code> controls optional resynthesis (<code>AREA</code> = none, <code>TIMING</code>/<code>TIMING_ANNEAL</code> = <code>resynth_annealing</code>, <code>TIMING_GENETIC</code> = <code>resynth_genetic</code>).</li>
 <li><code>cfg-synth-libs</code> defines named Liberty files for technology-mapped synthesis. <code>path</code> is resolved relative to <code>root_config.yaml</code>. The optional <code>lef-paths</code> list specifies LEF files required by the OpenROAD backend for technology loading; ignored by the Yosys backend.</li>
+<li><code>cfg-cdc-tools</code> defines CDC tool entries selected by <code>cdc.yaml</code> <code>tool</code> fields. <code>tool</code> is the executable name on <code>PATH</code> (or an absolute path). <code>opts.sync-depth</code> is forwarded as <code>--sync-depth N</code> and controls CDC-002's required synchronizer depth. <code>opts.extra-args</code> is appended verbatim to every analyzer invocation.</li>
 <li><code>cfg-rtl-reg.reg-cfg-path</code> is the fallback regression file for <code>rtl-buddy regression</code> when no <code>./regression.yaml</code> exists in the cwd.</li>
 <li><code>cfg-verible[].path</code> is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing <code>root_config.yaml</code>.</li>
 </ul>
@@ -1752,6 +1804,124 @@
 <li><code>synth-regression</code> changes directory into each synthesis suite directory before executing its entries.</li>
 </ul>
 <hr />
+<h2 id="cdcyaml">cdc.yaml</h2>
+<p><strong>Required keys:</strong></p>
+<ul>
+<li><code>rtl-buddy-filetype: cdc_config</code></li>
+<li><code>analyses</code></li>
+</ul>
+<p><strong>Example:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc_config</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nt">analyses</span><span class="p">:</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake_lint&quot;</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDC</span><span class="nv"> </span><span class="s">lint</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">request/ack</span><span class="nv"> </span><span class="s">handshake</span><span class="nv"> </span><span class="s">IP&quot;</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake&quot;</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/common/models.yaml&quot;</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake.sdc&quot;</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">    </span><span class="nt">waivers</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake.waivers&quot;</span><span class="w">   </span><span class="c1"># optional</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_lint&quot;</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDC</span><span class="nv"> </span><span class="s">lint</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">ALU</span><span class="nv"> </span><span class="s">accelerator&quot;</span>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_top&quot;</span>
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/alu_accel/models.yaml&quot;</span>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_top.sdc&quot;</span>
+<a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span>
+<a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a><span class="w">      </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a><span class="w">      </span><span class="nt">rtl-buddy-cdc</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
+<a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
+<a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a><span class="w">      </span><span class="nt">rtl-buddy-cdc</span><span class="p">:</span>
+<a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a><span class="w">        </span><span class="nt">sync_depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+<a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a><span class="w">        </span><span class="nt">extra_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;--strict&quot;</span>
+</code></pre></div>
+<p><strong>Field reference:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>Analysis identifier; used on the CLI and in <code>artefacts/{name}/</code></td>
+</tr>
+<tr>
+<td><code>desc</code></td>
+<td>string</td>
+<td>Human-readable analysis description</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>string</td>
+<td>Model name from <code>models.yaml</code>; also used as the top module for elaboration</td>
+</tr>
+<tr>
+<td><code>model_path</code></td>
+<td>string</td>
+<td>Path to <code>models.yaml</code>, resolved relative to the <code>cdc.yaml</code> file</td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>string</td>
+<td>CDC tool name from <code>root_config.yaml</code> <code>cfg-cdc-tools</code></td>
+</tr>
+<tr>
+<td><code>constraints</code></td>
+<td>string</td>
+<td>SDC file path, resolved relative to the <code>cdc.yaml</code> file</td>
+</tr>
+<tr>
+<td><code>waivers</code></td>
+<td>string</td>
+<td>Optional waiver file path, resolved relative to the <code>cdc.yaml</code> file</td>
+</tr>
+<tr>
+<td><code>reglvl</code></td>
+<td>int or dict</td>
+<td>Regression level; int for all tools, dict for per-tool with <code>default</code></td>
+</tr>
+<tr>
+<td><code>tool_overrides</code></td>
+<td>dict</td>
+<td>Optional per-tool overrides for <code>sync_depth</code> or <code>extra_args</code>, keyed by CDC tool name</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Runtime effects:</strong></p>
+<ul>
+<li><code>rtl-buddy cdc</code> loads <code>cdc.yaml</code>, resolves sources via <code>models.yaml</code>, and dispatches to the backend selected by <code>tool</code>.</li>
+<li>The bundled <code>rtl-buddy-cdc</code> backend invokes the standalone <code>rtl-buddy-cdc lint</code> CLI as a subprocess. The analysis receives the model's resolved filelist, the SDC, an optional waivers file, and the merged tool opts (root <code>cfg-cdc-tools</code> baseline plus any matching <code>tool_overrides.&lt;tool&gt;</code>).</li>
+<li>Each analysis writes a text report and a machine-readable JSON report under <code>artefacts/{name}/</code>; the JSON summary is parsed to populate the pass/fail/skip result for the CLI table.</li>
+<li><code>rtl-buddy cdc &lt;name&gt; --list</code> lists configured analyses without running them.</li>
+</ul>
+<hr />
+<h2 id="cdc_regressionyaml">cdc_regression.yaml</h2>
+<p><strong>Required keys:</strong></p>
+<ul>
+<li><code>rtl-buddy-filetype: cdc_reg_config</code></li>
+<li><code>cdc-configs</code></li>
+</ul>
+<p><strong>Example:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc_reg_config</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nt">cdc-configs</span><span class="p">:</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_a/lint/cdc.yaml&quot;</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_b/lint/cdc.yaml&quot;</span>
+</code></pre></div>
+<p><strong>Runtime effects:</strong></p>
+<ul>
+<li><code>rtl-buddy cdc-regression</code> iterates each listed <code>cdc.yaml</code> file and filters analyses by <code>--reg-level</code>.</li>
+<li>Paths in <code>cdc-configs</code> are resolved relative to the <code>cdc_regression.yaml</code> file.</li>
+<li><code>cdc-regression</code> changes directory into each CDC suite directory before executing its entries.</li>
+</ul>
+<hr />
 <h2 id="specsyaml">specs.yaml</h2>
 <p><code>specs.yaml</code> lives in <code>spec/&lt;block&gt;/</code> and defines the functional specification for one or more design blocks. It is consumed by the <code>rb spec</code> traceability commands and has no effect on simulation.</p>
 <p><strong>Required keys:</strong></p>
@@ -1760,19 +1930,19 @@
 <li><code>blocks</code></li>
 </ul>
 <p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spec_config</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nt">blocks</span><span class="p">:</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Brief</span><span class="nv"> </span><span class="s">description</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">block&quot;</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="nt">docs</span><span class="p">:</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;README.md&quot;</span>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;behavior.md&quot;</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-01&quot;</span>
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Normal</span><span class="nv"> </span><span class="s">operation</span><span class="nv"> </span><span class="s">path&quot;</span>
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-02&quot;</span>
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Error</span><span class="nv"> </span><span class="s">handling</span><span class="nv"> </span><span class="s">and</span><span class="nv"> </span><span class="s">recovery&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spec_config</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="nt">blocks</span><span class="p">:</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Brief</span><span class="nv"> </span><span class="s">description</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">block&quot;</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="nt">docs</span><span class="p">:</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;README.md&quot;</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;behavior.md&quot;</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-01&quot;</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Normal</span><span class="nv"> </span><span class="s">operation</span><span class="nv"> </span><span class="s">path&quot;</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-02&quot;</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Error</span><span class="nv"> </span><span class="s">handling</span><span class="nv"> </span><span class="s">and</span><span class="nv"> </span><span class="s">recovery&quot;</span>
 </code></pre></div>
 <p><strong>Block field reference:</strong></p>
 <table>
@@ -1839,8 +2009,8 @@
 <li>Add the suite path to <code>regression.yaml</code>.</li>
 <li>Run a smoke pass:</li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
 </code></pre></div>
 
 
