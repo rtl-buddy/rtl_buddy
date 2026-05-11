@@ -151,6 +151,33 @@ tool_overrides:
     abc_args: "-fast"
 ```
 
+### Effort levels
+
+A synthesis can select a named **effort level** that controls how much work the flow does. Efforts are defined once in `root_config.yaml` under `cfg-synth-efforts` (see [below](#synthesis-effort-configuration)) and referenced per synthesis:
+
+```yaml
+syntheses:
+  - name: "sandbox_quick"
+    desc: "Fast iteration build — Yosys-only, no STA"
+    model: "test_module"
+    model_path: "../../design/sandbox/models.yaml"
+    tool: "openroad"
+    libraries:
+      - "sky130hd_tt"
+    constraints: "constraints.sdc"
+    effort: "quick"      # references a cfg-synth-efforts entry
+    reglvl: 0
+```
+
+When `effort:` is omitted, a built-in `standard` effort with all defaults is used — equivalent to the pre-effort behaviour. The `--effort <name>` CLI flag overrides the per-synthesis setting at runtime:
+
+```bash
+rb synth sandbox_openroad --effort quick     # force the quick path
+rb synth-regression --effort accurate        # apply across a whole regression
+```
+
+Precedence for the same knob: per-synthesis `tool_overrides` > `cfg-synth-efforts` > `cfg-synth-tools`.
+
 ## Root config: `root_config.yaml`
 
 ### Synthesis tool configuration
@@ -178,6 +205,64 @@ The `strategy` option controls optional OpenROAD resynthesis after timing analys
 | `AREA` (default) | No resynthesis; report area and timing only |
 | `TIMING` / `TIMING_ANNEAL` | Run `resynth_annealing` after loading the netlist |
 | `TIMING_GENETIC` | Run `resynth_genetic` after loading the netlist |
+
+### Synthesis effort configuration
+
+`cfg-synth-efforts` defines named levels that shape both the Yosys stage and the OpenROAD stage. Reference an entry from `synth.yaml` `effort:` or `rb synth --effort <name>`.
+
+```yaml
+cfg-synth-efforts:
+  - name: "quick"
+    # Yosys-only fast path; skips OpenROAD entirely.
+    # Returns gate count + area only. No LEF/STA needed.
+    yosys:
+      synth-args: "-flatten"
+      abc-args: "-fast"
+    openroad:
+      run: false
+
+  - name: "standard"
+    # Default behaviour: Yosys + OpenROAD STA with ideal wires (zero RC).
+    openroad:
+      run: true
+
+  - name: "accurate"
+    # Apply the Liberty default_wire_load model for RC-aware pre-layout
+    # timing without needing a tech LEF + floorplan. Swap pre-sta-tcl
+    # for initialize_floorplan + global_placement + estimate_parasitics
+    # once a tech LEF is available.
+    openroad:
+      run: true
+      pre-sta-tcl: |
+        set_wire_load_mode top
+        set_wire_load_model -name Small
+```
+
+Effort schema:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique effort identifier; referenced from `synth.yaml` or `--effort` |
+| `yosys.synth-args` | string | Appended to the `synth -top` command in both backends |
+| `yosys.abc-args` | string | Used by the unmapped ABC step (Yosys backend without `libraries`) |
+| `openroad.run` | bool | When `false`, a `tool: openroad` synthesis falls back to the Yosys-only backend (no LEF/STA required) — the recommended quick-look path |
+| `openroad.pre-sta-tcl` | string | Raw Tcl snippet injected into `synth.tcl` between `read_sdc` and `report_checks` — use for floorplan/placement/parasitic-estimation before timing analysis |
+
+> **Built-in fallback:** when `cfg-synth-efforts` is not configured (or the synthesis omits `effort:` and no override is passed), an internal `standard` effort with all defaults is used. Existing projects therefore need no migration.
+
+> **Tradeoff:** `pre-sta-tcl` is a raw snippet — powerful, but errors in it surface only at OpenROAD runtime. Test new snippets against a small design before adopting them in a regression.
+
+### Example: quick / standard / accurate on SKY130
+
+Running the same DMA design at all three levels (ip_dma, sky130hd_tt, 5-clock SDC):
+
+| Effort | Gates | WNS | TNS | Notes |
+|--------|-------|-----|-----|-------|
+| `quick` | 213 | +3.314 ns | — | Yosys-only with `-flatten` / `-fast`; aggressive optimisation; no STA |
+| `standard` | 10218 | −1.172 ns | −7835.2 ns | OpenROAD STA with ideal wires (zero RC) |
+| `accurate` | 10218 | −1.347 ns | −8418.4 ns | OpenROAD STA + Liberty wire-load model |
+
+The pessimization between `standard` and `accurate` (−1.347 vs −1.172 ns WNS) shows the wire-load model adding parasitic RC; the gate count is unchanged because the Yosys stage runs identically.
 
 ### PDK library configuration
 
