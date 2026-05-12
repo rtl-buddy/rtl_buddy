@@ -78,6 +78,8 @@ class RtlBuilderConfig:
             return "verilator"
         if exe_base.startswith("vcs"):
             return "vcs"
+        if exe_base.startswith("iverilog") or exe_base.startswith("icarus"):
+            return "icarus"
         return exe_base
 
     def get_exe(self) -> str:

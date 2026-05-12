@@ -306,6 +306,68 @@ def test_vlog_sim_multiple_runs_keep_runtime_side_files_separate(tmp_path, monke
     ).read_text() == "run=2\n"
 
 
+def test_simulator_family_recognizes_iverilog():
+    from rtl_buddy.config.rtl import RtlBuilderConfig
+
+    cfg = RtlBuilderConfig.__new__(RtlBuilderConfig)
+    cfg.exe = "iverilog"
+    cfg.simulator_family = None
+    assert cfg.get_simulator_family() == "icarus"
+
+    cfg.exe = "/opt/homebrew/bin/iverilog"
+    assert cfg.get_simulator_family() == "icarus"
+
+
+def test_vlog_sim_icarus_simv_path_is_wrapper_in_compile_work_dir(
+    tmp_path, monkeypatch
+):
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(
+            exe="iverilog", simv="ignored", simulator_family="icarus"
+        ),
+    )
+    assert sim._get_simv_path() == str(tmp_path / "artefacts" / "basic" / "simv")
+    assert sim._get_icarus_snapshot_path() == str(
+        tmp_path / "artefacts" / "basic" / "obj_dir_basic" / "simv.vvp"
+    )
+
+
+def test_vlog_sim_icarus_compile_emits_dash_o_snapshot(tmp_path, monkeypatch):
+    captured = {}
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(
+            exe="iverilog", simulator_family="icarus", compile_opts=["-g2012"]
+        ),
+    )
+
+    def _fake_run(cmd, capture_output, text, cwd):
+        captured["cmd"] = list(cmd)
+        return ManagedProcessResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+    assert sim.compile() == 0
+    snapshot = str(tmp_path / "artefacts" / "basic" / "obj_dir_basic" / "simv.vvp")
+    assert "-o" in captured["cmd"]
+    assert snapshot in captured["cmd"]
+    # The wrapper script is materialized on successful compile.
+    wrapper = Path(tmp_path / "artefacts" / "basic" / "simv")
+    assert wrapper.is_file()
+    assert "exec vvp" in wrapper.read_text()
+    assert snapshot in wrapper.read_text()
+    # And the wrapper is executable so execute()'s existing path works.
+    import os as _os
+
+    assert _os.access(wrapper, _os.X_OK)
+
+
 def test_artifact_path_helpers_match_existing_sanitization():
     assert sanitize_artifact_component("basic") == "basic"
     assert (

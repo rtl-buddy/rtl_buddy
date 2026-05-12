@@ -99,16 +99,40 @@ class VlogSim:
     def _get_simv_path(self):
         """
         Return the simulator executable path for this test/build.
+
+        - Verilator: `<artefact>/<build>/simv` (the binary produced by `verilator --binary`).
+        - Icarus: `<artefact>/simv` — a tiny shell wrapper around `vvp <build>/simv.vvp`
+          so the existing execute() path can invoke it as a single executable.
+        - Other backends: honor `builder-simv:` from the builder config.
         """
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
             return str(
                 Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
             )
+        if self._get_simulator_family() == "icarus":
+            return str(Path(self._get_compile_work_dir()) / "simv")
         simv_path = self.rtl_builder_cfg.get_simv()
         if os.path.isabs(simv_path):
             return simv_path
         return str(Path(self._get_compile_work_dir()) / simv_path)
+
+    def _get_icarus_snapshot_path(self):
+        """Path to the .vvp snapshot produced by iverilog."""
+        return str(
+            Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv.vvp"
+        )
+
+    def _write_icarus_simv_wrapper(self):
+        """Write a shell wrapper that execs `vvp <snapshot> "$@"`.
+
+        Lets the existing execute() path invoke a single executable regardless
+        of backend; Icarus's two-phase compile/run becomes invisible.
+        """
+        wrapper_path = self._get_simv_path()
+        snapshot = self._get_icarus_snapshot_path()
+        Path(wrapper_path).write_text(f'#!/bin/sh\nexec vvp "{snapshot}" "$@"\n')
+        os.chmod(wrapper_path, 0o755)
 
     def _get_artifact_dir(self, run_id=None):
         return str(
@@ -300,6 +324,12 @@ class VlogSim:
 
         if os.path.basename(rtl_builder_cfg.get_exe()).startswith("verilator"):
             run_cmd += ["--Mdir", self._get_build_dir()]
+        elif self._get_simulator_family() == "icarus":
+            # Icarus has no -Mdir equivalent; output a single .vvp snapshot
+            # into the per-test build dir and let our execute() path wrap it.
+            build_dir = Path(self._get_compile_work_dir()) / self._get_build_dir()
+            build_dir.mkdir(parents=True, exist_ok=True)
+            run_cmd += ["-o", self._get_icarus_snapshot_path()]
 
         run_cmd += self._get_extra_compile_flags()
 
@@ -365,6 +395,8 @@ class VlogSim:
             )
             if result.stdout:
                 logger.debug("compile stdout\n%s", result.stdout)
+            if self._get_simulator_family() == "icarus":
+                self._write_icarus_simv_wrapper()
         return result.returncode
 
     def execute(
