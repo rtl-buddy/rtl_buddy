@@ -37,9 +37,7 @@ class PnrRunner:
             if cfg_reglvl > self.reglvl_filter:
                 return PnrSkipResults(
                     name=self.name + "/results",
-                    desc=(
-                        f"reglvl {cfg_reglvl} above filter {self.reglvl_filter}"
-                    ),
+                    desc=(f"reglvl {cfg_reglvl} above filter {self.reglvl_filter}"),
                 )
 
         tool_name = self.pnr_cfg.get_tool_name()

@@ -1057,9 +1057,7 @@ def test_openroad_or_script_no_sdc_omits_timing_reports(tmp_path):
     )
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(
-            model_name="top", platform="mylib", constraints=None
-        ),
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib", constraints=None),
         root_cfg=root_cfg,
     )
     script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()

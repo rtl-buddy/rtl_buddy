@@ -1525,7 +1525,9 @@ class RtlBuddy:
         ] = None,
         list_runs: Annotated[
             bool,
-            typer.Option("--list", help="list pnr runs in the selected config and exit"),
+            typer.Option(
+                "--list", help="list pnr runs in the selected config and exit"
+            ),
         ] = False,
         reg_level: Annotated[
             int,
@@ -1551,13 +1553,9 @@ class RtlBuddy:
             emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
             raise typer.Exit(0)
 
-        results = self._do_pnr_suite(
-            suite_cfg, pnr_name=pnr_name, reg_level=reg_level
-        )
+        results = self._do_pnr_suite(suite_cfg, pnr_name=pnr_name, reg_level=reg_level)
         self._render_pnr_summary("P&R Results Summary", results)
-        raise typer.Exit(
-            0 if all(r["results"].is_pass() for r in results) else 1
-        )
+        raise typer.Exit(0 if all(r["results"].is_pass() for r in results) else 1)
 
     def _do_pnr_suite(self, suite_cfg, *, pnr_name=None, reg_level=0):
         root_cfg = RootConfig(name="pnr")
@@ -1580,9 +1578,7 @@ class RtlBuddy:
                         "pnr_name": run.get_name(),
                         "results": PnrSkipResults(
                             name=f"{run.get_name()}/results",
-                            desc=(
-                                f"reglvl {run.get_reglvl()} above {reg_level}"
-                            ),
+                            desc=(f"reglvl {run.get_reglvl()} above {reg_level}"),
                         ),
                     }
                 )
@@ -1594,9 +1590,7 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 reglvl_filter=reg_level if reg_level else None,
             )
-            results.append(
-                {"pnr_name": run.get_name(), "results": runner.run()}
-            )
+            results.append({"pnr_name": run.get_name(), "results": runner.run()})
         return results
 
     def _render_pnr_summary(self, title, pnr_results, *, metadata=None):

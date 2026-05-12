@@ -469,8 +469,7 @@ class RootConfig:
         cfg = self.pdk_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(
-                f"PDK '{name}' not found in cfg-pdk; "
-                f"available: {sorted(self.pdk_cfgs)}"
+                f"PDK '{name}' not found in cfg-pdk; available: {sorted(self.pdk_cfgs)}"
             )
         return cfg
 

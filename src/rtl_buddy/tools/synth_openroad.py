@@ -107,9 +107,7 @@ class OpenRoadSynth:
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
             return []
-        return list(
-            self.root_cfg.get_synth_platform_cfg(platform).get_lef_paths()
-        )
+        return list(self.root_cfg.get_synth_platform_cfg(platform).get_lef_paths())
 
     # ------------------------------------------------------------------
     # Stage 1: Yosys — RTL to technology-mapped gate-level netlist
