@@ -330,3 +330,65 @@ def test_pnr_fail_is_not_pass():
     r = PnrFailResults(name="demo/results", desc="OpenROAD exited with code 1")
     assert not r.is_pass()
     assert r.results["result"] == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# OpenROAD version probe + KLayout helpers
+# ---------------------------------------------------------------------------
+
+
+def test_parse_version_token_handles_yyqn_and_semver():
+    from rtl_buddy.tools.pnr_openroad import _parse_version_token
+
+    assert _parse_version_token("26Q2-911-g731f") == (26, 2)
+    assert _parse_version_token("v2.0-1234-gabcd") == (2, 0)
+    assert _parse_version_token("25Q1") == (25, 1)
+    # Comparison: 26Q2 ranks above 25Q1
+    assert _parse_version_token("26Q2") > _parse_version_token("25Q1")
+    # Unparseable falls back to a string tuple
+    assert _parse_version_token("nightly-build") == ("nightly-build",)
+
+
+def test_resolve_klayout_exe_uses_path_first(monkeypatch):
+    from rtl_buddy.tools import pnr_openroad
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+    assert pnr_openroad._resolve_klayout_exe() == "/opt/klayout"
+
+
+def test_resolve_klayout_exe_returns_none_when_missing(monkeypatch):
+    from rtl_buddy.tools import pnr_openroad
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(pnr_openroad, "_KLAYOUT_FALLBACK_PATHS", ())
+    assert pnr_openroad._resolve_klayout_exe() is None
+
+
+def test_pnr_pass_result_carries_gds_and_png_paths():
+    r = PnrPassResults(
+        name="demo/results",
+        area_um2=100.0,
+        gds_path="/tmp/demo.gds",
+        png_path="/tmp/demo.png",
+    )
+    assert r.results["gds_path"] == "/tmp/demo.gds"
+    assert r.results["png_path"] == "/tmp/demo.png"
+
+
+def test_openroad_pnr_png_implies_gds():
+    """`--png` without `--gds` should still trigger GDS streamout."""
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    backend = OpenRoadPnr.__new__(OpenRoadPnr)
+    # Mimic __init__ for just the gds-implication knob.
+    OpenRoadPnr.__init__(
+        backend,
+        name="demo",
+        pnr_cfg=MagicMock(get_name=MagicMock(return_value="demo")),
+        suite_dir=str(__import__("tempfile").mkdtemp()),
+        root_cfg=MagicMock(),
+        emit_gds=False,
+        emit_png=True,
+    )
+    assert backend.emit_gds is True
+    assert backend.emit_png is True

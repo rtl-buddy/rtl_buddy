@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis flows, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, or synth_regression.yaml.
+description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, or pnr.yaml.
 ---
 
 # rtl_buddy
@@ -26,12 +26,13 @@ This skill ships with the CLI, so its content matches the installed major. Surfa
 
 Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 
-- **`root_config.yaml`** — project root, platform/build defaults, regression default path, synthesis tool defaults (`cfg-synth-tools`).
+- **`root_config.yaml`** — project root, platform/build defaults, regression default path, synthesis tool defaults (`cfg-synth-tools`), PDK assets (`cfg-pdk`), synth/P&R platforms (`cfg-synth-platforms`, `cfg-pnr-platforms`).
 - **`regression.yaml`** — repo-level suite list for `regression`.
 - **`tests.yaml`** — suite-level tests/testbenches; run `test` and `randtest` from this directory.
 - **`models.yaml`** — design source filelists referenced by `tests.yaml` and `synth.yaml`.
 - **`synth.yaml`** — synthesis runs; `model` name is the top; `tool` selects `cfg-synth-tools` entry; `params`/`defines`/`tool_overrides` for per-run customization.
 - **`synth_regression.yaml`** — repo-level synthesis suite list for `synth-regression`.
+- **`pnr.yaml`** — P&R runs that consume an upstream `rb synth` artefact; each entry names `synth`/`synth-path`, `platform` (a `cfg-pnr-platforms` entry), and `constraints` (SDC). Only `tool: openroad` today.
 - **`specs.yaml`** — spec traceability data; consumed by `rtl-buddy spec`.
 
 ## Pass/fail detection
@@ -58,6 +59,13 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 - Symlinks `test.log`, `test.err`, `test.randseed` at the suite root point at the latest run.
 - For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `artefacts/`; report logs per suite.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
+
+## Synthesis and P&R
+
+- `rb synth -c synth.yaml [name]` runs synthesis; artefacts land at `<suite>/artefacts/<run>/synth_netlist.v`.
+- `rb pnr -c pnr.yaml [name]` runs OpenROAD P&R against the upstream synth netlist; pass `--gds` for KLayout streamout and `--png` for a layout render (implies `--gds`). KLayout is optional — missing KLayout emits `pnr.no_klayout` and skips streamout, the P&R run still passes.
+- OpenROAD version is logged as `pnr.openroad_version`; below-min builds warn via `pnr.openroad_version_below_min` but still run.
+- See `rtl-buddy docs show concepts/synthesis` and `rtl-buddy docs show concepts/pnr`.
 
 ## Waveform viewing
 

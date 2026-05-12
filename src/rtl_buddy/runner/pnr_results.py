@@ -30,6 +30,8 @@ class PnrPassResults(PnrResults):
         wns_hold_ps: float | None = None,
         tns_ps: float | None = None,
         drc_count: int | None = None,
+        gds_path: str | None = None,
+        png_path: str | None = None,
     ):
         super().__init__(
             name=name,
@@ -47,6 +49,10 @@ class PnrPassResults(PnrResults):
             self.results["tns_ps"] = tns_ps
         if drc_count is not None:
             self.results["drc_count"] = drc_count
+        if gds_path is not None:
+            self.results["gds_path"] = gds_path
+        if png_path is not None:
+            self.results["png_path"] = png_path
 
 
 class PnrFailResults(PnrResults):

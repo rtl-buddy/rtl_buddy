@@ -22,6 +22,29 @@ ln -s /path/to/OpenROAD/build/bin/openroad /usr/local/bin/openroad
 
 See `tools/openroad/BUILD_OSX.md` in the project template for the macOS recipe.
 
+### Version expectations
+
+`rb pnr` probes `openroad -version` and compares it against an internal
+`MIN_OPENROAD_VERSION` (currently `25Q1`). Older builds may still work for
+the basic flow but are unvalidated — a `pnr.openroad_version_below_min`
+warning is emitted and the run continues. The version is also logged at
+INFO as `pnr.openroad_version` so it shows up in `rtl_buddy.log`.
+
+## Installing KLayout (optional)
+
+KLayout is only required when streaming out GDS with `--gds` or rendering
+PNGs with `--png`. The basic P&R flow works without it.
+
+```bash
+brew install --cask klayout            # macOS
+# or download from https://klayout.de
+```
+
+`rb pnr` resolves `klayout` from `PATH` first, then falls back to
+`/Applications/KLayout/klayout.app/Contents/MacOS/klayout` on macOS. If
+KLayout is not present, `--gds`/`--png` logs `pnr.no_klayout` and skips
+streamout/render without failing the run.
+
 ## P&R config: `pnr.yaml`
 
 `pnr.yaml` declares one or more P&R runs. Each entry references an upstream `rb synth` entry by path + name, an SDC, and a `cfg-pnr-platforms` name from `root_config.yaml`:
@@ -102,7 +125,24 @@ rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml -l 1000
 
 # List runs without executing
 rb pnr -c pnr/demo/pnr.yaml --list
+
+# Stream out a routed GDS via KLayout after the run
+rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --gds
+
+# Render a PNG of the GDS (implies --gds)
+rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml --png
 ```
+
+### `--gds` and `--png`
+
+When `--gds` is requested, `rb pnr` invokes KLayout headlessly after a
+successful OpenROAD run, merging the routed DEF with the PDK's standard
+cell GDS to produce `artefacts/<run>/<design>.gds`. `--png` additionally
+renders a 2048×2048 PNG via the bundled `gds2png.py` helper. Both helpers
+ship inside the wheel under `rtl_buddy/pnr/klayout/` and are copied into
+the artefact dir at run time. KLayout failures emit `pnr.gds_failed` /
+`pnr.png_failed` warnings but do not fail the P&R run — timing/DRC
+metrics remain authoritative.
 
 ## Results table
 
@@ -136,6 +176,10 @@ Per-run outputs land under `pnr/<run>/artefacts/`:
 | `timing.rpt` | Worst-path timing report (full clock expanded) |
 | `route.drc.rpt` | DRC violations (empty file = clean) |
 | `route.maze.log` | Detail-route maze log |
+| `<design>.gds` | Routed GDS — only when `--gds`/`--png` is set |
+| `<design>.png` | Layout render — only when `--png` is set |
+| `klayout.def2stream.log` | KLayout output for the DEF→GDS step (when used) |
+| `klayout.gds2png.log` | KLayout output for the GDS→PNG render (when used) |
 
 ## Pass/fail detection
 
@@ -147,6 +191,5 @@ Otherwise FAIL is returned with the exit code or error count in the description.
 
 ## Out of scope (today)
 
-- GDS streamout (KLayout invocation) and PNG rendering — planned for a `--gds` / `--png` follow-up.
 - Multi-corner signoff.
 - Tape-out-grade PPA tuning. The defaults are calibrated for teaching demos and quick PPA sanity checks.

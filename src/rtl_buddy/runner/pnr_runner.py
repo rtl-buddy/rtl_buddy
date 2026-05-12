@@ -16,12 +16,16 @@ class PnrRunner:
         pnr_cfg: PnrConfig,
         suite_dir: str,
         reglvl_filter: int | None = None,
+        emit_gds: bool = False,
+        emit_png: bool = False,
     ):
         self.name = name
         self.root_cfg = root_cfg
         self.pnr_cfg = pnr_cfg
         self.suite_dir = suite_dir
         self.reglvl_filter = reglvl_filter
+        self.emit_gds = emit_gds
+        self.emit_png = emit_png
 
     def run(self) -> PnrResults:
         log_event(
@@ -52,5 +56,7 @@ class PnrRunner:
             pnr_cfg=self.pnr_cfg,
             suite_dir=self.suite_dir,
             root_cfg=self.root_cfg,
+            emit_gds=self.emit_gds,
+            emit_png=self.emit_png,
         )
         return backend.run()

@@ -24,6 +24,9 @@ SUBCOMMANDS = [
     "spec",
     "synth",
     "synth-regression",
+    "pnr",
+    "cdc",
+    "cdc-regression",
 ]
 
 HEADER = """\

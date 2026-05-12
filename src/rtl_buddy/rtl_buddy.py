@@ -1537,9 +1537,25 @@ class RtlBuddy:
                 help="run only entries with reglvl at or below this value",
             ),
         ] = 0,
+        emit_gds: Annotated[
+            bool,
+            typer.Option(
+                "--gds",
+                help="stream out GDS via KLayout after a successful P&R",
+            ),
+        ] = False,
+        emit_png: Annotated[
+            bool,
+            typer.Option(
+                "--png",
+                help="render a PNG of the routed GDS via KLayout (implies --gds)",
+            ),
+        ] = False,
     ):
         """run place-and-route"""
         suite_cfg = PnrSuiteConfig(path=pnr_config)
+        if emit_png:
+            emit_gds = True
         log_event(
             logger,
             logging.INFO,
@@ -1553,11 +1569,25 @@ class RtlBuddy:
             emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
             raise typer.Exit(0)
 
-        results = self._do_pnr_suite(suite_cfg, pnr_name=pnr_name, reg_level=reg_level)
+        results = self._do_pnr_suite(
+            suite_cfg,
+            pnr_name=pnr_name,
+            reg_level=reg_level,
+            emit_gds=emit_gds,
+            emit_png=emit_png,
+        )
         self._render_pnr_summary("P&R Results Summary", results)
         raise typer.Exit(0 if all(r["results"].is_pass() for r in results) else 1)
 
-    def _do_pnr_suite(self, suite_cfg, *, pnr_name=None, reg_level=0):
+    def _do_pnr_suite(
+        self,
+        suite_cfg,
+        *,
+        pnr_name=None,
+        reg_level=0,
+        emit_gds: bool = False,
+        emit_png: bool = False,
+    ):
         root_cfg = RootConfig(name="pnr")
         runs = suite_cfg.get_runs(pnr_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
@@ -1589,6 +1619,8 @@ class RtlBuddy:
                 pnr_cfg=run,
                 suite_dir=suite_dir,
                 reglvl_filter=reg_level if reg_level else None,
+                emit_gds=emit_gds,
+                emit_png=emit_png,
             )
             results.append({"pnr_name": run.get_name(), "results": runner.run()})
         return results
@@ -1599,6 +1631,10 @@ class RtlBuddy:
         has_setup = any("wns_setup_ps" in r["results"].results for r in pnr_results)
         has_hold = any("wns_hold_ps" in r["results"].results for r in pnr_results)
         has_drcs = any("drc_count" in r["results"].results for r in pnr_results)
+        has_outputs = any(
+            "gds_path" in r["results"].results or "png_path" in r["results"].results
+            for r in pnr_results
+        )
         rows = []
         for r in pnr_results:
             res = r["results"].results
@@ -1631,6 +1667,13 @@ class RtlBuddy:
             if has_drcs:
                 drcs = res.get("drc_count")
                 row["drcs"] = str(drcs) if drcs is not None else "-"
+            if has_outputs:
+                tags = []
+                if res.get("gds_path"):
+                    tags.append("gds")
+                if res.get("png_path"):
+                    tags.append("png")
+                row["outputs"] = "+".join(tags) if tags else "-"
             rows.append(row)
 
         columns = [
@@ -1648,6 +1691,8 @@ class RtlBuddy:
             columns.append(("wns_hold", "WNS Hold"))
         if has_drcs:
             columns.append(("drcs", "DRCs"))
+        if has_outputs:
+            columns.append(("outputs", "Outputs"))
         render_summary(
             title=title,
             columns=columns,

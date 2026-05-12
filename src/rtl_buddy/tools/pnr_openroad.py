@@ -15,6 +15,42 @@ from ..runner.pnr_results import PnrFailResults, PnrPassResults, PnrResults
 
 _TEMPLATE_PACKAGE = "rtl_buddy.pnr"
 _TEMPLATE_FILE = "flow.tcl.template"
+_KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
+
+# Minimum OpenROAD release we test against. Older builds may still work for
+# the basic flow but are not validated — we warn rather than refuse.
+MIN_OPENROAD_VERSION = "25Q1"
+
+# Common macOS install locations for KLayout's `klayout` binary when the
+# cask doesn't add itself to PATH.
+_KLAYOUT_FALLBACK_PATHS = (
+    "/Applications/KLayout/klayout.app/Contents/MacOS/klayout",
+    "/Applications/klayout.app/Contents/MacOS/klayout",
+)
+
+
+def _parse_version_token(version: str) -> tuple:
+    """Extract a comparable tuple from an OpenROAD version string.
+
+    Handles `26Q2-911-g...`, `v2.0-1234-g...`, plain `v2.0`. Falls back to
+    the raw string so unknown formats just sort consistently.
+    """
+    m = re.match(r"^v?(\d+)(?:[.Qq](\d+))?", version.strip())
+    if not m:
+        return (version,)
+    major = int(m.group(1))
+    minor = int(m.group(2)) if m.group(2) else 0
+    return (major, minor)
+
+
+def _resolve_klayout_exe() -> str | None:
+    exe = shutil.which("klayout")
+    if exe:
+        return exe
+    for candidate in _KLAYOUT_FALLBACK_PATHS:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 class OpenRoadPnr:
@@ -33,11 +69,21 @@ class OpenRoadPnr:
         suite_dir: str,
         root_cfg,
         openroad_executable: str = "openroad",
+        emit_gds: bool = False,
+        emit_png: bool = False,
+        klayout_executable: str = "klayout",
+        png_width: int = 2048,
+        png_height: int = 2048,
     ):
         self.name = name
         self.pnr_cfg = pnr_cfg
         self.root_cfg = root_cfg
         self.openroad_executable = openroad_executable
+        self.emit_gds = emit_gds or emit_png
+        self.emit_png = emit_png
+        self.klayout_executable = klayout_executable
+        self.png_width = png_width
+        self.png_height = png_height
 
         artefact_root = Path(suite_dir) / "artefacts" / pnr_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -141,6 +187,53 @@ class OpenRoadPnr:
         m = re.search(r"^tns\s+(?:max|min)?\s*([-\d.]+)", log_text, re.MULTILINE)
         return float(m.group(1)) if m else None
 
+    # ------------------------------------------------------------------
+    # Version + feature probes
+    # ------------------------------------------------------------------
+
+    def _probe_openroad_version(self) -> str | None:
+        try:
+            r = subprocess.run(
+                [self.openroad_executable, "-version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        out = (r.stdout or r.stderr).strip()
+        return out.splitlines()[0] if out else None
+
+    def _version_below_min(self, version: str) -> bool:
+        return _parse_version_token(version) < _parse_version_token(
+            MIN_OPENROAD_VERSION
+        )
+
+    def _has_tcl_command(self, command: str) -> bool:
+        """Probe whether the OpenROAD build exposes a Tcl command.
+
+        Used as a feature-detect for things like `write_gds`. Returns False
+        if we cannot determine availability (treated as missing).
+        """
+        probe = (
+            f'if {{[info commands {command}] eq ""}} '
+            f'{{ puts "RB_HAS_CMD:{command}:no" }} '
+            f'else {{ puts "RB_HAS_CMD:{command}:yes" }}\nexit\n'
+        )
+        try:
+            r = subprocess.run(
+                [self.openroad_executable, "-no_init", "-exit"],
+                input=probe,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return f"RB_HAS_CMD:{command}:yes" in (r.stdout or "")
+
     def _count_drcs(self) -> int:
         drc_path = os.path.join(self.artefact_dir, "route.drc.rpt")
         if not os.path.isfile(drc_path):
@@ -150,6 +243,123 @@ class OpenRoadPnr:
                 return sum(1 for line in f if line.strip())
         except OSError:
             return 0
+
+    # ------------------------------------------------------------------
+    # KLayout streamout / render
+    # ------------------------------------------------------------------
+
+    def _klayout_script_path(self, name: str) -> str:
+        """Materialize a bundled KLayout helper to the artefact dir.
+
+        KLayout's `-r` flag wants a real path on disk; reading from
+        importlib.resources isn't enough since some packagers expose the
+        module via a zipfile loader. Always copy to the artefact dir.
+        """
+        target = Path(self.artefact_dir) / name
+        target.write_text(files(_KLAYOUT_PACKAGE).joinpath(name).read_text())
+        return str(target)
+
+    def _run_def2stream(self, platform, design: str) -> str | None:
+        pdk = platform.get_pdk()
+        tech = pdk.get_klayout_tech()
+        if not tech:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.gds_no_klayout_tech",
+                pnr=self.pnr_cfg.get_name(),
+                pdk=pdk.get_name(),
+            )
+            return None
+        klayout = _resolve_klayout_exe()
+        if not klayout:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.no_klayout",
+                pnr=self.pnr_cfg.get_name(),
+            )
+            return None
+        in_def = os.path.join(self.artefact_dir, f"{design}.def")
+        out_gds = os.path.join(self.artefact_dir, f"{design}.gds")
+        cell_gds = pdk.get_cell_gds()
+        script = self._klayout_script_path("def2stream.py")
+        cmd = [
+            klayout,
+            "-zz",
+            "-nc",
+            "-rd",
+            f"tech_file={tech}",
+            "-rd",
+            "layer_map=",
+            "-rd",
+            f"in_def={in_def}",
+            "-rd",
+            f"design_name={design}",
+            "-rd",
+            f"in_files={cell_gds}",
+            "-rd",
+            "seal_file=",
+            "-rd",
+            f"out_file={out_gds}",
+            "-r",
+            script,
+        ]
+        log_path = os.path.join(self.artefact_dir, "klayout.def2stream.log")
+        with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout gds]"):
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
+        if r.returncode != 0 or not os.path.isfile(out_gds):
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.gds_failed",
+                pnr=self.pnr_cfg.get_name(),
+                returncode=r.returncode,
+                log=log_path,
+            )
+            return None
+        return out_gds
+
+    def _run_gds2png(self, platform, gds_path: str, design: str) -> str | None:
+        klayout = _resolve_klayout_exe()
+        if not klayout:
+            return None
+        lyp = platform.get_pdk().get_klayout_props()
+        out_png = os.path.join(self.artefact_dir, f"{design}.png")
+        script = self._klayout_script_path("gds2png.py")
+        cmd = [
+            klayout,
+            "-zz",
+            "-nc",
+            "-rd",
+            f"in_gds={gds_path}",
+            "-rd",
+            f"lyp_file={lyp}",
+            "-rd",
+            f"out_png={out_png}",
+            "-rd",
+            f"width={self.png_width}",
+            "-rd",
+            f"height={self.png_height}",
+            "-r",
+            script,
+        ]
+        log_path = os.path.join(self.artefact_dir, "klayout.gds2png.log")
+        with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout png]"):
+            r = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
+        if r.returncode != 0 or not os.path.isfile(out_png):
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.png_failed",
+                pnr=self.pnr_cfg.get_name(),
+                returncode=r.returncode,
+                log=log_path,
+            )
+            return None
+        return out_png
 
     # ------------------------------------------------------------------
     # Entry point
@@ -176,6 +386,26 @@ class OpenRoadPnr:
                 name=self.name + "/results",
                 desc=f"{self.openroad_executable!r} not found on PATH",
             )
+
+        version = self._probe_openroad_version()
+        if version:
+            log_event(
+                logger,
+                logging.INFO,
+                "pnr.openroad_version",
+                pnr=self.pnr_cfg.get_name(),
+                version=version,
+                min_version=MIN_OPENROAD_VERSION,
+            )
+            if self._version_below_min(version):
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "pnr.openroad_version_below_min",
+                    pnr=self.pnr_cfg.get_name(),
+                    version=version,
+                    min_version=MIN_OPENROAD_VERSION,
+                )
 
         try:
             platform = self.root_cfg.get_pnr_platform_cfg(self.pnr_cfg.get_platform())
@@ -260,6 +490,14 @@ class OpenRoadPnr:
         tns = self._parse_tns(log_text)
         drcs = self._count_drcs()
 
+        gds_path: str | None = None
+        png_path: str | None = None
+        if self.emit_gds:
+            design = self.pnr_cfg.resolve_synth_cfg().get_top()
+            gds_path = self._run_def2stream(platform, design)
+            if gds_path and self.emit_png:
+                png_path = self._run_gds2png(platform, gds_path, design)
+
         log_event(
             logger,
             logging.INFO,
@@ -281,4 +519,6 @@ class OpenRoadPnr:
             wns_hold_ps=wns_hold * 1000.0 if wns_hold is not None else None,
             tns_ps=tns * 1000.0 if tns is not None else None,
             drc_count=drcs,
+            gds_path=gds_path,
+            png_path=png_path,
         )
