@@ -25,6 +25,7 @@ from .synth import (
 )
 from .pdk import PdkConfig
 from .pnr_platform import PnrPlatformConfig
+from .pnr import PnrConfig, PnrSuiteConfig
 
 __all__ = [
     "TestConfig",
@@ -52,4 +53,6 @@ __all__ = [
     "SynthPlatformConfig",
     "PdkConfig",
     "PnrPlatformConfig",
+    "PnrConfig",
+    "PnrSuiteConfig",
 ]

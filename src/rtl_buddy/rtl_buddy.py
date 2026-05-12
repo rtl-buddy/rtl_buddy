@@ -17,6 +17,7 @@ import click
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.model import ModelConfigLoader
+from .config.pnr import PnrSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
@@ -31,6 +32,8 @@ from .runner.cdc_runner import CdcRunner
 from .runner.cdc_results import CdcSkipResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
+from .runner.pnr_runner import PnrRunner
+from .runner.pnr_results import PnrSkipResults
 from .runner.synth_runner import SynthRunner
 from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
@@ -120,6 +123,7 @@ class RtlBuddy:
         self.app.command("synth-regression", help="run synthesis regression")(
             self.do_synth_regression
         )
+        self.app.command("pnr", help="run place-and-route")(self.do_cmd_pnr)
         self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
         self.app.command("cdc-regression", help="run CDC lint regression")(
             self.do_cdc_regression
@@ -1506,6 +1510,157 @@ class RtlBuddy:
         )
         self._render_synth_summary("Synthesis Results Summary", synth_results)
         raise typer.Exit(self._exit_code_from_synth_results(synth_results))
+
+    def do_cmd_pnr(
+        self,
+        pnr_config: Annotated[
+            str,
+            typer.Option("-c", "--pnr-config", help="pnr.yaml to use"),
+        ] = "pnr.yaml",
+        pnr_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of pnr run", show_default="run all entries in the suite"
+            ),
+        ] = None,
+        list_runs: Annotated[
+            bool,
+            typer.Option("--list", help="list pnr runs in the selected config and exit"),
+        ] = False,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l",
+                "--reg-level",
+                help="run only entries with reglvl at or below this value",
+            ),
+        ] = 0,
+    ):
+        """run place-and-route"""
+        suite_cfg = PnrSuiteConfig(path=pnr_config)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.pnr",
+            command="pnr",
+            pnr=pnr_name or "all",
+            pnr_config=pnr_config,
+        )
+
+        if list_runs:
+            emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        results = self._do_pnr_suite(
+            suite_cfg, pnr_name=pnr_name, reg_level=reg_level
+        )
+        self._render_pnr_summary("P&R Results Summary", results)
+        raise typer.Exit(
+            0 if all(r["results"].is_pass() for r in results) else 1
+        )
+
+    def _do_pnr_suite(self, suite_cfg, *, pnr_name=None, reg_level=0):
+        root_cfg = RootConfig(name="pnr")
+        runs = suite_cfg.get_runs(pnr_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for run in runs:
+            if reg_level is not None and run.get_reglvl() > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "pnr_suite.skip",
+                    pnr=run.get_name(),
+                    reason="above_regression_level",
+                    pnr_level=run.get_reglvl(),
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "pnr_name": run.get_name(),
+                        "results": PnrSkipResults(
+                            name=f"{run.get_name()}/results",
+                            desc=(
+                                f"reglvl {run.get_reglvl()} above {reg_level}"
+                            ),
+                        ),
+                    }
+                )
+                continue
+            runner = PnrRunner(
+                name=run.get_name(),
+                root_cfg=root_cfg,
+                pnr_cfg=run,
+                suite_dir=suite_dir,
+                reglvl_filter=reg_level if reg_level else None,
+            )
+            results.append(
+                {"pnr_name": run.get_name(), "results": runner.run()}
+            )
+        return results
+
+    def _render_pnr_summary(self, title, pnr_results, *, metadata=None):
+        has_cells = any("cell_count" in r["results"].results for r in pnr_results)
+        has_area = any("area_um2" in r["results"].results for r in pnr_results)
+        has_setup = any("wns_setup_ps" in r["results"].results for r in pnr_results)
+        has_hold = any("wns_hold_ps" in r["results"].results for r in pnr_results)
+        has_drcs = any("drc_count" in r["results"].results for r in pnr_results)
+        rows = []
+        for r in pnr_results:
+            res = r["results"].results
+            row = {
+                "pnr_name": r["pnr_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+            }
+            if has_cells:
+                row["cells"] = (
+                    str(res["cell_count"]) if res.get("cell_count") is not None else "-"
+                )
+            if has_area:
+                area = res.get("area_um2")
+                row["area"] = f"{area:.2f} µm²" if area is not None else "-"
+            if has_setup:
+                wns = res.get("wns_setup_ps")
+                row["wns_setup"] = (
+                    f"{'+' if wns >= 0 else ''}{wns / 1000:.3f} ns"
+                    if wns is not None
+                    else "-"
+                )
+            if has_hold:
+                wns = res.get("wns_hold_ps")
+                row["wns_hold"] = (
+                    f"{'+' if wns >= 0 else ''}{wns / 1000:.3f} ns"
+                    if wns is not None
+                    else "-"
+                )
+            if has_drcs:
+                drcs = res.get("drc_count")
+                row["drcs"] = str(drcs) if drcs is not None else "-"
+            rows.append(row)
+
+        columns = [
+            ("pnr_name", "P&R Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+        ]
+        if has_cells:
+            columns.append(("cells", "Cells"))
+        if has_area:
+            columns.append(("area", "Area"))
+        if has_setup:
+            columns.append(("wns_setup", "WNS Setup"))
+        if has_hold:
+            columns.append(("wns_hold", "WNS Hold"))
+        if has_drcs:
+            columns.append(("drcs", "DRCs"))
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
 
     def do_synth_regression(
         self,

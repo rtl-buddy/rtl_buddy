@@ -51,6 +51,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ wave-install-nvim  install nvim plugin for rb wave annotation                        │
 │ synth              run synthesis                                                     │
 │ synth-regression   run synthesis regression                                          │
+│ pnr                run place-and-route                                               │
 │ cdc                run CDC lint                                                      │
 │ cdc-regression     run CDC lint regression                                           │
 │ skill              manage the rtl_buddy agent skill                                  │
