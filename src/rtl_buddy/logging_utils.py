@@ -342,13 +342,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.openroad.no_lef":
             return (
-                f'OpenROAD synthesis "{fields.get("synth")}" requires lef-paths in cfg-synth-libs; '
-                "add LEF files for the technology library"
+                f'OpenROAD synthesis "{fields.get("synth")}" requires LEF files; '
+                "set tech-lef / macro-lef on the referenced cfg-pdk entry "
+                "or lef-paths on the cfg-synth-platforms entry"
             )
         case "synth.openroad.no_library":
             return (
                 f'OpenROAD synthesis "{fields.get("synth")}" requires a mapped library; '
-                "add libraries: [...] and lef-paths: [...] to cfg-synth-libs"
+                "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
+                "entry pointing at a cfg-pdk corner"
             )
         case "coverage.metric.failed":
             return (

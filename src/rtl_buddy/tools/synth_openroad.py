@@ -98,19 +98,18 @@ class OpenRoadSynth:
         return paths
 
     def _resolve_lib_paths(self) -> list[str]:
-        libraries = self.synth_cfg.get_libraries()
-        if not libraries or self.root_cfg is None:
+        platform = self.synth_cfg.get_platform()
+        if not platform or self.root_cfg is None:
             return []
-        return [self.root_cfg.get_synth_lib_cfg(name).get_path() for name in libraries]
+        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()]
 
     def _resolve_lef_paths(self) -> list[str]:
-        libraries = self.synth_cfg.get_libraries()
-        if not libraries or self.root_cfg is None:
+        platform = self.synth_cfg.get_platform()
+        if not platform or self.root_cfg is None:
             return []
-        paths: list[str] = []
-        for name in libraries:
-            paths.extend(self.root_cfg.get_synth_lib_cfg(name).get_lef_paths())
-        return paths
+        return list(
+            self.root_cfg.get_synth_platform_cfg(platform).get_lef_paths()
+        )
 
     # ------------------------------------------------------------------
     # Stage 1: Yosys — RTL to technology-mapped gate-level netlist

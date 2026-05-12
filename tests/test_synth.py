@@ -53,7 +53,7 @@ def _make_synth_cfg(
     constraints=None,
     params=None,
     defines=None,
-    libraries=None,
+    platform=None,
     reglvl=None,
     tool_overrides=None,
 ):
@@ -68,7 +68,7 @@ def _make_synth_cfg(
         constraints=constraints,
         params=params,
         defines=defines,
-        libraries=libraries,
+        platform=platform,
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
     )
@@ -505,7 +505,7 @@ def test_run_returns_pass_on_clean_exit(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -532,7 +532,7 @@ def test_run_returns_fail_on_nonzero_exit(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -560,7 +560,7 @@ def test_run_returns_fail_on_error_in_log(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -590,7 +590,7 @@ def test_run_uses_managed_process_for_yosys(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -619,7 +619,7 @@ def test_run_uses_managed_process_for_yosys(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class _FakeLibCfg:
+class _FakePlatformCfg:
     def __init__(self, path):
         self._path = path
 
@@ -631,12 +631,12 @@ class _FakeRootCfg:
     def __init__(self, lib_map):
         self._lib_map = lib_map
 
-    def get_synth_lib_cfg(self, name):
+    def get_synth_platform_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
 
         if name not in self._lib_map:
             raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
-        return _FakeLibCfg(self._lib_map[name])
+        return _FakePlatformCfg(self._lib_map[name])
 
 
 def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
@@ -650,7 +650,7 @@ def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
     root_cfg = _FakeRootCfg({"mylib": str(lib)})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(platform="mylib"),
         root_cfg=root_cfg,
     )
     script = Path(ys._write_script(str(fl))).read_text()
@@ -673,7 +673,7 @@ def test_write_script_lib_flow_no_standalone_abc(tmp_path):
     root_cfg = _FakeRootCfg({"mylib": str(lib)})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(platform="mylib"),
         tool_cfg=_tool_cfg(abc_args="-fast"),
         root_cfg=root_cfg,
     )
@@ -687,7 +687,7 @@ def test_write_script_no_lib_flow_unchanged(tmp_path):
     fl = tmp_path / "synth.f"
     fl.write_text(f"-v {sv}\n")
 
-    ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(libraries=None))
+    ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(platform=None))
     script = Path(ys._write_script(str(fl))).read_text()
 
     assert "read_liberty" not in script
@@ -702,7 +702,7 @@ def test_resolve_lib_paths_unknown_name_raises(tmp_path):
     root_cfg = _FakeRootCfg({})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["unknown_lib"]),
+        synth_cfg=_make_synth_cfg(platform="unknown_lib"),
         root_cfg=root_cfg,
     )
     with pytest.raises(FatalRtlBuddyError, match="not found"):
@@ -763,7 +763,7 @@ def test_write_script_lib_flow_with_sdc_adds_D_flag(tmp_path):
     root_cfg = _FakeRootCfg({"mylib": str(lib)})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"], constraints=str(sdc)),
+        synth_cfg=_make_synth_cfg(platform="mylib", constraints=str(sdc)),
         root_cfg=root_cfg,
     )
     script = Path(ys._write_script(str(fl))).read_text()
@@ -867,28 +867,60 @@ def test_synth_tool_config_strategy_via_override_dict():
 
 
 # ---------------------------------------------------------------------------
-# SynthLibConfig — lef_paths field
+# SynthPlatformConfig — pdk + corner + lef paths
 # ---------------------------------------------------------------------------
 
 
-def test_synth_lib_config_lef_paths_empty_by_default(tmp_path):
-    from rtl_buddy.config.synth import SynthLibConfigFile, SynthLibConfig
+def _make_pdk(name, root_cfg_path, *, tech_lef="", macro_lef="", corners=None):
+    from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
 
-    root_cfg_path = str(tmp_path / "root_config.yaml")
-    lib_file = SynthLibConfigFile(name="mylib", path="lib/cells.lib", lef_paths=[])
-    cfg = SynthLibConfig(lib_file, root_cfg_path)
-    assert cfg.get_lef_paths() == []
-
-
-def test_synth_lib_config_lef_paths_resolved(tmp_path):
-    from rtl_buddy.config.synth import SynthLibConfigFile, SynthLibConfig
-
-    root_cfg_path = str(tmp_path / "root_config.yaml")
-    lib_file = SynthLibConfigFile(
-        name="mylib", path="lib/cells.lib", lef_paths=["lef/cells.lef"]
+    return PdkConfig(
+        PdkConfigFile(
+            name=name,
+            corners=corners or {"typ": "lib/cells.lib"},
+            tech_lef=tech_lef,
+            macro_lef=macro_lef,
+        ),
+        root_cfg_path,
     )
-    cfg = SynthLibConfig(lib_file, root_cfg_path)
-    assert cfg.get_lef_paths() == [str(tmp_path / "lef" / "cells.lef")]
+
+
+def test_synth_platform_config_lef_paths_empty_by_default(tmp_path):
+    from rtl_buddy.config.synth import SynthPlatformConfigFile, SynthPlatformConfig
+
+    root_cfg_path = str(tmp_path / "root_config.yaml")
+    pdk = _make_pdk("nangate45", root_cfg_path)
+    cfg = SynthPlatformConfig(
+        SynthPlatformConfigFile(name="nangate45_typ", pdk="nangate45"),
+        root_cfg_path,
+        lambda _name: pdk,
+    )
+    assert cfg.get_lef_paths() == []
+    assert cfg.get_path() == str(tmp_path / "lib" / "cells.lib")
+
+
+def test_synth_platform_config_lef_paths_resolved(tmp_path):
+    from rtl_buddy.config.synth import SynthPlatformConfigFile, SynthPlatformConfig
+
+    root_cfg_path = str(tmp_path / "root_config.yaml")
+    pdk = _make_pdk(
+        "nangate45",
+        root_cfg_path,
+        tech_lef="lef/tech.lef",
+        macro_lef="lef/cells.lef",
+    )
+    cfg = SynthPlatformConfig(
+        SynthPlatformConfigFile(
+            name="nangate45_typ", pdk="nangate45", lef_paths=["lef/extra.lef"]
+        ),
+        root_cfg_path,
+        lambda _name: pdk,
+    )
+    assert cfg.get_lef_paths() == [
+        str(tmp_path / "lef" / "tech.lef"),
+        str(tmp_path / "lef" / "cells.lef"),
+        str(tmp_path / "lef" / "extra.lef"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +928,7 @@ def test_synth_lib_config_lef_paths_resolved(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _FakeLibCfgWithLef:
+class _FakePlatformCfgWithLef:
     def __init__(self, path, lef_paths=None):
         self._path = path
         self._lef_paths = lef_paths or []
@@ -913,13 +945,13 @@ class _FakeRootCfgOR:
         self._lib_map = lib_map
         self._lef_map = lef_map or {}
 
-    def get_synth_lib_cfg(self, name):
+    def get_synth_platform_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
 
         if name not in self._lib_map:
             raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
         lef_paths = self._lef_map.get(name, [])
-        return _FakeLibCfgWithLef(self._lib_map[name], lef_paths)
+        return _FakePlatformCfgWithLef(self._lib_map[name], lef_paths)
 
     def get_synth_tool_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
@@ -972,7 +1004,7 @@ def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
     )
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(model_name="top", libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
         root_cfg=root_cfg,
     )
     script = Path(or_synth._write_yosys_script(str(fl))).read_text()
@@ -998,7 +1030,7 @@ def test_openroad_or_script_has_lef_liberty_verilog_sdc(tmp_path):
     or_synth = _make_openroad(
         tmp_path,
         synth_cfg=_make_synth_cfg(
-            model_name="top", libraries=["mylib"], constraints=str(sdc)
+            model_name="top", platform="mylib", constraints=str(sdc)
         ),
         root_cfg=root_cfg,
     )
@@ -1026,7 +1058,7 @@ def test_openroad_or_script_no_sdc_omits_timing_reports(tmp_path):
     or_synth = _make_openroad(
         tmp_path,
         synth_cfg=_make_synth_cfg(
-            model_name="top", libraries=["mylib"], constraints=None
+            model_name="top", platform="mylib", constraints=None
         ),
         root_cfg=root_cfg,
     )
@@ -1052,7 +1084,7 @@ def test_openroad_or_script_timing_strategy_adds_resynth(tmp_path):
     or_synth = _make_openroad(
         tmp_path,
         synth_cfg=_make_synth_cfg(
-            model_name="top", libraries=["mylib"], constraints=str(sdc)
+            model_name="top", platform="mylib", constraints=str(sdc)
         ),
         tool_cfg=_make_or_tool_cfg(strategy="TIMING"),
         root_cfg=root_cfg,
@@ -1108,7 +1140,7 @@ def test_openroad_parse_area_missing_returns_none():
 
 def test_openroad_run_fails_without_library(tmp_path, monkeypatch):
 
-    or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(libraries=None))
+    or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(platform=None))
     result = or_synth.run()
     assert isinstance(result, SynthFailResults)
     assert "library" in result.results["desc"].lower()
@@ -1121,7 +1153,7 @@ def test_openroad_run_fails_without_lef(tmp_path, monkeypatch):
     root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)}, lef_map={})
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(platform="mylib"),
         root_cfg=root_cfg,
     )
     result = or_synth.run()
