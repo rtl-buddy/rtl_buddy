@@ -80,11 +80,33 @@ cfg-synth-tools:
     opts:
       strategy: "AREA"   # AREA | TIMING | TIMING_ANNEAL | TIMING_GENETIC
 
-cfg-synth-libs:
+cfg-pdk:
+  - name: "sky130hd"
+    site: "unithd"
+    corners:
+      tt: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
+    tech-lef:  "pdk/sky130hd/lef/sky130_fd_sc_hd.tlef"
+    macro-lef: "pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef"
+    cell-gds:      "pdk/sky130hd/gds/sky130_fd_sc_hd.gds"
+    klayout-tech:  "pdk/sky130hd/sky130hd.lyt"
+    klayout-props: "pdk/sky130hd/sky130hd.lyp"
+    tie-hi: "sky130_fd_sc_hd__conb_1/HI"
+    tie-lo: "sky130_fd_sc_hd__conb_1/LO"
+    fill-cells: [sky130_fd_sc_hd__fill_1, sky130_fd_sc_hd__fill_2]
+
+cfg-synth-platforms:
   - name: "sky130hd_tt"
-    path: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
-    lef-paths:           # required for OpenROAD backend
-      - "pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef"
+    pdk: "sky130hd"
+    corner: "tt"
+
+cfg-pnr-platforms:
+  - name: "sky130hd_tt"
+    pdk: "sky130hd"
+    sta-corner: "tt"
+    cts-buffer: "sky130_fd_sc_hd__clkbuf_4"
+    routing-layers:
+      signal: "met1-met5"
+      clock:  "met3-met5"
 
 cfg-synth-efforts:
   - name: "quick"
@@ -125,7 +147,9 @@ cfg-rtl-reg:
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the bundled nvim plugin first with `rb wave-install-nvim`.
 - `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the executable name on `PATH`. For the Yosys backend, `opts.synth-args` are appended to the `synth` command and `opts.abc-args` are used by the unmapped ABC step. For the OpenROAD backend, `opts.strategy` controls optional resynthesis (`AREA` = none, `TIMING`/`TIMING_ANNEAL` = `resynth_annealing`, `TIMING_GENETIC` = `resynth_genetic`).
-- `cfg-synth-libs` defines named Liberty files for technology-mapped synthesis. `path` is resolved relative to `root_config.yaml`. The optional `lef-paths` list specifies LEF files required by the OpenROAD backend for technology loading; ignored by the Yosys backend.
+- `cfg-pdk` defines one entry per process. Each holds *all* PDK-bound assets — Liberty per corner (under `corners:`), `tech-lef` / `macro-lef`, optional `cell-gds`, KLayout `.lyt` / `.lyp` for streamout, `SITE`, and `tie-hi` / `tie-lo` / `fill-cells` for P&R. Paths are resolved relative to `root_config.yaml`. Multiple PDKs can coexist; downstream platform blocks select which one to use.
+- `cfg-synth-platforms` selects a `cfg-pdk` entry + corner for synthesis. Each entry has `name` (referenced by `platform:` in `synth.yaml`), `pdk` (PDK entry name), and `corner` (optional — defaults to the first declared corner). Optional `lef-paths:` adds block-specific LEFs on top of the PDK's tech/macro LEFs.
+- `cfg-pnr-platforms` selects a `cfg-pdk` entry + STA corner for place-and-route. Each entry has `name` (referenced by `platform:` in `pnr.yaml`), `pdk`, optional `sta-corner` (defaults to first corner), `cts-buffer` (clock-tree buffer cell), and `routing-layers` with `signal` / `clock` layer ranges.
 - `cfg-synth-efforts` defines named synthesis effort levels referenced by `synth.yaml` `effort` fields or the `--effort` CLI flag. Each entry has optional `yosys.synth-args` / `yosys.abc-args` (merged into the Yosys stage) and an `openroad` block. When `openroad.run: false`, the runner falls back to the Yosys-only backend even if `tool: openroad` was selected — useful for a fast quick-look path that needs no LEF/STA. `openroad.pre-sta-tcl` is a raw Tcl snippet injected into `synth.tcl` between `read_sdc` and `report_checks`; use it to insert floorplan/placement/parasitic-estimation steps before timing analysis. When no `cfg-synth-efforts` entries are configured or no effort is selected, a built-in `standard` effort with all defaults is used. Precedence for the same knob: per-synthesis `tool_overrides` > `cfg-synth-efforts` > `cfg-synth-tools`.
 - `cfg-cdc-tools` defines CDC tool entries selected by `cdc.yaml` `tool` fields. `tool` is the executable name on `PATH` (or an absolute path). `opts.sync-depth` is forwarded as `--sync-depth N` and controls CDC-002's required synchronizer depth. `opts.extra-args` is appended verbatim to every analyzer invocation.
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
@@ -344,8 +368,7 @@ syntheses:
     model_path: "../src/models.yaml"
     tool: "yosys"
     constraints: "constraints.sdc"
-    libraries:
-      - "sky130hd_tt"
+    platform: "sky130hd_tt"
     params:
       WIDTH: 32
     defines:
@@ -363,8 +386,7 @@ syntheses:
     model_path: "../src/models.yaml"
     tool: "openroad"
     constraints: "constraints.sdc"
-    libraries:
-      - "sky130hd_tt"
+    platform: "sky130hd_tt"
     effort: "accurate"     # references cfg-synth-efforts entry; overridable via --effort
     reglvl: 0
 ```
@@ -381,7 +403,7 @@ syntheses:
 | `constraints` | string | Optional SDC file path, resolved relative to the `synth.yaml` file |
 | `params` | dict | Optional top-level parameter overrides passed through Yosys `chparam -set` |
 | `defines` | dict | Optional Verilog defines passed to `read_verilog` as `-D KEY=VALUE` |
-| `libraries` | list of strings | Optional Liberty library names from `cfg-synth-libs`; enables technology mapping |
+| `platform` | string | Optional `cfg-synth-platforms` name (which references a `cfg-pdk` entry); enables technology mapping |
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
 | `tool_overrides` | dict | Optional per-tool overrides for `synth_args`, `abc_args`, or `strategy`, keyed by synthesis tool name |
 | `effort` | string | Optional effort name from `cfg-synth-efforts`; controls Yosys synth/abc args and OpenROAD `pre-sta-tcl`. Overridable per invocation with `rtl-buddy synth --effort <name>`. Omitted ⇒ built-in `standard` defaults. |
@@ -389,8 +411,8 @@ syntheses:
 **Runtime effects:**
 
 - `rtl-buddy synth` loads `synth.yaml`, resolves sources via `models.yaml`, and dispatches to the backend selected by `tool`.
-- **Yosys backend** (`tool: "yosys"`): writes `synth.f` and `synth.ys`, runs Yosys, captures output in `synth.log`. Without `libraries`, emits RTLIL; with `libraries`, runs `dfflibmap` + `abc -liberty` and emits `synth_netlist.v`. Reports Gates, Area (lib-mapped only), and WNS (lib-mapped with SDC). Passes when exit code is 0 and `synth.log` has no `ERROR:` lines.
-- **OpenROAD backend** (`tool: "openroad"`): requires `libraries` with `lef-paths` configured in `cfg-synth-libs`. Stage 1 runs Yosys to produce `synth_netlist.v` (logged to `synth_yosys.log`). Stage 2 runs OpenROAD with `synth.tcl` which calls `read_lef`, `read_liberty`, `read_verilog`, `link_design`, `read_sdc` (native multi-clock), and reports area/timing; output in `synth.log`. Reports Gates, Area, WNS (from `report_checks -path_delay max`), and TNS (from `report_tns`). Passes when both stages exit with code 0 and neither log contains errors.
+- **Yosys backend** (`tool: "yosys"`): writes `synth.f` and `synth.ys`, runs Yosys, captures output in `synth.log`. Without `platform`, emits RTLIL; with `platform`, runs `dfflibmap` + `abc -liberty` and emits `synth_netlist.v`. Reports Gates, Area (lib-mapped only), and WNS (lib-mapped with SDC). Passes when exit code is 0 and `synth.log` has no `ERROR:` lines.
+- **OpenROAD backend** (`tool: "openroad"`): requires `platform` pointing at a `cfg-synth-platforms` entry whose PDK has `tech-lef` / `macro-lef` set. Stage 1 runs Yosys to produce `synth_netlist.v` (logged to `synth_yosys.log`). Stage 2 runs OpenROAD with `synth.tcl` which calls `read_lef`, `read_liberty`, `read_verilog`, `link_design`, `read_sdc` (native multi-clock), and reports area/timing; output in `synth.log`. Reports Gates, Area, WNS (from `report_checks -path_delay max`), and TNS (from `report_tns`). Passes when both stages exit with code 0 and neither log contains errors.
 - If `constraints` contains `create_clock` entries, the Yosys backend uses the minimum period as ABC's `-D` constraint (multi-clock workaround). The OpenROAD backend passes the full SDC to `read_sdc` without modification.
 - `effort` selects an entry from `root_config.yaml` `cfg-synth-efforts`. If the selected effort has `openroad.run: false`, a synthesis with `tool: openroad` falls back to the Yosys-only backend (no LEF/STA required) — this is the recommended "quick" path for iteration. The `--effort` CLI flag on `rtl-buddy synth` and `rtl-buddy synth-regression` overrides whatever is set per-synthesis.
 
@@ -418,6 +440,59 @@ synth-configs:
 - `rtl-buddy synth-regression` iterates each listed `synth.yaml` file and filters syntheses by `--reg-level`.
 - Paths in `synth-configs` are resolved relative to the `synth_regression.yaml` file.
 - `synth-regression` changes directory into each synthesis suite directory before executing its entries.
+
+---
+
+## pnr.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: pnr_config`
+- `runs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: pnr_config
+
+runs:
+  - name: "demo_pnr_nangate45"
+    desc: "OpenROAD P&R on Nangate45 typ corner"
+    tool: "openroad"
+    synth: "demo_synth_nangate45"
+    synth-path: "../../synth/demo/synth.yaml"
+    constraints: "../../synth/demo/constraints.sdc"
+    platform: "nangate45_typ"
+    floorplan:
+      utilization: 0.55
+      aspect: 1.0
+      core-margin: 2.0
+    reglvl: 1000
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | P&R run identifier; used on the CLI and in `artefacts/<name>/` |
+| `desc` | string | Human-readable description |
+| `tool` | string | Backend tool — `"openroad"` is the only supported value today |
+| `synth` | string | Name of the upstream `rb synth` entry that produced the netlist |
+| `synth-path` | string | Path to the `synth.yaml` that defines `synth`, resolved relative to `pnr.yaml` |
+| `constraints` | string | Path to the SDC file (required), resolved relative to `pnr.yaml` |
+| `platform` | string | `cfg-pnr-platforms` entry name |
+| `floorplan.utilization` | float | Core utilization (0–1) |
+| `floorplan.aspect` | float | Die aspect ratio |
+| `floorplan.core-margin` | float | Margin between core area and die edge, in microns |
+| `reglvl` | int | Regression level for filtering; same semantics as `synth.yaml` reglvl |
+| `tool_overrides` | dict | Reserved for tool-specific overrides (none consumed today) |
+
+**Runtime effects:**
+
+- `rb pnr` loads `pnr.yaml`, resolves the upstream `synth-path` + `synth` to find `<synth_dir>/artefacts/<synth_name>/synth_netlist.v`, and dispatches to the OpenROAD backend.
+- The backend writes `pnr.tcl` from a bundled template, invokes `openroad -no_init -exit -log artefacts/<name>/pnr.log artefacts/<name>/pnr.tcl`, and produces routed DEF + post-route netlist/SDC + timing/DRC reports under `artefacts/<name>/`.
+- The selected `cfg-pnr-platforms` entry provides Liberty, tech-LEF, macro-LEF, SITE, tie cells, fill cells, CTS buffer, and routing layer ranges via its referenced `cfg-pdk` entry.
+- Pass when OpenROAD exits 0 and the log has no `[ERROR ...]` lines. SKIP when the entry's `reglvl` is above `--reg-level` or `tool:` is not `openroad`.
 
 ---
 

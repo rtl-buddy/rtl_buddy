@@ -1,0 +1,152 @@
+---
+description: How to run OpenROAD place-and-route with rtl_buddy via the rb pnr command, pnr.yaml, and cfg-pnr-platforms.
+---
+
+# Place-and-Route
+
+`rb pnr` drives OpenROAD through a templated Tcl flow that consumes the tech-mapped netlist from an upstream `rb synth` run. It produces routed DEF, a post-route netlist + SDC, a timing report, and a DRC report under `pnr/<run>/artefacts/`.
+
+The flow is intentionally compact and config-driven — block-level knobs live in `pnr.yaml`, technology-level knobs live in `cfg-pdk` + `cfg-pnr-platforms` in `root_config.yaml`.
+
+## Supported backend
+
+Today only `openroad` is wired up. The `tool:` field in `pnr.yaml` selects it; the runner skips any other value with a clear message.
+
+## Installing OpenROAD
+
+`openroad` must be on `PATH`. Build from source (no official macOS binaries):
+
+```bash
+ln -s /path/to/OpenROAD/build/bin/openroad /usr/local/bin/openroad
+```
+
+See `tools/openroad/BUILD_OSX.md` in the project template for the macOS recipe.
+
+## P&R config: `pnr.yaml`
+
+`pnr.yaml` declares one or more P&R runs. Each entry references an upstream `rb synth` entry by path + name, an SDC, and a `cfg-pnr-platforms` name from `root_config.yaml`:
+
+```yaml
+rtl-buddy-filetype: pnr_config
+
+runs:
+  - name: "demo_pnr_nangate45"
+    desc: "OpenROAD P&R on Nangate45 typ corner"
+    tool: "openroad"
+    synth: "demo_synth_nangate45"
+    synth-path: "../../synth/demo/synth.yaml"
+    constraints: "../../synth/demo/constraints.sdc"
+    platform: "nangate45_typ"
+    floorplan:
+      utilization: 0.55
+      aspect: 1.0
+      core-margin: 2.0
+    reglvl: 1000
+```
+
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| `name` | Run identifier used on the command line and in `artefacts/<name>/` |
+| `desc` | Human-readable description |
+| `tool` | Backend tool name — only `"openroad"` is supported today |
+| `synth` | Name of the upstream `rb synth` entry to consume |
+| `synth-path` | Path to the `synth.yaml` containing `synth`, resolved relative to `pnr.yaml` |
+| `constraints` | SDC path (required), resolved relative to `pnr.yaml` |
+| `platform` | `cfg-pnr-platforms` entry name |
+| `floorplan.utilization` | Core utilization (0–1); 55% is a reasonable default |
+| `floorplan.aspect` | Die aspect ratio; 1.0 = square |
+| `floorplan.core-margin` | Margin in microns between core area and die edge |
+| `reglvl` | Regression level for filtering (same semantics as `rb synth`) |
+
+### Where inputs come from
+
+The runner reads the upstream `synth.yaml` to find the tech-mapped netlist at `<synth_dir>/artefacts/<synth_name>/synth_netlist.v`. The top module is taken from the synth entry's `model:` field. The SDC and the PDK Liberty/LEF come from `constraints:` and the selected `cfg-pnr-platforms` entry respectively — no path duplication.
+
+## Root config: `cfg-pdk` and `cfg-pnr-platforms`
+
+PDK assets live in `cfg-pdk` (per-process, corners as sub-fields — see the [synthesis page](synthesis.md#pdk-and-synth-platform-configuration)). `cfg-pnr-platforms` is the P&R-side selector:
+
+```yaml
+cfg-pnr-platforms:
+  - name: "nangate45_typ"
+    pdk: "nangate45"
+    sta-corner: "typ"
+    cts-buffer: "BUF_X4"
+    routing-layers:
+      signal: "metal2-metal8"
+      clock:  "metal4-metal8"
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Referenced by `platform:` in `pnr.yaml` |
+| `pdk` | `cfg-pdk` entry name |
+| `sta-corner` | Corner from the PDK used for STA; defaults to the first declared corner |
+| `cts-buffer` | Standard cell name passed to `clock_tree_synthesis -root_buf` / `-buf_list` |
+| `routing-layers.signal` | Layer range for signal routing (e.g. `metal2-metal8`) |
+| `routing-layers.clock` | Layer range for clock routing (typically higher metals) |
+
+## Running P&R
+
+```bash
+# All runs in the default ./pnr.yaml
+rb pnr
+
+# A single run from a specific config
+rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml
+
+# Reglvl-gated runs (1000 by default for tech-mapped flows)
+rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml -l 1000
+
+# List runs without executing
+rb pnr -c pnr/demo/pnr.yaml --list
+```
+
+## Results table
+
+A summary table prints after each run:
+
+```
+                              P&R Results Summary
+┏━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┓
+┃ P&R Run  ┃ Result ┃ Desc     ┃ Cells ┃ Area    ┃ WNS Setup┃ WNS Hold ┃ DRCs ┃
+┡━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━┩
+│ demo_…   │ PASS   │ P&R …    │ 1392  │ 3213 µm²│ +4.350 ns│ +0.080 ns│ 0    │
+└──────────┴────────┴──────────┴───────┴─────────┴──────────┴──────────┴──────┘
+```
+
+- **Cells** — `Number of instances` from OpenROAD's floorplan log.
+- **Area** — `Design area … um^2` from `report_design_area`.
+- **WNS Setup / WNS Hold** — `report_worst_slack -max` / `-min`.
+- **DRCs** — non-empty line count of `route.drc.rpt`. Zero == clean route.
+
+## Artefacts
+
+Per-run outputs land under `pnr/<run>/artefacts/`:
+
+| File | Contents |
+|---|---|
+| `pnr.log` | Full OpenROAD log |
+| `pnr.tcl` | Templated Tcl handed to OpenROAD |
+| `<design>.def` | Routed DEF |
+| `<design>.routed.v` | Post-route gate-level netlist |
+| `<design>.routed.sdc` | Post-route SDC |
+| `timing.rpt` | Worst-path timing report (full clock expanded) |
+| `route.drc.rpt` | DRC violations (empty file = clean) |
+| `route.maze.log` | Detail-route maze log |
+
+## Pass/fail detection
+
+A run is PASS when:
+1. `openroad` exits with code 0.
+2. The log has no `[ERROR ...]` lines.
+
+Otherwise FAIL is returned with the exit code or error count in the description. SKIP is returned when the run's `reglvl` is above the `-l` filter or when `tool:` is not `openroad`.
+
+## Out of scope (today)
+
+- GDS streamout (KLayout invocation) and PNG rendering — planned for a `--gds` / `--png` follow-up.
+- Multi-corner signoff.
+- Tape-out-grade PPA tuning. The defaults are calibrated for teaching demos and quick PPA sanity checks.
