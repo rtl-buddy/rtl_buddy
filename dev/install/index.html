@@ -328,6 +328,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#dependency-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#external-tools-by-feature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        External tools by feature
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="External tools by feature">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#forks-required" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forks required
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#install-into-a-project-with-uv" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -710,6 +760,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/pnr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Place-and-Route
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1066,6 +1144,56 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#dependency-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#external-tools-by-feature" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        External tools by feature
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="External tools by feature">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#forks-required" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forks required
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#install-into-a-project-with-uv" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1135,13 +1263,84 @@
 <ul>
 <li>Python 3.11 or later</li>
 <li><code>uv</code></li>
-<li>Simulation tool on <code>PATH</code>: Verilator (macOS/Linux) or VCS (Linux)</li>
-<li>Optional: Verible if you want to use <code>uv run rb verible ...</code> — e.g. <code>brew tap chipsalliance/verible &amp;&amp; brew install verible</code> on macOS, or see <a href="https://github.com/chipsalliance/verible/releases">Verible releases</a> for other platforms</li>
-<li>Optional system-level coverage tools:</li>
-<li><code>lcov</code> for <code>.info</code> export and HTML reports</li>
-<li>Antmicro <code>coverview</code> for Coverview package generation</li>
 </ul>
-<p><code>rtl_buddy</code> can be used with different project-specific tool setups, but the primary supported flows are Verilator and VCS. Basic Verible command integration exists; broader first-class Verible and PeakRDL workflows are on the roadmap.</p>
+<p>Everything else is feature-dependent: which external tools you need is decided by which <code>rb</code> commands you use. The matrix below maps each command to its required and optional tools.</p>
+<h2 id="dependency-types">Dependency types</h2>
+<p>rtl_buddy classifies dependencies into four buckets:</p>
+<ul>
+<li><strong>Required dependency</strong>: Installed automatically with the <code>rtl_buddy</code> wheel; no external setup.</li>
+<li><strong>Integrated tool</strong>: A rtl_buddy feature is built around one specific tool; you must install that exact tool to use the feature with no alternatives supported.</li>
+<li><strong>Pluggable</strong>: rtl_buddy defines an interface; any tool that fits the interface works. rtl_buddy does not know what the tool specifically is or does — it just hands it the inputs the interface promises and consumes the outputs the interface promises.</li>
+<li><strong>Pluggable, curated</strong>: tools that plug into the same plug point as <strong>Pluggable</strong>, but rtl_buddy carries first-class optimizations triggered by the tool name (e.g. coverage merging tuned for a specific simulator, a two-stage flow when a specific synthesis backend is selected). Having curated tools does not prevent non-curated tools from plugging into the same plug points.</li>
+</ul>
+<h2 id="required-dependencies">Required dependencies</h2>
+<p>These are installed automatically when you <code>uv add rtl_buddy</code> — no action needed:</p>
+<ul>
+<li><code>typer</code>, <code>click</code>, <code>pyserde[yaml]</code>, <code>ruamel.yaml</code>, <code>rich</code> — core CLI and config parsing.</li>
+<li><code>pywellen</code> — FST/VCD waveform reader. Used by <code>rb wave</code> annotation regardless of which waveform viewer is configured; the data layer is viewer-independent, which is why it ships with the wheel rather than as a Surfer-side install step.</li>
+</ul>
+<h2 id="external-tools-by-feature">External tools by feature</h2>
+<table>
+<thead>
+<tr>
+<th>Command / feature</th>
+<th>Integration type</th>
+<th>Curated tools</th>
+<th>Sub-deps and notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rb test</code>, <code>rb randtest</code>, <code>rb regression</code></td>
+<td>Pluggable</td>
+<td>Verilator, VCS (Icarus on the roadmap)</td>
+<td>Install the <code>lcov</code> package in your OS for LCOV / HTML coverage export from Verilator runs.</td>
+</tr>
+<tr>
+<td><code>rb verible</code></td>
+<td>Integrated tool</td>
+<td>Verible</td>
+<td><code>brew tap chipsalliance/verible &amp;&amp; brew install verible</code> on macOS; or see <a href="https://github.com/chipsalliance/verible/releases">Verible releases</a>.</td>
+</tr>
+<tr>
+<td>Coverview packaging (under <code>rb regression</code>)</td>
+<td>Integrated tool</td>
+<td>Antmicro <a href="https://github.com/antmicro/coverview">Coverview</a></td>
+<td>Install the <code>info-process</code> package in your OS via Coverview's own setup for full package generation.</td>
+</tr>
+<tr>
+<td><code>rb synth</code>, <code>rb synth-regression</code></td>
+<td>Pluggable</td>
+<td><code>yosys</code>, <code>openroad</code></td>
+<td><code>yosys</code> is required (the <a href="https://github.com/rtl-buddy/yosys">rtl-buddy/yosys fork</a>, see below); <code>openroad</code> is required only when <code>tool: openroad</code>. See <a href="../concepts/synthesis/">Synthesis</a>.</td>
+</tr>
+<tr>
+<td><code>rb pnr</code></td>
+<td>Integrated tool</td>
+<td>OpenROAD ≥ <code>25Q1</code></td>
+<td>Optional: <code>klayout</code> for <code>--gds</code> / <code>--png</code> streamout and rendering. See <a href="../concepts/pnr/">Place-and-Route</a>.</td>
+</tr>
+<tr>
+<td><code>rb cdc</code>, <code>rb cdc-regression</code></td>
+<td>Integrated tool</td>
+<td><a href="https://github.com/rtl-buddy/rtl-buddy-cdc">rtl-buddy-cdc</a></td>
+<td>SpyGlass support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">issue #85</a>.</td>
+</tr>
+<tr>
+<td><code>rb wave</code></td>
+<td>Integrated tool</td>
+<td>Surfer (rtl-buddy fork, <code>rtl-buddy</code> branch)</td>
+<td>nvim for full annotation round-trip; any editor configurable via <code>editor-cmd</code> for one-way "open at line". Vaporview / VS Code support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/84">issue #84</a>. See <a href="../concepts/wave/">Waveform Viewer</a>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="forks-required">Forks required</h3>
+<p>rtl_buddy currently validates against two forks rather than upstream:</p>
+<ul>
+<li><strong>Surfer</strong> — required. Use the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> repo, branch <code>rtl-buddy</code>. Mainline Surfer works for basic FST viewing but does not support the WCP signal-value annotation features <code>rb wave</code> relies on.</li>
+<li><strong>Yosys</strong> — required. Use the <a href="https://github.com/rtl-buddy/yosys"><code>rtl-buddy/yosys</code></a> repo, which tracks upstream with rtl-buddy-specific patches.</li>
+</ul>
+<p>Build instructions live on the respective concept pages: <a href="../concepts/wave/#surfer-build">Surfer build</a> and <a href="../concepts/synthesis/#installing-yosys">Installing Yosys</a>.</p>
 <h2 id="install-into-a-project-with-uv">Install Into A Project With <code>uv</code></h2>
 <p>Add <code>rtl_buddy</code> to your project environment:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>add<span class="w"> </span>rtl_buddy

@@ -773,6 +773,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pnr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Place-and-Route
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1254,6 +1282,12 @@
 
 
 <h1 id="waveform-viewer-rb-wave">Waveform Viewer (<code>rb wave</code>)</h1>
+<blockquote>
+<p><strong>Integration type:</strong> Integrated tool. <code>rb wave</code> is built around Surfer today; Vaporview / VS Code support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/84">issue #84</a>.</p>
+<p><strong>External binary required:</strong> Surfer, built from the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork on the <code>rtl-buddy</code> branch. Mainline Surfer works for basic FST viewing but not for WCP signal-value annotation. See <a href="#surfer-build">Surfer build</a>.</p>
+<p><strong>Editor integration:</strong> nvim for the full annotation round-trip (declaration jump + live signal values + add-from-editor). Any editor can be configured via <code>editor-cmd</code> for one-way "open at line".</p>
+<p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
+</blockquote>
 <p><code>rb wave</code> opens the <a href="https://surfer-project.org/">Surfer</a> waveform viewer for a test and connects it to your editor via the <strong>WCP</strong> (Waveform Client Protocol). When you right-click a signal in Surfer and choose <strong>Go to declaration</strong>, rtl-buddy:</p>
 <ol>
 <li>Resolves the signal to its source file and line number</li>
