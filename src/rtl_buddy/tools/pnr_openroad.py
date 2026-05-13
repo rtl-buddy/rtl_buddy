@@ -21,6 +21,7 @@ _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
 # the basic flow but are not validated — we warn rather than refuse.
 MIN_OPENROAD_VERSION = "25Q1"
 
+
 def _parse_version_token(version: str) -> tuple:
     """Extract a comparable tuple from an OpenROAD version string.
 
