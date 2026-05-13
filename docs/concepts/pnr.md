@@ -14,7 +14,10 @@ Today only `openroad` is wired up. The `tool:` field in `pnr.yaml` selects it; t
 
 ## Installing OpenROAD
 
-`openroad` must be on `PATH`. Build from source (no official macOS binaries):
+`openroad` must be on `PATH`, or its absolute path must be configured
+via a `cfg-pnr-tools` entry in `root_config.yaml` (see
+[yaml.md](../reference/yaml.md#root_configyaml)). Build from source (no
+official macOS binaries):
 
 ```bash
 ln -s /path/to/OpenROAD/build/bin/openroad /usr/local/bin/openroad
