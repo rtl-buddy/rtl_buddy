@@ -17,10 +17,10 @@ Everything else is feature-dependent: which external tools you need is decided b
 
 rtl_buddy classifies dependencies into four buckets:
 
-- **Required dependency** — installed automatically with the `rtl_buddy` wheel; no external setup.
-- **Integrated tool** — rtl_buddy is built around one specific tool; you must install that exact tool to use the feature. No alternative is supported today.
-- **Pluggable** — rtl_buddy defines an interface; any tool that fits the interface works. rtl_buddy does not know what the tool specifically is or does — it just hands it the inputs the interface promises and consumes the outputs the interface promises.
-- **Pluggable — curated** — tools plug into the same plug point as **Pluggable**, but rtl_buddy carries first-class optimizations triggered by the tool name (e.g. coverage merging tuned for a specific simulator, a two-stage flow when a specific synthesis backend is selected). Adding a curated tool requires changes inside rtl_buddy; uncurated tools that still fit the interface remain supported.
+- **Required dependency**: Installed automatically with the `rtl_buddy` wheel; no external setup.
+- **Integrated tool**: A rtl_buddy feature is built around one specific tool; you must install that exact tool to use the feature with no alternatives supported.
+- **Pluggable**: rtl_buddy defines an interface; any tool that fits the interface works. rtl_buddy does not know what the tool specifically is or does — it just hands it the inputs the interface promises and consumes the outputs the interface promises.
+- **Pluggable, curated**: tools that plug into the same plug point as **Pluggable**, but rtl_buddy carries first-class optimizations triggered by the tool name (e.g. coverage merging tuned for a specific simulator, a two-stage flow when a specific synthesis backend is selected). Having curated tools does not prevent non-curated tools from plugging into the same plug points.
 
 ## Required dependencies
 
@@ -29,16 +29,14 @@ These are installed automatically when you `uv add rtl_buddy` — no action need
 - `typer`, `click`, `pyserde[yaml]`, `ruamel.yaml`, `rich` — core CLI and config parsing.
 - `pywellen` — FST/VCD waveform reader. Used by `rb wave` annotation regardless of which waveform viewer is configured; the data layer is viewer-independent, which is why it ships with the wheel rather than as a Surfer-side install step.
 
-Plus Python ≥ 3.11 and `uv` itself.
-
 ## External tools by feature
 
-| Command / feature | Integration type | Tools | Sub-deps and notes |
+| Command / feature | Integration type | Curated tools | Sub-deps and notes |
 |---|---|---|---|
-| `rb test`, `rb randtest`, `rb regression` | Pluggable — curated | Verilator, VCS (Icarus on the roadmap) | Install the `lcov` package in your OS for LCOV / HTML coverage export from Verilator runs. |
+| `rb test`, `rb randtest`, `rb regression` | Pluggable | Verilator, VCS (Icarus on the roadmap) | Install the `lcov` package in your OS for LCOV / HTML coverage export from Verilator runs. |
 | `rb verible` | Integrated tool | Verible | `brew tap chipsalliance/verible && brew install verible` on macOS; or see [Verible releases](https://github.com/chipsalliance/verible/releases). |
 | Coverview packaging (under `rb regression`) | Integrated tool | Antmicro [Coverview](https://github.com/antmicro/coverview) | Install the `info-process` package in your OS via Coverview's own setup for full package generation. |
-| `rb synth`, `rb synth-regression` | Pluggable — curated | `yosys`, `openroad` | `yosys` is required (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see below); `openroad` is required only when `tool: openroad`. See [Synthesis](concepts/synthesis.md). |
+| `rb synth`, `rb synth-regression` | Pluggable | `yosys`, `openroad` | `yosys` is required (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see below); `openroad` is required only when `tool: openroad`. See [Synthesis](concepts/synthesis.md). |
 | `rb pnr` | Integrated tool | OpenROAD ≥ `25Q1` | Optional: `klayout` for `--gds` / `--png` streamout and rendering. See [Place-and-Route](concepts/pnr.md). |
 | `rb cdc`, `rb cdc-regression` | Integrated tool | [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) | SpyGlass support is on the roadmap — tracked in [issue #85](https://github.com/rtl-buddy/rtl_buddy/issues/85). |
 | `rb wave` | Integrated tool | Surfer (rtl-buddy fork, `rtl-buddy` branch) | nvim for full annotation round-trip; any editor configurable via `editor-cmd` for one-way "open at line". Vaporview / VS Code support is on the roadmap — tracked in [issue #84](https://github.com/rtl-buddy/rtl_buddy/issues/84). See [Waveform Viewer](concepts/wave.md). |

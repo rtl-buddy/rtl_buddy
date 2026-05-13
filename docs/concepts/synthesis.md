@@ -4,9 +4,9 @@ description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-syn
 
 # Synthesis
 
-> **Integration type:** Pluggable — curated. `rb synth` supports a fixed list of synthesis tools selected by `tool:` in `synth.yaml`. The schema is open for future backends.
+> **Integration type:** Pluggable. `rb synth` selects a synthesis tool via `tool:` in `synth.yaml`; the schema is open for future backends.
 >
-> **Supported `tool:` values:** `yosys` (Yosys-only flow); `openroad` (Yosys + OpenROAD-STA two-stage flow).
+> **Curated tools (`tool:` values):** `yosys` (Yosys-only flow); `openroad` (Yosys + OpenROAD-STA two-stage flow).
 >
 > **External binaries required:** `yosys` (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see [Installing Yosys](#installing-yosys)); plus `openroad` on `PATH` when `tool: openroad` is selected — see [Installing OpenROAD](#installing-openroad).
 >
