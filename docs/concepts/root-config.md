@@ -43,7 +43,7 @@ cfg-verible:
         - "--rules=-module-filename"
 
 cfg-rtl-reg:
-  reg-cfg-path: "design/regression.yaml"
+  reg-cfg-path: "regression.yaml"
 ```
 
 ## Key fields
@@ -97,7 +97,7 @@ The plugin provides the `WaveValue` highlight group and a `VimEnter` hook requir
 
 **`cfg-rtl-reg`**
 
-Sets the default path to `regressions.yaml` used by `rtl-buddy regression` when `--reg-config` is not specified.
+Sets the default path to `regression.yaml` used by `rtl-buddy regression` when `--reg-config` is not specified.
 
 ## Builder and mode overrides
 
