@@ -7,7 +7,7 @@ description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, r
 
 You are running rtl_buddy a Verilog/SV build and regression helper configured with YAML.
 
-This skill covers agent-specific conventions. Use bundled docs first:
+This skill covers agent-specific conventions. For CLI usage, `rb --help` and `rb <subcommand> --help` are the first stop, then bundled docs:
 `rtl-buddy docs list`, `rtl-buddy docs show agents`, `rtl-buddy --machine docs show reference/yaml`.
 Use <https://rtl-buddy.github.io/rtl_buddy/> only as a fallback reference.
 
@@ -59,13 +59,6 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 - Symlinks `test.log`, `test.err`, `test.randseed` at the suite root point at the latest run.
 - For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `artefacts/`; report logs per suite.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
-
-## Synthesis and P&R
-
-- `rb synth -c synth.yaml [name]` runs synthesis; artefacts land at `<suite>/artefacts/<run>/synth_netlist.v`.
-- `rb pnr -c pnr.yaml [name]` runs OpenROAD P&R against the upstream synth netlist; pass `--gds` for KLayout streamout and `--png` for a layout render (implies `--gds`). KLayout is optional — missing KLayout emits `pnr.no_klayout` and skips streamout, the P&R run still passes.
-- OpenROAD version is logged as `pnr.openroad_version`; below-min builds warn via `pnr.openroad_version_below_min` but still run.
-- See `rtl-buddy docs show concepts/synthesis` and `rtl-buddy docs show concepts/pnr`.
 
 ## Waveform viewing
 
