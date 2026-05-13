@@ -63,14 +63,10 @@ Prerequisites:
 
 - Python 3.11+
 - `uv`
-- A simulator on `PATH`
-  - Verilator is the recommended open-source starting point
-  - VCS is also supported as a first-class flow
-- Optional: the [rtl-buddy fork of Yosys](https://github.com/rtl-buddy/yosys) if you want to use `uv run rb synth ...`
-- Optional: Verible if you want to use `uv run rb verible ...` — e.g. `brew tap chipsalliance/verible && brew install verible` on macOS, or see [Verible releases](https://github.com/chipsalliance/verible/releases) for other platforms
-- Optional system-level coverage tools:
-  - `lcov` for LCOV and HTML coverage export
-  - [Coverview](https://github.com/antmicro/coverview) for Coverview package generation
+
+Beyond Python and `uv`, every other dependency is feature-dependent: which external tools you need depends on which `rb` commands you use. For example, `rb test` needs a simulator (Verilator / VCS), `rb synth` needs the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), `rb wave` needs the [rtl-buddy/surfer fork](https://github.com/rtl-buddy/surfer).
+
+See the [installation page](https://rtl-buddy.github.io/rtl_buddy/latest/install/) for the full feature-to-dependency matrix, including integration types (Integrated tool vs Pluggable vs Pluggable — curated) and install commands.
 
 ## Documentation
 

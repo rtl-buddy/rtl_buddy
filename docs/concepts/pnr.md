@@ -4,6 +4,14 @@ description: How to run OpenROAD place-and-route with rtl_buddy via the rb pnr c
 
 # Place-and-Route
 
+> **Integration type:** Integrated tool. `rb pnr` is built around OpenROAD today.
+>
+> **External binary required:** `openroad` ≥ `25Q1` — see [Installing OpenROAD](#installing-openroad).
+>
+> **Optional:** `klayout` for `--gds` / `--png` streamout and rendering — see [Installing KLayout](#installing-klayout-optional).
+>
+> See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
+
 `rb pnr` drives OpenROAD through a templated Tcl flow that consumes the tech-mapped netlist from an upstream `rb synth` run. It produces routed DEF, a post-route netlist + SDC, a timing report, and a DRC report under `pnr/<run>/artefacts/`.
 
 The flow is intentionally compact and config-driven — block-level knobs live in `pnr.yaml`, technology-level knobs live in `cfg-pdks` + `cfg-pnr-platforms` in `root_config.yaml`.
