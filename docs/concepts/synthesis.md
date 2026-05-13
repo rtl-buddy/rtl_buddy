@@ -1,5 +1,5 @@
 ---
-description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-pdk + cfg-synth-platforms, and the rb synth command.
+description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-pdks + cfg-synth-platforms, and the rb synth command.
 ---
 
 # Synthesis
@@ -105,7 +105,7 @@ syntheses:
 | `model` | Model name from `models.yaml`; also used as the synthesis top module |
 | `model_path` | Path to `models.yaml`, resolved relative to the `synth.yaml` directory |
 | `tool` | Synthesis tool name — must match a `cfg-synth-tools` entry in `root_config.yaml` |
-| `platform` | Optional synth platform name from `cfg-synth-platforms` (which in turn references a `cfg-pdk` entry); enables technology mapping |
+| `platform` | Optional synth platform name from `cfg-synth-platforms` (which in turn references a `cfg-pdks` entry); enables technology mapping |
 | `constraints` | Optional SDC constraints file, resolved relative to `synth.yaml` |
 | `params` | Optional key-value pairs passed as top-level parameter overrides (`chparam` in Yosys) |
 | `defines` | Optional compile-time Verilog defines passed via `-D KEY=VALUE` |
@@ -263,12 +263,12 @@ The pessimization between `standard` and `accurate` (−1.347 vs −1.172 ns WNS
 
 ### PDK and synth platform configuration
 
-PDK assets live under `cfg-pdk` — one entry per process, with corners as sub-fields. Each entry owns *everything* PDK-bound (Liberty per corner, tech-LEF, macro-LEF, cell-GDS, KLayout `.lyt`/`.lyp`, SITE, tie/fill cells); synth and P&R consume what they need.
+PDK assets live under `cfg-pdks` — one entry per process, with corners as sub-fields. Each entry owns *everything* PDK-bound (Liberty per corner, tech-LEF, macro-LEF, cell-GDS, KLayout `.lyt`/`.lyp`, SITE, tie/fill cells); synth and P&R consume what they need.
 
 `cfg-synth-platforms` is a thin selector layer: each entry references a PDK + corner. `synth.yaml` then picks a platform name via `platform:`. All paths are resolved relative to `root_config.yaml`.
 
 ```yaml
-cfg-pdk:
+cfg-pdks:
   - name: "sky130hd"
     site: "unithd"
     corners:
@@ -283,7 +283,7 @@ cfg-synth-platforms:
 ```
 
 - **Yosys backend:** uses the platform's Liberty for `read_liberty` → `dfflibmap` → `abc -liberty` → `write_verilog`. LEF is ignored.
-- **OpenROAD backend:** requires both Liberty and LEF. The `tech-lef` and `macro-lef` on the PDK are passed through automatically; per-block extras can be added via `lef-paths:` on the `cfg-synth-platforms` entry. A platform with no LEF assets fails immediately with an actionable error.
+- **OpenROAD backend:** requires both Liberty and LEF. The `tech-lef` and `macro-lef` on the PDK are passed through automatically; per-block extras can be added via `lef-paths:` on the `synth.yaml` entry. A platform with no LEF assets fails immediately with an actionable error.
 
 PDK files are typically large and should be gitignored. Provide a download script:
 

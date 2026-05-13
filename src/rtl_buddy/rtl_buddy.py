@@ -1593,14 +1593,15 @@ class RtlBuddy:
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         results = []
         for run in runs:
-            if reg_level is not None and run.get_reglvl() > reg_level:
+            pnr_level = run.get_reglvl(run.get_tool_name())
+            if reg_level is not None and pnr_level > reg_level:
                 log_event(
                     logger,
                     logging.INFO,
                     "pnr_suite.skip",
                     pnr=run.get_name(),
                     reason="above_regression_level",
-                    pnr_level=run.get_reglvl(),
+                    pnr_level=pnr_level,
                     reg_level=reg_level,
                 )
                 results.append(
@@ -1608,7 +1609,7 @@ class RtlBuddy:
                         "pnr_name": run.get_name(),
                         "results": PnrSkipResults(
                             name=f"{run.get_name()}/results",
-                            desc=(f"reglvl {run.get_reglvl()} above {reg_level}"),
+                            desc=(f"reglvl {pnr_level} above {reg_level}"),
                         ),
                     }
                 )

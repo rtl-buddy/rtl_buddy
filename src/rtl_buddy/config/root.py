@@ -27,6 +27,7 @@ from .synth import (
     default_effort_config,
 )
 from .pdk import PdkConfig, PdkConfigFile
+from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
 from ..errors import FatalRtlBuddyError
@@ -109,12 +110,15 @@ class RootConfigFile:
     synth_tools: list[SynthToolConfigFile] = field(
         rename="cfg-synth-tools", default_factory=list
     )
-    pdks: list[PdkConfigFile] = field(rename="cfg-pdk", default_factory=list)
+    pdks: list[PdkConfigFile] = field(rename="cfg-pdks", default_factory=list)
     synth_platforms: list[SynthPlatformConfigFile] = field(
         rename="cfg-synth-platforms", default_factory=list
     )
     pnr_platforms: list[PnrPlatformConfigFile] = field(
         rename="cfg-pnr-platforms", default_factory=list
+    )
+    pnr_tools: list[PnrToolConfigFile] = field(
+        rename="cfg-pnr-tools", default_factory=list
     )
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
@@ -168,6 +172,7 @@ class RootConfig:
         self.pdk_cfgs: dict = {}
         self.synth_platform_cfgs: dict = {}
         self.pnr_platform_cfgs: dict = {}
+        self.pnr_tool_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
         self.platform_cfg = None
@@ -223,14 +228,14 @@ class RootConfig:
                 pdk = self.pdk_cfgs.get(name)
                 if pdk is None:
                     raise FatalRtlBuddyError(
-                        f"PDK '{name}' not found in cfg-pdk; "
+                        f"PDK '{name}' not found in cfg-pdks; "
                         f"available: {sorted(self.pdk_cfgs)}"
                     )
                 return pdk
 
             # Populate synth platform configs (referencing PDKs by name)
             self.synth_platform_cfgs = {
-                cfg.name: SynthPlatformConfig(cfg, self.root_cfg_path, _pdk_lookup)
+                cfg.name: SynthPlatformConfig(cfg, _pdk_lookup)
                 for cfg in data.synth_platforms
             }
 
@@ -238,6 +243,11 @@ class RootConfig:
             self.pnr_platform_cfgs = {
                 cfg.name: PnrPlatformConfig(cfg, _pdk_lookup)
                 for cfg in data.pnr_platforms
+            }
+
+            # Populate P&R tool configs
+            self.pnr_tool_cfgs = {
+                cfg.name: PnrToolConfig(cfg) for cfg in data.pnr_tools
             }
 
             # Populate CDC tool configs
@@ -448,6 +458,19 @@ class RootConfig:
             )
         return cfg
 
+    def get_pnr_tool_cfg(self, name: str):
+        """
+        Get P&R tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-pnr-tools.
+        Returns:
+          cfg (PnrToolConfig|None): Matching P&R tool configuration, or
+            None if no entry with that name is configured. Callers fall
+            back to the bare tool name on PATH when None is returned.
+        """
+        return self.pnr_tool_cfgs.get(name)
+
     def get_cdc_tool_cfg(self, name: str):
         """
         Get CDC tool configuration by name.
@@ -465,11 +488,11 @@ class RootConfig:
         return cfg
 
     def get_pdk_cfg(self, name: str) -> PdkConfig:
-        """Get a PDK configuration by name (cfg-pdk entry)."""
+        """Get a PDK configuration by name (cfg-pdks entry)."""
         cfg = self.pdk_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(
-                f"PDK '{name}' not found in cfg-pdk; available: {sorted(self.pdk_cfgs)}"
+                f"PDK '{name}' not found in cfg-pdks; available: {sorted(self.pdk_cfgs)}"
             )
         return cfg
 

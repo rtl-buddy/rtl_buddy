@@ -75,7 +75,6 @@ def test_synth_platform_defaults_to_first_corner(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
     cfg = SynthPlatformConfig(
         SynthPlatformConfigFile(name="nangate45_typ", pdk="nangate45"),
-        str(tmp_path / "root_config.yaml"),
         lambda _name: pdk,
     )
     assert cfg.get_corner() == "typ"
@@ -86,26 +85,21 @@ def test_synth_platform_explicit_corner(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
     cfg = SynthPlatformConfig(
         SynthPlatformConfigFile(name="nangate45_slow", pdk="nangate45", corner="slow"),
-        str(tmp_path / "root_config.yaml"),
         lambda _name: pdk,
     )
     assert cfg.get_corner() == "slow"
     assert cfg.get_path().endswith("slow.lib")
 
 
-def test_synth_platform_lef_paths_compose_pdk_and_extras(tmp_path):
+def test_synth_platform_lef_paths_are_pdk_lefs_only(tmp_path):
     pdk = _make_pdk_cfg(tmp_path)
     cfg = SynthPlatformConfig(
-        SynthPlatformConfigFile(
-            name="nangate45_typ", pdk="nangate45", lef_paths=["pdk/lef/extra.lef"]
-        ),
-        str(tmp_path / "root_config.yaml"),
+        SynthPlatformConfigFile(name="nangate45_typ", pdk="nangate45"),
         lambda _name: pdk,
     )
     assert cfg.get_lef_paths() == [
         str(tmp_path / "pdk" / "lef" / "tech.lef"),
         str(tmp_path / "pdk" / "lef" / "cells.lef"),
-        str(tmp_path / "pdk" / "lef" / "extra.lef"),
     ]
 
 
@@ -169,7 +163,7 @@ def test_pnr_suite_loads_runs(tmp_path):
     assert run.get_platform() == "nangate45_typ"
     assert run.get_floorplan().utilization == pytest.approx(0.6)
     assert run.get_floorplan().core_margin == pytest.approx(3.0)
-    assert run.get_reglvl() == 1000
+    assert run.get_reglvl("openroad") == 1000
     # synth-path and constraints are resolved relative to pnr.yaml
     assert run.get_synth_suite_path() == str(tmp_path.parent / "synth" / "synth.yaml")
     assert run.get_constraints() == str(tmp_path.parent / "synth" / "constraints.sdc")
@@ -241,6 +235,54 @@ def _make_pnr_cfg(tmp_path):
     )
 
 
+def test_pnr_runner_resolves_executable_from_cfg_pnr_tools(tmp_path):
+    """PnrRunner should resolve the executable via cfg-pnr-tools when present."""
+    from rtl_buddy.config.pnr import PnrToolConfig, PnrToolConfigFile
+    from rtl_buddy.runner.pnr_runner import PnrRunner
+
+    tool_cfg = PnrToolConfig(
+        PnrToolConfigFile(name="openroad", tool="/opt/openroad/bin/openroad")
+    )
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_tool_cfg.return_value = tool_cfg
+    runner = PnrRunner(
+        name="demo",
+        root_cfg=root_cfg,
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        reglvl_filter=1000,
+    )
+    with patch("rtl_buddy.runner.pnr_runner.OpenRoadPnr") as mock_backend:
+        mock_backend.return_value.run.return_value = PnrSkipResults(
+            name="demo/results", desc="stub"
+        )
+        runner.run()
+    _, kwargs = mock_backend.call_args
+    assert kwargs["openroad_executable"] == "/opt/openroad/bin/openroad"
+
+
+def test_pnr_runner_falls_back_to_bare_tool_name_when_no_cfg(tmp_path):
+    """Without a matching cfg-pnr-tools entry, the bare tool name is used."""
+    from rtl_buddy.runner.pnr_runner import PnrRunner
+
+    root_cfg = MagicMock()
+    root_cfg.get_pnr_tool_cfg.return_value = None
+    runner = PnrRunner(
+        name="demo",
+        root_cfg=root_cfg,
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        reglvl_filter=1000,
+    )
+    with patch("rtl_buddy.runner.pnr_runner.OpenRoadPnr") as mock_backend:
+        mock_backend.return_value.run.return_value = PnrSkipResults(
+            name="demo/results", desc="stub"
+        )
+        runner.run()
+    _, kwargs = mock_backend.call_args
+    assert kwargs["openroad_executable"] == "openroad"
+
+
 def test_openroad_pnr_skips_when_executable_missing(tmp_path):
     from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
 
@@ -254,7 +296,7 @@ def test_openroad_pnr_skips_when_executable_missing(tmp_path):
     with patch("shutil.which", return_value=None):
         result = backend.run()
     assert isinstance(result, PnrFailResults)
-    assert "not found on PATH" in result.results["desc"]
+    assert "not found" in result.results["desc"]
 
 
 def test_openroad_pnr_template_substitutes_all_placeholders(tmp_path):
@@ -360,7 +402,6 @@ def test_resolve_klayout_exe_returns_none_when_missing(monkeypatch):
     from rtl_buddy.tools import pnr_openroad
 
     monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(pnr_openroad, "_KLAYOUT_FALLBACK_PATHS", ())
     assert pnr_openroad._resolve_klayout_exe() is None
 
 

@@ -885,21 +885,20 @@ def _make_pdk(name, root_cfg_path, *, tech_lef="", macro_lef="", corners=None):
     )
 
 
-def test_synth_platform_config_lef_paths_empty_by_default(tmp_path):
+def test_synth_platform_config_lef_paths_empty_when_pdk_has_no_lef(tmp_path):
     from rtl_buddy.config.synth import SynthPlatformConfigFile, SynthPlatformConfig
 
     root_cfg_path = str(tmp_path / "root_config.yaml")
     pdk = _make_pdk("nangate45", root_cfg_path)
     cfg = SynthPlatformConfig(
         SynthPlatformConfigFile(name="nangate45_typ", pdk="nangate45"),
-        root_cfg_path,
         lambda _name: pdk,
     )
     assert cfg.get_lef_paths() == []
     assert cfg.get_path() == str(tmp_path / "lib" / "cells.lib")
 
 
-def test_synth_platform_config_lef_paths_resolved(tmp_path):
+def test_synth_platform_config_lef_paths_from_pdk(tmp_path):
     from rtl_buddy.config.synth import SynthPlatformConfigFile, SynthPlatformConfig
 
     root_cfg_path = str(tmp_path / "root_config.yaml")
@@ -910,16 +909,12 @@ def test_synth_platform_config_lef_paths_resolved(tmp_path):
         macro_lef="lef/cells.lef",
     )
     cfg = SynthPlatformConfig(
-        SynthPlatformConfigFile(
-            name="nangate45_typ", pdk="nangate45", lef_paths=["lef/extra.lef"]
-        ),
-        root_cfg_path,
+        SynthPlatformConfigFile(name="nangate45_typ", pdk="nangate45"),
         lambda _name: pdk,
     )
     assert cfg.get_lef_paths() == [
         str(tmp_path / "lef" / "tech.lef"),
         str(tmp_path / "lef" / "cells.lef"),
-        str(tmp_path / "lef" / "extra.lef"),
     ]
 
 

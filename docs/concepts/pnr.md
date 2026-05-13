@@ -6,7 +6,7 @@ description: How to run OpenROAD place-and-route with rtl_buddy via the rb pnr c
 
 `rb pnr` drives OpenROAD through a templated Tcl flow that consumes the tech-mapped netlist from an upstream `rb synth` run. It produces routed DEF, a post-route netlist + SDC, a timing report, and a DRC report under `pnr/<run>/artefacts/`.
 
-The flow is intentionally compact and config-driven — block-level knobs live in `pnr.yaml`, technology-level knobs live in `cfg-pdk` + `cfg-pnr-platforms` in `root_config.yaml`.
+The flow is intentionally compact and config-driven — block-level knobs live in `pnr.yaml`, technology-level knobs live in `cfg-pdks` + `cfg-pnr-platforms` in `root_config.yaml`.
 
 ## Supported backend
 
@@ -40,10 +40,9 @@ brew install --cask klayout            # macOS
 # or download from https://klayout.de
 ```
 
-`rb pnr` resolves `klayout` from `PATH` first, then falls back to
-`/Applications/KLayout/klayout.app/Contents/MacOS/klayout` on macOS. If
-KLayout is not present, `--gds`/`--png` logs `pnr.no_klayout` and skips
-streamout/render without failing the run.
+`rb pnr` resolves `klayout` from `PATH`. If KLayout is not present,
+`--gds`/`--png` logs `pnr.no_klayout` and skips streamout/render
+without failing the run.
 
 ## P&R config: `pnr.yaml`
 
@@ -87,15 +86,15 @@ runs:
 
 The runner reads the upstream `synth.yaml` to find the tech-mapped netlist at `<synth_dir>/artefacts/<synth_name>/synth_netlist.v`. The top module is taken from the synth entry's `model:` field. The SDC and the PDK Liberty/LEF come from `constraints:` and the selected `cfg-pnr-platforms` entry respectively — no path duplication.
 
-## Root config: `cfg-pdk` and `cfg-pnr-platforms`
+## Root config: `cfg-pdks` and `cfg-pnr-platforms`
 
-PDK assets live in `cfg-pdk` (per-process, corners as sub-fields — see the [synthesis page](synthesis.md#pdk-and-synth-platform-configuration)). `cfg-pnr-platforms` is the P&R-side selector:
+PDK assets live in `cfg-pdks` (per-process, corners as sub-fields — see the [synthesis page](synthesis.md#pdk-and-synth-platform-configuration)). `cfg-pnr-platforms` is the P&R-side selector:
 
 ```yaml
 cfg-pnr-platforms:
   - name: "nangate45_typ"
     pdk: "nangate45"
-    sta-corner: "typ"
+    corner: "typ"
     cts-buffer: "BUF_X4"
     routing-layers:
       signal: "metal2-metal8"
@@ -105,8 +104,8 @@ cfg-pnr-platforms:
 | Field | Description |
 |-------|-------------|
 | `name` | Referenced by `platform:` in `pnr.yaml` |
-| `pdk` | `cfg-pdk` entry name |
-| `sta-corner` | Corner from the PDK used for STA; defaults to the first declared corner |
+| `pdk` | `cfg-pdks` entry name |
+| `corner` | Corner from the PDK used for STA; defaults to the first declared corner |
 | `cts-buffer` | Standard cell name passed to `clock_tree_synthesis -root_buf` / `-buf_list` |
 | `routing-layers.signal` | Layer range for signal routing (e.g. `metal2-metal8`) |
 | `routing-layers.clock` | Layer range for clock routing (typically higher metals) |

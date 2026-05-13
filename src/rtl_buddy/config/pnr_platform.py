@@ -17,7 +17,7 @@ class PnrRoutingLayersFile:
 class PnrPlatformConfigFile:
     name: str
     pdk: str
-    sta_corner: str = field(rename="sta-corner", default="")
+    sta_corner: str = field(rename="corner", default="")
     cts_buffer: str = field(rename="cts-buffer", default="")
     routing_layers: PnrRoutingLayersFile = field(
         rename="routing-layers", default_factory=PnrRoutingLayersFile

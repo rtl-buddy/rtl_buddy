@@ -26,7 +26,7 @@ This skill ships with the CLI, so its content matches the installed major. Surfa
 
 Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 
-- **`root_config.yaml`** — project root, platform/build defaults, regression default path, synthesis tool defaults (`cfg-synth-tools`), PDK assets (`cfg-pdk`), synth/P&R platforms (`cfg-synth-platforms`, `cfg-pnr-platforms`).
+- **`root_config.yaml`** — project root, platform/build defaults, regression default path, synthesis tool defaults (`cfg-synth-tools`), PDK assets (`cfg-pdks`), synth/P&R platforms (`cfg-synth-platforms`, `cfg-pnr-platforms`).
 - **`regression.yaml`** — repo-level suite list for `regression`.
 - **`tests.yaml`** — suite-level tests/testbenches; run `test` and `randtest` from this directory.
 - **`models.yaml`** — design source filelists referenced by `tests.yaml` and `synth.yaml`.

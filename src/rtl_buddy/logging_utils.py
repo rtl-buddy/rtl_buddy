@@ -343,14 +343,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "synth.openroad.no_lef":
             return (
                 f'OpenROAD synthesis "{fields.get("synth")}" requires LEF files; '
-                "set tech-lef / macro-lef on the referenced cfg-pdk entry "
-                "or lef-paths on the cfg-synth-platforms entry"
+                "set tech-lef / macro-lef on the referenced cfg-pdks entry "
+                "or lef-paths on the synth.yaml entry"
             )
         case "synth.openroad.no_library":
             return (
                 f'OpenROAD synthesis "{fields.get("synth")}" requires a mapped library; '
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
-                "entry pointing at a cfg-pdk corner"
+                "entry pointing at a cfg-pdks corner"
             )
         case "coverage.metric.failed":
             return (

@@ -21,14 +21,6 @@ _KLAYOUT_PACKAGE = "rtl_buddy.pnr.klayout"
 # the basic flow but are not validated — we warn rather than refuse.
 MIN_OPENROAD_VERSION = "25Q1"
 
-# Common macOS install locations for KLayout's `klayout` binary when the
-# cask doesn't add itself to PATH.
-_KLAYOUT_FALLBACK_PATHS = (
-    "/Applications/KLayout/klayout.app/Contents/MacOS/klayout",
-    "/Applications/klayout.app/Contents/MacOS/klayout",
-)
-
-
 def _parse_version_token(version: str) -> tuple:
     """Extract a comparable tuple from an OpenROAD version string.
 
@@ -44,13 +36,7 @@ def _parse_version_token(version: str) -> tuple:
 
 
 def _resolve_klayout_exe() -> str | None:
-    exe = shutil.which("klayout")
-    if exe:
-        return exe
-    for candidate in _KLAYOUT_FALLBACK_PATHS:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
-    return None
+    return shutil.which("klayout")
 
 
 class OpenRoadPnr:
@@ -384,7 +370,7 @@ class OpenRoadPnr:
             )
             return PnrFailResults(
                 name=self.name + "/results",
-                desc=f"{self.openroad_executable!r} not found on PATH",
+                desc=f"{self.openroad_executable!r} not found",
             )
 
         version = self._probe_openroad_version()

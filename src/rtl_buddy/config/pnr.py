@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 
 
 @serde
+class PnrToolConfigFile:
+    name: str
+    tool: str
+
+
+class PnrToolConfig:
+    def __init__(self, cfg: PnrToolConfigFile):
+        self._cfg = cfg
+
+    def get_name(self) -> str:
+        return self._cfg.name
+
+    def get_executable(self) -> str:
+        return self._cfg.tool
+
+
+@serde
 class PnrFloorplanFile:
     utilization: float = 0.55
     aspect: float = 1.0
@@ -38,7 +55,7 @@ class PnrConfigFile:
     constraints: str | None = None
     platform: str = ""
     floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
-    reglvl: int | None = field(rename="reglvl", default=None)
+    reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
 
     def initialise(self, config_dir: str) -> "PnrConfig":
@@ -91,7 +108,7 @@ class PnrConfig:
     constraints: str | None
     platform: str
     floorplan: PnrFloorplan
-    _reglvl: int | None
+    _reglvl: int | dict | None
     tool_overrides: dict | None
 
     def get_name(self) -> str:
@@ -118,8 +135,27 @@ class PnrConfig:
     def get_floorplan(self) -> PnrFloorplan:
         return self.floorplan
 
-    def get_reglvl(self) -> int:
-        return self._reglvl if self._reglvl is not None else 0
+    def get_reglvl(self, tool_name: str) -> int:
+        match self._reglvl:
+            case int() as lvl:
+                return lvl
+            case dict() if tool_name in self._reglvl:
+                return self._reglvl[tool_name]
+            case dict() if "default" in self._reglvl:
+                return self._reglvl["default"]
+            case None:
+                return 0
+            case _:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr_config.reglvl_malformed",
+                    pnr=self.name,
+                    tool=tool_name,
+                )
+                raise FatalRtlBuddyError(
+                    f"Malformed pnr.yaml, specify reglvl for {self.name} with {tool_name} or default"
+                )
 
     def get_tool_overrides(self) -> dict | None:
         return self.tool_overrides
