@@ -4,18 +4,26 @@ description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-syn
 
 # Synthesis
 
+> **Integration type:** Pluggable — curated. `rb synth` supports a fixed list of synthesis tools selected by `tool:` in `synth.yaml`. The schema is open for future backends.
+>
+> **Supported `tool:` values:** `yosys` (Yosys-only flow); `openroad` (Yosys + OpenROAD-STA two-stage flow).
+>
+> **External binaries required:** `yosys` (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see [Installing Yosys](#installing-yosys)); plus `openroad` on `PATH` when `tool: openroad` is selected — see [Installing OpenROAD](#installing-openroad).
+>
+> See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
+
 `rtl_buddy` provides a tool-agnostic synthesis flow that mirrors the simulation workflow. Synthesis runs are described in `synth.yaml` files; tool-specific defaults and PDK library paths live in `root_config.yaml`.
 
 ## Supported backends
 
-`rtl_buddy` ships two synthesis backends selectable via `tool:` in `synth.yaml`:
+`rb synth` ships two backends selectable via `tool:` in `synth.yaml`. Both backends use Yosys to map RTL to a gate-level netlist; they differ in whether OpenROAD is run afterwards for static timing analysis.
 
 | `tool:` | Backend | Multi-clock SDC | Reports |
 |---------|---------|-----------------|---------|
-| `yosys` | Yosys + ABC | Workaround (min period) | Gates, Area, WNS |
+| `yosys` | Yosys + ABC (single stage) | Workaround (min period) | Gates, Area, WNS |
 | `openroad` | Yosys (stage 1) + OpenROAD STA (stage 2) | Native `read_sdc` | Gates, Area, WNS, TNS |
 
-The OpenROAD backend removes the multi-clock SDC workaround: stage 1 maps RTL to a gate-level netlist with Yosys, stage 2 feeds that netlist into OpenROAD which loads the SDC natively and reports WNS (actual worst slack from `report_checks`) and TNS (total negative slack).
+The `openroad` backend removes the multi-clock SDC workaround: stage 1 maps RTL to a gate-level netlist with Yosys, stage 2 feeds that netlist into OpenROAD which loads the SDC natively and reports WNS (actual worst slack from `report_checks`) and TNS (total negative slack).
 
 ## Installing Yosys
 

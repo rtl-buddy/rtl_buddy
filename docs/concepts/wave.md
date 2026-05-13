@@ -4,6 +4,14 @@ description: How rb wave opens Surfer with live signal value annotation in your 
 
 # Waveform Viewer (`rb wave`)
 
+> **Integration type:** Integrated tool. `rb wave` is built around Surfer today; Vaporview / VS Code support is on the roadmap — tracked in [issue #84](https://github.com/rtl-buddy/rtl_buddy/issues/84).
+>
+> **External binary required:** Surfer, built from the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) fork on the `rtl-buddy` branch. Mainline Surfer works for basic FST viewing but not for WCP signal-value annotation. See [Surfer build](#surfer-build).
+>
+> **Editor integration:** nvim for the full annotation round-trip (declaration jump + live signal values + add-from-editor). Any editor can be configured via `editor-cmd` for one-way "open at line".
+>
+> See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
+
 `rb wave` opens the [Surfer](https://surfer-project.org/) waveform viewer for a test and connects it to your editor via the **WCP** (Waveform Client Protocol). When you right-click a signal in Surfer and choose **Go to declaration**, rtl-buddy:
 
 1. Resolves the signal to its source file and line number
