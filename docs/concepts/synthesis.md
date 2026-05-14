@@ -196,12 +196,45 @@ cfg-synth-tools:
     opts:
       synth-args: ""
       abc-args: ""
+      frontend: "verilog"      # "verilog" (default) | "slang"
+      plugin-path: ""          # required if frontend: slang
 
   - name: "openroad"
     tool: "openroad"     # executable name (must be on PATH)
     opts:
       strategy: "AREA"   # AREA (default) | TIMING | TIMING_ANNEAL | TIMING_GENETIC
+      frontend: "verilog"
+      plugin-path: ""
 ```
+
+#### SystemVerilog frontend
+
+`opts.frontend` chooses the parser Yosys uses to read the design:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"verilog"` (default) | `read_verilog -sv -defer` per source — lazy elaboration, fast, supports the SystemVerilog subset built into the rtl-buddy Yosys fork. |
+| `"slang"` | Loads the [yosys-slang](https://github.com/povik/yosys-slang) plugin and calls `read_slang --top <top> --std 1800-2017` — full SV-2017 (`import pkg::*`, packed-struct typedefs, virtual interfaces, complex generates). Elaboration is eager, so `params:` are folded into `read_slang -GNAME=VAL` and `defines:` into `-DNAME=VAL` (subsequent `chparam` is skipped). |
+
+When `frontend: slang`, `opts.plugin-path` must be set to the location of yosys-slang's `slang.so`. Absolute paths pass through unchanged; relative paths resolve against the project root (the directory containing `root_config.yaml`). Build instructions for the plugin are in [`yosys-slang's README`](https://github.com/povik/yosys-slang#building).
+
+Per-block opt-in (leaves other blocks on the legacy frontend):
+
+```yaml
+# synth.yaml
+- name: "<block>_synth"
+  tool: "yosys"
+  model: "<top>"
+  model_path: "../../design/<block>/models.yaml"
+  tool_overrides:
+    yosys:
+      frontend: "slang"
+      plugin_path: "../yosys-slang/build/slang.so"
+```
+
+The OpenROAD backend inherits the same selection — it runs Yosys for elaboration before handing the netlist to OpenROAD for STA/placement.
+
+#### Strategy
 
 The `strategy` option controls optional OpenROAD resynthesis after timing analysis:
 

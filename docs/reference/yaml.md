@@ -75,10 +75,14 @@ cfg-synth-tools:
     opts:
       synth-args: ""
       abc-args: ""
+      frontend: "verilog"              # "verilog" (default) | "slang"
+      plugin-path: ""                  # required if frontend: slang — path to slang.so
   - name: "openroad"
     tool: "openroad"
     opts:
       strategy: "AREA"   # AREA | TIMING | TIMING_ANNEAL | TIMING_GENETIC
+      frontend: "verilog"
+      plugin-path: ""
 
 cfg-pdks:
   - name: "sky130hd"
@@ -150,7 +154,7 @@ cfg-rtl-reg:
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the bundled nvim plugin first with `rb wave-install-nvim`.
-- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. For the Yosys backend, `opts.synth-args` are appended to the `synth` command and `opts.abc-args` are used by the unmapped ABC step. For the OpenROAD backend, `opts.strategy` controls optional resynthesis (`AREA` = none, `TIMING`/`TIMING_ANNEAL` = `resynth_annealing`, `TIMING_GENETIC` = `resynth_genetic`).
+- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. For the Yosys backend, `opts.synth-args` are appended to the `synth` command and `opts.abc-args` are used by the unmapped ABC step. For the OpenROAD backend, `opts.strategy` controls optional resynthesis (`AREA` = none, `TIMING`/`TIMING_ANNEAL` = `resynth_annealing`, `TIMING_GENETIC` = `resynth_genetic`). `opts.frontend` selects the SystemVerilog parser: `"verilog"` (default) uses Yosys's built-in `read_verilog -sv -defer` per source — fast, lazy elaboration, but a small SV subset. `"slang"` loads the [yosys-slang](https://github.com/povik/yosys-slang) plugin and calls `read_slang` instead — full SV-2017 (package imports, packed-struct typedefs, complex generates) with eager elaboration. `opts.plugin-path` is required when `frontend: slang`; absolute paths pass through and relative paths resolve against the project root. Both options accept per-block overrides via `synth.yaml` `tool_overrides.<tool>.frontend` / `.plugin_path`. The OpenROAD backend inherits the same frontend selection (it runs Yosys for elaboration → write_verilog → OpenROAD reads the netlist).
 - `cfg-pdks` defines one entry per process. Each holds *all* PDK-bound assets — Liberty per corner (under `corners:`), `tech-lef` / `macro-lef`, optional `cell-gds`, KLayout `.lyt` / `.lyp` for streamout, `SITE`, and `tie-hi` / `tie-lo` / `fill-cells` for P&R. Paths are resolved relative to `root_config.yaml`. Multiple PDKs can coexist; downstream platform blocks select which one to use.
 - `cfg-synth-platforms` selects a `cfg-pdks` entry + corner for synthesis. Each entry has `name` (referenced by `platform:` in `synth.yaml`), `pdk` (PDK entry name), and `corner` (optional — defaults to the first declared corner). Block-specific LEFs go on the `synth.yaml` entry (`lef-paths:`) on top of the PDK's tech/macro LEFs.
 - `cfg-pnr-platforms` selects a `cfg-pdks` entry + STA corner for place-and-route. Each entry has `name` (referenced by `platform:` in `pnr.yaml`), `pdk`, optional `corner` (defaults to first corner), `cts-buffer` (clock-tree buffer cell), and `routing-layers` with `signal` / `clock` layer ranges.
