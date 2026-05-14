@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -60,31 +61,40 @@ def emit_frontend_read_cmds(
       (the latter folded in here since slang elaborates eagerly — a later
       ``chparam`` would arrive too late).
     """
+    # Shell-quote everything that comes from filesystem paths or
+    # user-supplied dict values — Yosys parses each script line with
+    # shell-style tokenisation, so an unquoted space in a macOS Library
+    # path or a project name with a space corrupts the command. This is
+    # critical on the slang path (one read_slang line covers all
+    # sources, so one bad path breaks elaboration entirely) but applied
+    # uniformly so both frontends behave the same.
     cmds: list[str] = []
     define_flags_v = ""
     if defines:
-        define_flags_v = " " + " ".join(f"-D {k}={v}" for k, v in defines.items())
+        define_flags_v = " " + " ".join(
+            f"-D {k}={shlex.quote(str(v))}" for k, v in defines.items()
+        )
 
     if opts.frontend == "verilog":
         for src in source_files:
-            cmds.append(f"read_verilog -sv -defer{define_flags_v} {src}")
+            cmds.append(f"read_verilog -sv -defer{define_flags_v} {shlex.quote(src)}")
         return cmds
 
     if opts.frontend == "slang":
-        if not opts.plugin_path:
+        if not opts.plugin_path.strip():
             raise FatalRtlBuddyError(
                 "frontend: slang requires opts.plugin-path to be set "
                 "(path to yosys-slang's slang.so)"
             )
         plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
-        cmds.append(f"plugin -i {plugin_abs}")
-        flags = []
+        cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
+        flags: list[str] = []
         if defines:
-            flags.extend(f"-D{k}={v}" for k, v in defines.items())
+            flags.extend(f"-D{k}={shlex.quote(str(v))}" for k, v in defines.items())
         if params:
-            flags.extend(f"-G{k}={v}" for k, v in params.items())
+            flags.extend(f"-G{k}={shlex.quote(str(v))}" for k, v in params.items())
         flags_str = (" " + " ".join(flags)) if flags else ""
-        sources_joined = " ".join(source_files)
+        sources_joined = " ".join(shlex.quote(s) for s in source_files)
         cmds.append(
             f"read_slang --std 1800-2017 --top {top}{flags_str} {sources_joined}"
         )

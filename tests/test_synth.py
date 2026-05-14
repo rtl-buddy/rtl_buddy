@@ -617,6 +617,113 @@ def test_write_script_default_frontend_is_verilog(tmp_path):
     assert "read_slang" not in script
 
 
+def test_write_script_explicit_frontend_verilog(tmp_path):
+    """``frontend: "verilog"`` explicitly set must produce the same
+    output as the default. Guards against future default flips that
+    would silently change behavior for projects that pinned to the
+    explicit value."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys", tool="yosys", opts=SynthToolOptsFile(frontend="verilog")
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "read_verilog -sv -defer" in script
+    assert "plugin -i" not in script
+    assert "read_slang" not in script
+
+
+def test_write_script_frontend_slang_quotes_path_with_spaces(tmp_path):
+    """Source paths containing spaces must be shell-quoted on the
+    read_slang line, otherwise the whole elaboration corrupts (one
+    line per source on the verilog path; one line for ALL sources
+    on the slang path → unquoted space breaks slang elaboration
+    entirely). Plugin path also quoted."""
+    spacey_dir = tmp_path / "dir with spaces"
+    spacey_dir.mkdir()
+    sv = spacey_dir / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = spacey_dir / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    script = Path(ys._write_script(str(fl))).read_text()
+    # The literal unquoted path must NOT appear (would tokenise).
+    assert f"read_slang --std 1800-2017 --top my_module {sv}" not in script
+    # Both source and plugin path must be present in *quoted* form
+    # — shlex.quote uses single quotes for paths with spaces.
+    assert f"'{sv}'" in script
+    assert f"'{plugin}'" in script
+
+
+def test_write_script_frontend_slang_quotes_define_value_with_spaces(tmp_path):
+    """Define values containing spaces (uncommon but possible — e.g.
+    a multi-token macro expansion) must be quoted on the read_slang
+    line. Same correctness invariant as path quoting; missed during
+    the original implementation."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(
+        tmp_path,
+        tool_cfg=SynthToolConfig(cfg_file),
+        synth_cfg=_make_synth_cfg(defines={"MULTI": "a b c"}),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    # Quoted form: -DMULTI='a b c' (shlex.quote single-quotes anything
+    # that needs escaping). Unquoted -DMULTI=a b c would be parsed as
+    # three tokens by Yosys.
+    assert "-DMULTI='a b c'" in script
+
+
+def test_write_script_frontend_slang_whitespace_only_plugin_path_raises(tmp_path):
+    """Whitespace-only plugin-path must raise the same FatalRtlBuddyError
+    as empty string — otherwise we'd build a `plugin -i '   '` line
+    that fails inscrutably inside Yosys."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path="   "),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
+        ys._write_script(str(fl))
+
+
 def test_tool_overrides_can_flip_frontend_to_slang(tmp_path):
     sv = tmp_path / "top.sv"
     sv.write_text("")

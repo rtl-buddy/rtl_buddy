@@ -80,6 +80,11 @@ class CdcConfigFile:
     waivers: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # Forwarded as-is via ``--frontend <value>`` to the analyzer
+    # subprocess. Intentionally not validated here — keeps rtl_buddy
+    # decoupled from the analyzer's accepted-value set so the analyzer
+    # can add frontends without an rtl_buddy release. Unknown values
+    # are rejected by the analyzer's own arg parser.
     frontend: str | None = None
 
     def initialise(self, config_dir: str) -> "CdcConfig":

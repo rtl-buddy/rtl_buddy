@@ -14,7 +14,7 @@ from ..config.synth import (
     SynthEffortConfig,
     default_effort_config,
 )
-from ..errors import FilelistError
+from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
@@ -135,8 +135,13 @@ class OpenRoadSynth:
                 opts = yosys_tool_cfg.get_opts(
                     self.synth_cfg.get_tool_overrides_for("yosys")
                 )
-            except Exception:
-                pass  # keep fallback opts from the active tool_cfg
+            except FatalRtlBuddyError:
+                # No `yosys` entry under cfg-synth-tools — fall back to
+                # the active tool_cfg's opts. Any other config error
+                # (typo'd opts dict, malformed cfg-synth-tools entry,
+                # etc.) is surfaced rather than silently degrading the
+                # frontend selection to "verilog".
+                pass
 
         lines = []
         for lib in lib_paths:

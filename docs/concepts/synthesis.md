@@ -257,6 +257,8 @@ The OpenROAD backend inherits the same selection — it runs Yosys for elaborati
       plugin_path: "../yosys-slang/build/slang.so"
 ```
 
+> **Naming convention — `plugin-path` vs `plugin_path`:** under `cfg-synth-tools.opts` (above) the YAML field is **kebab-case** (`plugin-path`, `synth-args`, `abc-args`) — that's the schema's canonical form. Under `tool_overrides.yosys` keys are the **Python attribute names** (snake_case: `plugin_path`, `synth_args`), because the override dict is merged at the attribute level rather than re-deserialised through the YAML schema. Same field, two names, depending on where it lives.
+
 #### Strategy
 
 The `strategy` option controls optional OpenROAD resynthesis after timing analysis:
