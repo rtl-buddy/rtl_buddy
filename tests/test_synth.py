@@ -1266,6 +1266,128 @@ def test_openroad_or_script_timing_strategy_adds_resynth(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# OpenRoadSynth — frontend pickup from yosys tool config
+# ---------------------------------------------------------------------------
+
+
+class _FakeRootCfgORWithYosys:
+    """Variant of _FakeRootCfgOR that exposes a yosys tool config so the
+    elaboration stage can find frontend / plugin-path settings."""
+
+    def __init__(self, lib_map, lef_map=None, yosys_opts=None):
+        self._lib_map = lib_map
+        self._lef_map = lef_map or {}
+        self._yosys_opts = yosys_opts
+
+    def get_synth_platform_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+
+        if name not in self._lib_map:
+            raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
+        lef_paths = self._lef_map.get(name, [])
+        return _FakePlatformCfgWithLef(self._lib_map[name], lef_paths)
+
+    def get_synth_tool_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.config.synth import SynthToolConfigFile
+
+        if name != "yosys" or self._yosys_opts is None:
+            raise FatalRtlBuddyError(f"tool '{name}' not found")
+        cfg_file = SynthToolConfigFile(
+            name="yosys", tool="yosys", opts=self._yosys_opts
+        )
+        return SynthToolConfig(cfg_file)
+
+
+def test_openroad_yosys_stage_picks_up_yosys_frontend_from_root_cfg(tmp_path):
+    """When `tool: openroad` is selected, the internal Yosys elaboration stage
+    should read frontend / plugin-path from the *yosys* tool config (and
+    tool_overrides.yosys), not from the openroad tool config."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    root_cfg = _FakeRootCfgORWithYosys(
+        lib_map={"mylib": str(lib)},
+        yosys_opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert f"plugin -i {plugin}" in script
+    assert "read_slang --std 1800-2017 --top top" in script
+    assert "read_verilog -sv -defer" not in script
+
+
+def test_openroad_yosys_stage_picks_up_yosys_tool_overrides(tmp_path):
+    """A `tool_overrides.yosys` block in synth.yaml should reach the Yosys
+    elaboration stage of the OpenROAD backend (not just `tool: yosys` flows)."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    # yosys tool defaults to verilog frontend; per-block override flips to slang.
+    root_cfg = _FakeRootCfgORWithYosys(
+        lib_map={"mylib": str(lib)},
+        yosys_opts=SynthToolOptsFile(),  # all defaults — frontend="verilog"
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool_overrides={"yosys": {"frontend": "slang", "plugin_path": str(plugin)}},
+        ),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "read_slang" in script
+    assert "read_verilog -sv -defer" not in script
+
+
+def test_openroad_falls_back_to_openroad_opts_when_no_yosys_tool_cfg(tmp_path):
+    """Projects that only configure cfg-synth-tools[openroad] keep working —
+    the OpenROAD backend falls back to its own opts (default frontend=verilog)
+    when no yosys tool entry is configured."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)})
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "read_verilog -sv -defer" in script
+    assert "read_slang" not in script
+
+
+# ---------------------------------------------------------------------------
 # OpenRoadSynth — output parsing
 # ---------------------------------------------------------------------------
 
