@@ -49,6 +49,19 @@ yosys --version
 
 The `yosys` binary must be on `PATH` when `rb synth` is invoked.
 
+### Optional: yosys-slang plugin
+
+For designs that use SystemVerilog-2017 features Yosys's built-in frontend doesn't accept (e.g. `import pkg::*`, packed-struct typedefs, complex package generates), build the [yosys-slang](https://github.com/povik/yosys-slang) plugin against the same Yosys you just installed:
+
+```bash
+git clone --recursive https://github.com/povik/yosys-slang.git
+cd yosys-slang
+make -j 8           # produces build/slang.so
+make install        # optional: copies into $(yosys-config --datdir)/plugins/
+```
+
+Wire it into `rb synth` by setting `opts.frontend: "slang"` and `opts.plugin-path` under `cfg-synth-tools` (see [`SystemVerilog frontend`](#systemverilog-frontend) below). Skip this step entirely if your designs work with the default `frontend: "verilog"`.
+
 ## Installing OpenROAD
 
 OpenROAD is required only for the `openroad` backend. It must be built from source on macOS — no official binaries are published. See the build notes in your project's `tools/openroad/SETUP_OSX.md` (the starter template uses that filename) for the full procedure. After building, symlink the binary to a directory on `PATH`:
