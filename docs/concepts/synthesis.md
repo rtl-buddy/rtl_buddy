@@ -245,7 +245,17 @@ Per-block opt-in (leaves other blocks on the legacy frontend):
       plugin_path: "../yosys-slang/build/slang.so"
 ```
 
-The OpenROAD backend inherits the same selection — it runs Yosys for elaboration before handing the netlist to OpenROAD for STA/placement.
+The OpenROAD backend inherits the same selection — it runs Yosys for elaboration before handing the netlist to OpenROAD for STA/placement. Even when the synth's `tool:` is `openroad`, the per-block override key is `tool_overrides.yosys` (the elaboration tool), not `tool_overrides.openroad`:
+
+```yaml
+# synth.yaml
+- name: "<block>_or"
+  tool: "openroad"          # full Yosys + OpenROAD STA flow
+  tool_overrides:
+    yosys:                  # elaboration-stage opts → live under yosys
+      frontend: "slang"
+      plugin_path: "../yosys-slang/build/slang.so"
+```
 
 #### Strategy
 
