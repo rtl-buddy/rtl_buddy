@@ -459,6 +459,185 @@ def test_write_script_tool_overrides_applied(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# YosysSynth — frontend: slang
+# ---------------------------------------------------------------------------
+
+
+def _slang_tool_cfg(plugin_path: str):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=plugin_path),
+    )
+    return SynthToolConfig(cfg_file)
+
+
+class _FakeRoot:
+    """Minimal stand-in for RootConfig.get_project_rootdir() in tests."""
+
+    def __init__(self, rootdir: str):
+        self._rootdir = rootdir
+
+    def get_project_rootdir(self) -> str:
+        return self._rootdir
+
+
+def test_write_script_frontend_slang_emits_plugin_and_read_slang(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="my_top"),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert f"plugin -i {plugin}" in script
+    assert "read_slang --std 1800-2017 --top my_top" in script
+    assert f"{sv}" in script
+    # Legacy verilog frontend must not be emitted.
+    assert "read_verilog -sv -defer" not in script
+
+
+def test_write_script_frontend_slang_resolves_relative_plugin_path(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin_rel = "tools/slang.so"
+    (tmp_path / "tools").mkdir()
+    plugin_abs = tmp_path / plugin_rel
+    plugin_abs.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        tool_cfg=_slang_tool_cfg(plugin_rel),
+        root_cfg=_FakeRoot(str(tmp_path)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"plugin -i {plugin_abs.resolve()}" in script
+
+
+def test_write_script_frontend_slang_folds_params_into_G(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", params={"WIDTH": 8, "DEPTH": 16}),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert "-GWIDTH=8" in script
+    assert "-GDEPTH=16" in script
+    # Slang elaborates eagerly; a later chparam would arrive too late.
+    assert "chparam" not in script
+
+
+def test_write_script_frontend_slang_folds_defines_into_D(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(defines={"SYNTH": 1, "FOO": "bar"}),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "-DSYNTH=1" in script
+    assert "-DFOO=bar" in script
+
+
+def test_write_script_frontend_slang_missing_plugin_path_raises(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=""),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
+        ys._write_script(str(fl))
+
+
+def test_write_script_frontend_unknown_raises(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="vhdl"),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        ys._write_script(str(fl))
+
+
+def test_write_script_default_frontend_is_verilog(tmp_path):
+    """Regression guard: existing root_config.yaml without a frontend
+    field continues to use read_verilog -sv -defer."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    ys = _make_yosys(tmp_path)
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "read_verilog -sv -defer" in script
+    assert "plugin -i" not in script
+    assert "read_slang" not in script
+
+
+def test_tool_overrides_can_flip_frontend_to_slang(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    # Tool config defaults to verilog; per-block override flips to slang.
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            tool_overrides={"yosys": {"frontend": "slang", "plugin_path": str(plugin)}}
+        ),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "read_slang" in script
+    assert "read_verilog -sv -defer" not in script
+
+
+# ---------------------------------------------------------------------------
 # YosysSynth — run() pass/fail detection
 # ---------------------------------------------------------------------------
 

@@ -7,6 +7,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .vlog_filelist import VlogFilelist
+from .synth_yosys import emit_frontend_read_cmds, slang_handles_params
 from ..config.synth import (
     SynthConfig,
     SynthToolConfig,
@@ -120,20 +121,27 @@ class OpenRoadSynth:
         lib_paths = self._resolve_lib_paths()
         params = self.synth_cfg.get_params()
         defines = self.synth_cfg.get_defines()
-
-        define_flags = ""
-        if defines:
-            define_flags = " " + " ".join(f"-D {k}={v}" for k, v in defines.items())
+        opts = self.tool_cfg.get_opts(
+            self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+        )
 
         lines = []
         for lib in lib_paths:
             lines.append(f"read_liberty -lib {lib}")
 
         source_files = self._source_files_from_filelist(fl_path)
-        for src in source_files:
-            lines.append(f"read_verilog -sv -defer{define_flags} {src}")
+        lines.extend(
+            emit_frontend_read_cmds(
+                opts=opts,
+                source_files=source_files,
+                top=top,
+                defines=defines,
+                params=params,
+                root_cfg=self.root_cfg,
+            )
+        )
 
-        if params:
+        if params and not slang_handles_params(opts):
             for key, value in params.items():
                 lines.append(f"chparam -set {key} {value} {top}")
 

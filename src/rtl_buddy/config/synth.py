@@ -59,6 +59,8 @@ class SynthToolOpts:
     synth_args: str = ""
     abc_args: str = ""
     strategy: str = ""
+    frontend: str = "verilog"
+    plugin_path: str = ""
 
 
 @serde
@@ -66,6 +68,8 @@ class SynthToolOptsFile:
     synth_args: str = field(rename="synth-args", default="")
     abc_args: str = field(rename="abc-args", default="")
     strategy: str = field(default="")
+    frontend: str = field(default="verilog")
+    plugin_path: str = field(rename="plugin-path", default="")
 
 
 @serde
@@ -136,12 +140,20 @@ class SynthToolConfig:
         synth_args = self._cfg.opts.synth_args
         abc_args = self._cfg.opts.abc_args
         strategy = self._cfg.opts.strategy
+        frontend = self._cfg.opts.frontend
+        plugin_path = self._cfg.opts.plugin_path
         if overrides:
             synth_args = overrides.get("synth_args", synth_args)
             abc_args = overrides.get("abc_args", abc_args)
             strategy = overrides.get("strategy", strategy)
+            frontend = overrides.get("frontend", frontend)
+            plugin_path = overrides.get("plugin_path", plugin_path)
         return SynthToolOpts(
-            synth_args=synth_args, abc_args=abc_args, strategy=strategy
+            synth_args=synth_args,
+            abc_args=abc_args,
+            strategy=strategy,
+            frontend=frontend,
+            plugin_path=plugin_path,
         )
 
 
