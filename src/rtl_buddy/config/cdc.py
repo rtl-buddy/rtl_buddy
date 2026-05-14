@@ -80,6 +80,7 @@ class CdcConfigFile:
     waivers: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    frontend: str | None = None
 
     def initialise(self, config_dir: str) -> "CdcConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -98,6 +99,7 @@ class CdcConfigFile:
             waivers=waivers,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            frontend=self.frontend,
         )
 
 
@@ -111,6 +113,7 @@ class CdcConfig:
     waivers: str | None
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    frontend: str | None = None
 
     def get_name(self) -> str:
         return self.name

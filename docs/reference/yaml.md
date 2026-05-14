@@ -534,6 +534,7 @@ analyses:
     model_path: "../../design/alu_accel/models.yaml"
     tool: "rtl-buddy-cdc"
     constraints: "alu_accel_top.sdc"
+    frontend: "slang"   # opt this analysis into the slang elaboration frontend
     reglvl:
       default: 0
       rtl-buddy-cdc: 100
@@ -556,11 +557,13 @@ analyses:
 | `waivers` | string | Optional waiver file path, resolved relative to the `cdc.yaml` file |
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
 | `tool_overrides` | dict | Optional per-tool overrides for `sync_depth` or `extra_args`, keyed by CDC tool name |
+| `frontend` | string | Optional elaboration frontend selector forwarded as `--frontend <value>` to the analyzer. For the `rtl-buddy-cdc` backend the supported values are `"yosys"` (built-in) and `"slang"` (full SV-2017 via pyslang). Omit to use the analyzer's own default. |
 
 **Runtime effects:**
 
 - `rtl-buddy cdc` loads `cdc.yaml`, resolves sources via `models.yaml`, and dispatches to the backend selected by `tool`.
-- The bundled `rtl-buddy-cdc` backend invokes the standalone `rtl-buddy-cdc lint` CLI as a subprocess. The analysis receives the model's resolved filelist, the SDC, an optional waivers file, and the merged tool opts (root `cfg-cdc-tools` baseline plus any matching `tool_overrides.<tool>`).
+- The bundled `rtl-buddy-cdc` backend invokes the standalone `rtl-buddy-cdc lint` CLI as a subprocess. The analysis receives the model's resolved filelist, the SDC, an optional waivers file, the merged tool opts (root `cfg-cdc-tools` baseline plus any matching `tool_overrides.<tool>`), and — when set — `--frontend <value>` from the per-analysis `frontend` field.
+- `frontend` is **per-analysis** (not on `cfg-cdc-tools` opts) — different from the synth side, where the equivalent selector lives on `cfg-synth-tools.opts.frontend`. Per-analysis suits the CDC use case because slang-required and Yosys-only analyses commonly coexist in one suite, and there is no useful project-wide default.
 - Each analysis writes a text report and a machine-readable JSON report under `artefacts/{name}/`; the JSON summary is parsed to populate the pass/fail/skip result for the CLI table.
 - `rtl-buddy cdc <name> --list` lists configured analyses without running them.
 
