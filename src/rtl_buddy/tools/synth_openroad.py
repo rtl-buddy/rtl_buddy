@@ -121,9 +121,22 @@ class OpenRoadSynth:
         lib_paths = self._resolve_lib_paths()
         params = self.synth_cfg.get_params()
         defines = self.synth_cfg.get_defines()
+        # The elaboration stage uses Yosys regardless of `tool:`, so its opts
+        # (frontend, plugin_path, etc.) come from the yosys tool config plus
+        # any `tool_overrides.yosys` block — not from this backend's openroad
+        # tool config. Fall back to the openroad opts only when no yosys tool
+        # config exists.
         opts = self.tool_cfg.get_opts(
             self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )
+        if self.root_cfg is not None:
+            try:
+                yosys_tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
+                opts = yosys_tool_cfg.get_opts(
+                    self.synth_cfg.get_tool_overrides_for("yosys")
+                )
+            except Exception:
+                pass  # keep fallback opts from the active tool_cfg
 
         lines = []
         for lib in lib_paths:
