@@ -1324,6 +1324,7 @@ def test_openroad_or_script_has_lef_liberty_verilog_sdc(tmp_path):
     assert f"read_sdc {sdc}" in script
     assert "report_design_area" in script
     assert "report_checks -path_delay max" in script
+    assert "report_worst_slack -max" in script
     assert "report_tns" in script
 
 
@@ -1520,6 +1521,34 @@ def test_openroad_parse_wns_violated():
     assert or_synth._parse_or_wns_ns(
         "           -0.431   slack (VIOLATED)\n"
     ) == pytest.approx(-0.431)
+
+
+def test_openroad_parse_wns_prefers_report_worst_slack():
+    # When `report_worst_slack -max` is present, prefer that authoritative
+    # line over the per-group path summaries (which may appear in any order).
+    log = (
+        "            6.754   slack (MET)\n"
+        "           -0.431   slack (VIOLATED)\n"
+        "worst slack max -2.150\n"
+    )
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_wns_ns(log) == pytest.approx(-2.150)
+
+
+def test_openroad_parse_wns_multi_group_fallback_picks_min():
+    # Legacy log without `report_worst_slack`. The parser must scan every
+    # `slack (...)` line and return the minimum — the historical bug was
+    # to take the first match, which on multi-clock designs is whichever
+    # path group OpenROAD prints first, not the true WNS.
+    log = (
+        "            3.054   slack (MET)\n"
+        "           -2.000   slack (VIOLATED)\n"
+        "          -11.867   slack (VIOLATED)\n"
+        "         -556.494   slack (VIOLATED)\n"
+        "            5.919   slack (MET)\n"
+    )
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_wns_ns(log) == pytest.approx(-556.494)
 
 
 def test_openroad_parse_tns_with_corner():

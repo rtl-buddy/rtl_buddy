@@ -318,7 +318,12 @@ class OpenRoadSynth:
 
         lines.append("report_design_area")
         if constraints:
+            # report_checks emits per-group path reports for readability;
+            # report_worst_slack -max emits the single authoritative WNS
+            # across all path groups so the summary table reflects the
+            # true worst, not just whichever group OpenROAD printed first.
             lines.append("report_checks -path_delay max -digits 3")
+            lines.append("report_worst_slack -max -digits 3")
             lines.append("report_tns")
 
         script = "\n".join(lines) + "\n"
@@ -332,12 +337,24 @@ class OpenRoadSynth:
         return float(m.group(1)) if m else None
 
     def _parse_or_wns_ns(self, log_text: str) -> float | None:
-        # report_checks -path_delay max emits the worst slack as the last line of the
-        # timing path report: "   6.754   slack (MET)" or "  -0.123   slack (VIOLATED)"
-        m = re.search(
+        # Prefer the single authoritative line from `report_worst_slack -max`:
+        #     "worst slack max -0.431"
+        # That's the true WNS across every path group OpenROAD checked.
+        m = re.search(r"^worst slack\s+max\s+([-\d.]+)", log_text, re.MULTILINE)
+        if m:
+            return float(m.group(1))
+        # Fallback for legacy logs without report_worst_slack: scan every
+        # path-report summary line and take the minimum.
+        # `report_checks -path_delay max` emits one timing report per group,
+        # each ending with "   6.754   slack (MET)" or "  -0.123   slack (VIOLATED)".
+        # `re.search` would only grab the first; the summary needs the worst,
+        # so collect them all and return the min.
+        matches = re.findall(
             r"^\s+([-\d.]+)\s+slack\s+\((?:MET|VIOLATED)\)", log_text, re.MULTILINE
         )
-        return float(m.group(1)) if m else None
+        if not matches:
+            return None
+        return min(float(s) for s in matches)
 
     def _parse_or_tns_ns(self, log_text: str) -> float | None:
         m = re.search(r"^tns\s+(?:max|min)?\s*([-\d.]+)", log_text, re.MULTILINE)
