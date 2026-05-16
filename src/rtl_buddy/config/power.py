@@ -14,21 +14,10 @@ from .synth import SynthSuiteConfig
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PowerToolOpts:
-    power_args: str = ""
-
-
-@serde
-class PowerToolOptsFile:
-    power_args: str = field(rename="power-args", default="")
-
-
 @serde
 class PowerToolConfigFile:
     name: str
     tool: str
-    opts: PowerToolOptsFile = field(default_factory=PowerToolOptsFile)
 
 
 class PowerToolConfig:
@@ -41,18 +30,12 @@ class PowerToolConfig:
     def get_executable(self) -> str:
         return self._cfg.tool
 
-    def get_opts(self, overrides: dict | None = None) -> PowerToolOpts:
-        power_args = self._cfg.opts.power_args
-        if overrides:
-            power_args = overrides.get("power_args", power_args)
-        return PowerToolOpts(power_args=power_args)
-
 
 @serde
 class PowerActivityFile:
-    saif: str = ""
-    vcd: str = ""
-    scope: str = ""
+    saif: str | None = None
+    vcd: str | None = None
+    scope: str | None = None
     default_toggle_rate: float = field(rename="default-toggle-rate", default=0.1)
     default_static_prob: float = field(rename="default-static-prob", default=0.5)
 
@@ -108,27 +91,22 @@ class PowerConfigFile:
                 f"power run '{self.name}': activity.saif and activity.vcd "
                 "are mutually exclusive; pick one"
             )
+        if self.activity.scope and not (self.activity.saif or self.activity.vcd):
+            raise FatalRtlBuddyError(
+                f"power run '{self.name}': activity.scope is set but no "
+                "activity.saif or activity.vcd was provided; scope only "
+                "applies when reading a trace file"
+            )
+
+        def _resolve(p: str | None) -> str | None:
+            return os.path.normpath(os.path.join(config_dir, p)) if p else None
 
         synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
-        constraints = (
-            os.path.normpath(os.path.join(config_dir, self.constraints))
-            if self.constraints is not None
-            else None
-        )
-        saif_path = (
-            os.path.normpath(os.path.join(config_dir, self.activity.saif))
-            if self.activity.saif
-            else None
-        )
-        vcd_path = (
-            os.path.normpath(os.path.join(config_dir, self.activity.vcd))
-            if self.activity.vcd
-            else None
-        )
+        constraints = _resolve(self.constraints)
         activity = PowerActivity(
-            saif=saif_path,
-            vcd=vcd_path,
-            scope=self.activity.scope or None,
+            saif=_resolve(self.activity.saif),
+            vcd=_resolve(self.activity.vcd),
+            scope=self.activity.scope,
             default_toggle_rate=self.activity.default_toggle_rate,
             default_static_prob=self.activity.default_static_prob,
         )

@@ -11,45 +11,19 @@ from rtl_buddy.config.power import (
     PowerSuiteConfig,
     PowerToolConfig,
     PowerToolConfigFile,
-    PowerToolOptsFile,
 )
 from rtl_buddy.errors import FatalRtlBuddyError
 
 
 # ---------------------------------------------------------------------------
-# PowerToolConfig — opts resolution + tool_overrides merge
+# PowerToolConfig — minimal name/executable resolution
 # ---------------------------------------------------------------------------
 
 
-def test_power_tool_cfg_defaults_empty_args():
+def test_power_tool_cfg_exposes_name_and_executable():
     cfg = PowerToolConfig(PowerToolConfigFile(name="openroad", tool="openroad"))
-    opts = cfg.get_opts()
-    assert opts.power_args == ""
-    assert cfg.get_executable() == "openroad"
     assert cfg.get_name() == "openroad"
-
-
-def test_power_tool_cfg_root_opts_picked_up():
-    cfg = PowerToolConfig(
-        PowerToolConfigFile(
-            name="openroad",
-            tool="openroad",
-            opts=PowerToolOptsFile(power_args="-corner typ"),
-        )
-    )
-    assert cfg.get_opts().power_args == "-corner typ"
-
-
-def test_power_tool_cfg_overrides_replace_root_opts():
-    cfg = PowerToolConfig(
-        PowerToolConfigFile(
-            name="openroad",
-            tool="openroad",
-            opts=PowerToolOptsFile(power_args="-corner typ"),
-        )
-    )
-    opts = cfg.get_opts(overrides={"power_args": "-corner slow"})
-    assert opts.power_args == "-corner slow"
+    assert cfg.get_executable() == "openroad"
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +204,27 @@ def test_power_suite_saif_and_vcd_mutually_exclusive(tmp_path):
         PowerSuiteConfig(str(p))
 
 
+def test_power_suite_scope_without_trace_raises(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(
+        dedent("""\
+            rtl-buddy-filetype: power_config
+            runs:
+              - name: "demo"
+                desc: "demo"
+                tool: "openroad"
+                mode: "dynamic"
+                synth: "demo_synth"
+                synth-path: "../synth/synth.yaml"
+                platform: "nangate45_typ"
+                activity:
+                  scope: "tb.dut"
+        """)
+    )
+    with pytest.raises(FatalRtlBuddyError, match="scope is set but no"):
+        PowerSuiteConfig(str(p))
+
+
 def test_power_suite_unknown_run_raises(tmp_path):
     p = tmp_path / "power.yaml"
     p.write_text(_POWER_YAML_STATIC)
@@ -327,9 +322,9 @@ def test_power_activity_has_trace():
 def test_power_activity_file_default_values():
     """Defaults on PowerActivityFile match the schema doc."""
     a = PowerActivityFile()
-    assert a.saif == ""
-    assert a.vcd == ""
-    assert a.scope == ""
+    assert a.saif is None
+    assert a.vcd is None
+    assert a.scope is None
     assert a.default_toggle_rate == pytest.approx(0.1)
     assert a.default_static_prob == pytest.approx(0.5)
 

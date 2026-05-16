@@ -18,7 +18,7 @@ from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.model import ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
-from .config.power import PowerSuiteConfig
+from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
@@ -73,6 +73,7 @@ class RtlBuddy:
         "synth",
         "synth-regression",
         "power",
+        "power-regression",
         "cdc",
         "cdc-regression",
     }
@@ -129,6 +130,12 @@ class RtlBuddy:
         )
         self.app.command("pnr", help="run place-and-route")(self.do_cmd_pnr)
         self.app.command("power", help="run power analysis")(self.do_cmd_power)
+        self.app.command("power-regression", help="run power analysis regression")(
+            self.do_power_regression
+        )
+        self.app.command("saif", help="convert FST/VCD trace to SAIF v2.0")(
+            self.do_cmd_saif
+        )
         self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
         self.app.command("cdc-regression", help="run CDC lint regression")(
             self.do_cdc_regression
@@ -1869,6 +1876,80 @@ class RtlBuddy:
             metadata=metadata,
         )
 
+    def _exit_code_from_power_results(self, power_results):
+        return 0 if all(r["results"].is_pass() for r in power_results) else 1
+
+    def do_power_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to power_regression.yaml",
+                show_default="Use ./power_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="power regression level to stop at"),
+        ] = 0,
+    ):
+        """
+        run power analysis regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.power_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        start_dir = os.getcwd()
+        if reg_config is not None:
+            reg_cfg_path = os.path.join(start_dir, reg_config)
+        else:
+            local = os.path.join(start_dir, "power_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "power_regression.yaml not found; pass -c to specify a path"
+                )
+
+        power_reg = PowerRegConfig(
+            name=self.name + "/power_reg_config", path=reg_cfg_path
+        )
+        emit_console_text(
+            f"Running power regression from {os.path.dirname(reg_cfg_path)}",
+            style="cyan",
+        )
+
+        all_results = []
+        try:
+            for suite_cfg in power_reg.get_suite_configs():
+                suite_dir = os.path.dirname(suite_cfg.get_path())
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "power_regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                )
+                os.chdir(suite_dir)
+                suite_results = self._do_power_suite(
+                    suite_cfg, power_name=None, reg_level=reg_level
+                )
+                all_results.extend(suite_results)
+        finally:
+            os.chdir(start_dir)
+
+        self._render_power_summary(
+            "Power Regression Summary",
+            all_results,
+            metadata=[f"Reg Level: {reg_level}"],
+        )
+        raise typer.Exit(self._exit_code_from_power_results(all_results))
+
     def do_synth_regression(
         self,
         reg_config: Annotated[
@@ -2024,6 +2105,24 @@ class RtlBuddy:
             )
             results.append({"cdc_name": a.get_name(), "results": runner.run()})
         return results
+
+    def do_cmd_saif(
+        self,
+        trace: Annotated[
+            str,
+            typer.Argument(help="path to input FST or VCD trace"),
+        ],
+        output: Annotated[
+            str,
+            typer.Argument(help="path to write SAIF v2.0 file"),
+        ],
+    ):
+        """convert FST/VCD trace to SAIF v2.0"""
+        from pathlib import Path
+
+        from .tools.saif_from_trace import convert
+
+        convert(Path(trace), Path(output))
 
     def do_cmd_cdc(
         self,
