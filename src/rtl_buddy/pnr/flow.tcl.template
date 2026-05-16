@@ -33,6 +33,7 @@ puts ">>> Reading Liberty + LEF"
 read_liberty $LIBERTY
 read_lef     $TECH_LEF
 read_lef     $MACRO_LEF
+{{ extra_libs_lefs }}
 
 puts ">>> Reading netlist"
 read_verilog $NETLIST

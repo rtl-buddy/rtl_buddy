@@ -12,3 +12,4 @@ _build/
 .DS_Store
 # MkDocs build output
 site/
+rtl_buddy.log
