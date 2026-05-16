@@ -255,15 +255,29 @@ class OpenRoadSynth:
 
         Yosys omits blackbox module definitions from write_verilog output.
         OpenROAD link_design fails if it encounters an instance whose module is
-        undefined. We find source files containing (* blackbox *), strip that
-        Yosys-specific attribute (which OpenROAD's reader rejects), and write
-        cleaned copies into the artefact directory for use in the OR Tcl script.
-        Returns the list of cleaned stub paths.
+        undefined. We find source files containing (* blackbox *), generate a
+        port-only stub (header + endmodule, no body), and write it into the
+        artefact directory for use in the OR Tcl script. The body is stripped
+        because OpenSTA's gate-level reader only accepts a tiny subset of
+        Verilog — `reg` arrays, `always` blocks, `initial`, attributes other
+        than `keep` etc. all break parsing, and the body has no semantic role
+        for STA (cell timing comes from the Liberty). Returns the list of
+        cleaned stub paths.
         """
         try:
             candidates = self._source_files_from_filelist(self._filelist_path())
         except OSError:
             return []
+        # Match a module header (with its port list, possibly multi-line),
+        # capture from the (* blackbox *) attribute through the closing );
+        # of the port list, then everything up to endmodule is dropped.
+        bb_re = re.compile(
+            r"\(\*\s*blackbox\s*\*\)\s*"
+            r"(module\s+\w+\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
+            r".*?"
+            r"endmodule",
+            re.DOTALL,
+        )
         result = []
         for src in candidates:
             try:
@@ -271,9 +285,9 @@ class OpenRoadSynth:
                     content = f.read()
                 if "(* blackbox *)" not in content:
                     continue
+                cleaned = bb_re.sub(r"\1\nendmodule", content)
                 # OpenROAD's gate-level reader does not accept SV `logic`;
                 # replace with `wire` for port declarations.
-                cleaned = content.replace("(* blackbox *)", "")
                 cleaned = cleaned.replace("  input  logic ", "  input  wire  ")
                 cleaned = cleaned.replace("  output logic ", "  output wire  ")
                 stub_name = os.path.basename(src)
