@@ -70,7 +70,7 @@ class YosysSynth:
             output_path=fl_path,
         )
         vlog_fl.write_output(
-            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+            output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
         )
         return fl_path
 

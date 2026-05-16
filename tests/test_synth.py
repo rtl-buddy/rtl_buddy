@@ -354,6 +354,31 @@ def test_source_files_resolves_relative_paths(tmp_path):
     assert paths == [str(sv)]
 
 
+def test_filelist_with_incdir_does_not_leak_directory(tmp_path):
+    # Regression: rtl_buddy#69 — `+incdir+<path>` in the model filelist
+    # leaked into the generated synth.f as a bare directory path because
+    # `strip=True` removed the option prefix, then
+    # `_source_files_from_filelist` couldn't tell it from a source file.
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    sub_f = tmp_path / "src.f"
+    sub_f.write_text("+incdir+.\ntop.sv\n")
+    from rtl_buddy.config.model import ModelConfig
+
+    model = ModelConfig(
+        name="m", filelist=[f"-F {sub_f}"], path=str(tmp_path / "models.yaml")
+    )
+    out = tmp_path / "synth.f"
+    VlogFilelist(name="t", model_cfg=model, output_path=str(out)).write_output(
+        output_filepath=str(out), unroll=True, strip=False, deduplicate=True
+    )
+    ys = _make_yosys(tmp_path)
+    paths = ys._source_files_from_filelist(str(out))
+    assert paths == [str(sv)], (
+        f"+incdir+ leaked into source list: {paths!r}; synth.f was:\n{out.read_text()}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # YosysSynth — _write_script
 # ---------------------------------------------------------------------------
