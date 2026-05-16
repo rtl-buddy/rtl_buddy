@@ -14,16 +14,23 @@ description: How to run OpenROAD-driven gate-level power analysis with rtl_buddy
 
 ## Where the numbers come from
 
-The flow is **post-synth, gate-level**. It loads:
+`rb power` runs on either the **post-synth** netlist (default) or the **post-PnR** routed netlist with SPEF parasitics. The `netlist-source:` field in `power.yaml` selects which.
 
-- The yosys tech-mapped netlist from the upstream synth run (`synth_netlist.v`).
-- Liberty + tech LEF + macro LEF from the selected `cfg-pnr-platforms` entry.
-- The SDC from `constraints:`.
-- The activity model chosen in the run's `activity:` block.
+| Aspect | `netlist-source: synth` (default) | `netlist-source: pnr` |
+|---|---|---|
+| Netlist | `synth_netlist.v` from `rb synth` | `<top>.routed.v` from `rb pnr` |
+| SDC | User-supplied `constraints:` | Post-CTS `<top>.routed.sdc` (or user `constraints:` if set) |
+| Parasitics | None | `<top>.routed.spef` read via `read_spef` |
+| Clock tree | Flat (no CTS buffers) | Real CTS-buffered tree |
+| Wire capacitance | None (zero) | Extracted from routing |
+| Internal power | Gate-accurate (Liberty) | Gate-accurate (Liberty) |
+| Leakage | Gate-accurate (Liberty) | Gate-accurate (Liberty) |
+| Switching | **Under-estimated** | Realistic |
+| Upstream run needed | `rb synth` | `rb synth` + `rb pnr` |
 
-LEF is loaded because OpenROAD's gate-level `read_verilog` requires a technology view in its in-memory DB; `report_power` itself only consults Liberty (per-cell internal/switching coefficients, leakage tables).
+LEF is loaded in both cases because OpenROAD's gate-level `read_verilog` requires a technology view in its in-memory DB; `report_power` itself only consults Liberty (per-cell internal/switching coefficients, leakage tables).
 
-**Internal and leakage** numbers are gate-accurate (driven by Liberty). **Switching** is *under-estimated* — there is no real wire capacitance (no PnR + parasitic extraction) and no CTS-buffered clock tree, so the clock network looks like one flat net. For realistic post-route switching numbers, run after `rb pnr` and load SPEF — that flow is on the roadmap.
+For early PPA exploration where you just want a leakage + activity-aware switching estimate, the synth-source path is fast and cheap. For sign-off-grade switching numbers where the clock tree matters, use the pnr-source path.
 
 ## Supported backend
 
@@ -70,6 +77,19 @@ runs:
       saif: "../../verif/demo/artefacts/csr_smoke/dump.saif"
       scope: "tb_top/u_dut"
     reglvl: 1000
+
+  - name: "demo_power_postpnr"
+    desc: "Post-PnR power with SPEF parasitics"
+    tool: "openroad"
+    mode: "dynamic"
+    netlist-source: "pnr"
+    pnr: "demo_pnr_nangate45"
+    pnr-path: "../../pnr/demo/pnr.yaml"
+    platform: "nangate45_typ"
+    activity:
+      saif: "../../verif/demo/artefacts/csr_smoke/dump.saif"
+      scope: "tb_top/u_dut"
+    reglvl: 1000
 ```
 
 ### Fields
@@ -80,9 +100,12 @@ runs:
 | `desc` | Human-readable description |
 | `tool` | Backend tool name — only `openroad` is supported today |
 | `mode` | `"static"` or `"dynamic"`. Static skips activity entirely; dynamic applies one of the activity sources below |
-| `synth` | Name of the upstream `rb synth` entry to consume |
-| `synth-path` | Path to the `synth.yaml` containing `synth`, resolved relative to `power.yaml` |
-| `constraints` | SDC path (required), resolved relative to `power.yaml` |
+| `netlist-source` | `"synth"` (default) or `"pnr"`. Selects post-synth vs post-PnR netlist |
+| `synth` | Name of the upstream `rb synth` entry — **required when** `netlist-source: synth` |
+| `synth-path` | Path to the `synth.yaml`, resolved relative to `power.yaml` — required when `netlist-source: synth` |
+| `pnr` | Name of the upstream `rb pnr` entry — **required when** `netlist-source: pnr` |
+| `pnr-path` | Path to the `pnr.yaml`, resolved relative to `power.yaml` — required when `netlist-source: pnr` |
+| `constraints` | SDC path (required for `synth` source; optional for `pnr` source — defaults to `routed.sdc`) |
 | `platform` | `cfg-pnr-platforms` entry name — reused for Liberty + corner |
 | `activity.saif` | Path to a SAIF v2 file (mutually exclusive with `vcd`) |
 | `activity.vcd` | Path to a VCD trace (mutually exclusive with `saif`) |
@@ -194,7 +217,6 @@ Otherwise FAIL is returned with the parser/exit-code message. SKIP is returned w
 
 ## Out of scope (today)
 
-- **Post-PnR power.** Requires SPEF/parasitic input and a `netlist-source: pnr` selector. On the roadmap.
 - **Per-instance power breakdown.** The current parser only takes the `Total` line; per-module/per-instance numbers are in `power.rpt` but not surfaced.
 - **Multi-corner power signoff.** One corner per run; multi-corner needs a richer schema.
 - **RTL-level power estimation** (Joules-style). Would need a different backend; the activity schema would extend without breaking.

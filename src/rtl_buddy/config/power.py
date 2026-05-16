@@ -9,6 +9,7 @@ from serde.yaml import from_yaml
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .pnr import PnrSuiteConfig
 from .synth import SynthSuiteConfig
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ class PowerActivity:
 
 
 PowerMode = Literal["static", "dynamic"]
+NetlistSource = Literal["synth", "pnr"]
 
 
 @serde
@@ -61,8 +63,11 @@ class PowerConfigFile:
     desc: str
     tool: str = "openroad"
     mode: PowerMode = "static"
+    netlist_source: NetlistSource = field(rename="netlist-source", default="synth")
     synth: str = ""
     synth_path: str = field(rename="synth-path", default="")
+    pnr: str = ""
+    pnr_path: str = field(rename="pnr-path", default="")
     constraints: str | None = None
     platform: str = ""
     activity: PowerActivityFile = field(default_factory=PowerActivityFile)
@@ -70,16 +75,29 @@ class PowerConfigFile:
     tool_overrides: dict | None = None
 
     def initialise(self, config_dir: str) -> "PowerConfig":
-        if not self.synth:
-            raise FatalRtlBuddyError(
-                f"power run '{self.name}': missing 'synth' "
-                "(name of upstream rb synth entry)"
-            )
-        if not self.synth_path:
-            raise FatalRtlBuddyError(
-                f"power run '{self.name}': missing 'synth-path' "
-                "(path to the synth.yaml that defines the synth entry)"
-            )
+        if self.netlist_source == "synth":
+            if not self.synth:
+                raise FatalRtlBuddyError(
+                    f"power run '{self.name}': missing 'synth' "
+                    "(name of upstream rb synth entry)"
+                )
+            if not self.synth_path:
+                raise FatalRtlBuddyError(
+                    f"power run '{self.name}': missing 'synth-path' "
+                    "(path to the synth.yaml that defines the synth entry)"
+                )
+        elif self.netlist_source == "pnr":
+            if not self.pnr:
+                raise FatalRtlBuddyError(
+                    f"power run '{self.name}': netlist-source 'pnr' requires "
+                    "'pnr' (name of upstream rb pnr entry)"
+                )
+            if not self.pnr_path:
+                raise FatalRtlBuddyError(
+                    f"power run '{self.name}': netlist-source 'pnr' requires "
+                    "'pnr-path' (path to the pnr.yaml that defines the entry)"
+                )
+
         if not self.platform:
             raise FatalRtlBuddyError(
                 f"power run '{self.name}': missing 'platform' "
@@ -101,7 +119,6 @@ class PowerConfigFile:
         def _resolve(p: str | None) -> str | None:
             return os.path.normpath(os.path.join(config_dir, p)) if p else None
 
-        synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
         constraints = _resolve(self.constraints)
         activity = PowerActivity(
             saif=_resolve(self.activity.saif),
@@ -116,8 +133,11 @@ class PowerConfigFile:
             desc=self.desc,
             tool=self.tool,
             mode=self.mode,
-            synth_name=self.synth,
-            synth_suite_path=synth_path_abs,
+            netlist_source=self.netlist_source,
+            synth_name=self.synth or None,
+            synth_suite_path=_resolve(self.synth_path) if self.synth_path else None,
+            pnr_name=self.pnr or None,
+            pnr_suite_path=_resolve(self.pnr_path) if self.pnr_path else None,
             constraints=constraints,
             platform=self.platform,
             activity=activity,
@@ -132,8 +152,11 @@ class PowerConfig:
     desc: str
     tool: str
     mode: PowerMode
-    synth_name: str
-    synth_suite_path: str
+    netlist_source: NetlistSource
+    synth_name: str | None
+    synth_suite_path: str | None
+    pnr_name: str | None
+    pnr_suite_path: str | None
     constraints: str | None
     platform: str
     activity: PowerActivity
@@ -152,11 +175,20 @@ class PowerConfig:
     def get_mode(self) -> PowerMode:
         return self.mode
 
-    def get_synth_name(self) -> str:
+    def get_netlist_source(self) -> NetlistSource:
+        return self.netlist_source
+
+    def get_synth_name(self) -> str | None:
         return self.synth_name
 
-    def get_synth_suite_path(self) -> str:
+    def get_synth_suite_path(self) -> str | None:
         return self.synth_suite_path
+
+    def get_pnr_name(self) -> str | None:
+        return self.pnr_name
+
+    def get_pnr_suite_path(self) -> str | None:
+        return self.pnr_suite_path
 
     def get_constraints(self) -> str | None:
         return self.constraints
@@ -214,9 +246,39 @@ class PowerConfig:
         return self.tool_overrides
 
     def resolve_synth_cfg(self):
-        """Load the upstream synth.yaml and return the referenced entry."""
+        """Load the upstream synth.yaml and return the referenced entry.
+
+        Only valid when `netlist_source == "synth"`. For the `pnr` path,
+        use `resolve_pnr_cfg()` and chain to its synth.
+        """
+        if not self.synth_suite_path or not self.synth_name:
+            raise FatalRtlBuddyError(
+                f"power run '{self.name}': resolve_synth_cfg() called but "
+                "synth/synth-path are not configured"
+            )
         suite = SynthSuiteConfig(self.synth_suite_path)
         return suite.get_syntheses(self.synth_name)[0]
+
+    def resolve_pnr_cfg(self):
+        """Load the upstream pnr.yaml and return the referenced entry.
+
+        Only valid when `netlist_source == "pnr"`. The pnr entry itself
+        chains to a synth via its own `resolve_synth_cfg()`, which is
+        how the top module name is recovered.
+        """
+        if not self.pnr_suite_path or not self.pnr_name:
+            raise FatalRtlBuddyError(
+                f"power run '{self.name}': resolve_pnr_cfg() called but "
+                "pnr/pnr-path are not configured"
+            )
+        suite = PnrSuiteConfig(self.pnr_suite_path)
+        return suite.get_runs(self.pnr_name)[0]
+
+    def get_top(self) -> str:
+        """Return the design top module name regardless of netlist source."""
+        if self.netlist_source == "pnr":
+            return self.resolve_pnr_cfg().resolve_synth_cfg().get_top()
+        return self.resolve_synth_cfg().get_top()
 
     def __str__(self):
         return pprint.pformat(self)

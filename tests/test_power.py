@@ -244,8 +244,11 @@ def _make_power_cfg(reglvl):
         desc="demo",
         tool="openroad",
         mode="static",
+        netlist_source="synth",
         synth_name="demo_synth",
         synth_suite_path="/tmp/synth.yaml",
+        pnr_name=None,
+        pnr_suite_path=None,
         constraints=None,
         platform="nangate45_typ",
         activity=PowerActivity(
@@ -350,8 +353,11 @@ def _make_power_cfg_with(mode, activity):
         desc="demo",
         tool="openroad",
         mode=mode,
+        netlist_source="synth",
         synth_name="demo_synth",
         synth_suite_path="/tmp/synth.yaml",
+        pnr_name=None,
+        pnr_suite_path=None,
         constraints=None,
         platform="nangate45_typ",
         activity=activity,
@@ -399,3 +405,138 @@ def test_power_backends_registry_contains_openroad():
     assert "openroad" in _POWER_BACKENDS
     assert _POWER_BACKENDS["openroad"] is OpenRoadPower
     assert issubclass(OpenRoadPower, BasePower)
+
+
+# ---------------------------------------------------------------------------
+# Post-PnR power: netlist-source selector + pnr/pnr-path fields
+# ---------------------------------------------------------------------------
+
+
+_POWER_YAML_PNR_SOURCE = dedent("""\
+    rtl-buddy-filetype: power_config
+
+    runs:
+      - name: "demo_pnr_power"
+        desc: "Post-PnR power with SPEF"
+        tool: "openroad"
+        mode: "dynamic"
+        netlist-source: "pnr"
+        pnr: "demo_pnr_nangate45"
+        pnr-path: "../pnr/pnr.yaml"
+        platform: "nangate45_typ"
+        activity:
+          default-toggle-rate: 0.2
+          default-static-prob: 0.5
+        reglvl: 1000
+""")
+
+
+def test_power_default_netlist_source_is_synth(tmp_path):
+    """Backward-compat: existing yamls without netlist-source default to synth."""
+    p = tmp_path / "power.yaml"
+    p.write_text(_POWER_YAML_STATIC)
+    suite = PowerSuiteConfig(str(p))
+    run = suite.get_runs("demo_static_power")[0]
+    assert run.get_netlist_source() == "synth"
+    assert run.get_pnr_name() is None
+    assert run.get_pnr_suite_path() is None
+
+
+def test_power_pnr_source_loads_paths(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(_POWER_YAML_PNR_SOURCE)
+    suite = PowerSuiteConfig(str(p))
+    run = suite.get_runs("demo_pnr_power")[0]
+    assert run.get_netlist_source() == "pnr"
+    assert run.get_pnr_name() == "demo_pnr_nangate45"
+    assert run.get_pnr_suite_path() == str(tmp_path.parent / "pnr" / "pnr.yaml")
+    # synth fields are not required for the pnr path
+    assert run.get_synth_name() is None
+    assert run.get_synth_suite_path() is None
+
+
+def test_power_pnr_source_requires_pnr_name(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(
+        dedent("""\
+            rtl-buddy-filetype: power_config
+            runs:
+              - name: "demo"
+                desc: "demo"
+                tool: "openroad"
+                mode: "dynamic"
+                netlist-source: "pnr"
+                pnr-path: "../pnr/pnr.yaml"
+                platform: "nangate45_typ"
+        """)
+    )
+    with pytest.raises(FatalRtlBuddyError, match="requires 'pnr'"):
+        PowerSuiteConfig(str(p))
+
+
+def test_power_pnr_source_requires_pnr_path(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(
+        dedent("""\
+            rtl-buddy-filetype: power_config
+            runs:
+              - name: "demo"
+                desc: "demo"
+                tool: "openroad"
+                mode: "dynamic"
+                netlist-source: "pnr"
+                pnr: "demo_pnr_nangate45"
+                platform: "nangate45_typ"
+        """)
+    )
+    with pytest.raises(FatalRtlBuddyError, match="requires 'pnr-path'"):
+        PowerSuiteConfig(str(p))
+
+
+def test_power_synth_source_still_requires_synth_fields(tmp_path):
+    """Synth-source path keeps its existing required-field validation."""
+    p = tmp_path / "power.yaml"
+    p.write_text(
+        dedent("""\
+            rtl-buddy-filetype: power_config
+            runs:
+              - name: "demo"
+                desc: "demo"
+                tool: "openroad"
+                netlist-source: "synth"
+                platform: "nangate45_typ"
+        """)
+    )
+    with pytest.raises(FatalRtlBuddyError, match="missing 'synth'"):
+        PowerSuiteConfig(str(p))
+
+
+def test_power_get_top_dispatches_on_netlist_source():
+    """get_top() picks the right resolver based on netlist_source."""
+    from unittest.mock import MagicMock
+
+    cfg = _make_power_cfg(0)
+    cfg.synth_name = "demo_synth"
+    cfg.synth_suite_path = "/nope/synth.yaml"
+    cfg.resolve_synth_cfg = MagicMock(return_value=MagicMock(get_top=lambda: "TOP_S"))
+    assert cfg.get_top() == "TOP_S"
+
+    cfg.netlist_source = "pnr"
+    inner = MagicMock()
+    inner.resolve_synth_cfg.return_value.get_top.return_value = "TOP_P"
+    cfg.resolve_pnr_cfg = MagicMock(return_value=inner)
+    assert cfg.get_top() == "TOP_P"
+
+
+def test_power_resolve_synth_cfg_fatal_when_not_configured():
+    cfg = _make_power_cfg(0)
+    cfg.synth_name = None
+    cfg.synth_suite_path = None
+    with pytest.raises(FatalRtlBuddyError, match="resolve_synth_cfg.*not configured"):
+        cfg.resolve_synth_cfg()
+
+
+def test_power_resolve_pnr_cfg_fatal_when_not_configured():
+    cfg = _make_power_cfg(0)
+    with pytest.raises(FatalRtlBuddyError, match="resolve_pnr_cfg.*not configured"):
+        cfg.resolve_pnr_cfg()

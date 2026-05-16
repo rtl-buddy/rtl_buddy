@@ -105,6 +105,10 @@ puts ">>> Write outputs"
 write_def     $OUT_DIR/${DESIGN}.def
 write_verilog $OUT_DIR/${DESIGN}.routed.v
 write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
+# OpenROAD binary DB. Captures placement + routing + parasitic
+# annotations so downstream tools (rb power with netlist-source: pnr)
+# can re-enter at the post-route state without re-running PnR.
+write_db      $OUT_DIR/${DESIGN}.routed.odb
 
 puts ">>> DONE"
 exit 0
