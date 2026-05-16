@@ -433,3 +433,91 @@ def test_openroad_pnr_png_implies_gds():
     )
     assert backend.emit_gds is True
     assert backend.emit_png is True
+
+
+def test_def2stream_treats_nonzero_exit_as_warning_when_gds_exists(
+    tmp_path, monkeypatch
+):
+    """KLayout's def2stream exits non-zero when a LEF-only macro (e.g. ORFS
+    fakeram45) has no matching GDS body, but the streamout still produces a
+    valid GDS with the macro as an empty placeholder. The runner should keep
+    that GDS (so `--png` can still render it) and just log a warning."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        klayout_tech="pdk/klayout/tech.lyt",
+        cell_gds="pdk/gds/cells.gds",
+    )
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+
+    design = "demo_top"
+    out_gds = Path(backend.artefact_dir) / f"{design}.gds"
+
+    def _fake_run(cmd, **_kwargs):
+        # Simulate KLayout writing a non-empty GDS but exiting non-zero
+        # because of a benign per-cell `[ERROR]` line.
+        out_gds.write_bytes(b"\x00\x06\x00\x02\x00\x07")
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "[ERROR] LEF Cell 'foo' has no matching GDS/OAS cell.\n"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    returned = backend._run_def2stream(platform, design)
+    assert returned == str(out_gds), (
+        "non-empty GDS should be returned even on non-zero exit"
+    )
+    assert out_gds.exists() and out_gds.stat().st_size > 0
+
+
+def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
+    """If KLayout fails before producing any GDS bytes the runner should
+    still return None so downstream PNG render is skipped."""
+    from rtl_buddy.tools import pnr_openroad
+    from rtl_buddy.tools.pnr_openroad import OpenRoadPnr
+
+    monkeypatch.setattr(pnr_openroad.shutil, "which", lambda _name: "/opt/klayout")
+
+    pdk = _make_pdk_cfg(
+        tmp_path,
+        klayout_tech="pdk/klayout/tech.lyt",
+        cell_gds="pdk/gds/cells.gds",
+    )
+    platform = MagicMock()
+    platform.get_pdk.return_value = pdk
+
+    backend = OpenRoadPnr(
+        name="demo/openroad",
+        pnr_cfg=_make_pnr_cfg(tmp_path),
+        suite_dir=str(tmp_path),
+        root_cfg=MagicMock(),
+        emit_gds=True,
+    )
+
+    def _fake_run(cmd, **_kwargs):
+        # No GDS file written, exit non-zero.
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "fatal: unable to load tech file"
+        result.stderr = ""
+        return result
+
+    monkeypatch.setattr(pnr_openroad.subprocess, "run", _fake_run)
+
+    returned = backend._run_def2stream(platform, "demo_top")
+    assert returned is None

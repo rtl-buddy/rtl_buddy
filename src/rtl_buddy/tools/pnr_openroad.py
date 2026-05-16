@@ -305,7 +305,14 @@ class OpenRoadPnr:
         with task_status(f"pnr {self.pnr_cfg.get_name()} [klayout gds]"):
             r = subprocess.run(cmd, capture_output=True, text=True, check=False)
         Path(log_path).write_text((r.stdout or "") + (r.stderr or ""))
-        if r.returncode != 0 or not os.path.isfile(out_gds):
+        # def2stream is treated as failed only when no GDS file was
+        # produced. Some platforms ship LEF-only macros (e.g. ORFS
+        # fakeram45) for early-flow verification; KLayout emits an
+        # [ERROR] for each such cell and exits non-zero, but the GDS
+        # is still streamed (with the macro as an empty placeholder)
+        # and downstream gds2png works fine. Treating non-zero exit
+        # as fatal here unnecessarily skipped the PNG render step.
+        if not os.path.isfile(out_gds) or os.path.getsize(out_gds) == 0:
             log_event(
                 logger,
                 logging.WARNING,
@@ -315,6 +322,15 @@ class OpenRoadPnr:
                 log=log_path,
             )
             return None
+        if r.returncode != 0:
+            log_event(
+                logger,
+                logging.WARNING,
+                "pnr.gds_warnings",
+                pnr=self.pnr_cfg.get_name(),
+                returncode=r.returncode,
+                log=log_path,
+            )
         return out_gds
 
     def _run_gds2png(self, platform, gds_path: str, design: str) -> str | None:
