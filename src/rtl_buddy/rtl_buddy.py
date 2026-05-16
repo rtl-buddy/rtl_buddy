@@ -18,6 +18,7 @@ from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.model import ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
+from .config.power import PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
@@ -34,6 +35,8 @@ from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.pnr_runner import PnrRunner
 from .runner.pnr_results import PnrSkipResults
+from .runner.power_runner import PowerRunner
+from .runner.power_results import PowerSkipResults
 from .runner.synth_runner import SynthRunner
 from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
@@ -69,6 +72,7 @@ class RtlBuddy:
         "wave",
         "synth",
         "synth-regression",
+        "power",
         "cdc",
         "cdc-regression",
     }
@@ -124,6 +128,7 @@ class RtlBuddy:
             self.do_synth_regression
         )
         self.app.command("pnr", help="run place-and-route")(self.do_cmd_pnr)
+        self.app.command("power", help="run power analysis")(self.do_cmd_power)
         self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
         self.app.command("cdc-regression", help="run CDC lint regression")(
             self.do_cdc_regression
@@ -1694,6 +1699,168 @@ class RtlBuddy:
             columns.append(("drcs", "DRCs"))
         if has_outputs:
             columns.append(("outputs", "Outputs"))
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def do_cmd_power(
+        self,
+        power_config: Annotated[
+            str,
+            typer.Option("-c", "--power-config", help="power.yaml to use"),
+        ] = "power.yaml",
+        power_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of power run",
+                show_default="run all entries in the suite",
+            ),
+        ] = None,
+        list_runs: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list power runs in the selected config and exit"
+            ),
+        ] = False,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l",
+                "--reg-level",
+                help="run only entries with reglvl at or below this value",
+            ),
+        ] = 0,
+    ):
+        """run power analysis"""
+        suite_cfg = PowerSuiteConfig(path=power_config)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.power",
+            command="power",
+            power=power_name or "all",
+            power_config=power_config,
+        )
+
+        if list_runs:
+            emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        results = self._do_power_suite(
+            suite_cfg,
+            power_name=power_name,
+            reg_level=reg_level,
+        )
+        self._render_power_summary("Power Results Summary", results)
+        raise typer.Exit(0 if all(r["results"].is_pass() for r in results) else 1)
+
+    def _do_power_suite(
+        self,
+        suite_cfg,
+        *,
+        power_name=None,
+        reg_level=0,
+    ):
+        root_cfg = RootConfig(name="power")
+        runs = suite_cfg.get_runs(power_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for run in runs:
+            power_level = run.get_reglvl(run.get_tool_name())
+            if reg_level is not None and power_level > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "power_suite.skip",
+                    power=run.get_name(),
+                    reason="above_regression_level",
+                    power_level=power_level,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "power_name": run.get_name(),
+                        "results": PowerSkipResults(
+                            name=f"{run.get_name()}/results",
+                            desc=f"reglvl {power_level} above {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = PowerRunner(
+                name=run.get_name(),
+                root_cfg=root_cfg,
+                power_cfg=run,
+                suite_dir=suite_dir,
+                reglvl_filter=reg_level if reg_level else None,
+            )
+            results.append({"power_name": run.get_name(), "results": runner.run()})
+        return results
+
+    def _render_power_summary(self, title, power_results, *, metadata=None):
+        def _fmt_w(v):
+            if v is None:
+                return "-"
+            if v == 0:
+                return "0 W"
+            mag = abs(v)
+            if mag >= 1e-3:
+                return f"{v * 1e3:.3f} mW"
+            if mag >= 1e-6:
+                return f"{v * 1e6:.3f} µW"
+            return f"{v * 1e9:.3f} nW"
+
+        has_mode = any("mode" in r["results"].results for r in power_results)
+        has_activity = any(
+            "activity_source" in r["results"].results for r in power_results
+        )
+        has_total = any("total_w" in r["results"].results for r in power_results)
+        has_breakdown = any(
+            "internal_w" in r["results"].results
+            or "switching_w" in r["results"].results
+            or "leakage_w" in r["results"].results
+            for r in power_results
+        )
+
+        rows = []
+        for r in power_results:
+            res = r["results"].results
+            row = {
+                "power_name": r["power_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+            }
+            if has_mode:
+                row["mode"] = res.get("mode", "-")
+            if has_activity:
+                row["activity"] = res.get("activity_source", "-")
+            if has_total:
+                row["total"] = _fmt_w(res.get("total_w"))
+            if has_breakdown:
+                row["internal"] = _fmt_w(res.get("internal_w"))
+                row["switching"] = _fmt_w(res.get("switching_w"))
+                row["leakage"] = _fmt_w(res.get("leakage_w"))
+            rows.append(row)
+
+        columns = [
+            ("power_name", "Power Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+        ]
+        if has_mode:
+            columns.append(("mode", "Mode"))
+        if has_activity:
+            columns.append(("activity", "Activity"))
+        if has_total:
+            columns.append(("total", "Total"))
+        if has_breakdown:
+            columns.append(("internal", "Internal"))
+            columns.append(("switching", "Switching"))
+            columns.append(("leakage", "Leakage"))
         render_summary(
             title=title,
             columns=columns,

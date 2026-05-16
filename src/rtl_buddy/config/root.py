@@ -29,6 +29,7 @@ from .synth import (
 from .pdk import PdkConfig, PdkConfigFile
 from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
+from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -120,6 +121,9 @@ class RootConfigFile:
     pnr_tools: list[PnrToolConfigFile] = field(
         rename="cfg-pnr-tools", default_factory=list
     )
+    power_tools: list[PowerToolConfigFile] = field(
+        rename="cfg-power-tools", default_factory=list
+    )
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
     )
@@ -173,6 +177,7 @@ class RootConfig:
         self.synth_platform_cfgs: dict = {}
         self.pnr_platform_cfgs: dict = {}
         self.pnr_tool_cfgs: dict = {}
+        self.power_tool_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
         self.platform_cfg = None
@@ -248,6 +253,11 @@ class RootConfig:
             # Populate P&R tool configs
             self.pnr_tool_cfgs = {
                 cfg.name: PnrToolConfig(cfg) for cfg in data.pnr_tools
+            }
+
+            # Populate power tool configs
+            self.power_tool_cfgs = {
+                cfg.name: PowerToolConfig(cfg) for cfg in data.power_tools
             }
 
             # Populate CDC tool configs
@@ -470,6 +480,24 @@ class RootConfig:
             back to the bare tool name on PATH when None is returned.
         """
         return self.pnr_tool_cfgs.get(name)
+
+    def get_power_tool_cfg(self, name: str):
+        """
+        Get power analysis tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-power-tools.
+        Returns:
+          cfg (PowerToolConfig): Matching power tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.power_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"power tool '{name}' not found in cfg-power-tools"
+            )
+        return cfg
 
     def get_cdc_tool_cfg(self, name: str):
         """
