@@ -117,6 +117,14 @@ class OpenRoadPnr:
 
         fill_cells = " ".join(pdk.get_fill_cells())
 
+        # Design-specific macro libraries and LEFs (e.g. SRAM macros).
+        extra_lines = []
+        for lib in self.pnr_cfg.get_lib_paths():
+            extra_lines.append(f"read_liberty {lib}")
+        for lef in self.pnr_cfg.get_lef_paths():
+            extra_lines.append(f"read_lef     {lef}")
+        extra_libs_lefs = "\n".join(extra_lines)
+
         substitutions = {
             "design": self.pnr_cfg.resolve_synth_cfg().get_top(),
             "netlist": netlist,
@@ -135,6 +143,7 @@ class OpenRoadPnr:
             "clock_layers": platform.get_clock_layers(),
             "fill_cells": fill_cells,
             "out_dir": self.artefact_dir,
+            "extra_libs_lefs": extra_libs_lefs,
         }
 
         template = self._load_template()

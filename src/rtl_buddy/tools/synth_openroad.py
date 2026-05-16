@@ -98,10 +98,11 @@ class OpenRoadSynth:
         return paths
 
     def _resolve_lib_paths(self) -> list[str]:
+        extras = list(self.synth_cfg.get_lib_paths())
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
-            return []
-        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()]
+            return extras
+        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
 
     def _resolve_lef_paths(self) -> list[str]:
         platform = self.synth_cfg.get_platform()

@@ -123,10 +123,11 @@ class YosysSynth:
         return int(min(periods) * 1000)
 
     def _resolve_lib_paths(self) -> list[str]:
+        extras = list(self.synth_cfg.get_lib_paths())
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
-            return []
-        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()]
+            return extras
+        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
 
     def _parse_area_um2(self, log_text: str) -> float | None:
         m = re.search(r"Chip area for module[^:]*:\s*([\d.]+)", log_text)
