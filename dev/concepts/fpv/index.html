@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to run OpenROAD place-and-route with rtl_buddy via the rb pnr command, pnr.yaml, and cfg-pnr-platforms.">
+        <meta name="description" content="How to run formal property verification with rtl_buddy via the rb fpv command, fpv.yaml, and SymbiYosys.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/">
       
       
-        <link rel="prev" href="../synthesis/">
+        <link rel="prev" href="../pnr/">
       
       
-        <link rel="next" href="../fpv/">
+        <link rel="next" href="../../reference/cli/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Place-and-Route - RTL Buddy</title>
+        <title>Formal Property Verification - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#place-and-route" class="md-skip">
+        <a href="#formal-property-verification" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Place-and-Route
+              Formal Property Verification
             
           </span>
         </div>
@@ -614,6 +614,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../pnr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Place-and-Route
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -633,7 +661,7 @@
   <span class="md-ellipsis">
     
   
-    Place-and-Route
+    Formal Property Verification
   
 
     
@@ -651,7 +679,7 @@
   <span class="md-ellipsis">
     
   
-    Place-and-Route
+    Formal Property Verification
   
 
     
@@ -688,15 +716,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#installing-openroad" class="md-nav__link">
+  <a href="#installing-symbiyosys" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Installing OpenROAD
+        Installing SymbiYosys
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Installing OpenROAD">
+    <nav class="md-nav" aria-label="Installing SymbiYosys">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -716,26 +744,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#installing-klayout-optional" class="md-nav__link">
+  <a href="#fpv-config-fpvyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Installing KLayout (optional)
+        FPV config: fpv.yaml
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pr-config-pnryaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        P&amp;R config: pnr.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="P&amp;R config: pnr.yaml">
+    <nav class="md-nav" aria-label="FPV config: fpv.yaml">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -766,10 +783,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#root-config-cfg-pdks-and-cfg-pnr-platforms" class="md-nav__link">
+  <a href="#root-config-cfg-fpv-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Root config: cfg-pdks and cfg-pnr-platforms
+        Root config: cfg-fpv-tools
       
     </span>
   </a>
@@ -777,30 +794,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-pr" class="md-nav__link">
+  <a href="#running-fpv" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running P&amp;R
+        Running FPV
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Running P&amp;R">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#-gds-and-png" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        --gds and --png
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -852,34 +852,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../fpv/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Formal Property Verification
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1241,15 +1213,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#installing-openroad" class="md-nav__link">
+  <a href="#installing-symbiyosys" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Installing OpenROAD
+        Installing SymbiYosys
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Installing OpenROAD">
+    <nav class="md-nav" aria-label="Installing SymbiYosys">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1269,26 +1241,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#installing-klayout-optional" class="md-nav__link">
+  <a href="#fpv-config-fpvyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Installing KLayout (optional)
+        FPV config: fpv.yaml
       
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pr-config-pnryaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        P&amp;R config: pnr.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="P&amp;R config: pnr.yaml">
+    <nav class="md-nav" aria-label="FPV config: fpv.yaml">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1319,10 +1280,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#root-config-cfg-pdks-and-cfg-pnr-platforms" class="md-nav__link">
+  <a href="#root-config-cfg-fpv-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Root config: cfg-pdks and cfg-pnr-platforms
+        Root config: cfg-fpv-tools
       
     </span>
   </a>
@@ -1330,30 +1291,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-pr" class="md-nav__link">
+  <a href="#running-fpv" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running P&amp;R
+        Running FPV
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Running P&amp;R">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#-gds-and-png" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        --gds and --png
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1421,57 +1365,50 @@
   
 
 
-<h1 id="place-and-route">Place-and-Route</h1>
+<h1 id="formal-property-verification">Formal Property Verification</h1>
 <blockquote>
-<p><strong>Integration type:</strong> Integrated tool. <code>rb pnr</code> is built around OpenROAD today.</p>
-<p><strong>External binary required:</strong> <code>openroad</code> ≥ <code>25Q1</code> — see <a href="#installing-openroad">Installing OpenROAD</a>.</p>
-<p><strong>Optional:</strong> <code>klayout</code> for <code>--gds</code> / <code>--png</code> streamout and rendering — see <a href="#installing-klayout-optional">Installing KLayout</a>.</p>
+<p><strong>Integration type:</strong> Integrated tool. <code>rb fpv</code> is built around <a href="https://symbiyosys.readthedocs.io/">SymbiYosys (<code>sby</code>)</a> today.</p>
+<p><strong>External binary required:</strong> <code>sby</code> plus at least one SMT solver (e.g. <code>yices</code>, <code>z3</code>, <code>boolector</code>) — see <a href="#installing-symbiyosys">Installing SymbiYosys</a>.</p>
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
-<p><code>rb pnr</code> drives OpenROAD through a templated Tcl flow that consumes the tech-mapped netlist from an upstream <code>rb synth</code> run. It produces routed DEF, a post-route netlist + SDC, a timing report, and a DRC report under <code>pnr/&lt;run&gt;/artefacts/</code>.</p>
-<p>The flow is intentionally compact and config-driven — block-level knobs live in <code>pnr.yaml</code>, technology-level knobs live in <code>cfg-pdks</code> + <code>cfg-pnr-platforms</code> in <code>root_config.yaml</code>.</p>
+<p><code>rb fpv</code> drives SymbiYosys through a generated <code>.sby</code> config that consumes the model's filelist plus a list of SystemVerilog property files. It produces a per-run <code>status</code> verdict, a counterexample VCD when a property is disproved, and a full <code>sby</code> log under <code>fpv/&lt;run&gt;/artefacts/</code>.</p>
+<p>The flow is intentionally compact and config-driven — per-run knobs (mode, depth, engines, properties) live in <code>fpv.yaml</code>, tool-wide defaults live in <code>cfg-fpv-tools</code> in <code>root_config.yaml</code>.</p>
 <h2 id="supported-backend">Supported backend</h2>
-<p>Today only <code>openroad</code> is wired up. The <code>tool:</code> field in <code>pnr.yaml</code> selects it; the runner skips any other value with a clear message.</p>
-<h2 id="installing-openroad">Installing OpenROAD</h2>
-<p><code>openroad</code> must be on <code>PATH</code>, or its absolute path must be configured
-via a <code>cfg-pnr-tools</code> entry in <code>root_config.yaml</code> (see
-<a href="../../reference/yaml/#root_configyaml">yaml.md</a>). Build from source (no
-official macOS binaries):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>ln<span class="w"> </span>-s<span class="w"> </span>/path/to/OpenROAD/build/bin/openroad<span class="w"> </span>/usr/local/bin/openroad
+<p>Today only <code>sby</code> is wired up. The <code>tool:</code> field in <code>fpv.yaml</code> selects it; the runner raises a clear error if no matching <code>cfg-fpv-tools</code> entry exists. Adding a second backend (e.g. a commercial formal tool) parallels how <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85"><code>rb cdc</code> is structured</a> — implement a sibling driver under <code>src/rtl_buddy/tools/</code>, then dispatch from <code>FpvRunner</code>.</p>
+<h2 id="installing-symbiyosys">Installing SymbiYosys</h2>
+<p><code>sby</code> must be on <code>PATH</code>, or its absolute path must be configured via a <code>cfg-fpv-tools</code> entry in <code>root_config.yaml</code> (see <a href="../../reference/yaml/#root_configyaml">yaml.md</a>). The standalone install is small and runs on top of the Yosys you already have for <code>rb synth</code> / <code>rb cdc</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/YosysHQ/sby.git
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>sby
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>make<span class="w"> </span>install<span class="w"> </span><span class="nv">PREFIX</span><span class="o">=</span><span class="nv">$HOME</span>/.local<span class="w">      </span><span class="c1"># no sudo</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>pip<span class="w"> </span>install<span class="w"> </span>click<span class="w">                     </span><span class="c1"># sby&#39;s only Python dep</span>
 </code></pre></div>
-<p>See <code>tools/openroad/BUILD_OSX.md</code> in the project template for the macOS recipe.</p>
+<p><code>sby</code> shells out to one or more solvers — install at least one:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>brew<span class="w"> </span>install<span class="w"> </span>yices2<span class="w">                   </span><span class="c1"># macOS — most common default</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>brew<span class="w"> </span>install<span class="w"> </span>z3<span class="w">                       </span><span class="c1"># widely useful</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>brew<span class="w"> </span>install<span class="w"> </span>boolector<span class="w">                </span><span class="c1"># bitvector-heavy proofs</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>brew<span class="w"> </span>install<span class="w"> </span>berkeley-abc<span class="w">             </span><span class="c1"># for the `abc pdr` engine</span>
+</code></pre></div>
+<p>For a turnkey alternative, the <a href="https://github.com/YosysHQ/oss-cad-suite-build/releases">OSS CAD Suite</a> bundles Yosys, <code>sby</code>, and every supported solver in one tarball.</p>
 <h3 id="version-expectations">Version expectations</h3>
-<p><code>rb pnr</code> probes <code>openroad -version</code> and compares it against an internal
-<code>MIN_OPENROAD_VERSION</code> (currently <code>25Q1</code>). Older builds may still work for
-the basic flow but are unvalidated — a <code>pnr.openroad_version_below_min</code>
-warning is emitted and the run continues. The version is also logged at
-INFO as <code>pnr.openroad_version</code> so it shows up in <code>rtl_buddy.log</code>.</p>
-<h2 id="installing-klayout-optional">Installing KLayout (optional)</h2>
-<p>KLayout is only required when streaming out GDS with <code>--gds</code> or rendering
-PNGs with <code>--png</code>. The basic P&amp;R flow works without it.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>brew<span class="w"> </span>install<span class="w"> </span>--cask<span class="w"> </span>klayout<span class="w">            </span><span class="c1"># macOS</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># or download from https://klayout.de</span>
-</code></pre></div>
-<p><code>rb pnr</code> resolves <code>klayout</code> from <code>PATH</code>. If KLayout is not present,
-<code>--gds</code>/<code>--png</code> logs <code>pnr.no_klayout</code> and skips streamout/render
-without failing the run.</p>
-<h2 id="pr-config-pnryaml">P&amp;R config: <code>pnr.yaml</code></h2>
-<p><code>pnr.yaml</code> declares one or more P&amp;R runs. Each entry references an upstream <code>rb synth</code> entry by path + name, an SDC, and a <code>cfg-pnr-platforms</code> name from <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pnr_config</span>
+<p><code>rb fpv</code> probes <code>sby --version</code> and logs it as <code>fpv.sby_version</code> so the version is captured in <code>rtl_buddy.log</code>. There is no hard minimum today — anything 0.40 or newer should work.</p>
+<h2 id="fpv-config-fpvyaml">FPV config: <code>fpv.yaml</code></h2>
+<p><code>fpv.yaml</code> declares one or more verification runs. Each entry references a model from <code>models.yaml</code>, a top module (defaults to the model name), and one or more property files:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fpv_config</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nt">runs</span><span class="p">:</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_pnr_nangate45&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;OpenROAD</span><span class="nv"> </span><span class="s">P&amp;R</span><span class="nv"> </span><span class="s">on</span><span class="nv"> </span><span class="s">Nangate45</span><span class="nv"> </span><span class="s">typ</span><span class="nv"> </span><span class="s">corner&quot;</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">synth</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_synth_nangate45&quot;</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">synth-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../synth/demo/synth.yaml&quot;</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../synth/demo/constraints.sdc&quot;</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">platform</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nangate45_typ&quot;</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">floorplan</span><span class="p">:</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">      </span><span class="nt">utilization</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.55</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">      </span><span class="nt">aspect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">      </span><span class="nt">core-margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2.0</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nt">verifications</span><span class="p">:</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_fifo&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Bounded</span><span class="nv"> </span><span class="s">proof</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">FIFO</span><span class="nv"> </span><span class="s">interface</span><span class="nv"> </span><span class="s">assertions&quot;</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_fifo/models.yaml&quot;</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">top</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;demo_fifo_props.sv&quot;</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bmc&quot;</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">yices&quot;</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 </code></pre></div>
 <h3 id="fields">Fields</h3>
 <table>
@@ -1492,54 +1429,56 @@ without failing the run.</p>
 </tr>
 <tr>
 <td><code>tool</code></td>
-<td>Backend tool name — only <code>"openroad"</code> is supported today</td>
+<td>Backend tool name — only <code>"sby"</code> is supported today</td>
 </tr>
 <tr>
-<td><code>synth</code></td>
-<td>Name of the upstream <code>rb synth</code> entry to consume</td>
+<td><code>model</code></td>
+<td>Model name from <code>models.yaml</code></td>
 </tr>
 <tr>
-<td><code>synth-path</code></td>
-<td>Path to the <code>synth.yaml</code> containing <code>synth</code>, resolved relative to <code>pnr.yaml</code></td>
+<td><code>model_path</code></td>
+<td>Path to <code>models.yaml</code>, resolved relative to <code>fpv.yaml</code></td>
 </tr>
 <tr>
-<td><code>constraints</code></td>
-<td>SDC path (required), resolved relative to <code>pnr.yaml</code></td>
+<td><code>top</code></td>
+<td>Top module passed to <code>prep -top</code>; defaults to <code>model</code> when omitted</td>
 </tr>
 <tr>
-<td><code>platform</code></td>
-<td><code>cfg-pnr-platforms</code> entry name</td>
+<td><code>properties</code></td>
+<td>List of <code>.sv</code> files containing SVA properties / bound checker modules, resolved relative to <code>fpv.yaml</code>. Optional when properties are in-RTL under <code>`ifdef FORMAL</code> guards</td>
 </tr>
 <tr>
-<td><code>floorplan.utilization</code></td>
-<td>Core utilization (0–1); 55% is a reasonable default</td>
+<td><code>mode</code></td>
+<td>One of <code>bmc</code> (bounded), <code>prove</code> (k-induction), <code>cover</code>, <code>live</code></td>
 </tr>
 <tr>
-<td><code>floorplan.aspect</code></td>
-<td>Die aspect ratio; 1.0 = square</td>
+<td><code>depth</code></td>
+<td>Cycle depth passed to sby; defaults to 20</td>
 </tr>
 <tr>
-<td><code>floorplan.core-margin</code></td>
-<td>Margin in microns between core area and die edge</td>
+<td><code>engines</code></td>
+<td>List of sby engine specs (e.g. <code>smtbmc yices</code>, <code>abc pdr</code>); defaults to <code>["smtbmc yices"]</code></td>
 </tr>
 <tr>
 <td><code>reglvl</code></td>
-<td>Regression level for filtering (same semantics as <code>rb synth</code>)</td>
+<td>Regression level for filtering (same semantics as <code>rb synth</code> / <code>rb cdc</code>)</td>
+</tr>
+<tr>
+<td><code>tool_overrides</code></td>
+<td>Optional per-tool overrides for <code>timeout</code> or <code>extra_args</code>, keyed by FPV tool name</td>
 </tr>
 </tbody>
 </table>
 <h3 id="where-inputs-come-from">Where inputs come from</h3>
-<p>The runner reads the upstream <code>synth.yaml</code> to find the tech-mapped netlist at <code>&lt;synth_dir&gt;/artefacts/&lt;synth_name&gt;/synth_netlist.v</code>. The top module is taken from the synth entry's <code>model:</code> field. The SDC and the PDK Liberty/LEF come from <code>constraints:</code> and the selected <code>cfg-pnr-platforms</code> entry respectively — no path duplication.</p>
-<h2 id="root-config-cfg-pdks-and-cfg-pnr-platforms">Root config: <code>cfg-pdks</code> and <code>cfg-pnr-platforms</code></h2>
-<p>PDK assets live in <code>cfg-pdks</code> (per-process, corners as sub-fields — see the <a href="../synthesis/#pdk-and-synth-platform-configuration">synthesis page</a>). <code>cfg-pnr-platforms</code> is the P&amp;R-side selector:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-pnr-platforms</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nangate45_typ&quot;</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">pdk</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nangate45&quot;</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">corner</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;typ&quot;</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">cts-buffer</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;BUF_X4&quot;</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">routing-layers</span><span class="p">:</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">      </span><span class="nt">signal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;metal2-metal8&quot;</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">      </span><span class="nt">clock</span><span class="p">:</span><span class="w">  </span><span class="s">&quot;metal4-metal8&quot;</span>
+<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb cdc</code> use), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. Property files are appended to the same <code>read -sv -formal</code> block — they can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
+<h2 id="root-config-cfg-fpv-tools">Root config: <code>cfg-fpv-tools</code></h2>
+<p><code>cfg-fpv-tools</code> declares the FPV tools available to all suites in this project:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-fpv-tools</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span><span class="w">          </span><span class="c1"># binary on PATH, or absolute path</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">      </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span><span class="w">       </span><span class="c1"># seconds per task; optional</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">     </span><span class="c1"># appended to sby invocation; optional</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1551,75 +1490,51 @@ without failing the run.</p>
 <tbody>
 <tr>
 <td><code>name</code></td>
-<td>Referenced by <code>platform:</code> in <code>pnr.yaml</code></td>
+<td>Referenced by <code>tool:</code> in <code>fpv.yaml</code></td>
 </tr>
 <tr>
-<td><code>pdk</code></td>
-<td><code>cfg-pdks</code> entry name</td>
+<td><code>tool</code></td>
+<td>Binary name (PATH-resolved) or absolute path</td>
 </tr>
 <tr>
-<td><code>corner</code></td>
-<td>Corner from the PDK used for STA; defaults to the first declared corner</td>
+<td><code>opts.timeout</code></td>
+<td>Per-task timeout in seconds, written to the sby <code>[options]</code> block</td>
 </tr>
 <tr>
-<td><code>cts-buffer</code></td>
-<td>Standard cell name passed to <code>clock_tree_synthesis -root_buf</code> / <code>-buf_list</code></td>
-</tr>
-<tr>
-<td><code>routing-layers.signal</code></td>
-<td>Layer range for signal routing (e.g. <code>metal2-metal8</code>)</td>
-</tr>
-<tr>
-<td><code>routing-layers.clock</code></td>
-<td>Layer range for clock routing (typically higher metals)</td>
+<td><code>opts.extra-args</code></td>
+<td>Passed through verbatim to the sby command line</td>
 </tr>
 </tbody>
 </table>
-<h2 id="running-pr">Running P&amp;R</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># All runs in the default ./pnr.yaml</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>pnr
+<h2 id="running-fpv">Running FPV</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># All verifications in the default ./fpv.yaml</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>fpv
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># A single run from a specific config</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># A single verification from a specific config</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>rb<span class="w"> </span>fpv<span class="w"> </span>demo_fpv_fifo<span class="w"> </span>-c<span class="w"> </span>fpv/demo_fifo/fpv.yaml
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Reglvl-gated runs (1000 by default for tech-mapped flows)</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># List verifications without executing</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>rb<span class="w"> </span>fpv<span class="w"> </span>-c<span class="w"> </span>fpv/demo_fifo/fpv.yaml<span class="w"> </span>--list
 <a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># List runs without executing</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>rb<span class="w"> </span>pnr<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>--list
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># Stream out a routed GDS via KLayout after the run</span>
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>--gds
-<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>
-<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="c1"># Render a PNG of the GDS (implies --gds)</span>
-<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>--png
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># Regression across multiple fpv.yaml suites, filtered by reglvl</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>rb<span class="w"> </span>fpv-regression<span class="w"> </span>-c<span class="w"> </span>fpv_regression.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
 </code></pre></div>
-<h3 id="-gds-and-png"><code>--gds</code> and <code>--png</code></h3>
-<p>When <code>--gds</code> is requested, <code>rb pnr</code> invokes KLayout headlessly after a
-successful OpenROAD run, merging the routed DEF with the PDK's standard
-cell GDS to produce <code>artefacts/&lt;run&gt;/&lt;design&gt;.gds</code>. <code>--png</code> additionally
-renders a 2048×2048 PNG via the bundled <code>gds2png.py</code> helper. Both helpers
-ship inside the wheel under <code>rtl_buddy/pnr/klayout/</code> and are copied into
-the artefact dir at run time. KLayout failures emit <code>pnr.gds_failed</code> /
-<code>pnr.png_failed</code> warnings but do not fail the P&amp;R run — timing/DRC
-metrics remain authoritative.</p>
 <h2 id="results-table">Results table</h2>
 <p>A summary table prints after each run:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>                              P&amp;R Results Summary
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>┏━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┓
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>┃ P&amp;R Run  ┃ Result ┃ Desc     ┃ Cells ┃ Area    ┃ WNS Setup┃ WNS Hold ┃ DRCs ┃
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>┡━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━┩
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>│ demo_…   │ PASS   │ P&amp;R …    │ 1392  │ 3213 µm²│ +4.350 ns│ +0.080 ns│ 0    │
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>└──────────┴────────┴──────────┴───────┴─────────┴──────────┴──────────┴──────┘
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>                                  FPV Results Summary
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>┃ FPV Run         ┃ Result ┃ Description               ┃ Mode ┃ Depth ┃ Engines      ┃ Runtime ┃
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>┡━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>│ demo_fpv_fifo   │ PASS   │ property proved (bmc, 32) │ bmc  │ 32    │ smtbmc yices │ 0.4s    │
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>└─────────────────┴────────┴───────────────────────────┴──────┴───────┴──────────────┴─────────┘
 </code></pre></div>
 <ul>
-<li><strong>Cells</strong> — <code>Number of instances</code> from OpenROAD's floorplan log.</li>
-<li><strong>Area</strong> — <code>Design area … um^2</code> from <code>report_design_area</code>.</li>
-<li><strong>WNS Setup / WNS Hold</strong> — <code>report_worst_slack -max</code> / <code>-min</code>.</li>
-<li><strong>DRCs</strong> — non-empty line count of <code>route.drc.rpt</code>. Zero == clean route.</li>
+<li><strong>Mode / Depth / Engines</strong> — what was actually run, surfaced for quick triage.</li>
+<li><strong>Runtime</strong> — wall-clock seconds for the sby invocation.</li>
+<li><strong>Description</strong> — <code>property proved (...)</code> on pass; on fail, the path to the counterexample VCD when available.</li>
 </ul>
 <h2 id="artefacts">Artefacts</h2>
-<p>Per-run outputs land under <code>pnr/&lt;run&gt;/artefacts/</code>:</p>
+<p>Per-run outputs land under <code>fpv/&lt;run&gt;/artefacts/</code>:</p>
 <table>
 <thead>
 <tr>
@@ -1629,64 +1544,40 @@ metrics remain authoritative.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>pnr.log</code></td>
-<td>Full OpenROAD log</td>
+<td><code>fpv.log</code></td>
+<td>Full <code>sby</code> stdout/stderr</td>
 </tr>
 <tr>
-<td><code>pnr.tcl</code></td>
-<td>Templated Tcl handed to OpenROAD</td>
+<td><code>fpv.f</code></td>
+<td>Generated filelist (stripped, deduplicated)</td>
 </tr>
 <tr>
-<td><code>&lt;design&gt;.def</code></td>
-<td>Routed DEF</td>
+<td><code>fpv.sby</code></td>
+<td>Generated sby config (the file actually handed to <code>sby</code>)</td>
 </tr>
 <tr>
-<td><code>&lt;design&gt;.routed.v</code></td>
-<td>Post-route gate-level netlist</td>
+<td><code>sby_workdir/status</code></td>
+<td>Sby's verdict file (<code>PASS</code>, <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>)</td>
 </tr>
 <tr>
-<td><code>&lt;design&gt;.routed.sdc</code></td>
-<td>Post-route SDC</td>
+<td><code>sby_workdir/engine_&lt;N&gt;/trace.vcd</code></td>
+<td>Counterexample VCD on failed properties</td>
 </tr>
 <tr>
-<td><code>timing.rpt</code></td>
-<td>Worst-path timing report (full clock expanded)</td>
-</tr>
-<tr>
-<td><code>route.drc.rpt</code></td>
-<td>DRC violations (empty file = clean)</td>
-</tr>
-<tr>
-<td><code>route.maze.log</code></td>
-<td>Detail-route maze log</td>
-</tr>
-<tr>
-<td><code>&lt;design&gt;.gds</code></td>
-<td>Routed GDS — only when <code>--gds</code>/<code>--png</code> is set</td>
-</tr>
-<tr>
-<td><code>&lt;design&gt;.png</code></td>
-<td>Layout render — only when <code>--png</code> is set</td>
-</tr>
-<tr>
-<td><code>klayout.def2stream.log</code></td>
-<td>KLayout output for the DEF→GDS step (when used)</td>
-</tr>
-<tr>
-<td><code>klayout.gds2png.log</code></td>
-<td>KLayout output for the GDS→PNG render (when used)</td>
+<td><code>sby_workdir/engine_&lt;N&gt;/logfile.txt</code></td>
+<td>Per-engine log</td>
 </tr>
 </tbody>
 </table>
 <h2 id="passfail-detection">Pass/fail detection</h2>
-<p>A run is PASS when:
-1. <code>openroad</code> exits with code 0.
-2. The log has no <code>[ERROR ...]</code> lines.</p>
-<p>Otherwise FAIL is returned with the exit code or error count in the description. SKIP is returned when the run's <code>reglvl</code> is above the <code>-l</code> filter or when <code>tool:</code> is not <code>openroad</code>.</p>
+<p>A run is PASS when <code>sby</code> writes <code>PASS</code> to <code>sby_workdir/status</code> (or returns exit code 0 when the status file is missing).</p>
+<p>A run is FAIL when sby writes <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>, or when it exits non-zero. The failure description points at the counterexample trace inside <code>sby_workdir/engine_&lt;N&gt;/</code> so the user can open it in <code>gtkwave</code> or via <code>rb wave</code>.</p>
+<p>SKIP is returned when the run's <code>reglvl</code> is above the <code>-l</code> filter passed to <code>rb fpv-regression</code>.</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
-<li>Multi-corner signoff.</li>
-<li>Tape-out-grade PPA tuning. The defaults are calibrated for teaching demos and quick PPA sanity checks.</li>
+<li><strong>SymbiYosys-only.</strong> Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up — adding them parallels the pattern documented for <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">SpyGlass in <code>rb cdc</code></a>.</li>
+<li><strong>Per-property granularity.</strong> The summary table reports the overall sby verdict, not per-assertion pass/fail. Sby's own <code>status.json</code> per task is preserved under <code>sby_workdir/</code> for users who need that detail.</li>
+<li><strong>Wide SVA coverage.</strong> Yosys's native frontend supports a limited subset of SystemVerilog Assertions. Broader SVA coverage will land alongside the <a href="https://github.com/rtl-buddy/rtl_buddy/issues/88">slang frontend</a>.</li>
 </ul>
 
 
