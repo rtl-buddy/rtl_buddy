@@ -1,5 +1,5 @@
 ---
-description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, and cdc_regression.yaml.
+description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, cdc_regression.yaml, fpv.yaml, and fpv_regression.yaml.
 ---
 
 # YAML Formats
@@ -142,6 +142,13 @@ cfg-cdc-tools:
       sync-depth: 2          # forwarded as `--sync-depth N` (CDC-002 required depth)
       extra-args: ""         # appended verbatim to every invocation
 
+cfg-fpv-tools:
+  - name: "sby"
+    tool: "sby"              # bare name → found via PATH; or absolute path
+    opts:
+      timeout: 600           # per-task timeout in seconds; written to sby [options]
+      extra-args: ""         # appended verbatim to every sby invocation
+
 cfg-rtl-reg:
   reg-cfg-path: "design/regression.yaml"
 ```
@@ -161,6 +168,7 @@ cfg-rtl-reg:
 - `cfg-synth-efforts` defines named synthesis effort levels referenced by `synth.yaml` `effort` fields or the `--effort` CLI flag. Each entry has optional `yosys.synth-args` / `yosys.abc-args` (merged into the Yosys stage) and an `openroad` block. When `openroad.run: false`, the runner falls back to the Yosys-only backend even if `tool: openroad` was selected — useful for a fast quick-look path that needs no LEF/STA. `openroad.pre-sta-tcl` is a raw Tcl snippet injected into `synth.tcl` between `read_sdc` and `report_checks`; use it to insert floorplan/placement/parasitic-estimation steps before timing analysis. When no `cfg-synth-efforts` entries are configured or no effort is selected, a built-in `standard` effort with all defaults is used. Precedence for the same knob: per-synthesis `tool_overrides` > `cfg-synth-efforts` > `cfg-synth-tools`.
 - `cfg-pnr-tools` defines P&R tool entries selected by `pnr.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. When `pnr.yaml` `tool` does not match a `cfg-pnr-tools` entry, the value is used as the executable name directly (bare-name on `PATH` semantics).
 - `cfg-cdc-tools` defines CDC tool entries selected by `cdc.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. `opts.sync-depth` is forwarded as `--sync-depth N` and controls CDC-002's required synchronizer depth. `opts.extra-args` is appended verbatim to every analyzer invocation.
+- `cfg-fpv-tools` defines FPV tool entries selected by `fpv.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. `opts.timeout` is written to the generated `.sby` `[options]` block as a per-task timeout in seconds. `opts.extra-args` is appended verbatim to every sby invocation.
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
 - `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`.
 
@@ -591,6 +599,106 @@ cdc-configs:
 - `rtl-buddy cdc-regression` iterates each listed `cdc.yaml` file and filters analyses by `--reg-level`.
 - Paths in `cdc-configs` are resolved relative to the `cdc_regression.yaml` file.
 - `cdc-regression` changes directory into each CDC suite directory before executing its entries.
+
+---
+
+## fpv.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: fpv_config`
+- `verifications`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: fpv_config
+
+verifications:
+  - name: "demo_fpv_fifo"
+    desc: "Bounded proof of FIFO interface assertions"
+    tool: "sby"
+    model: "demo_fifo"
+    model_path: "../../design/demo_fifo/models.yaml"
+    top: "demo_fifo"
+    properties:
+      - "demo_fifo_props.sv"
+    mode: "bmc"
+    depth: 32
+    engines:
+      - "smtbmc yices"
+    reglvl: 1000
+
+  - name: "alu_accel_fpv"
+    desc: "k-induction prove of ALU accelerator invariants"
+    tool: "sby"
+    model: "alu_accel_top"
+    model_path: "../../design/alu_accel/models.yaml"
+    properties:
+      - "alu_accel_props.sv"
+    mode: "prove"
+    depth: 16
+    engines:
+      - "smtbmc z3"
+      - "abc pdr"
+    reglvl:
+      default: 0
+      sby: 1000
+    tool_overrides:
+      sby:
+        timeout: 1800
+        extra_args: ""
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Verification identifier; used on the CLI and in `artefacts/{name}/` |
+| `desc` | string | Human-readable verification description |
+| `tool` | string | FPV tool name from `root_config.yaml` `cfg-fpv-tools` |
+| `model` | string | Model name from `models.yaml` |
+| `model_path` | string | Path to `models.yaml`, resolved relative to the `fpv.yaml` file |
+| `top` | string | Top module name passed to `prep -top`; defaults to `model` |
+| `properties` | list | SystemVerilog files containing SVA properties / bound checkers, resolved relative to `fpv.yaml`. Optional when properties are in-RTL under `` `ifdef FORMAL `` guards |
+| `mode` | string | One of `bmc`, `prove`, `cover`, `live`; defaults to `bmc` |
+| `depth` | int | Cycle depth for the proof; defaults to 20 |
+| `engines` | list | Sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |
+| `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
+| `tool_overrides` | dict | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
+
+**Runtime effects:**
+
+- `rtl-buddy fpv` loads `fpv.yaml`, resolves the model's filelist via `models.yaml`, and dispatches to the backend selected by `tool`.
+- The bundled `sby` backend generates a `.sby` config containing `[options]` (mode, depth, optional timeout), `[engines]`, `[script]` (Yosys read + prep), and `[files]` (resolved source paths), then invokes `sby -f -d <workdir> <config>`.
+- Each verification writes the generated config, the full sby log, and the sby workdir under `artefacts/{name}/`; the workdir's `status` file is the authoritative pass/fail signal, with the process exit code as fallback.
+- Counterexample VCDs (on FAIL) land at `artefacts/{name}/sby_workdir/engine_<N>/trace.vcd`.
+- `rtl-buddy fpv <name> --list` lists configured verifications without running them.
+
+---
+
+## fpv_regression.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: fpv_reg_config`
+- `fpv-configs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: fpv_reg_config
+
+fpv-configs:
+  - "design/example_block_a/fpv/fpv.yaml"
+  - "design/example_block_b/fpv/fpv.yaml"
+```
+
+**Runtime effects:**
+
+- `rtl-buddy fpv-regression` iterates each listed `fpv.yaml` file and filters verifications by `--reg-level`.
+- Paths in `fpv-configs` are resolved relative to the `fpv_regression.yaml` file.
+- `fpv-regression` changes directory into each FPV suite directory before executing its entries.
 
 ---
 

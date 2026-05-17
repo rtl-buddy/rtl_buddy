@@ -27,6 +27,8 @@ SUBCOMMANDS = [
     "pnr",
     "cdc",
     "cdc-regression",
+    "fpv",
+    "fpv-regression",
 ]
 
 HEADER = """\

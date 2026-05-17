@@ -16,6 +16,7 @@ import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
+from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.model import ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
@@ -30,6 +31,8 @@ from .logging_utils import (
 )
 from .runner.cdc_runner import CdcRunner
 from .runner.cdc_results import CdcSkipResults
+from .runner.fpv_runner import FpvRunner
+from .runner.fpv_results import FpvSkipResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.pnr_runner import PnrRunner
@@ -71,6 +74,8 @@ class RtlBuddy:
         "synth-regression",
         "cdc",
         "cdc-regression",
+        "fpv",
+        "fpv-regression",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -127,6 +132,12 @@ class RtlBuddy:
         self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
         self.app.command("cdc-regression", help="run CDC lint regression")(
             self.do_cdc_regression
+        )
+        self.app.command("fpv", help="run formal property verification")(
+            self.do_cmd_fpv
+        )
+        self.app.command("fpv-regression", help="run FPV regression")(
+            self.do_fpv_regression
         )
         self.app.add_typer(
             skill_app, name="skill", help="manage the rtl_buddy agent skill"
@@ -1968,6 +1979,194 @@ class RtlBuddy:
             metadata=[f"Reg Level: {reg_level}"],
         )
         raise typer.Exit(self._exit_code_from_cdc_results(all_results))
+
+    # --- FPV subcommands ----------------------------------------------------
+
+    def _render_fpv_summary(self, title, fpv_results, *, metadata=None):
+        rows = []
+        for r in fpv_results:
+            res = r["results"].results
+            engines = res.get("engines") or []
+            runtime = res.get("runtime_s")
+            row = {
+                "fpv_name": r["fpv_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+                "mode": str(res.get("mode", "-")),
+                "depth": str(res.get("depth", "-")),
+                "engines": ", ".join(engines) if engines else "-",
+                "runtime": f"{runtime:.1f}s" if runtime is not None else "-",
+            }
+            rows.append(row)
+
+        columns = [
+            ("fpv_name", "FPV Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+            ("mode", "Mode"),
+            ("depth", "Depth"),
+            ("engines", "Engines"),
+            ("runtime", "Runtime"),
+        ]
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _exit_code_from_fpv_results(self, fpv_results):
+        return 0 if all(r["results"].is_pass() for r in fpv_results) else 1
+
+    def _do_fpv_suite(self, suite_cfg, fpv_name=None, reg_level=None):
+        verifications = suite_cfg.get_verifications(fpv_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for v in verifications:
+            tool_name = v.get_tool_name()
+            t_lvl = v.get_reglvl(tool_name)
+            if reg_level is not None and t_lvl > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpv_suite.skip",
+                    fpv=v.get_name(),
+                    reason="above_regression_level",
+                    fpv_level=t_lvl,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "fpv_name": v.get_name(),
+                        "results": FpvSkipResults(
+                            name=v.get_name() + "/results",
+                            desc=f"lvl {t_lvl} > cmd reg_level {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = FpvRunner(
+                name=self.name + "/fpv_runner",
+                root_cfg=self.root_cfg,
+                fpv_cfg=v,
+                suite_dir=suite_dir,
+            )
+            results.append({"fpv_name": v.get_name(), "results": runner.run()})
+        return results
+
+    def do_cmd_fpv(
+        self,
+        fpv_config: Annotated[
+            str,
+            typer.Option("-c", "--fpv-config", help="fpv.yaml to use"),
+        ] = "fpv.yaml",
+        fpv_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of FPV verification to run",
+                show_default="run all verifications",
+            ),
+        ] = None,
+        list_fpvs: Annotated[
+            bool,
+            typer.Option(
+                "--list",
+                help="list verifications in the selected config and exit",
+            ),
+        ] = False,
+    ):
+        """
+        run formal property verification
+        """
+        suite_cfg = FpvSuiteConfig(path=fpv_config)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpv",
+            command="fpv",
+            fpv=fpv_name or "all",
+            fpv_config=fpv_config,
+        )
+
+        if list_fpvs:
+            emit_console_text(
+                "  ".join(suite_cfg.get_verification_names()), stream="stdout"
+            )
+            raise typer.Exit(0)
+
+        fpv_results = self._do_fpv_suite(suite_cfg, fpv_name=fpv_name)
+        self._render_fpv_summary("FPV Results Summary", fpv_results)
+        raise typer.Exit(self._exit_code_from_fpv_results(fpv_results))
+
+    def do_fpv_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to fpv_regression.yaml",
+                show_default="Use ./fpv_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="FPV regression level to stop at"),
+        ] = 0,
+    ):
+        """
+        run FPV regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpv_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        start_dir = os.getcwd()
+        if reg_config is not None:
+            reg_cfg_path = os.path.join(start_dir, reg_config)
+        else:
+            local = os.path.join(start_dir, "fpv_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "fpv_regression.yaml not found; pass -c to specify a path"
+                )
+
+        fpv_reg = FpvRegConfig(name=self.name + "/fpv_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running FPV regression from {os.path.dirname(reg_cfg_path)}",
+            style="cyan",
+        )
+
+        all_results = []
+        try:
+            for suite_cfg in fpv_reg.get_suite_configs():
+                suite_dir = os.path.dirname(suite_cfg.get_path())
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpv_regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                )
+                os.chdir(suite_dir)
+                suite_results = self._do_fpv_suite(
+                    suite_cfg, fpv_name=None, reg_level=reg_level
+                )
+                all_results.extend(suite_results)
+        finally:
+            os.chdir(start_dir)
+
+        self._render_fpv_summary(
+            "FPV Regression Summary",
+            all_results,
+            metadata=[f"Reg Level: {reg_level}"],
+        )
+        raise typer.Exit(self._exit_code_from_fpv_results(all_results))
 
     def do_cmd_wave(
         self,
