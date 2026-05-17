@@ -5,11 +5,9 @@ description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, r
 
 # rtl_buddy
 
-You are running rtl_buddy a Verilog/SV build and regression helper configured with YAML.
+Run `rtl-buddy --version` at the top of every run summary.
 
-This skill covers agent-specific conventions. For CLI usage, `rb --help` and `rb <subcommand> --help` are the first stop, then bundled docs:
-`rtl-buddy docs list`, `rtl-buddy docs show agents`, `rtl-buddy --machine docs show reference/yaml`.
-Use <https://rtl-buddy.github.io/rtl_buddy/> only as a fallback reference.
+Use this skill for agent-specific workflow rules only. For command syntax or schema details, start with `rb --help`, `rb <subcommand> --help`, `rtl-buddy docs list`, `rtl-buddy docs show agents`, and `rtl-buddy --machine docs show reference/yaml`.
 
 ## Always use `--machine`
 
@@ -17,32 +15,33 @@ All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL. Structur
 
 See `rtl-buddy docs show agents` for the stdout envelope schema, JSONL log format, and exit codes (0 pass, 1 test failures, 2 fatal).
 
-## Version check
+## YAML map
 
-Report `rtl-buddy --version` at the top of every run summary.
-This skill ships with the CLI, so its content matches the installed major. Surface any observed behavior differences in your summary.
+Use `rtl-buddy --machine docs show reference/yaml` for exact fields.
 
-## Config files
+- `root_config.yaml` configures platforms, builders, coverage, waveform, synth, P&R, CDC, FPV, and default regression paths.
+- `tests.yaml` is suite-local and defines testbenches plus tests; run `test` and `randtest` from this directory.
+- `models.yaml` defines design filelists referenced by tests, synth, CDC, and FPV.
+- `regression.yaml`, `synth_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists.
+- `synth.yaml`, `pnr.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows.
+- `specs.yaml` feeds `rb spec` traceability commands.
 
-Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
+## CWD rules
 
-- `root_config.yaml` sets project defaults and tool/platform entries.
-- `tests.yaml` and `regression.yaml` drive sim suites; run `test`/`randtest` from the suite directory and `regression` from the repo root.
-- `models.yaml` lists design sources used by sim, synth, P&R, CDC, FPV, and hierarchy commands.
-- `synth.yaml`, `pnr.yaml`, `power.yaml`, `cdc.yaml`, and `fpv.yaml` configure implementation/analysis runs.
-- `specs.yaml` holds spec traceability data consumed by `rtl-buddy spec`.
+- Run `test` and `randtest` from the suite directory that contains `tests.yaml`.
+- Run `regression`, `synth-regression`, `cdc-regression`, and `fpv-regression` from the repo root.
+- For multi-suite repos, summarize results per suite, not only globally.
 
 ## Pass/fail detection
 
-- UVM tests use configured report thresholds; cocotb testbenches use JUnit XML.
-- Otherwise, `artefacts/<test>/test.log` must contain stdout starting with `PASS` or `FAIL`.
-- When emitting `FAIL`, also print an `ERR:` or `FAT:` line. Missing markers report `NA`; simulator exit code alone is not authoritative.
-- See `rtl-buddy docs show agents` and `rtl-buddy docs show concepts/cocotb`.
+- UVM uses configured warning/error thresholds.
+- cocotb uses `cocotb_results.xml`, not `PASS` or `FAIL` stdout markers.
+- Other sims should emit `PASS` or `FAIL` in `artefacts/<test>/test.log`; add an `ERR:` or `FAT:` line when reporting failure.
+- Formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
 
 ## Multi-suite runs
 
 - Discover suites with `rg --files -g '**/tests.yaml'`.
-- Summarize results per suite, not just globally.
 
 ## Artefact locations
 
