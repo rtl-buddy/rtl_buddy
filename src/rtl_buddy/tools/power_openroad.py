@@ -380,6 +380,7 @@ class OpenRoadPower(BasePower):
         return PowerPassResults(
             name=self.name + "/results",
             mode=self.power_cfg.get_mode(),
+            netlist_source=self.power_cfg.get_netlist_source(),
             total_w=parsed["total_w"],
             internal_w=parsed["internal_w"],
             switching_w=parsed["switching_w"],

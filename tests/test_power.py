@@ -540,3 +540,33 @@ def test_power_resolve_pnr_cfg_fatal_when_not_configured():
     cfg = _make_power_cfg(0)
     with pytest.raises(FatalRtlBuddyError, match="resolve_pnr_cfg.*not configured"):
         cfg.resolve_pnr_cfg()
+
+
+# ---------------------------------------------------------------------------
+# PowerPassResults — netlist_source surfaces for the table renderer
+# ---------------------------------------------------------------------------
+
+
+def test_power_pass_results_carries_netlist_source():
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    r = PowerPassResults(
+        name="demo/results",
+        mode="dynamic",
+        netlist_source="pnr",
+        total_w=1.1e-3,
+        internal_w=7.1e-4,
+        switching_w=3.4e-4,
+        leakage_w=6.0e-5,
+        activity_source="saif",
+    )
+    assert r.results["netlist_source"] == "pnr"
+    assert r.results["mode"] == "dynamic"
+    assert r.results["activity_source"] == "saif"
+
+
+def test_power_pass_results_omits_netlist_source_when_none():
+    from rtl_buddy.runner.power_results import PowerPassResults
+
+    r = PowerPassResults(name="demo/results", mode="static")
+    assert "netlist_source" not in r.results

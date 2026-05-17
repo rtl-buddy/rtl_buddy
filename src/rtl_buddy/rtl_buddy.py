@@ -1822,6 +1822,9 @@ class RtlBuddy:
             return f"{v * 1e9:.3f} nW"
 
         has_mode = any("mode" in r["results"].results for r in power_results)
+        has_source = any(
+            "netlist_source" in r["results"].results for r in power_results
+        )
         has_activity = any(
             "activity_source" in r["results"].results for r in power_results
         )
@@ -1843,6 +1846,8 @@ class RtlBuddy:
             }
             if has_mode:
                 row["mode"] = res.get("mode", "-")
+            if has_source:
+                row["source"] = res.get("netlist_source", "-")
             if has_activity:
                 row["activity"] = res.get("activity_source", "-")
             if has_total:
@@ -1860,6 +1865,8 @@ class RtlBuddy:
         ]
         if has_mode:
             columns.append(("mode", "Mode"))
+        if has_source:
+            columns.append(("source", "Source"))
         if has_activity:
             columns.append(("activity", "Activity"))
         if has_total:

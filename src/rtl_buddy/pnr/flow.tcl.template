@@ -108,6 +108,14 @@ write_sdc     $OUT_DIR/${DESIGN}.routed.sdc
 # OpenROAD binary DB. Captures placement + routing + parasitic
 # annotations so downstream tools (rb power with netlist-source: pnr)
 # can re-enter at the post-route state without re-running PnR.
+#
+# Note on SPEF: we intentionally do NOT call write_spef. Producing a
+# real SPEF requires OpenROAD's RCX extractor (rcx_run) and a PDK-
+# specific .rcx_rules file; Nangate45 / FreePDK45 doesn't ship one,
+# and the estimate_parasitics-derived in-memory annotations are not
+# extractable to SPEF ("[INFO RCX-0134] no extraction data."). The
+# ODB-based handoff carries the same routing-derived cap to rb power
+# without the calibration step.
 write_db      $OUT_DIR/${DESIGN}.routed.odb
 
 puts ">>> DONE"

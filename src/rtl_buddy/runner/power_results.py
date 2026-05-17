@@ -25,6 +25,7 @@ class PowerPassResults(PowerResults):
         name,
         *,
         mode: str | None = None,
+        netlist_source: str | None = None,
         total_w: float | None = None,
         internal_w: float | None = None,
         switching_w: float | None = None,
@@ -37,6 +38,8 @@ class PowerPassResults(PowerResults):
         )
         if mode is not None:
             self.results["mode"] = mode
+        if netlist_source is not None:
+            self.results["netlist_source"] = netlist_source
         if total_w is not None:
             self.results["total_w"] = total_w
         if internal_w is not None:
