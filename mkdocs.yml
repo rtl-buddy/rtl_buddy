@@ -46,6 +46,7 @@ nav:
       - Waveform Viewer: concepts/wave.md
       - Synthesis: concepts/synthesis.md
       - Place-and-Route: concepts/pnr.md
+      - Formal Property Verification: concepts/fpv.md
   - Reference:
       - CLI: reference/cli.md
       - YAML Formats: reference/yaml.md

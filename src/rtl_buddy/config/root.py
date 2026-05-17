@@ -30,6 +30,7 @@ from .pdk import PdkConfig, PdkConfigFile
 from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
+from .fpv import FpvToolConfig, FpvToolConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -123,6 +124,9 @@ class RootConfigFile:
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
     )
+    fpv_tools: list[FpvToolConfigFile] = field(
+        rename="cfg-fpv-tools", default_factory=list
+    )
     synth_efforts: list[SynthEffortConfigFile] = field(
         rename="cfg-synth-efforts", default_factory=list
     )
@@ -174,6 +178,7 @@ class RootConfig:
         self.pnr_platform_cfgs: dict = {}
         self.pnr_tool_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
+        self.fpv_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
@@ -253,6 +258,11 @@ class RootConfig:
             # Populate CDC tool configs
             self.cdc_tool_cfgs = {
                 cfg.name: CdcToolConfig(cfg) for cfg in data.cdc_tools
+            }
+
+            # Populate FPV tool configs
+            self.fpv_tool_cfgs = {
+                cfg.name: FpvToolConfig(cfg) for cfg in data.fpv_tools
             }
 
             # Populate synth effort configs
@@ -485,6 +495,22 @@ class RootConfig:
         cfg = self.cdc_tool_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(f"CDC tool '{name}' not found in cfg-cdc-tools")
+        return cfg
+
+    def get_fpv_tool_cfg(self, name: str):
+        """
+        Get FPV tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-fpv-tools.
+        Returns:
+          cfg (FpvToolConfig): Matching FPV tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.fpv_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(f"FPV tool '{name}' not found in cfg-fpv-tools")
         return cfg
 
     def get_pdk_cfg(self, name: str) -> PdkConfig:

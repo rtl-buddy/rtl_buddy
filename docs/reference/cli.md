@@ -54,6 +54,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ pnr                run place-and-route                                               │
 │ cdc                run CDC lint                                                      │
 │ cdc-regression     run CDC lint regression                                           │
+│ fpv                run formal property verification                                  │
+│ fpv-regression     run FPV regression                                                │
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
 │ spec               spec traceability commands                                        │
@@ -368,6 +370,39 @@ Usage: rtl-buddy cdc-regression [OPTIONS]
 │ --reg-config  -c      TEXT     path to cdc_regression.yaml                           │
 │                                [default: (Use ./cdc_regression.yaml if present)]     │
 │ --reg-level   -l      INTEGER  CDC regression level to stop at [default: 0]          │
+│ --help                         Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## fpv
+
+```text
+Usage: rtl-buddy fpv [OPTIONS] [FPV_NAME]                                              
+                                                                                        
+ run formal property verification                                                       
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   fpv_name      [FPV_NAME]  name of FPV verification to run                          │
+│                             [default: (run all verifications)]                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --fpv-config  -c      TEXT  fpv.yaml to use [default: fpv.yaml]                      │
+│ --list                      list verifications in the selected config and exit       │
+│ --help                      Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## fpv-regression
+
+```text
+Usage: rtl-buddy fpv-regression [OPTIONS]                                              
+                                                                                        
+ run FPV regression                                                                     
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config  -c      TEXT     path to fpv_regression.yaml                           │
+│                                [default: (Use ./fpv_regression.yaml if present)]     │
+│ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
 │ --help                         Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
