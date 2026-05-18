@@ -59,6 +59,8 @@ class SynthToolOpts:
     synth_args: str = ""
     abc_args: str = ""
     strategy: str = ""
+    frontend: str = "verilog"
+    plugin_path: str = ""
 
 
 @serde
@@ -66,6 +68,8 @@ class SynthToolOptsFile:
     synth_args: str = field(rename="synth-args", default="")
     abc_args: str = field(rename="abc-args", default="")
     strategy: str = field(default="")
+    frontend: str = field(default="verilog")
+    plugin_path: str = field(rename="plugin-path", default="")
 
 
 @serde
@@ -136,12 +140,20 @@ class SynthToolConfig:
         synth_args = self._cfg.opts.synth_args
         abc_args = self._cfg.opts.abc_args
         strategy = self._cfg.opts.strategy
+        frontend = self._cfg.opts.frontend
+        plugin_path = self._cfg.opts.plugin_path
         if overrides:
             synth_args = overrides.get("synth_args", synth_args)
             abc_args = overrides.get("abc_args", abc_args)
             strategy = overrides.get("strategy", strategy)
+            frontend = overrides.get("frontend", frontend)
+            plugin_path = overrides.get("plugin_path", plugin_path)
         return SynthToolOpts(
-            synth_args=synth_args, abc_args=abc_args, strategy=strategy
+            synth_args=synth_args,
+            abc_args=abc_args,
+            strategy=strategy,
+            frontend=frontend,
+            plugin_path=plugin_path,
         )
 
 
@@ -157,6 +169,7 @@ class SynthConfigFile:
     defines: dict | None = None
     platform: str | None = None
     lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
+    lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
     effort: str | None = None
@@ -173,6 +186,9 @@ class SynthConfigFile:
         lef_paths = [
             os.path.normpath(os.path.join(config_dir, p)) for p in self.lef_paths
         ]
+        lib_paths = [
+            os.path.normpath(os.path.join(config_dir, p)) for p in self.lib_paths
+        ]
         return SynthConfig(
             name=self.name,
             desc=self.desc,
@@ -183,6 +199,7 @@ class SynthConfigFile:
             defines=self.defines,
             platform=self.platform,
             lef_paths=lef_paths,
+            lib_paths=lib_paths,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             effort=self.effort,
@@ -203,6 +220,7 @@ class SynthConfig:
     tool_overrides: dict | None
     effort: str | None = None
     lef_paths: list[str] = dc_field(default_factory=list)
+    lib_paths: list[str] = dc_field(default_factory=list)
 
     def get_effort_name(self) -> str | None:
         return self.effort
@@ -230,6 +248,9 @@ class SynthConfig:
 
     def get_lef_paths(self) -> list[str]:
         return list(self.lef_paths)
+
+    def get_lib_paths(self) -> list[str]:
+        return list(self.lib_paths)
 
     def get_tool_name(self) -> str:
         return self.tool

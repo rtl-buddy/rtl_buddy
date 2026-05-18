@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -10,10 +11,11 @@ from .vlog_filelist import VlogFilelist
 from ..config.synth import (
     SynthConfig,
     SynthToolConfig,
+    SynthToolOpts,
     SynthEffortConfig,
     default_effort_config,
 )
-from ..errors import FilelistError
+from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
@@ -25,6 +27,88 @@ _ABC_SCRIPT_NO_TIMING = (
 )
 # Same but with stime -p appended to report critical-path delay
 _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
+
+
+def resolve_plugin_path(plugin_path: str, root_cfg) -> str:
+    """Resolve a Yosys plugin path. Absolute paths pass through; relative
+    paths are taken relative to the project root."""
+    p = Path(plugin_path)
+    if p.is_absolute():
+        return str(p)
+    if root_cfg is None:
+        return str(p.resolve())
+    return str((Path(root_cfg.get_project_rootdir()) / p).resolve())
+
+
+def emit_frontend_read_cmds(
+    opts: SynthToolOpts,
+    source_files: list[str],
+    top: str,
+    defines: dict | None,
+    params: dict | None,
+    root_cfg,
+) -> list[str]:
+    """Emit the Yosys commands that load + elaborate the design, based on
+    the selected frontend (``verilog`` | ``slang``).
+
+    - verilog (default): per-file ``read_verilog -sv -defer`` matching the
+      legacy behavior. Elaboration is lazy; ``synth -top`` resolves later
+      and any top-level parameter overrides come from a subsequent
+      ``chparam`` line.
+    - slang: load the yosys-slang plugin and elaborate fully with
+      ``read_slang``. Slang requires ``--top`` and accepts ``-D NAME=VAL``
+      for macros and ``-G NAME=VAL`` for top-level parameter overrides
+      (the latter folded in here since slang elaborates eagerly — a later
+      ``chparam`` would arrive too late).
+    """
+    # Shell-quote everything that comes from filesystem paths or
+    # user-supplied dict values — Yosys parses each script line with
+    # shell-style tokenisation, so an unquoted space in a macOS Library
+    # path or a project name with a space corrupts the command. This is
+    # critical on the slang path (one read_slang line covers all
+    # sources, so one bad path breaks elaboration entirely) but applied
+    # uniformly so both frontends behave the same.
+    cmds: list[str] = []
+    define_flags_v = ""
+    if defines:
+        define_flags_v = " " + " ".join(
+            f"-D {k}={shlex.quote(str(v))}" for k, v in defines.items()
+        )
+
+    if opts.frontend == "verilog":
+        for src in source_files:
+            cmds.append(f"read_verilog -sv -defer{define_flags_v} {shlex.quote(src)}")
+        return cmds
+
+    if opts.frontend == "slang":
+        if not opts.plugin_path.strip():
+            raise FatalRtlBuddyError(
+                "frontend: slang requires opts.plugin-path to be set "
+                "(path to yosys-slang's slang.so)"
+            )
+        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
+        cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
+        flags: list[str] = []
+        if defines:
+            flags.extend(f"-D{k}={shlex.quote(str(v))}" for k, v in defines.items())
+        if params:
+            flags.extend(f"-G{k}={shlex.quote(str(v))}" for k, v in params.items())
+        flags_str = (" " + " ".join(flags)) if flags else ""
+        sources_joined = " ".join(shlex.quote(s) for s in source_files)
+        cmds.append(
+            f"read_slang --std 1800-2017 --top {top}{flags_str} {sources_joined}"
+        )
+        return cmds
+
+    raise FatalRtlBuddyError(
+        f"unknown synth frontend {opts.frontend!r}; expected 'verilog' or 'slang'"
+    )
+
+
+def slang_handles_params(opts: SynthToolOpts) -> bool:
+    """Slang elaborates eagerly so top-level params are folded into
+    read_slang; a subsequent chparam would be too late."""
+    return opts.frontend == "slang"
 
 
 class YosysSynth:
@@ -123,10 +207,11 @@ class YosysSynth:
         return int(min(periods) * 1000)
 
     def _resolve_lib_paths(self) -> list[str]:
+        extras = list(self.synth_cfg.get_lib_paths())
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
-            return []
-        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()]
+            return extras
+        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
 
     def _parse_area_um2(self, log_text: str) -> float | None:
         m = re.search(r"Chip area for module[^:]*:\s*([\d.]+)", log_text)
@@ -161,19 +246,27 @@ class YosysSynth:
         mapped = bool(lib_paths)
 
         defines = self.synth_cfg.get_defines()
-        define_flags = ""
-        if defines:
-            define_flags = " " + " ".join(f"-D {k}={v}" for k, v in defines.items())
 
         lines = []
         for lib in lib_paths:
             lines.append(f"read_liberty -lib {lib}")
 
         source_files = self._source_files_from_filelist(fl_path)
-        for src in source_files:
-            lines.append(f"read_verilog -sv -defer{define_flags} {src}")
+        lines.extend(
+            emit_frontend_read_cmds(
+                opts=opts,
+                source_files=source_files,
+                top=top,
+                defines=defines,
+                params=params,
+                root_cfg=self.root_cfg,
+            )
+        )
 
-        if params:
+        # Top-level params: chparam works for the legacy verilog frontend
+        # (lazy elaboration). For slang they're already folded into
+        # read_slang via -G, so skip the redundant pass.
+        if params and not slang_handles_params(opts):
             for key, value in params.items():
                 lines.append(f"chparam -set {key} {value} {top}")
 
