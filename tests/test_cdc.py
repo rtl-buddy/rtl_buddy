@@ -39,6 +39,7 @@ def _make_cdc_cfg(
     waivers=None,
     reglvl=None,
     tool_overrides=None,
+    frontend=None,
 ):
     from rtl_buddy.config.model import ModelConfig
 
@@ -52,6 +53,7 @@ def _make_cdc_cfg(
         waivers=waivers,
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
+        frontend=frontend,
     )
 
 
@@ -165,6 +167,26 @@ def test_cdc_config_tool_overrides_merge_through_tool_cfg():
 
 
 # ---------------------------------------------------------------------------
+# CdcConfig — frontend (per-analysis elaboration frontend selector)
+# ---------------------------------------------------------------------------
+
+
+def test_cdc_config_frontend_defaults_to_none():
+    cfg = _make_cdc_cfg()
+    assert cfg.frontend is None
+
+
+def test_cdc_config_frontend_explicit_slang():
+    cfg = _make_cdc_cfg(frontend="slang")
+    assert cfg.frontend == "slang"
+
+
+def test_cdc_config_frontend_explicit_yosys():
+    cfg = _make_cdc_cfg(frontend="yosys")
+    assert cfg.frontend == "yosys"
+
+
+# ---------------------------------------------------------------------------
 # CdcSuiteConfig — YAML loading + path resolution
 # ---------------------------------------------------------------------------
 
@@ -187,6 +209,7 @@ _SUITE_YAML = dedent("""\
         constraints: "mod_b.sdc"
         waivers: "mod_b.waivers"
         reglvl: 1000
+        frontend: "slang"
 """)
 
 _MODELS_YAML = dedent("""\
@@ -244,6 +267,16 @@ def test_cdc_suite_config_missing_name_raises(tmp_path):
         cfg.get_analyses("nonexistent")
 
 
+def test_cdc_suite_config_picks_up_frontend_field(tmp_path):
+    """Per-analysis `frontend:` round-trips through CdcConfigFile -> CdcConfig."""
+    suite_yaml = _write_suite(tmp_path)
+    cfg = CdcSuiteConfig(str(suite_yaml))
+    cdc_a = cfg.get_analyses("cdc_a")[0]
+    cdc_b = cfg.get_analyses("cdc_b")[0]
+    assert cdc_a.frontend is None  # not set in YAML -> default
+    assert cdc_b.frontend == "slang"  # explicit in YAML
+
+
 # ---------------------------------------------------------------------------
 # CdcRegConfig — YAML loading + per-suite path resolution
 # ---------------------------------------------------------------------------
@@ -270,3 +303,106 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
     suites = reg_cfg.get_suite_configs()
     assert len(suites) == 1
     assert suites[0].get_analysis_names() == ["cdc_a", "cdc_b"]
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — frontend argv plumbing
+# ---------------------------------------------------------------------------
+
+
+def _setup_lint_run(tmp_path, frontend=None):
+    """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
+    build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
+
+    The subprocess is mocked: each invocation is appended to the returned
+    list, and the mock writes a minimal valid JSON report so run() can
+    finish parsing its output. Use the captured argv to assert on the
+    --frontend plumbing.
+    """
+    from contextlib import nullcontext
+    from rtl_buddy.config.cdc import CdcToolConfig, CdcToolConfigFile, CdcToolOptsFile
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.process_utils import ManagedProcessResult
+    from rtl_buddy.tools import cdc_rtl_buddy as cdc_rtl_buddy_module
+    from rtl_buddy.tools.cdc_rtl_buddy import RtlBuddyCdc
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("module my_module(); endmodule")
+    sdc = tmp_path / "my_module.sdc"
+    sdc.write_text("# empty SDC")
+
+    model = ModelConfig(name="my_module", filelist=[f"-v {sv}"], path=str(tmp_path))
+    cdc_cfg = CdcConfig(
+        name="test_cdc",
+        desc="t",
+        model=model,
+        tool="rtl-buddy-cdc",
+        constraints=str(sdc),
+        waivers=None,
+        _reglvl=None,
+        tool_overrides=None,
+        frontend=frontend,
+    )
+    tool_cfg = CdcToolConfig(
+        CdcToolConfigFile(
+            name="rtl-buddy-cdc",
+            tool="rtl-buddy-cdc",
+            opts=CdcToolOptsFile(),
+        )
+    )
+
+    wrapper = RtlBuddyCdc(
+        name="t", cdc_cfg=cdc_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+    )
+    json_report = Path(wrapper.artefact_dir) / "cdc.json"
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, stdout, stderr, **kwargs):
+        calls.append(list(cmd))
+        # Subprocess succeeded; write the minimal payload run() expects so
+        # downstream parsing finishes cleanly.
+        json_report.write_text('{"summary": {"violations": 0, "suppressed": 0}}')
+        return ManagedProcessResult(returncode=0)
+
+    return wrapper, calls, _fake_run, cdc_rtl_buddy_module, nullcontext
+
+
+def test_lint_argv_omits_frontend_when_unset(tmp_path, monkeypatch):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend=None)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    wrapper.run()
+
+    assert len(calls) == 2  # text + json
+    for cmd in calls:
+        assert "--frontend" not in cmd
+
+
+def test_lint_argv_adds_frontend_slang(tmp_path, monkeypatch):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend="slang")
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "--frontend" in cmd
+        assert cmd[cmd.index("--frontend") + 1] == "slang"
+
+
+def test_lint_argv_adds_frontend_yosys_when_explicit(tmp_path, monkeypatch):
+    """An explicit `frontend: "yosys"` is forwarded as well — useful for
+    pinning a config to a specific frontend independent of the tool's own
+    default, and as a regression guard against future default changes."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend="yosys")
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert cmd[cmd.index("--frontend") + 1] == "yosys"

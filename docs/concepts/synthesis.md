@@ -49,6 +49,19 @@ yosys --version
 
 The `yosys` binary must be on `PATH` when `rb synth` is invoked.
 
+### Optional: yosys-slang plugin
+
+For designs that use SystemVerilog-2017 features Yosys's built-in frontend doesn't accept (e.g. `import pkg::*`, packed-struct typedefs, complex package generates), build the [yosys-slang](https://github.com/povik/yosys-slang) plugin against the same Yosys you just installed:
+
+```bash
+git clone --recursive https://github.com/povik/yosys-slang.git
+cd yosys-slang
+make -j 8           # produces build/slang.so
+make install        # optional: copies into $(yosys-config --datdir)/plugins/
+```
+
+Wire it into `rb synth` by setting `opts.frontend: "slang"` and `opts.plugin-path` under `cfg-synth-tools` (see [`SystemVerilog frontend`](#systemverilog-frontend) below). Skip this step entirely if your designs work with the default `frontend: "verilog"`.
+
 ## Installing OpenROAD
 
 OpenROAD is required only for the `openroad` backend. It must be built from source on macOS — no official binaries are published. See the build notes in your project's `tools/openroad/SETUP_OSX.md` (the starter template uses that filename) for the full procedure. After building, symlink the binary to a directory on `PATH`:
@@ -196,12 +209,57 @@ cfg-synth-tools:
     opts:
       synth-args: ""
       abc-args: ""
+      frontend: "verilog"      # "verilog" (default) | "slang"
+      plugin-path: ""          # required if frontend: slang
 
   - name: "openroad"
     tool: "openroad"     # executable name (must be on PATH)
     opts:
       strategy: "AREA"   # AREA (default) | TIMING | TIMING_ANNEAL | TIMING_GENETIC
+      frontend: "verilog"
+      plugin-path: ""
 ```
+
+#### SystemVerilog frontend
+
+`opts.frontend` chooses the parser Yosys uses to read the design:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"verilog"` (default) | `read_verilog -sv -defer` per source — lazy elaboration, fast, supports the SystemVerilog subset built into the rtl-buddy Yosys fork. |
+| `"slang"` | Loads the [yosys-slang](https://github.com/povik/yosys-slang) plugin and calls `read_slang --top <top> --std 1800-2017` — full SV-2017 (`import pkg::*`, packed-struct typedefs, virtual interfaces, complex generates). Elaboration is eager, so `params:` are folded into `read_slang -GNAME=VAL` and `defines:` into `-DNAME=VAL` (subsequent `chparam` is skipped). |
+
+When `frontend: slang`, `opts.plugin-path` must be set to the location of yosys-slang's `slang.so`. Absolute paths pass through unchanged; relative paths resolve against the project root (the directory containing `root_config.yaml`). Build instructions for the plugin are in [`yosys-slang's README`](https://github.com/povik/yosys-slang#building).
+
+Per-block opt-in (leaves other blocks on the legacy frontend):
+
+```yaml
+# synth.yaml
+- name: "<block>_synth"
+  tool: "yosys"
+  model: "<top>"
+  model_path: "../../design/<block>/models.yaml"
+  tool_overrides:
+    yosys:
+      frontend: "slang"
+      plugin_path: "../yosys-slang/build/slang.so"
+```
+
+The OpenROAD backend inherits the same selection — it runs Yosys for elaboration before handing the netlist to OpenROAD for STA/placement. Even when the synth's `tool:` is `openroad`, the per-block override key is `tool_overrides.yosys` (the elaboration tool), not `tool_overrides.openroad`:
+
+```yaml
+# synth.yaml
+- name: "<block>_or"
+  tool: "openroad"          # full Yosys + OpenROAD STA flow
+  tool_overrides:
+    yosys:                  # elaboration-stage opts → live under yosys
+      frontend: "slang"
+      plugin_path: "../yosys-slang/build/slang.so"
+```
+
+> **Naming convention — `plugin-path` vs `plugin_path`:** under `cfg-synth-tools.opts` (above) the YAML field is **kebab-case** (`plugin-path`, `synth-args`, `abc-args`) — that's the schema's canonical form. Under `tool_overrides.yosys` keys are the **Python attribute names** (snake_case: `plugin_path`, `synth_args`), because the override dict is merged at the attribute level rather than re-deserialised through the YAML schema. Same field, two names, depending on where it lives.
+
+#### Strategy
 
 The `strategy` option controls optional OpenROAD resynthesis after timing analysis:
 
