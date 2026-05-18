@@ -1673,16 +1673,24 @@
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">power/demo_block_b/power.yaml</span>
 </code></pre></div>
 <h2 id="results-table">Results table</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>                             Power Results Summary
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>┏━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━━┓
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>┃ Power  ┃ Result ┃ Desc   ┃ Mode  ┃Activity┃ Total ┃Internal┃ Switch┃Leakage ┃
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>┡━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━━┩
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>│ …static│ PASS   │ …      │static │default │ 422 µW│ 344 µW│22.6 µW│54.9 µW │
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>│ …synth │ PASS   │ …      │dynamic│synth…  │ 515 µW│ 363 µW│93.1 µW│59.3 µW │
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>│ …saif  │ PASS   │ …      │dynamic│saif    │ 906 µW│ 646 µW│ 203 µW│57.1 µW │
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>└────────┴────────┴────────┴───────┴────────┴───────┴───────┴───────┴────────┘
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>                              Power Results Summary
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>┏━━━━━━━━┳━━━━━━┳━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━━┓
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>┃ Power  ┃Res…  ┃Desc  ┃Mode  ┃Source ┃Activity┃Total ┃Intern…┃Switch.┃Leakag…┃
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>┡━━━━━━━━╇━━━━━━╇━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━━┩
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>│ …static│PASS  │…     │static│synth  │default │422 µW│ 344 µW│22.6 µW│54.9 µW│
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>│ …synth │PASS  │…     │dynam.│synth  │synth.  │515 µW│ 363 µW│93.1 µW│59.3 µW│
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>│ …saif  │PASS  │…     │dynam.│synth  │saif    │906 µW│ 646 µW│ 203 µW│57.1 µW│
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>│ …postp │PASS  │…     │dynam.│ pnr   │saif    │1.110 │ 708 µW│ 341 µW│59.8 µW│
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>│        │      │      │      │       │        │  mW  │       │       │       │
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>└────────┴──────┴──────┴──────┴───────┴────────┴──────┴───────┴───────┴───────┘
 </code></pre></div>
-<p>Power values auto-scale between W / mW / µW / nW for readability.</p>
+<p>Columns:</p>
+<ul>
+<li><strong>Mode</strong> — <code>static</code> or <code>dynamic</code> from <code>power.yaml</code>.</li>
+<li><strong>Source</strong> — <code>synth</code> (post-synth netlist) or <code>pnr</code> (post-PnR ODB). Set by <code>netlist-source:</code>.</li>
+<li><strong>Activity</strong> — resolved activity strategy: <code>default</code> (static), <code>synthetic</code>, <code>saif</code>, or <code>vcd</code>.</li>
+</ul>
+<p>Power values auto-scale between W / mW / µW / nW for readability. Columns only render when at least one run populates them.</p>
 <h2 id="artefacts">Artefacts</h2>
 <p>Per-run outputs land under <code>power/&lt;suite&gt;/artefacts/&lt;run&gt;/</code>:</p>
 <table>
