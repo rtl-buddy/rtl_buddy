@@ -95,6 +95,19 @@ To update the pre-commit hook version:
 pre-commit autoupdate
 ```
 
+## Testing
+
+The `pytest` suite under `tests/` is run in CI by `.github/workflows/test.yml` with coverage on every push and PR. Locally:
+
+```bash
+uv run pytest                                    # run the suite
+uv run pytest --cov                              # with coverage summary
+uv run pytest --cov --cov-report=term-missing    # show uncovered lines
+uv run pytest --cov --cov-report=html            # write htmlcov/index.html
+```
+
+Coverage configuration lives in `[tool.coverage.*]` in `pyproject.toml` (source = `src/rtl_buddy`, excludes the bundled `skill/` and `docs/`). No `--cov` is set in `pytest.ini` so plain `pytest` stays fast; pass `--cov` explicitly when you want a coverage run.
+
 ## Logging Practices
 
 All runtime logging goes through `log_event()` in `src/rtl_buddy/logging_utils.py`. Do not use `logger.info(f"...")` directly — use `log_event(logger, level, "event.name", key=value, ...)` so that both human and machine modes produce correct output.
