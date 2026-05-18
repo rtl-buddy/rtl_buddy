@@ -1,0 +1,480 @@
+"""Tests for the FPV config surface: tool config, per-verification
+config, suite/regression YAML loading, sby driver helpers. Mirrors the
+structure of ``test_cdc.py``."""
+
+from pathlib import Path
+from textwrap import dedent
+from unittest.mock import patch
+
+import pytest
+
+from rtl_buddy.config.fpv import (
+    FpvConfig,
+    FpvRegConfig,
+    FpvSuiteConfig,
+    FpvToolConfig,
+    FpvToolConfigFile,
+    FpvToolOptsFile,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _tool_cfg(name="sby", exe="sby", timeout=None, extra_args=""):
+    opts = FpvToolOptsFile(timeout=timeout, extra_args=extra_args)
+    return FpvToolConfig(FpvToolConfigFile(name=name, tool=exe, opts=opts))
+
+
+def _make_fpv_cfg(
+    *,
+    name="test_fpv",
+    model_name="my_module",
+    model_path="/fake/models.yaml",
+    tool="sby",
+    top=None,
+    properties=None,
+    mode="bmc",
+    depth=20,
+    engines=None,
+    reglvl=None,
+    tool_overrides=None,
+):
+    from rtl_buddy.config.model import ModelConfig
+
+    model = ModelConfig(name=model_name, filelist=[], path=model_path)
+    return FpvConfig(
+        name=name,
+        desc="test fpv",
+        model=model,
+        tool=tool,
+        top=top or model_name,
+        properties=list(properties or []),
+        mode=mode,
+        depth=depth,
+        engines=list(engines or ["smtbmc yices"]),
+        _reglvl=reglvl,
+        tool_overrides=tool_overrides,
+    )
+
+
+# ---------------------------------------------------------------------------
+# FpvToolConfig — opts and overrides
+# ---------------------------------------------------------------------------
+
+
+def test_fpv_tool_config_returns_base_opts():
+    cfg = _tool_cfg(timeout=300, extra_args="--verbose")
+    opts = cfg.get_opts()
+    assert opts.timeout == 300
+    assert opts.extra_args == "--verbose"
+
+
+def test_fpv_tool_config_overrides_merge_over_base():
+    cfg = _tool_cfg(timeout=120, extra_args="")
+    opts = cfg.get_opts({"timeout": 600, "extra_args": "--debug"})
+    assert opts.timeout == 600
+    assert opts.extra_args == "--debug"
+
+
+def test_fpv_tool_config_partial_override_keeps_unset_base():
+    cfg = _tool_cfg(timeout=120, extra_args="--baseline")
+    opts = cfg.get_opts({"timeout": 300})
+    assert opts.timeout == 300
+    assert opts.extra_args == "--baseline"
+
+
+def test_fpv_tool_config_none_override_returns_base():
+    cfg = _tool_cfg(timeout=120)
+    assert cfg.get_opts(None).timeout == 120
+    assert cfg.get_opts({}).timeout == 120
+
+
+# ---------------------------------------------------------------------------
+# FpvConfig — basic accessors and reglvl semantics
+# ---------------------------------------------------------------------------
+
+
+def test_fpv_config_top_defaults_to_model_name():
+    cfg = _make_fpv_cfg(model_name="my_top", top=None)
+    assert cfg.get_top() == "my_top"
+
+
+def test_fpv_config_top_explicit_wins_over_model_name():
+    cfg = _make_fpv_cfg(model_name="my_top", top="inner_block")
+    assert cfg.get_top() == "inner_block"
+
+
+def test_fpv_config_engines_default_to_yices_smtbmc():
+    cfg = _make_fpv_cfg()
+    assert cfg.get_engines() == ["smtbmc yices"]
+
+
+def test_fpv_config_reglvl_int():
+    cfg = _make_fpv_cfg(reglvl=500)
+    assert cfg.get_reglvl("sby") == 500
+
+
+def test_fpv_config_reglvl_none_defaults_to_zero():
+    cfg = _make_fpv_cfg(reglvl=None)
+    assert cfg.get_reglvl("sby") == 0
+
+
+def test_fpv_config_reglvl_dict_tool_specific():
+    cfg = _make_fpv_cfg(reglvl={"sby": 100, "jaspergold": 200, "default": 50})
+    assert cfg.get_reglvl("sby") == 100
+    assert cfg.get_reglvl("jaspergold") == 200
+    assert cfg.get_reglvl("vc-formal") == 50  # default fallback
+
+
+def test_fpv_config_reglvl_dict_default_only():
+    cfg = _make_fpv_cfg(reglvl={"default": 100})
+    assert cfg.get_reglvl("sby") == 100
+    assert cfg.get_reglvl("anything") == 100
+
+
+def test_fpv_config_reglvl_malformed_dict_raises():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg = _make_fpv_cfg(reglvl={"some-other-tool": 100})
+    with pytest.raises(FatalRtlBuddyError, match="reglvl"):
+        cfg.get_reglvl("sby")
+
+
+# ---------------------------------------------------------------------------
+# FpvConfig — tool_overrides (nested by tool name)
+# ---------------------------------------------------------------------------
+
+
+def test_fpv_config_tool_overrides_for_matching_tool():
+    cfg = _make_fpv_cfg(tool_overrides={"sby": {"extra_args": "--strict"}})
+    assert cfg.get_tool_overrides_for("sby") == {"extra_args": "--strict"}
+
+
+def test_fpv_config_tool_overrides_for_non_matching_tool():
+    cfg = _make_fpv_cfg(tool_overrides={"sby": {"extra_args": "--strict"}})
+    assert cfg.get_tool_overrides_for("jaspergold") is None
+
+
+def test_fpv_config_tool_overrides_none():
+    cfg = _make_fpv_cfg(tool_overrides=None)
+    assert cfg.get_tool_overrides_for("sby") is None
+
+
+def test_fpv_config_tool_overrides_merge_through_tool_cfg():
+    """End-to-end: a per-verification tool_overrides entry overrides the root
+    config baseline when passed through FpvToolConfig.get_opts()."""
+    fpv_cfg = _make_fpv_cfg(
+        tool_overrides={"sby": {"timeout": 600, "extra_args": "--strict"}}
+    )
+    tool_cfg = _tool_cfg(timeout=120, extra_args="")
+    opts = tool_cfg.get_opts(fpv_cfg.get_tool_overrides_for(tool_cfg.get_name()))
+    assert opts.timeout == 600
+    assert opts.extra_args == "--strict"
+
+
+# ---------------------------------------------------------------------------
+# FpvSuiteConfig — YAML loading + path resolution
+# ---------------------------------------------------------------------------
+
+_SUITE_YAML = dedent("""\
+    rtl-buddy-filetype: fpv_config
+
+    verifications:
+      - name: "fpv_a"
+        desc: "First verification"
+        model: "mod_a"
+        model_path: "{models_path}"
+        tool: "sby"
+        top: "mod_a"
+        properties:
+          - "mod_a_props.sv"
+        mode: "bmc"
+        depth: 32
+        engines:
+          - "smtbmc yices"
+        reglvl: 0
+      - name: "fpv_b"
+        desc: "Second verification"
+        model: "mod_b"
+        model_path: "{models_path}"
+        tool: "sby"
+        properties:
+          - "mod_b_props.sv"
+        mode: "prove"
+        depth: 16
+        engines:
+          - "smtbmc z3"
+          - "abc pdr"
+        reglvl: 1000
+""")
+
+_MODELS_YAML = dedent("""\
+    rtl-buddy-filetype: model_config
+
+    models:
+      - name: "mod_a"
+        filelist: ["top_a.sv"]
+      - name: "mod_b"
+        filelist: ["top_b.sv"]
+""")
+
+
+def _write_suite(tmp_path):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "fpv.yaml"
+    suite_yaml.write_text(_SUITE_YAML.format(models_path="models.yaml"))
+    return suite_yaml
+
+
+def test_fpv_suite_config_loads_all_verifications(tmp_path):
+    suite_yaml = _write_suite(tmp_path)
+    cfg = FpvSuiteConfig(str(suite_yaml))
+    assert cfg.get_verification_names() == ["fpv_a", "fpv_b"]
+
+
+def test_fpv_suite_config_get_by_name(tmp_path):
+    suite_yaml = _write_suite(tmp_path)
+    cfg = FpvSuiteConfig(str(suite_yaml))
+    results = cfg.get_verifications("fpv_a")
+    assert len(results) == 1
+    assert results[0].get_name() == "fpv_a"
+    assert results[0].get_top() == "mod_a"
+    assert results[0].get_mode() == "bmc"
+    assert results[0].get_depth() == 32
+
+
+def test_fpv_suite_config_paths_resolved_relative_to_yaml(tmp_path):
+    """Properties paths must be resolved relative to the fpv.yaml file."""
+    suite_yaml = _write_suite(tmp_path)
+    cfg = FpvSuiteConfig(str(suite_yaml))
+    fpv_a = cfg.get_verifications("fpv_a")[0]
+    fpv_b = cfg.get_verifications("fpv_b")[0]
+    assert Path(fpv_a.get_properties()[0]) == tmp_path / "mod_a_props.sv"
+    assert Path(fpv_b.get_properties()[0]) == tmp_path / "mod_b_props.sv"
+
+
+def test_fpv_suite_config_missing_name_raises(tmp_path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    suite_yaml = _write_suite(tmp_path)
+    cfg = FpvSuiteConfig(str(suite_yaml))
+    with pytest.raises(FatalRtlBuddyError, match="not found"):
+        cfg.get_verifications("nonexistent")
+
+
+def test_fpv_suite_config_invalid_mode_raises(tmp_path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    bad_yaml = dedent("""\
+        rtl-buddy-filetype: fpv_config
+
+        verifications:
+          - name: "fpv_bad"
+            desc: "Bad mode"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "sby"
+            properties: ["mod_a_props.sv"]
+            mode: "telepathy"
+            depth: 16
+            engines: ["smtbmc yices"]
+    """)
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "fpv.yaml"
+    suite_yaml.write_text(bad_yaml)
+    with pytest.raises(FatalRtlBuddyError, match="mode"):
+        FpvSuiteConfig(str(suite_yaml))
+
+
+# ---------------------------------------------------------------------------
+# FpvRegConfig — YAML loading + per-suite path resolution
+# ---------------------------------------------------------------------------
+
+_REG_YAML = dedent("""\
+    rtl-buddy-filetype: fpv_reg_config
+
+    fpv-configs:
+      - "sandbox/fpv.yaml"
+""")
+
+
+def test_fpv_reg_config_loads_suite_paths(tmp_path):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = sandbox / "fpv.yaml"
+    suite_yaml.write_text(_SUITE_YAML.format(models_path="models.yaml"))
+
+    reg_yaml = tmp_path / "fpv_regression.yaml"
+    reg_yaml.write_text(_REG_YAML)
+
+    reg_cfg = FpvRegConfig(name="reg", path=str(reg_yaml))
+    suites = reg_cfg.get_suite_configs()
+    assert len(suites) == 1
+    assert suites[0].get_verification_names() == ["fpv_a", "fpv_b"]
+
+
+# ---------------------------------------------------------------------------
+# SbyFpv driver — config-file rendering + status parsing
+# ---------------------------------------------------------------------------
+
+
+def test_sby_fpv_writes_sby_file_with_expected_sections(tmp_path):
+    """The generated .sby file must contain options/engines/script/files
+    sections derived from FpvConfig."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    # Stand up a real filelist on disk so VlogFilelist's write_output
+    # has something to chew on. We avoid running write_output here by
+    # bypassing _write_filelist via _parse_filelist directly.
+    src = tmp_path / "design.sv"
+    src.write_text("module design(); endmodule\n")
+    props = tmp_path / "props.sv"
+    props.write_text("// SVA properties\n")
+    fl = tmp_path / "artefacts" / "demo" / "fpv.f"
+    fl.parent.mkdir(parents=True)
+    fl.write_text(f"{src}\n")
+
+    fpv_cfg = _make_fpv_cfg(
+        name="demo",
+        top="design",
+        properties=[str(props)],
+        mode="bmc",
+        depth=42,
+        engines=["smtbmc yices", "abc pdr"],
+    )
+    tool_cfg = _tool_cfg(timeout=300)
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=fpv_cfg,
+        tool_cfg=tool_cfg,
+        suite_dir=str(tmp_path),
+    )
+    sources, incdirs = sby._parse_filelist(str(fl))
+    sby_path = sby._write_sby_file(sources, incdirs)
+
+    content = Path(sby_path).read_text()
+    assert "[options]" in content
+    assert "mode bmc" in content
+    assert "depth 42" in content
+    assert "timeout 300" in content
+    assert "[engines]" in content
+    assert "smtbmc yices" in content
+    assert "abc pdr" in content
+    assert "[script]" in content
+    assert "prep -top design" in content
+    assert "read -sv -formal design.sv" in content
+    assert "read -sv -formal props.sv" in content
+    assert "[files]" in content
+    assert str(src) in content
+    assert str(props) in content
+
+
+def test_sby_fpv_parse_filelist_extracts_incdirs(tmp_path):
+    """+incdir+ entries from the filelist must be resolved and surfaced
+    as include directories, separate from source files."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+incdir+./rtl/inc\n{src.name}\n")
+
+    fpv_cfg = _make_fpv_cfg()
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=fpv_cfg,
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    sources, incdirs = sby._parse_filelist(str(fl))
+    assert sources == [str((tmp_path / "design.sv").resolve())] or sources == [
+        str(tmp_path / "design.sv")
+    ]
+    assert incdirs == [str(tmp_path / "rtl" / "inc")]
+
+
+def test_sby_fpv_read_status_returns_first_token(tmp_path):
+    """The status file may contain extra info after the verdict — we
+    only care about the first token."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    workdir = tmp_path / "sby_workdir"
+    workdir.mkdir()
+    (workdir / "status").write_text("PASS (engine_0)\n")
+    assert SbyFpv._read_status(str(workdir)) == "PASS"
+
+    (workdir / "status").write_text("FAIL")
+    assert SbyFpv._read_status(str(workdir)) == "FAIL"
+
+
+def test_sby_fpv_read_status_missing_returns_none(tmp_path):
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    workdir = tmp_path / "sby_workdir"
+    workdir.mkdir()
+    assert SbyFpv._read_status(str(workdir)) is None
+
+
+def test_sby_fpv_counterexample_desc_points_at_trace(tmp_path):
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    workdir = tmp_path / "sby_workdir"
+    (workdir / "engine_0").mkdir(parents=True)
+    (workdir / "engine_0" / "trace.vcd").write_text("$dummy\n")
+    desc = SbyFpv._counterexample_desc(str(workdir))
+    assert "trace.vcd" in desc
+
+
+def test_sby_fpv_counterexample_desc_no_engine_dir(tmp_path):
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    workdir = tmp_path / "sby_workdir"
+    workdir.mkdir()
+    desc = SbyFpv._counterexample_desc(str(workdir))
+    assert "no counterexample" in desc
+
+
+# ---------------------------------------------------------------------------
+# FpvRunner — dispatch & skip semantics (no real sby invocation)
+# ---------------------------------------------------------------------------
+
+
+class _StubRootCfg:
+    def __init__(self, tool_cfg):
+        self._tool_cfg = tool_cfg
+
+    def get_fpv_tool_cfg(self, name):
+        return self._tool_cfg
+
+
+def test_fpv_runner_dispatches_to_sby_backend(tmp_path):
+    """FpvRunner should look up the tool config from root_cfg and hand
+    a real SbyFpv instance the per-verification config."""
+    from rtl_buddy.runner.fpv_runner import FpvRunner
+    from rtl_buddy.runner.fpv_results import FpvPassResults
+
+    fpv_cfg = _make_fpv_cfg(tool="sby")
+    tool_cfg = _tool_cfg()
+    root_cfg = _StubRootCfg(tool_cfg)
+
+    runner = FpvRunner(
+        name="t/runner",
+        root_cfg=root_cfg,
+        fpv_cfg=fpv_cfg,
+        suite_dir=str(tmp_path),
+    )
+
+    fake_result = FpvPassResults(
+        name="test_fpv", mode="bmc", depth=20, engines=["smtbmc yices"]
+    )
+    with patch(
+        "rtl_buddy.tools.sby_fpv.SbyFpv.run", return_value=fake_result
+    ) as mocked:
+        result = runner.run()
+    assert mocked.called
+    assert result.results["result"] == "PASS"
+    assert result.results["mode"] == "bmc"

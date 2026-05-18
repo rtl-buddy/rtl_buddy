@@ -33,6 +33,7 @@ puts ">>> Reading Liberty + LEF"
 read_liberty $LIBERTY
 read_lef     $TECH_LEF
 read_lef     $MACRO_LEF
+{{ extra_libs_lefs }}
 
 puts ">>> Reading netlist"
 read_verilog $NETLIST
@@ -55,6 +56,35 @@ place_pins -hor_layers metal3 -ver_layers metal2
 puts ">>> Tie cells"
 if {[string length $TIEHI_CELL_PORT] > 0} { insert_tiecells $TIEHI_CELL_PORT }
 if {[string length $TIELO_CELL_PORT] > 0} { insert_tiecells $TIELO_CELL_PORT }
+
+puts ">>> Macro placement (snap to row pitch)"
+# Hard macros must be placed + legalized on row boundaries before the
+# standard-cell global_placement run. Without this, global_placement
+# positions macros in continuous coordinates and detail-route fails
+# with off-grid pin shapes. Walk the block's instances, find any
+# whose master is CLASS BLOCK (i.e., a hard macro), and snap its
+# origin to the manufacturing grid + row pitch using a fixed origin
+# near the die's bottom-left corner. For multi-macro designs the
+# manual placement would need real planning; for the common
+# single-macro case (this project's vxp_cor) one corner placement is
+# fine.
+set block [ord::get_db_block]
+set manuf_grid_dbu [expr {int([ord::microns_to_dbu 0.005])}]
+set row_pitch_dbu  [expr {int([ord::microns_to_dbu 1.4])}]
+set macro_x_dbu [expr {[ord::microns_to_dbu 10.0]}]
+set macro_y_dbu [expr {[ord::microns_to_dbu 8.4]}] ; # 6 × 1.4 µm rows
+set macro_idx 0
+foreach inst [$block getInsts] {
+  set master [$inst getMaster]
+  if {[$master isBlock]} {
+    incr macro_idx
+    set off_y [expr {$macro_idx * $row_pitch_dbu * 4}]
+    set y_pos [expr {$macro_y_dbu + $off_y}]
+    $inst setLocation $macro_x_dbu $y_pos
+    $inst setPlacementStatus FIRM
+    puts ">>>   placed [$inst getName] at ($macro_x_dbu, $y_pos) DBU"
+  }
+}
 
 puts ">>> Global placement"
 global_placement -density 0.7 -pad_left 1 -pad_right 1

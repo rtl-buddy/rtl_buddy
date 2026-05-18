@@ -7,13 +7,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 from .vlog_filelist import VlogFilelist
+from .synth_yosys import emit_frontend_read_cmds, slang_handles_params
 from ..config.synth import (
     SynthConfig,
     SynthToolConfig,
     SynthEffortConfig,
     default_effort_config,
 )
-from ..errors import FilelistError
+from ..errors import FatalRtlBuddyError, FilelistError
 from ..logging_utils import log_event, task_status
 from ..runner.synth_results import SynthFailResults, SynthPassResults, SynthResults
 
@@ -98,10 +99,11 @@ class OpenRoadSynth:
         return paths
 
     def _resolve_lib_paths(self) -> list[str]:
+        extras = list(self.synth_cfg.get_lib_paths())
         platform = self.synth_cfg.get_platform()
         if not platform or self.root_cfg is None:
-            return []
-        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()]
+            return extras
+        return [self.root_cfg.get_synth_platform_cfg(platform).get_path()] + extras
 
     def _resolve_lef_paths(self) -> list[str]:
         platform = self.synth_cfg.get_platform()
@@ -120,20 +122,45 @@ class OpenRoadSynth:
         lib_paths = self._resolve_lib_paths()
         params = self.synth_cfg.get_params()
         defines = self.synth_cfg.get_defines()
-
-        define_flags = ""
-        if defines:
-            define_flags = " " + " ".join(f"-D {k}={v}" for k, v in defines.items())
+        # The elaboration stage uses Yosys regardless of `tool:`, so its opts
+        # (frontend, plugin_path, etc.) come from the yosys tool config plus
+        # any `tool_overrides.yosys` block — not from this backend's openroad
+        # tool config. Fall back to the openroad opts only when no yosys tool
+        # config exists.
+        opts = self.tool_cfg.get_opts(
+            self.synth_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+        )
+        if self.root_cfg is not None:
+            try:
+                yosys_tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
+                opts = yosys_tool_cfg.get_opts(
+                    self.synth_cfg.get_tool_overrides_for("yosys")
+                )
+            except FatalRtlBuddyError:
+                # No `yosys` entry under cfg-synth-tools — fall back to
+                # the active tool_cfg's opts. Any other config error
+                # (typo'd opts dict, malformed cfg-synth-tools entry,
+                # etc.) is surfaced rather than silently degrading the
+                # frontend selection to "verilog".
+                pass
 
         lines = []
         for lib in lib_paths:
             lines.append(f"read_liberty -lib {lib}")
 
         source_files = self._source_files_from_filelist(fl_path)
-        for src in source_files:
-            lines.append(f"read_verilog -sv -defer{define_flags} {src}")
+        lines.extend(
+            emit_frontend_read_cmds(
+                opts=opts,
+                source_files=source_files,
+                top=top,
+                defines=defines,
+                params=params,
+                root_cfg=self.root_cfg,
+            )
+        )
 
-        if params:
+        if params and not slang_handles_params(opts):
             for key, value in params.items():
                 lines.append(f"chparam -set {key} {value} {top}")
 
@@ -228,15 +255,29 @@ class OpenRoadSynth:
 
         Yosys omits blackbox module definitions from write_verilog output.
         OpenROAD link_design fails if it encounters an instance whose module is
-        undefined. We find source files containing (* blackbox *), strip that
-        Yosys-specific attribute (which OpenROAD's reader rejects), and write
-        cleaned copies into the artefact directory for use in the OR Tcl script.
-        Returns the list of cleaned stub paths.
+        undefined. We find source files containing (* blackbox *), generate a
+        port-only stub (header + endmodule, no body), and write it into the
+        artefact directory for use in the OR Tcl script. The body is stripped
+        because OpenSTA's gate-level reader only accepts a tiny subset of
+        Verilog — `reg` arrays, `always` blocks, `initial`, attributes other
+        than `keep` etc. all break parsing, and the body has no semantic role
+        for STA (cell timing comes from the Liberty). Returns the list of
+        cleaned stub paths.
         """
         try:
             candidates = self._source_files_from_filelist(self._filelist_path())
         except OSError:
             return []
+        # Match a module header (with its port list, possibly multi-line),
+        # capture from the (* blackbox *) attribute through the closing );
+        # of the port list, then everything up to endmodule is dropped.
+        bb_re = re.compile(
+            r"\(\*\s*blackbox\s*\*\)\s*"
+            r"(module\s+\w+\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
+            r".*?"
+            r"endmodule",
+            re.DOTALL,
+        )
         result = []
         for src in candidates:
             try:
@@ -244,9 +285,9 @@ class OpenRoadSynth:
                     content = f.read()
                 if "(* blackbox *)" not in content:
                     continue
+                cleaned = bb_re.sub(r"\1\nendmodule", content)
                 # OpenROAD's gate-level reader does not accept SV `logic`;
                 # replace with `wire` for port declarations.
-                cleaned = content.replace("(* blackbox *)", "")
                 cleaned = cleaned.replace("  input  logic ", "  input  wire  ")
                 cleaned = cleaned.replace("  output logic ", "  output wire  ")
                 stub_name = os.path.basename(src)
@@ -292,7 +333,12 @@ class OpenRoadSynth:
 
         lines.append("report_design_area")
         if constraints:
+            # report_checks emits per-group path reports for readability;
+            # report_worst_slack -max emits the single authoritative WNS
+            # across all path groups so the summary table reflects the
+            # true worst, not just whichever group OpenROAD printed first.
             lines.append("report_checks -path_delay max -digits 3")
+            lines.append("report_worst_slack -max -digits 3")
             lines.append("report_tns")
 
         script = "\n".join(lines) + "\n"
@@ -306,12 +352,24 @@ class OpenRoadSynth:
         return float(m.group(1)) if m else None
 
     def _parse_or_wns_ns(self, log_text: str) -> float | None:
-        # report_checks -path_delay max emits the worst slack as the last line of the
-        # timing path report: "   6.754   slack (MET)" or "  -0.123   slack (VIOLATED)"
-        m = re.search(
+        # Prefer the single authoritative line from `report_worst_slack -max`:
+        #     "worst slack max -0.431"
+        # That's the true WNS across every path group OpenROAD checked.
+        m = re.search(r"^worst slack\s+max\s+([-\d.]+)", log_text, re.MULTILINE)
+        if m:
+            return float(m.group(1))
+        # Fallback for legacy logs without report_worst_slack: scan every
+        # path-report summary line and take the minimum.
+        # `report_checks -path_delay max` emits one timing report per group,
+        # each ending with "   6.754   slack (MET)" or "  -0.123   slack (VIOLATED)".
+        # `re.search` would only grab the first; the summary needs the worst,
+        # so collect them all and return the min.
+        matches = re.findall(
             r"^\s+([-\d.]+)\s+slack\s+\((?:MET|VIOLATED)\)", log_text, re.MULTILINE
         )
-        return float(m.group(1)) if m else None
+        if not matches:
+            return None
+        return min(float(s) for s in matches)
 
     def _parse_or_tns_ns(self, log_text: str) -> float | None:
         m = re.search(r"^tns\s+(?:max|min)?\s*([-\d.]+)", log_text, re.MULTILINE)

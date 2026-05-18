@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, or pnr.yaml.
+description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, CDC lint, formal property verification, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, cdc.yaml, or fpv.yaml.
 ---
 
 # rtl_buddy
@@ -33,6 +33,8 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 - **`synth.yaml`** — synthesis runs; `model` name is the top; `tool` selects `cfg-synth-tools` entry; `params`/`defines`/`tool_overrides` for per-run customization.
 - **`synth_regression.yaml`** — repo-level synthesis suite list for `synth-regression`.
 - **`pnr.yaml`** — P&R runs that consume an upstream `rb synth` artefact; each entry names `synth`/`synth-path`, `platform` (a `cfg-pnr-platforms` entry), and `constraints` (SDC). Only `tool: openroad` today.
+- **`cdc.yaml`** — CDC lint analyses; each entry names a `model`, `tool` (selects `cfg-cdc-tools` entry), an SDC, and optional waivers.
+- **`fpv.yaml`** — formal property verification runs; each entry names a `model`, `top`, a list of `properties:` (SV files with bound checker modules), `mode` (bmc/prove/cover/live), `depth`, and `engines:`. `tool` selects `cfg-fpv-tools` entry; only `sby` (SymbiYosys) today.
 - **`specs.yaml`** — spec traceability data; consumed by `rtl-buddy spec`.
 
 ## Pass/fail detection
