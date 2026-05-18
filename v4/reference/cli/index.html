@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/">
       
       
-        <link rel="prev" href="../../concepts/pnr/">
+        <link rel="prev" href="../../concepts/fpv/">
       
       
         <link rel="next" href="../yaml/">
@@ -636,6 +636,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/power/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/fpv/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formal Property Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -933,6 +989,28 @@
     <span class="md-ellipsis">
       
         cdc-regression
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fpv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fpv
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fpv-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fpv-regression
       
     </span>
   </a>
@@ -1381,6 +1459,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#fpv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fpv
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fpv-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        fpv-regression
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1447,12 +1547,17 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>│ synth              run synthesis                                                     │
 <a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>│ synth-regression   run synthesis regression                                          │
 <a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>│ pnr                run place-and-route                                               │
-<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>│ cdc                run CDC lint                                                      │
-<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>│ cdc-regression     run CDC lint regression                                           │
-<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>│ skill              manage the rtl_buddy agent skill                                  │
-<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>│ docs               browse bundled documentation                                      │
-<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>│ spec               spec traceability commands                                        │
-<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>│ power              run power analysis                                                │
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>│ power-regression   run power analysis regression                                     │
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>│ saif               convert FST/VCD trace to SAIF v2.0                                │
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>│ cdc                run CDC lint                                                      │
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>│ cdc-regression     run CDC lint regression                                           │
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>│ fpv                run formal property verification                                  │
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>│ fpv-regression     run FPV regression                                                │
+<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>│ skill              manage the rtl_buddy agent skill                                  │
+<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>│ docs               browse bundled documentation                                      │
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>│ spec               spec traceability commands                                        │
+<a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="test">test</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
@@ -1720,6 +1825,33 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a>│ --reg-level   -l      INTEGER  CDC regression level to stop at [default: 0]          │
 <a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>│ --help                         Show this message and exit.                           │
 <a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="fpv">fpv</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>Usage: rtl-buddy fpv [OPTIONS] [FPV_NAME]                                              
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a> run formal property verification                                                       
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>│   fpv_name      [FPV_NAME]  name of FPV verification to run                          │
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>│                             [default: (run all verifications)]                       │
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>│ --fpv-config  -c      TEXT  fpv.yaml to use [default: fpv.yaml]                      │
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>│ --list                      list verifications in the selected config and exit       │
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>│ --help                      Show this message and exit.                              │
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+</code></pre></div>
+<h2 id="fpv-regression">fpv-regression</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>Usage: rtl-buddy fpv-regression [OPTIONS]                                              
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a> run FPV regression                                                                     
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>│ --reg-config  -c      TEXT     path to fpv_regression.yaml                           │
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>│                                [default: (Use ./fpv_regression.yaml if present)]     │
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>│ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>│ --help                         Show this message and exit.                           │
+<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 
 
