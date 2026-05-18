@@ -1,0 +1,32 @@
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb_basic
+    filelist:
+      - src/example.sv
+tests:
+  - name: basic
+    desc: trivial smoke-test entry
+    model: example
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb_basic
+    sim_timeout:
+  - name: extra
+    desc: second test entry used for --list output
+    model: example
+    model_path: models.yaml
+    reglvl: 5
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb_basic
+    sim_timeout:
