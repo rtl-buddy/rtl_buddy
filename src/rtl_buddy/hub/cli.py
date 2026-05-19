@@ -31,6 +31,7 @@ from ..logging_utils import emit_console_text, log_event
 from . import config as hub_config
 from . import discovery
 from . import loop as hub_loop
+from . import status_client
 
 
 logger = logging.getLogger(__name__)
@@ -193,8 +194,38 @@ def cmd_status() -> None:
         emit_console_text(f"  viewer_url     : http://127.0.0.1:{record.http_port}/")
     emit_console_text(f"  server_version : {record.server_version}")
     emit_console_text(f"  started_at     : {record.started_at}")
+
     if not live:
         raise typer.Exit(code=1)
+
+    # Live hub: query the registry over TCP and render per-peer state.
+    # A connect / hello failure is a peer-level note, not a fatal — the
+    # hub may still be running but mid-shutdown, or have just accepted
+    # another CLI client (origin-cli dedup, §3.2). The user sees the
+    # underlying error verbatim either way.
+    host, _, port_str = record.tcp.rpartition(":")
+    try:
+        port = int(port_str)
+    except ValueError:
+        emit_console_text(
+            f"  peers          : (unparseable tcp address {record.tcp!r})",
+            style="yellow",
+        )
+        return
+
+    emit_console_text("  peers")
+    try:
+        registered = status_client.query_registered_origins_sync(host, port)
+    except status_client.HubStatusQueryError as exc:
+        emit_console_text(f"    (query failed: {exc})", style="yellow")
+        return
+
+    registered_set = {o for o in registered if o != "cli"}
+    for origin in status_client.DISPLAY_ORIGINS:
+        if origin in registered_set:
+            emit_console_text(f"    {origin:<6} CONNECTED", style="green")
+        else:
+            emit_console_text(f"    {origin:<6} not connected", style="yellow")
 
 
 @app.command("log", help="tail the hub log")
