@@ -30,6 +30,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
 from . import config as hub_config
 from . import discovery
+from . import launchagent
 from . import loop as hub_loop
 
 
@@ -271,6 +272,67 @@ def cmd_config_validate(
     emit_console_text(f"  log_path       : {cfg.hub.log_path}")
     emit_console_text(f"  tb_prefix      : {cfg.mapping.tb_prefix!r}")
     emit_console_text(f"  signal_aliases : {len(cfg.mapping.signal_aliases)}")
+
+
+@app.command(
+    "install-launchagent",
+    help="install the macOS LaunchAgent so the hub auto-starts at login",
+)
+def cmd_install_launchagent() -> None:
+    """Render and ``launchctl load`` the user-level LaunchAgent.
+
+    Runs from the current project root — the agent is project-scoped,
+    so multiple projects each install their own agent under a unique
+    plist path. Re-run after moving the project; the old plist needs
+    a manual ``rb hub uninstall-launchagent`` from the prior location.
+    """
+    try:
+        project_root = _resolve_project_root()
+    except FatalRtlBuddyError as exc:
+        emit_console_text(str(exc), style="red")
+        raise typer.Exit(code=2)
+    try:
+        target = launchagent.install(project_root=project_root)
+    except launchagent.LaunchAgentUnsupportedError as exc:
+        emit_console_text(str(exc), style="red")
+        raise typer.Exit(code=2)
+    except launchagent.LaunchAgentError as exc:
+        emit_console_text(str(exc), style="red")
+        raise typer.Exit(code=1)
+    emit_console_text(f"LaunchAgent installed at {target}", style="green")
+    emit_console_text("  agent: " + launchagent.LABEL)
+    emit_console_text(f"  project_root: {project_root}")
+    emit_console_text(
+        "The hub will auto-start at next login and stay up across crashes. "
+        "Use `rb hub stop` for a one-off shutdown; the agent will restart it. "
+        "Use `rb hub uninstall-launchagent` to remove."
+    )
+
+
+@app.command(
+    "uninstall-launchagent",
+    help="remove the macOS LaunchAgent",
+)
+def cmd_uninstall_launchagent() -> None:
+    """``launchctl unload`` and delete the plist."""
+    try:
+        removed = launchagent.uninstall()
+    except launchagent.LaunchAgentUnsupportedError as exc:
+        emit_console_text(str(exc), style="red")
+        raise typer.Exit(code=2)
+    except launchagent.LaunchAgentError as exc:
+        emit_console_text(str(exc), style="red")
+        raise typer.Exit(code=1)
+    if removed:
+        emit_console_text(
+            f"LaunchAgent removed from {launchagent.default_plist_path()}",
+            style="green",
+        )
+    else:
+        emit_console_text(
+            f"no LaunchAgent installed at {launchagent.default_plist_path()}",
+            style="yellow",
+        )
 
 
 def _package_version() -> str:
