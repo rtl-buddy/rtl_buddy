@@ -22,6 +22,7 @@ from pathlib import Path
 from ..logging_utils import log_event
 from .config import HubConfig
 from .discovery import delete_record_if_owner, write_record
+from .resolver import Resolver, default_view_json_path
 from .server import HubServer
 
 
@@ -36,10 +37,17 @@ def _server_version() -> str:
 
 
 async def _run(project_root: Path, config: HubConfig) -> int:
+    if config.mapping.view_json:
+        view_json_path = (project_root / config.mapping.view_json).resolve()
+    else:
+        view_json_path = default_view_json_path(project_root)
+    resolver = Resolver(view_json_path=view_json_path, mapping=config.mapping)
+
     server = HubServer(
         host="127.0.0.1",
         port=config.hub.listen_port,
         server_version=_server_version(),
+        resolver=resolver,
     )
     host, port = await server.start()
 

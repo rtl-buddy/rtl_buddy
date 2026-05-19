@@ -48,6 +48,7 @@ from .protocol import (
     make_welcome,
     new_id,
 )
+from .resolver import Resolver
 from .state import (
     CursorTime,
     HubState,
@@ -202,10 +203,12 @@ class HubServer:
         server_version: str = "0.0.0",
         dedupe_capacity: int = DEFAULT_DEDUPE_CAPACITY,
         dedupe_ttl_seconds: float = DEFAULT_DEDUPE_TTL_SECONDS,
+        resolver: Resolver | None = None,
     ) -> None:
         self.host = host
         self.requested_port = port
         self.server_version = server_version
+        self.resolver = resolver
         self._registry: dict[Origin, ClientConnection] = {}
         self._pending = _LruIdSet(
             capacity=dedupe_capacity, ttl_seconds=dedupe_ttl_seconds
@@ -522,23 +525,148 @@ class HubServer:
         await self._safe_send(target_conn, env)
 
     async def _handle_hub_request(self, env: Envelope, conn: ClientConnection) -> None:
-        """Resolver stub — PR 3 wires the real coordinate mapper.
+        """Run a hub-side ``resolve_*`` request and reply on the same socket."""
 
-        Until then every ``resolve_*`` request returns ``unresolvable``
-        so client code can compile against the request shapes without
-        silently looking like it succeeded.
-        """
+        if self.resolver is None:
+            await self._reply_unresolvable(
+                env, conn, "resolver not configured (no view.json available)"
+            )
+            return
 
+        if env.type == "resolve_view_to_wave":
+            await self._handle_resolve_view_to_wave(env, conn)
+        elif env.type == "resolve_signal_to_view":
+            await self._handle_resolve_signal_to_view(env, conn)
+        else:
+            # Shouldn't happen — HUB_HANDLED_REQUESTS gates this dispatch.
+            await self._reply_unresolvable(
+                env, conn, f"unhandled hub request {env.type}"
+            )
+
+    async def _handle_resolve_view_to_wave(
+        self, env: Envelope, conn: ClientConnection
+    ) -> None:
+        assert self.resolver is not None
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        instance_path = payload.get("instance_path")
+        if not isinstance(instance_path, str) or not instance_path:
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="bad_request",
+                    message="resolve_view_to_wave payload missing instance_path",
+                    context={"received": payload},
+                    in_reply_to=env.id,
+                ),
+            )
+            return
+
+        wave_scope = self.resolver.view_to_wave(instance_path)
+        if wave_scope is None:
+            await self._reply_unresolvable(
+                env,
+                conn,
+                f"no wave scope matches instance {instance_path!r}",
+                context={
+                    "instance_path": instance_path,
+                    "tb_prefix": self.resolver.mapping.tb_prefix,
+                },
+            )
+            return
+
+        await self._safe_send(
+            conn,
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.RESPONSE,
+                type="resolve_view_to_wave",
+                id=env.id,
+                payload={"wave_scope": wave_scope},
+            ),
+        )
+
+    async def _handle_resolve_signal_to_view(
+        self, env: Envelope, conn: ClientConnection
+    ) -> None:
+        assert self.resolver is not None
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        signal = payload.get("signal")
+        wave_scope = payload.get("wave_scope")
+        if not (
+            isinstance(signal, str)
+            and signal
+            and isinstance(wave_scope, str)
+            and wave_scope
+        ):
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="bad_request",
+                    message="resolve_signal_to_view payload requires signal+wave_scope",
+                    context={"received": payload},
+                    in_reply_to=env.id,
+                ),
+            )
+            return
+
+        drivers = self.resolver.signal_drivers(signal=signal, wave_scope=wave_scope)
+        if not drivers:
+            await self._reply_unresolvable(
+                env,
+                conn,
+                f"no driver of {signal!r} found under {wave_scope!r}",
+                context={"signal": signal, "wave_scope": wave_scope},
+            )
+            return
+
+        # §7: payload.instance_path is the list of driver paths; "port"
+        # is the driven port. When drivers disagree on port name (rare)
+        # we surface the first one and log; downstream surfacing is the
+        # client's call.
+        ports = {d.port for d in drivers}
+        if len(ports) > 1:
+            log_event(
+                logger,
+                logging.INFO,
+                "hub.resolver.signal_drivers_port_mismatch",
+                signal=signal,
+                wave_scope=wave_scope,
+                ports=sorted(ports),
+            )
+
+        await self._safe_send(
+            conn,
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.RESPONSE,
+                type="resolve_signal_to_view",
+                id=env.id,
+                payload={
+                    "instance_path": [d.instance_path for d in drivers],
+                    "port": drivers[0].port,
+                },
+            ),
+        )
+
+    async def _reply_unresolvable(
+        self,
+        env: Envelope,
+        conn: ClientConnection,
+        message: str,
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> None:
         await self._safe_send(
             conn,
             make_error(
                 origin=Origin.CLI,
                 code="unresolvable",
-                message=(
-                    f"hub-side resolver for {env.type} not yet implemented "
-                    "(PR 3 of rtl-buddy/rtl_buddy#115)"
-                ),
-                context=env.payload if isinstance(env.payload, dict) else None,
+                message=message,
+                context=context
+                if context is not None
+                else (env.payload if isinstance(env.payload, dict) else None),
                 in_reply_to=env.id,
             ),
         )

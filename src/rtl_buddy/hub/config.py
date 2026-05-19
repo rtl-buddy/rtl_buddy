@@ -58,6 +58,9 @@ class HubMappingConfig:
 
     tb_prefix: str = DEFAULT_TB_PREFIX
     signal_aliases: tuple[SignalAlias, ...] = field(default_factory=tuple)
+    view_json: str | None = None
+    """Path (relative to the project root) of the ``view.json`` snapshot the
+    resolver consumes. ``None`` falls back to ``.rtl-buddy/view.json``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +149,12 @@ def _parse_mapping_block(raw: dict[str, Any], path: Path) -> HubMappingConfig:
             f"{path}: [mapping].tb_prefix must be a string, got {tb_prefix!r}"
         )
 
+    view_json = raw.get("view_json", defaults.view_json)
+    if view_json is not None and (not isinstance(view_json, str) or not view_json):
+        raise HubConfigError(
+            f"{path}: [mapping].view_json must be a non-empty string, got {view_json!r}"
+        )
+
     aliases_raw = raw.get("signal_aliases", [])
     if not isinstance(aliases_raw, list):
         raise HubConfigError(
@@ -170,7 +179,11 @@ def _parse_mapping_block(raw: dict[str, Any], path: Path) -> HubMappingConfig:
             )
         aliases.append(SignalAlias(wave=wave, view=view))
 
-    return HubMappingConfig(tb_prefix=tb_prefix, signal_aliases=tuple(aliases))
+    return HubMappingConfig(
+        tb_prefix=tb_prefix,
+        signal_aliases=tuple(aliases),
+        view_json=view_json,
+    )
 
 
 def default_config_path(project_root: Path) -> Path:

@@ -309,7 +309,9 @@ async def test_request_to_missing_origin_returns_not_connected(server: HubServer
         await view.close()
 
 
-async def test_resolve_request_returns_stub_unresolvable(server: HubServer):
+async def test_resolve_request_without_resolver_returns_unresolvable(server: HubServer):
+    """Server with no resolver attached → resolve_* surfaces unresolvable."""
+
     view = await MockClient.connect(server.host, server.port)
     try:
         await view.hello(Origin.VIEW)
@@ -324,7 +326,7 @@ async def test_resolve_request_returns_stub_unresolvable(server: HubServer):
         err = await view.recv()
         assert err.type == "error"
         assert err.payload["code"] == "unresolvable"
-        assert "PR 3" in err.payload["message"]
+        assert "resolver not configured" in err.payload["message"]
     finally:
         await view.close()
 
