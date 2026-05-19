@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -102,6 +103,24 @@ class RtlBuddyView:
         return cmd
 
     def run(self) -> int:
+        # Resolve the viewer up-front. Bare names (no '/') go through
+        # PATH lookup; an absolute or relative path is checked for
+        # existence + executability. Without this, a missing binary
+        # surfaces as an unhandled Python traceback from subprocess.
+        if os.sep in self.executable or (os.altsep and os.altsep in self.executable):
+            if not (
+                os.path.isfile(self.executable) and os.access(self.executable, os.X_OK)
+            ):
+                raise FatalRtlBuddyError(
+                    f"hier: rtl-buddy-view not found or not executable: "
+                    f"{self.executable}"
+                )
+        elif shutil.which(self.executable) is None:
+            raise FatalRtlBuddyError(
+                f"hier: '{self.executable}' not found on PATH; install rtl-buddy-view "
+                f"into the active venv or pass --tool to point at the binary"
+            )
+
         if self.cdc_annotations is not None and not os.path.isfile(
             self.cdc_annotations
         ):

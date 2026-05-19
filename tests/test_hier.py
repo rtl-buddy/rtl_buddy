@@ -153,6 +153,55 @@ def test_wrapper_rejects_missing_cdc_annotations(tmp_path: Path):
         view.run()
 
 
+def test_wrapper_rejects_missing_tool_path(tmp_path: Path):
+    """An absolute path that doesn't exist surfaces a friendly error,
+    not a subprocess FileNotFoundError traceback. Caught in real-world
+    use when rtl-buddy-view lives only in a venv that isn't on PATH."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(tmp_path / "does-not-exist"),
+    )
+    with pytest.raises(FatalRtlBuddyError, match="not found or not executable"):
+        view.run()
+
+
+def test_wrapper_rejects_missing_tool_on_path(tmp_path: Path, monkeypatch):
+    """A bare command name that doesn't resolve through PATH gets the
+    same friendly treatment via ``shutil.which``."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    # Empty PATH ensures the lookup fails deterministically.
+    monkeypatch.setenv("PATH", "")
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable="totally-fake-binary-xyz",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="not found on PATH"):
+        view.run()
+
+
 # --- rb hier command (integration through Typer) --------------------------
 
 
