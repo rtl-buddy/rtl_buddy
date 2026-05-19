@@ -46,6 +46,7 @@ from .seed_mode import SeedMode
 from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
+from .tools.hier_rtl_buddy_view import RtlBuddyView
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
@@ -81,6 +82,7 @@ class RtlBuddy:
         "cdc-regression",
         "fpv",
         "fpv-regression",
+        "hier",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -121,6 +123,9 @@ class RtlBuddy:
         )
         self.app.command("filelist", help="generate filelists using models.yaml")(
             self.do_gen_model_filelist
+        )
+        self.app.command("hier", help="render module hierarchy via rtl-buddy-view")(
+            self.do_cmd_hier
         )
         self.app.command("verible", help="run verible cmd")(self.do_verible)
         self.app.command("wave", help="open waveform viewer for a test")(
@@ -1093,6 +1098,76 @@ class RtlBuddy:
             deduplicate=deduplicate,
         )
         return
+
+    def do_cmd_hier(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        fmt: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                help="output format: tree, dot, mermaid, json",
+            ),
+        ] = "tree",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help="write renderer output to file instead of stdout",
+            ),
+        ] = None,
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="parser frontend (verible|slang)"),
+        ] = None,
+        cdc_annotations: Annotated[
+            str | None,
+            typer.Option(
+                "--cdc-annotations",
+                help="clock-domain map JSON from `rtl-buddy-cdc --emit-domain-map`",
+            ),
+        ] = None,
+        clock_legend: Annotated[
+            bool,
+            typer.Option(
+                "--clock-legend",
+                help="dot format only: emit a side legend of clock colors",
+            ),
+        ] = False,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+    ):
+        """
+        render module hierarchy via rtl-buddy-view
+        """
+        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.hier",
+            command="hier",
+            model=model_name,
+            format=fmt,
+            output=output,
+        )
+        view = RtlBuddyView(
+            name=self.name + "/hier",
+            model_cfg=model_cfg,
+            suite_dir=os.getcwd(),
+            format=fmt,
+            output=output,
+            frontend=frontend,
+            cdc_annotations=cdc_annotations,
+            clock_legend=clock_legend,
+            executable=tool,
+        )
+        raise typer.Exit(view.run())
 
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]

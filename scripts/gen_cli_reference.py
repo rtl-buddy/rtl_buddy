@@ -16,6 +16,7 @@ SUBCOMMANDS = [
     "randtest",
     "regression",
     "filelist",
+    "hier",
     "verible",
     "wave",
     "wave-install-nvim",

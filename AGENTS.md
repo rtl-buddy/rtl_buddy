@@ -27,6 +27,8 @@ src/rtl_buddy/
 ├── runner/synth_results.py # SynthResults / SynthPassResults / SynthFailResults / SynthSkipResults
 └── tools/
     ├── synth_yosys.py     # Yosys backend: filelist → synth.ys script → yosys invocation
+    ├── cdc_rtl_buddy.py   # rtl-buddy-cdc subprocess wrapper, parses JSON report
+    ├── hier_rtl_buddy_view.py # rtl-buddy-view subprocess wrapper for `rb hier`
     ├── spec_trace.py      # discover_spec_configs, build_coverage_map, etc.
     └── ...                # filelist, sim, postproc, verible wrappers
 ```
@@ -50,6 +52,7 @@ src/rtl_buddy/
 - Hook scripts (`sweep`, `preproc`, `postproc`) are executed dynamically and should be treated as compatibility-sensitive APIs.
 - `SynthRunner` resolves a `SynthToolConfig` from `root_cfg.get_synth_tool_cfg(tool_name)`, merges any `tool_overrides` from the `SynthConfig`, then dispatches to `YosysSynth`. Opts resolution: root-config `opts` are the baseline; per-run `tool_overrides.<tool>` keys overwrite matching fields.
 - `YosysSynth` writes `synth.f` via `VlogFilelist` (with `unroll=True, strip=True, deduplicate=True`), then generates `synth.ys`. Source files are emitted as individual `read_verilog -sv -defer` commands (not `-f filelist`) so Yosys only elaborates the top hierarchy. Pass/fail is determined by exit code then `ERROR:` line scan.
+- `rb hier <model>` (`tools/hier_rtl_buddy_view.py`) writes a stripped+deduplicated filelist to `artefacts/hier/<model>/hier.f`, then shells out to `rtl-buddy-view` with `--top <model> --filelist hier.f --format <fmt>` plus optional `--output`, `--frontend`, `--cdc-annotations`, `--clock-legend`. The renderer's stdout passes through to the terminal when `-o` is not given (so `rb hier x --format dot | dot -Tsvg ...` works); stderr is captured to `hier.log`. The integration is at subprocess granularity — rtl_buddy is not coupled to the viewer's Python API. The viewer's JSON contract (`schema_version`, `tool.*`, `design.top`, `nodes`, `edges`) is guarded by `test_json_contract_keys_present_and_typed` in rtl-buddy-view.
 
 ## Validation
 
