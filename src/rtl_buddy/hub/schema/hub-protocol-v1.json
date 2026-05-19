@@ -399,6 +399,45 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "diagnostics_set" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["source", "items"],
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Producer key — e.g. `rtl-buddy-cdc`. Latest-writer-wins per source on the hub's in-memory cache."
+              },
+              "items": {
+                "type": "array",
+                "description": "Full diagnostic set for this source. An empty array clears the source's diagnostics on all clients.",
+                "items": {
+                  "type": "object",
+                  "required": ["file", "line", "severity", "message"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "file":     { "type": "string", "minLength": 1, "description": "Absolute path." },
+                    "line":     { "type": "integer", "minimum": 1, "description": "1-based start line." },
+                    "col":      { "type": "integer", "minimum": 1, "description": "1-based start column; defaults to 1 if absent." },
+                    "end_line": { "type": "integer", "minimum": 1 },
+                    "end_col":  { "type": "integer", "minimum": 1 },
+                    "severity": { "enum": ["error", "warning", "info", "hint"] },
+                    "code":     { "type": "string", "minLength": 1, "description": "Producer-defined rule code, e.g. `CDC-001`." },
+                    "message":  { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "error" } }, "required": ["type"] },
       "then": {
         "properties": {

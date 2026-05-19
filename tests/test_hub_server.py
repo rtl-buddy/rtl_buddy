@@ -261,6 +261,123 @@ async def test_unknown_event_type_silently_dropped(server: HubServer):
 
 
 # ---------------------------------------------------------------------------
+# diagnostics_set
+# ---------------------------------------------------------------------------
+
+
+def _diag_evt(origin: Origin, source: str, items: list[dict]) -> Envelope:
+    return Envelope(
+        origin=origin,
+        kind=Kind.EVENT,
+        type="diagnostics_set",
+        id=new_id(),
+        payload={"source": source, "items": items},
+    )
+
+
+async def test_diagnostics_set_broadcasts_and_caches(server: HubServer):
+    publisher = await MockClient.connect(server.host, server.port)
+    subscriber = await MockClient.connect(server.host, server.port)
+    try:
+        await publisher.hello(Origin.CLI)
+        await subscriber.hello(Origin.SRC)
+
+        items = [
+            {"file": "/abs/a.sv", "line": 4, "severity": "error", "message": "x"},
+            {
+                "file": "/abs/b.sv",
+                "line": 9,
+                "col": 3,
+                "severity": "warning",
+                "code": "CDC-002",
+                "message": "depth",
+            },
+        ]
+        evt = _diag_evt(Origin.CLI, "rtl-buddy-cdc", items)
+        await publisher.send(evt)
+
+        got = await subscriber.recv()
+        assert got.type == "diagnostics_set"
+        assert got.payload["source"] == "rtl-buddy-cdc"
+        assert got.payload["items"] == items
+        await publisher.expect_no_message()  # origin gets suppressed
+
+        await asyncio.sleep(0.05)
+        bundle = server.state.diagnostics["rtl-buddy-cdc"]
+        assert bundle.origin is Origin.CLI
+        assert len(bundle.items) == 2
+    finally:
+        await publisher.close()
+        await subscriber.close()
+
+
+async def test_diagnostics_set_replayed_to_late_joiner(server: HubServer):
+    publisher = await MockClient.connect(server.host, server.port)
+    try:
+        await publisher.hello(Origin.CLI)
+        await publisher.send(
+            _diag_evt(
+                Origin.CLI,
+                "src-a",
+                [{"file": "/x.sv", "line": 1, "severity": "info", "message": "m"}],
+            )
+        )
+        await publisher.send(
+            _diag_evt(
+                Origin.CLI,
+                "src-b",
+                [{"file": "/y.sv", "line": 2, "severity": "warning", "message": "n"}],
+            )
+        )
+        await asyncio.sleep(0.05)
+
+        # Late joiner connects after the diagnostics were broadcast.
+        late = await MockClient.connect(server.host, server.port)
+        try:
+            await late.hello(Origin.SRC)
+            seen: dict[str, Envelope] = {}
+            for _ in range(2):
+                env = await late.recv()
+                assert env.type == "diagnostics_set"
+                seen[env.payload["source"]] = env
+            assert set(seen.keys()) == {"src-a", "src-b"}
+            assert seen["src-a"].payload["items"][0]["file"] == "/x.sv"
+        finally:
+            await late.close()
+    finally:
+        await publisher.close()
+
+
+async def test_diagnostics_set_empty_items_is_cache_clear(server: HubServer):
+    publisher = await MockClient.connect(server.host, server.port)
+    subscriber = await MockClient.connect(server.host, server.port)
+    try:
+        await publisher.hello(Origin.CLI)
+        await subscriber.hello(Origin.SRC)
+
+        await publisher.send(
+            _diag_evt(
+                Origin.CLI,
+                "rtl-buddy-cdc",
+                [{"file": "/x.sv", "line": 1, "severity": "error", "message": "boom"}],
+            )
+        )
+        first = await subscriber.recv()
+        assert len(first.payload["items"]) == 1
+
+        # Empty items is the legal "clear all" — must still broadcast.
+        await publisher.send(_diag_evt(Origin.CLI, "rtl-buddy-cdc", []))
+        second = await subscriber.recv()
+        assert second.payload["items"] == []
+
+        await asyncio.sleep(0.05)
+        assert server.state.diagnostics["rtl-buddy-cdc"].items == ()
+    finally:
+        await publisher.close()
+        await subscriber.close()
+
+
+# ---------------------------------------------------------------------------
 # requests
 # ---------------------------------------------------------------------------
 

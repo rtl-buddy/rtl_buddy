@@ -10,12 +10,14 @@ import pytest
 
 from rtl_buddy.hub import protocol
 from rtl_buddy.hub.protocol import (
+    Diagnostic,
     Envelope,
     HubProtocolError,
     Kind,
     Origin,
     decode,
     encode,
+    make_diagnostics_set,
     make_error,
     make_hello,
     make_welcome,
@@ -291,8 +293,126 @@ def test_vendored_schema_has_expected_types():
         "welcome",
         "bye",
         "error",
+        "diagnostics_set",
     }
     assert types_seen == expected
+
+
+# ---------------------------------------------------------------------------
+# diagnostics_set
+# ---------------------------------------------------------------------------
+
+
+def test_make_diagnostics_set_round_trips_minimal_and_full_items():
+    env = make_diagnostics_set(
+        origin=Origin.CLI,
+        source="rtl-buddy-cdc",
+        items=[
+            Diagnostic(file="/abs/a.sv", line=1, severity="error", message="m"),
+            Diagnostic(
+                file="/abs/b.sv",
+                line=10,
+                col=4,
+                end_line=10,
+                end_col=18,
+                severity="warning",
+                code="CDC-002",
+                message="depth too shallow",
+            ),
+        ],
+    )
+    line = encode(env)
+    back = decode(line)
+    assert back.type == "diagnostics_set"
+    assert back.kind is Kind.EVENT
+    assert back.payload["source"] == "rtl-buddy-cdc"
+    assert len(back.payload["items"]) == 2
+    minimal, full = back.payload["items"]
+    assert minimal == {
+        "file": "/abs/a.sv",
+        "line": 1,
+        "severity": "error",
+        "message": "m",
+    }
+    assert full["code"] == "CDC-002"
+    assert full["end_col"] == 18
+
+
+def test_make_diagnostics_set_accepts_dict_items():
+    env = make_diagnostics_set(
+        origin=Origin.CLI,
+        source="manual",
+        items=[{"file": "/x.sv", "line": 5, "severity": "info", "message": "ok"}],
+    )
+    assert encode(env)  # validates via schema
+
+
+def test_diagnostics_set_empty_items_is_legal_clear():
+    env = make_diagnostics_set(origin=Origin.CLI, source="rtl-buddy-cdc", items=[])
+    back = decode(encode(env))
+    assert back.payload == {"source": "rtl-buddy-cdc", "items": []}
+
+
+def test_diagnostics_set_rejects_bad_severity():
+    with pytest.raises(HubProtocolError):
+        encode(
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.EVENT,
+                type="diagnostics_set",
+                id=new_id(),
+                payload={
+                    "source": "x",
+                    "items": [
+                        {
+                            "file": "/x.sv",
+                            "line": 1,
+                            "severity": "fatal",
+                            "message": "m",
+                        }
+                    ],
+                },
+            )
+        )
+
+
+def test_diagnostics_set_rejects_missing_required_item_field():
+    with pytest.raises(HubProtocolError):
+        encode(
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.EVENT,
+                type="diagnostics_set",
+                id=new_id(),
+                payload={
+                    "source": "x",
+                    "items": [{"file": "/x.sv", "severity": "error", "message": "m"}],
+                },
+            )
+        )
+
+
+def test_diagnostics_set_rejects_line_zero():
+    with pytest.raises(HubProtocolError):
+        encode(
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.EVENT,
+                type="diagnostics_set",
+                id=new_id(),
+                payload={
+                    "source": "x",
+                    "items": [
+                        {
+                            "file": "/x.sv",
+                            "line": 0,
+                            "severity": "error",
+                            "message": "m",
+                        }
+                    ],
+                },
+            )
+        )
 
 
 def test_vendored_schema_matches_source_when_view_repo_present():

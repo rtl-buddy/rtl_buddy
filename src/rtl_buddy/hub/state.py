@@ -15,7 +15,7 @@ on top.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .protocol import Origin
 
@@ -63,6 +63,20 @@ class WaveScope:
     origin: Origin
 
 
+@dataclass(frozen=True, slots=True)
+class DiagnosticsBundle:
+    """Last ``diagnostics_set`` payload for one producer ``source``.
+
+    Stored as the raw on-wire items so the server can replay them to
+    newly-connected clients verbatim. The empty-tuple case is a "this
+    source has been cleared" record — replaying it tells late joiners
+    to clear the source on their side too.
+    """
+
+    items: tuple[dict[str, Any], ...]
+    origin: Origin
+
+
 @dataclass
 class HubState:
     """One-slot cache per coordinate type.
@@ -77,6 +91,7 @@ class HubState:
     signal_selection: Optional[SignalSelection] = None
     cursor_time: Optional[CursorTime] = None
     wave_scope: Optional[WaveScope] = None
+    diagnostics: dict[str, DiagnosticsBundle] = field(default_factory=dict)
 
     registered_clients: set[Origin] = field(default_factory=set)
 
@@ -87,6 +102,7 @@ class HubState:
         self.signal_selection = None
         self.cursor_time = None
         self.wave_scope = None
+        self.diagnostics = {}
 
 
 __all__ = [
@@ -94,5 +110,6 @@ __all__ = [
     "SignalSelection",
     "CursorTime",
     "WaveScope",
+    "DiagnosticsBundle",
     "HubState",
 ]
