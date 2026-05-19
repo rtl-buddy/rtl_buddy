@@ -44,6 +44,7 @@ nav:
       - cocotb: concepts/cocotb.md
       - Spec Traceability: concepts/spec-traceability.md
       - Waveform Viewer: concepts/wave.md
+      - Hub: concepts/hub.md
       - Synthesis: concepts/synthesis.md
       - Place-and-Route: concepts/pnr.md
       - Power Analysis: concepts/power.md
