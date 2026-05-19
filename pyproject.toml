@@ -14,6 +14,7 @@ dependencies = [
   "rich >= 14.0.0",
   "pywellen >= 0.20.0",
   "jsonschema >= 4.21.0",
+  "websockets >= 12.0",
 ]
 
 authors = [

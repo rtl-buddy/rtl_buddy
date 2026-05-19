@@ -72,9 +72,24 @@ def cmd_start(
         bool,
         typer.Option(
             "--serve-viewer/--no-serve-viewer",
-            help="Also serve the rtl-buddy-view SPA. Requires PR 5 of #115.",
+            help=(
+                "Also serve the viewer HTTP+WebSocket layer at the http_port. "
+                "When no --viewer-bundle is given, a placeholder page proves "
+                "the transport works."
+            ),
         ),
     ] = False,
+    viewer_bundle: Annotated[
+        Path | None,
+        typer.Option(
+            "--viewer-bundle",
+            help=(
+                "Path to a rtl-buddy-view SPA build (directory containing "
+                "index.html, or a path to a single index.html). Only used "
+                "with --serve-viewer."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Bind, write ``hub.json``, run the server loop.
 
@@ -92,10 +107,9 @@ def cmd_start(
             style="yellow",
         )
 
-    if serve_viewer:
+    if viewer_bundle is not None and not serve_viewer:
         emit_console_text(
-            "rb hub start --serve-viewer: viewer HTTP layer is PR 5 of #115. "
-            "Continuing with TCP server only.",
+            "rb hub start --viewer-bundle: ignored without --serve-viewer.",
             style="yellow",
         )
 
@@ -117,8 +131,16 @@ def cmd_start(
         http_port=cfg.hub.http_port,
         foreground=foreground,
         serve_viewer=serve_viewer,
+        viewer_bundle=str(viewer_bundle) if viewer_bundle else "",
     )
-    raise typer.Exit(code=hub_loop.serve(project_root, cfg))
+    raise typer.Exit(
+        code=hub_loop.serve(
+            project_root,
+            cfg,
+            serve_viewer=serve_viewer,
+            viewer_bundle=viewer_bundle,
+        )
+    )
 
 
 @app.command("stop", help="ask the running hub to shut down")
@@ -167,6 +189,8 @@ def cmd_status() -> None:
     emit_console_text(f"  project_root   : {record.project_root}")
     emit_console_text(f"  pid            : {record.pid}")
     emit_console_text(f"  tcp            : {record.tcp}")
+    if record.http_port is not None:
+        emit_console_text(f"  viewer_url     : http://127.0.0.1:{record.http_port}/")
     emit_console_text(f"  server_version : {record.server_version}")
     emit_console_text(f"  started_at     : {record.started_at}")
     if not live:

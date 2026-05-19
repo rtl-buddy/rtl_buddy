@@ -60,6 +60,10 @@ class HubRecord:
 
     Kept intentionally narrow; anything that's not needed by a client
     to *connect* belongs in the runtime log, not in the discovery file.
+
+    ``http_port`` is present only when the hub was started with
+    ``--serve-viewer``; it carries the bound port of the viewer HTTP+WS
+    layer so users can ``open http://localhost:<http_port>/``.
     """
 
     v: int
@@ -68,9 +72,15 @@ class HubRecord:
     server_version: str
     project_root: str
     started_at: str
+    http_port: int | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        out = asdict(self)
+        # Keep optional fields off the wire when absent so older readers
+        # don't trip on unexpected keys.
+        if self.http_port is None:
+            out.pop("http_port", None)
+        return out
 
 
 def hub_dir(project_root: Path) -> Path:
@@ -99,6 +109,7 @@ def write_record(
     pid: int,
     tcp: str,
     server_version: str,
+    http_port: int | None = None,
 ) -> HubRecord:
     """Write ``hub.json`` after enforcing the one-hub-per-project rule.
 
@@ -121,6 +132,7 @@ def write_record(
         server_version=server_version,
         project_root=str(project_root.resolve()),
         started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        http_port=http_port,
     )
 
     tmp = target.with_suffix(".json.tmp")
@@ -193,6 +205,10 @@ def _read_record_if_present(path: Path) -> HubRecord | None:
     if not isinstance(raw, dict):
         raise HubDiscoveryError(f"{path}: hub.json must be a JSON object")
     try:
+        http_port_raw = raw.get("http_port")
+        http_port: int | None = None
+        if http_port_raw is not None:
+            http_port = int(http_port_raw)
         return HubRecord(
             v=int(raw["v"]),
             pid=int(raw["pid"]),
@@ -200,6 +216,7 @@ def _read_record_if_present(path: Path) -> HubRecord | None:
             server_version=str(raw["server_version"]),
             project_root=str(raw["project_root"]),
             started_at=str(raw["started_at"]),
+            http_port=http_port,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HubDiscoveryError(

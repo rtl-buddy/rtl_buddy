@@ -18,12 +18,14 @@ import signal
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+from typing import Any
 
 from ..logging_utils import log_event
 from .config import HubConfig
 from .discovery import delete_record_if_owner, write_record
 from .resolver import Resolver, default_view_json_path
 from .server import HubServer
+from .viewer_http import ViewerServer
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,13 @@ def _server_version() -> str:
         return "0.0.0+unknown"
 
 
-async def _run(project_root: Path, config: HubConfig) -> int:
+async def _run(
+    project_root: Path,
+    config: HubConfig,
+    *,
+    serve_viewer: bool = False,
+    viewer_bundle: Path | None = None,
+) -> int:
     if config.mapping.view_json:
         view_json_path = (project_root / config.mapping.view_json).resolve()
     else:
@@ -51,11 +59,30 @@ async def _run(project_root: Path, config: HubConfig) -> int:
     )
     host, port = await server.start()
 
+    viewer: ViewerServer | None = None
+    http_port: int | None = None
+    if serve_viewer:
+        viewer = ViewerServer(
+            hub_host=host,
+            hub_port=port,
+            http_port=config.hub.http_port,
+            viewer_bundle=viewer_bundle,
+        )
+        _vhost, vport = await viewer.start()
+        http_port = vport
+        log_event(
+            logger,
+            logging.INFO,
+            "hub.viewer.url",
+            url=f"http://127.0.0.1:{vport}/",
+        )
+
     write_record(
         project_root,
         pid=os.getpid(),
         tcp=f"{host}:{port}",
         server_version=server.server_version,
+        http_port=http_port,
     )
 
     loop = asyncio.get_running_loop()
@@ -73,33 +100,60 @@ async def _run(project_root: Path, config: HubConfig) -> int:
             pass
 
     serve_task = asyncio.create_task(server.serve_forever(), name="hub-serve")
+    viewer_task: asyncio.Task[None] | None = None
+    if viewer is not None:
+        viewer_task = asyncio.create_task(
+            viewer.serve_forever(), name="hub-viewer-http"
+        )
     stop_task = asyncio.create_task(stop_event.wait(), name="hub-stop")
+
+    watched: set[asyncio.Task[Any]] = {serve_task, stop_task}
+    if viewer_task is not None:
+        watched.add(viewer_task)
 
     try:
         done, _pending = await asyncio.wait(
-            {serve_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+            watched, return_when=asyncio.FIRST_COMPLETED
         )
         for task in done:
             exc = task.exception()
             if exc is not None and not isinstance(exc, asyncio.CancelledError):
                 raise exc
     finally:
+        if viewer is not None:
+            await viewer.shutdown()
         await server.shutdown()
-        serve_task.cancel()
-        try:
-            await serve_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for task in (serve_task, viewer_task):
+            if task is None:
+                continue
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         stop_task.cancel()
         delete_record_if_owner(project_root, expected_pid=os.getpid())
 
     return 0
 
 
-def serve(project_root: Path, config: HubConfig) -> int:
+def serve(
+    project_root: Path,
+    config: HubConfig,
+    *,
+    serve_viewer: bool = False,
+    viewer_bundle: Path | None = None,
+) -> int:
     """Run the hub event loop until exit. Returns the process exit code."""
 
-    return asyncio.run(_run(project_root, config))
+    return asyncio.run(
+        _run(
+            project_root,
+            config,
+            serve_viewer=serve_viewer,
+            viewer_bundle=viewer_bundle,
+        )
+    )
 
 
 __all__ = ["serve"]
