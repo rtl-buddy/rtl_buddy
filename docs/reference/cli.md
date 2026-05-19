@@ -60,6 +60,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ cdc-regression     run CDC lint regression                                           │
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
+│ hub                manage the rtl-buddy-hub daemon                                   │
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
 │ spec               spec traceability commands                                        │

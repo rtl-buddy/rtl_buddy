@@ -1,0 +1,424 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rtl-buddy.dev/schemas/hub-protocol-v1.json",
+  "title": "rtl-buddy-hub protocol v1 envelope",
+  "description": "Wire contract for messages exchanged between rtl-buddy-hub and its clients (viewer, surfer/WCP adapter, nvim plugin, CLI). See docs/hub-protocol.md.",
+  "type": "object",
+  "required": ["v", "id", "origin", "kind", "type"],
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol major version."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "RFC 4122 UUID for request/response correlation and loop-prevention dedupe."
+    },
+    "origin": {
+      "enum": ["view", "wave", "src", "cli"],
+      "description": "Conceptual originator of the message; the loop-prevention discriminator."
+    },
+    "kind": {
+      "enum": ["event", "request", "response", "error"]
+    },
+    "type": {
+      "type": "string",
+      "description": "Message type. See docs/hub-protocol.md §3 for the v1 catalog. Unknown types MUST be silently dropped at DEBUG."
+    },
+    "payload": {
+      "description": "Type-specific. May be null for messages without payload (e.g. bye)."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "selection_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["instance_path"],
+            "additionalProperties": false,
+            "properties": {
+              "instance_path": {
+                "oneOf": [
+                  { "type": "string", "minLength": 1 },
+                  { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+                ],
+                "description": "Single instance path, or a list when collapsed from a multi-driver signal (§6)."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "signal_selected" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["signal", "wave_scope"],
+            "additionalProperties": false,
+            "properties": {
+              "signal": { "type": "string", "minLength": 1 },
+              "wave_scope": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "cursor_time_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["t_fs"],
+            "additionalProperties": false,
+            "properties": {
+              "t_fs": {
+                "type": "string",
+                "pattern": "^-?[0-9]+$",
+                "description": "Time in femtoseconds, encoded as a decimal string to avoid JSON number precision loss for large timestamps."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "scope_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["wave_scope"],
+            "additionalProperties": false,
+            "properties": {
+              "wave_scope": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "source_focused" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["file", "line", "col"],
+            "additionalProperties": false,
+            "properties": {
+              "file": { "type": "string", "minLength": 1, "description": "Absolute path." },
+              "line": { "type": "integer", "minimum": 1 },
+              "col":  { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "open_source" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["file", "line", "col"],
+                "additionalProperties": false,
+                "properties": {
+                  "file": { "type": "string", "minLength": 1 },
+                  "line": { "type": "integer", "minimum": 1 },
+                  "col":  { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_add_variables" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["variables"],
+                "additionalProperties": false,
+                "properties": {
+                  "variables": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ids"],
+                "additionalProperties": false,
+                "properties": {
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_set_scope" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["wave_scope"],
+                "additionalProperties": false,
+                "properties": { "wave_scope": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_set_cursor" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["t_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "t_fs": { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "view_pan_to" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path"],
+                "additionalProperties": false,
+                "properties": { "instance_path": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "resolve_view_to_wave" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path"],
+                "additionalProperties": false,
+                "properties": { "instance_path": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["wave_scope"],
+                "additionalProperties": false,
+                "properties": { "wave_scope": { "type": "string", "minLength": 1 } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "resolve_signal_to_view" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["signal", "wave_scope"],
+                "additionalProperties": false,
+                "properties": {
+                  "signal": { "type": "string", "minLength": 1 },
+                  "wave_scope": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path", "port"],
+                "additionalProperties": false,
+                "properties": {
+                  "instance_path": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+                  "port": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "hello" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "request" },
+          "origin": { "enum": ["view", "wave", "src", "cli"] },
+          "payload": {
+            "type": "object",
+            "required": ["client", "version", "capabilities"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "enum": ["view", "wave", "src", "cli"] },
+              "version": { "type": "string", "minLength": 1, "description": "Semver of the client implementation." },
+              "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "welcome" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "response" },
+          "payload": {
+            "type": "object",
+            "required": ["server_version", "registered_clients"],
+            "additionalProperties": false,
+            "properties": {
+              "server_version": { "type": "string", "minLength": 1 },
+              "registered_clients": {
+                "type": "array",
+                "items": { "enum": ["view", "wave", "src", "cli"] },
+                "uniqueItems": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "bye" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "object", "additionalProperties": false }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "error" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "error" },
+          "payload": {
+            "type": "object",
+            "required": ["code", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "enum": ["unresolvable", "not_connected", "bad_request", "protocol_mismatch"],
+                "description": "`timeout` is a client-side-only code and is never sent on the wire."
+              },
+              "message": { "type": "string", "minLength": 1 },
+              "context": { "type": "object", "description": "Arbitrary structured context for the error; e.g. the offending input." }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "Loop prevention and origin-suppression rules (docs §6) are runtime invariants the hub enforces; they are not expressible in JSON Schema."
+}

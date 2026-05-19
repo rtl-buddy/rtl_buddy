@@ -43,6 +43,7 @@ from .runner.power_results import PowerSkipResults
 from .runner.synth_runner import SynthRunner
 from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
+from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
@@ -156,6 +157,7 @@ class RtlBuddy:
         self.app.command("fpv-regression", help="run FPV regression")(
             self.do_fpv_regression
         )
+        self.app.add_typer(hub_app, name="hub", help="manage the rtl-buddy-hub daemon")
         self.app.add_typer(
             skill_app, name="skill", help="manage the rtl_buddy agent skill"
         )
@@ -196,7 +198,7 @@ class RtlBuddy:
 
     def run(self):
         try:
-            self.app(standalone_mode=False)
+            rv = self.app(standalone_mode=False)
         except click.exceptions.Exit as exc:
             return exc.exit_code
         except click.exceptions.Abort:
@@ -207,7 +209,11 @@ class RtlBuddy:
         except (FatalRtlBuddyError, FilelistError) as exc:
             emit_console_text(str(exc), style="red")
             return 2
-        return 0
+        # standalone_mode=False makes click *return* the exit code from
+        # `typer.Exit(code=N)` rather than re-raise it, so we have to
+        # surface it here. Existing commands that return None continue
+        # to exit cleanly with code 0.
+        return rv if isinstance(rv, int) else 0
 
     def _is_test_list_invocation(self, ctx: typer.Context) -> bool:
         return ctx.invoked_subcommand == "test" and "--list" in sys.argv[1:]
@@ -275,7 +281,7 @@ class RtlBuddy:
 
         self.machine = machine
 
-        if ctx.invoked_subcommand in {"skill", "docs", "spec"}:
+        if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub"}:
             return
 
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
