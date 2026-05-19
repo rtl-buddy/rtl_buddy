@@ -136,12 +136,25 @@ def test_stop_clears_stale_record(runner: CliRunner, project_root: Path):
     assert not (cfg_dir / "hub.json").exists()
 
 
-def test_start_stub_exits_clearly(runner: CliRunner, project_root: Path):
-    """PR 1 ships the CLI surface but not the server loop."""
+def test_start_runs_preflight_only_when_blocked(runner: CliRunner, project_root: Path):
+    """A live hub already registered must block start without entering the loop.
 
+    Writing a record for this process's own PID is the cheap way to
+    trip the `HubAlreadyRunningError` path — it short-circuits before
+    `loop.serve` is reached, so the test doesn't need to actually run
+    the asyncio loop in the CliRunner.
+    """
+
+    discovery.write_record(
+        project_root,
+        pid=os.getpid(),
+        tcp="127.0.0.1:65000",
+        server_version="0.0.0+test",
+    )
     result = runner.invoke(hub_app, ["start"])
-    assert result.exit_code == 2, result.output
-    assert "PR 2" in result.output or "not yet implemented" in result.output
+    assert result.exit_code != 0
+    assert result.exception is not None
+    assert "already running" in str(result.exception)
 
 
 def test_log_missing_file(runner: CliRunner, project_root: Path):

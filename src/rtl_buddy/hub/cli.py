@@ -30,6 +30,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
 from . import config as hub_config
 from . import discovery
+from . import loop as hub_loop
 
 
 logger = logging.getLogger(__name__)
@@ -77,12 +78,26 @@ def cmd_start(
 ) -> None:
     """Bind, write ``hub.json``, run the server loop.
 
-    The asyncio server is implemented in PR 2; this command currently
-    validates the project root, parses ``hub.toml``, checks that no
-    other hub is running, and then exits with a clear "server not yet
-    implemented" notice. The plumbing exercised here is what PR 2
-    snaps into place.
+    Preflight (project root, config, conflict check) runs before the
+    asyncio loop starts so a misconfigured project fails immediately
+    rather than hanging in an event loop. The loop exits cleanly on
+    SIGINT / SIGTERM / ``rb hub stop`` and removes its discovery file.
     """
+
+    if not foreground:
+        emit_console_text(
+            "rb hub start --daemon: background detach not implemented yet; "
+            "wrap with `nohup rb hub start &` or use a process manager. "
+            "Running in foreground.",
+            style="yellow",
+        )
+
+    if serve_viewer:
+        emit_console_text(
+            "rb hub start --serve-viewer: viewer HTTP layer is PR 5 of #115. "
+            "Continuing with TCP server only.",
+            style="yellow",
+        )
 
     project_root = _resolve_project_root()
     cfg = _resolve_config(project_root)
@@ -103,13 +118,7 @@ def cmd_start(
         foreground=foreground,
         serve_viewer=serve_viewer,
     )
-    emit_console_text(
-        "rb hub start: server loop not yet implemented "
-        "(PR 2 of rtl-buddy/rtl_buddy#115). "
-        "Discovery, config, and lifecycle plumbing is in place.",
-        style="yellow",
-    )
-    raise typer.Exit(code=2)
+    raise typer.Exit(code=hub_loop.serve(project_root, cfg))
 
 
 @app.command("stop", help="ask the running hub to shut down")

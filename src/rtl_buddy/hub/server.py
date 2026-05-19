@@ -1,0 +1,645 @@
+"""asyncio TCP server for rtl-buddy-hub.
+
+Transport: line-delimited JSON over TCP, one envelope per line, UTF-8
+(§2 of the protocol spec). The browser-facing WebSocket layer lives in
+the viewer-integration PR and reuses this server's dispatch surface.
+
+Responsibilities of this module:
+
+* Accept client connections, run the ``hello``/``welcome`` handshake,
+  and maintain a registry keyed by :class:`Origin`. The spec allows at
+  most one client per origin in v1 — a second ``hello`` for an already
+  registered origin is refused with ``not_connected``.
+* Dispatch incoming envelopes:
+    - **state events** (selection_changed, signal_selected, …) are
+      broadcast to every connected client *except* the one whose
+      origin matches the event's ``origin`` (§6 rule 1).
+    - **requests** are routed to the client whose origin owns the
+      target coordinate system; if no such client is registered, the
+      hub replies with ``error{code: "not_connected"}``.
+    - **responses / errors** are routed back to the original requester
+      by ``id``.
+* Maintain a bounded LRU of recently seen request IDs so duplicate
+  requests (§6 rule 2) are silently dropped.
+
+The resolver (view ↔ wave ↔ src) is a PR 3 follow-up; this module
+returns ``error{code: "unresolvable"}`` for ``resolve_*`` requests so
+the wire surface is real even before the resolver lands.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from typing import Any
+
+from ..logging_utils import log_event
+from .protocol import (
+    Envelope,
+    HubProtocolError,
+    Kind,
+    Origin,
+    decode,
+    encode,
+    make_error,
+    make_welcome,
+    new_id,
+)
+from .state import (
+    CursorTime,
+    HubState,
+    Selection,
+    SignalSelection,
+    WaveScope,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+STATE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "selection_changed",
+        "signal_selected",
+        "cursor_time_changed",
+        "scope_changed",
+        "source_focused",
+    }
+)
+"""Event ``type`` strings that broadcast to all clients except origin.
+
+``bye`` is technically also broadcast, but the connection close handler
+emits it explicitly; it's not a payload-bearing event the application
+emits, so it's tracked separately."""
+
+
+REQUEST_ROUTING: dict[str, Origin] = {
+    "wave_add_variables": Origin.WAVE,
+    "wave_set_scope": Origin.WAVE,
+    "wave_set_cursor": Origin.WAVE,
+    "open_source": Origin.SRC,
+    "view_pan_to": Origin.VIEW,
+}
+"""Request ``type`` → ``origin`` of the client that handles it.
+
+``resolve_*`` requests are hub-handled and not in this table; ``hello``
+is intercepted upfront by the handshake stage."""
+
+
+HUB_HANDLED_REQUESTS: frozenset[str] = frozenset(
+    {"resolve_view_to_wave", "resolve_signal_to_view"}
+)
+
+
+DEFAULT_DEDUPE_CAPACITY = 1024
+DEFAULT_DEDUPE_TTL_SECONDS = 60.0
+
+
+class HubServerError(Exception):
+    """Server-side error not routed back over the wire."""
+
+
+@dataclass
+class ClientConnection:
+    """One TCP-connected client."""
+
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    peer: str
+    origin: Origin | None = None
+    capabilities: tuple[str, ...] = field(default_factory=tuple)
+    client_version: str = ""
+
+    async def send(self, env: Envelope) -> None:
+        """Serialise + write one envelope; flush via ``drain``."""
+
+        line = encode(env).encode("utf-8") + b"\n"
+        self.writer.write(line)
+        await self.writer.drain()
+
+    def close(self) -> None:
+        self.writer.close()
+
+
+@dataclass
+class _PendingRequest:
+    """In-flight request awaiting a response or error."""
+
+    requester_origin: Origin
+    seen_at: float
+
+
+class _LruIdSet:
+    """Bounded LRU of request IDs with a TTL.
+
+    Used both as a dedupe filter for incoming requests (§6 rule 2) and
+    as the table of currently-pending request IDs for response routing.
+    Two different concerns mapped onto the same data structure is
+    intentional: dedupe and routing both want "have we recently seen
+    this id, and what was it for?"
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity: int = DEFAULT_DEDUPE_CAPACITY,
+        ttl_seconds: float = DEFAULT_DEDUPE_TTL_SECONDS,
+    ) -> None:
+        self._capacity = capacity
+        self._ttl = ttl_seconds
+        self._store: OrderedDict[str, _PendingRequest] = OrderedDict()
+
+    def __contains__(self, key: str) -> bool:
+        self._evict_expired()
+        return key in self._store
+
+    def get(self, key: str) -> _PendingRequest | None:
+        self._evict_expired()
+        return self._store.get(key)
+
+    def put(self, key: str, requester_origin: Origin) -> None:
+        self._store[key] = _PendingRequest(
+            requester_origin=requester_origin, seen_at=time.monotonic()
+        )
+        self._store.move_to_end(key)
+        while len(self._store) > self._capacity:
+            self._store.popitem(last=False)
+
+    def pop(self, key: str) -> _PendingRequest | None:
+        return self._store.pop(key, None)
+
+    def _evict_expired(self) -> None:
+        now = time.monotonic()
+        cutoff = now - self._ttl
+        while self._store:
+            _, value = next(iter(self._store.items()))
+            if value.seen_at >= cutoff:
+                return
+            self._store.popitem(last=False)
+
+
+class HubServer:
+    """The hub's asyncio TCP server.
+
+    Lifecycle:
+
+    1. :meth:`start` binds the listening socket on the configured
+       interface and returns the resolved ``(host, port)`` pair.
+    2. The caller then writes the discovery record and arranges for
+       :meth:`serve_forever` to be awaited.
+    3. :meth:`shutdown` triggers a clean tear-down: broadcasts ``bye``,
+       closes connections, stops accepting new ones.
+    """
+
+    def __init__(
+        self,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        server_version: str = "0.0.0",
+        dedupe_capacity: int = DEFAULT_DEDUPE_CAPACITY,
+        dedupe_ttl_seconds: float = DEFAULT_DEDUPE_TTL_SECONDS,
+    ) -> None:
+        self.host = host
+        self.requested_port = port
+        self.server_version = server_version
+        self._registry: dict[Origin, ClientConnection] = {}
+        self._pending = _LruIdSet(
+            capacity=dedupe_capacity, ttl_seconds=dedupe_ttl_seconds
+        )
+        self._dedupe = _LruIdSet(
+            capacity=dedupe_capacity, ttl_seconds=dedupe_ttl_seconds
+        )
+        self.state = HubState()
+        self._asyncio_server: asyncio.base_events.Server | None = None
+        self._serve_task: asyncio.Task[None] | None = None
+        self._stopped = asyncio.Event()
+
+    # ------------------------------------------------------------------
+    # lifecycle
+    # ------------------------------------------------------------------
+
+    async def start(self) -> tuple[str, int]:
+        self._asyncio_server = await asyncio.start_server(
+            self._handle_client, self.host, self.requested_port
+        )
+        sockets = self._asyncio_server.sockets or ()
+        if not sockets:
+            raise HubServerError("hub server bound 0 sockets")
+        host, port = sockets[0].getsockname()[:2]
+        self.host = host
+        self.port = port
+        log_event(
+            logger,
+            logging.INFO,
+            "hub.server.listening",
+            host=host,
+            port=port,
+            requested_port=self.requested_port,
+        )
+        return host, port
+
+    async def serve_forever(self) -> None:
+        if self._asyncio_server is None:
+            raise HubServerError("call start() before serve_forever()")
+        try:
+            await self._asyncio_server.serve_forever()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._stopped.set()
+
+    async def shutdown(self) -> None:
+        """Broadcast ``bye``, close connections, stop the listener.
+
+        Idempotent; multiple calls (e.g. signal handler + finally
+        block) are safe.
+        """
+
+        if self._asyncio_server is None or not self._asyncio_server.is_serving():
+            self._asyncio_server = None
+            return
+
+        for conn in list(self._registry.values()):
+            try:
+                await conn.send(self._bye_envelope(origin=Origin.CLI))
+            except Exception:
+                pass
+            conn.close()
+
+        self._asyncio_server.close()
+        try:
+            await self._asyncio_server.wait_closed()
+        except Exception:
+            pass
+        self._asyncio_server = None
+        log_event(logger, logging.INFO, "hub.server.shutdown")
+
+    @property
+    def registered_origins(self) -> list[Origin]:
+        return list(self._registry.keys())
+
+    # ------------------------------------------------------------------
+    # per-connection handler
+    # ------------------------------------------------------------------
+
+    async def _handle_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        peer = _peer_repr(writer)
+        conn = ClientConnection(reader=reader, writer=writer, peer=peer)
+        log_event(logger, logging.DEBUG, "hub.client.accepted", peer=peer)
+        try:
+            if not await self._run_handshake(conn):
+                return
+            await self._dispatch_loop(conn)
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            pass
+        except Exception:
+            logger.exception("hub.client.unhandled_error peer=%s", peer)
+        finally:
+            await self._cleanup_connection(conn)
+
+    async def _run_handshake(self, conn: ClientConnection) -> bool:
+        try:
+            line = await conn.reader.readline()
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            return False
+        if not line:
+            return False
+
+        try:
+            env = decode(line)
+        except HubProtocolError as exc:
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="bad_request",
+                    message=str(exc),
+                    context=({"path": exc.json_pointer} if exc.json_pointer else None),
+                ),
+            )
+            return False
+
+        if env.kind is not Kind.REQUEST or env.type != "hello":
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="protocol_mismatch",
+                    message="first message must be a hello request",
+                    in_reply_to=env.id,
+                ),
+            )
+            return False
+
+        client = Origin(env.payload["client"])
+        if client in self._registry:
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="not_connected",
+                    message=f"{client.value} client already registered",
+                    in_reply_to=env.id,
+                ),
+            )
+            return False
+
+        conn.origin = client
+        conn.capabilities = tuple(env.payload.get("capabilities", []))
+        conn.client_version = str(env.payload.get("version", ""))
+        self._registry[client] = conn
+        self.state.registered_clients = set(self._registry.keys())
+
+        await conn.send(
+            make_welcome(
+                in_reply_to=env.id,
+                server_version=self.server_version,
+                registered_clients=self.registered_origins,
+            )
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "hub.client.registered",
+            origin=client.value,
+            peer=conn.peer,
+            version=conn.client_version,
+            capabilities=list(conn.capabilities),
+        )
+        return True
+
+    async def _dispatch_loop(self, conn: ClientConnection) -> None:
+        while True:
+            line = await conn.reader.readline()
+            if not line:
+                return
+            try:
+                env = decode(line)
+            except HubProtocolError as exc:
+                await self._safe_send(
+                    conn,
+                    make_error(
+                        origin=Origin.CLI,
+                        code="bad_request",
+                        message=str(exc),
+                        context=(
+                            {"path": exc.json_pointer} if exc.json_pointer else None
+                        ),
+                    ),
+                )
+                continue
+
+            await self._dispatch(env, conn)
+
+    async def _dispatch(self, env: Envelope, conn: ClientConnection) -> None:
+        if env.kind is Kind.EVENT:
+            await self._handle_event(env, conn)
+        elif env.kind is Kind.REQUEST:
+            await self._handle_request(env, conn)
+        elif env.kind in (Kind.RESPONSE, Kind.ERROR):
+            await self._handle_response_or_error(env)
+
+    # ------------------------------------------------------------------
+    # events
+    # ------------------------------------------------------------------
+
+    async def _handle_event(self, env: Envelope, conn: ClientConnection) -> None:
+        if env.type == "bye":
+            await self._cleanup_connection(conn)
+            return
+
+        if env.type in STATE_EVENT_TYPES:
+            self._update_state(env)
+            await self._broadcast(env, suppress_origin=env.origin)
+            return
+
+        # Unknown event types are silently dropped per §11.
+        log_event(logger, logging.DEBUG, "hub.event.dropped_unknown", type=env.type)
+
+    def _update_state(self, env: Envelope) -> None:
+        try:
+            if env.type == "selection_changed":
+                ip = env.payload["instance_path"]
+                paths = (ip,) if isinstance(ip, str) else tuple(ip)
+                self.state.selection = Selection(instance_path=paths, origin=env.origin)
+            elif env.type == "signal_selected":
+                self.state.signal_selection = SignalSelection(
+                    signal=env.payload["signal"],
+                    wave_scope=env.payload["wave_scope"],
+                    origin=env.origin,
+                )
+            elif env.type == "cursor_time_changed":
+                self.state.cursor_time = CursorTime(
+                    t_fs=env.payload["t_fs"], origin=env.origin
+                )
+            elif env.type == "scope_changed":
+                self.state.wave_scope = WaveScope(
+                    wave_scope=env.payload["wave_scope"], origin=env.origin
+                )
+        except (KeyError, TypeError) as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "hub.state.update_failed",
+                type=env.type,
+                error=str(exc),
+            )
+
+    async def _broadcast(
+        self, env: Envelope, *, suppress_origin: Origin | None
+    ) -> None:
+        for origin, conn in list(self._registry.items()):
+            if origin == suppress_origin:
+                continue
+            await self._safe_send(conn, env)
+
+    # ------------------------------------------------------------------
+    # requests
+    # ------------------------------------------------------------------
+
+    async def _handle_request(self, env: Envelope, conn: ClientConnection) -> None:
+        if env.type == "hello":
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="protocol_mismatch",
+                    message="hello may only be sent once per connection",
+                    in_reply_to=env.id,
+                ),
+            )
+            return
+
+        if env.id in self._dedupe:
+            log_event(
+                logger,
+                logging.WARNING,
+                "hub.request.duplicate_dropped",
+                id=env.id,
+                type=env.type,
+            )
+            return
+        self._dedupe.put(env.id, requester_origin=env.origin)
+
+        if env.type in HUB_HANDLED_REQUESTS:
+            await self._handle_hub_request(env, conn)
+            return
+
+        target = REQUEST_ROUTING.get(env.type)
+        if target is None:
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="bad_request",
+                    message=f"unknown request type: {env.type}",
+                    in_reply_to=env.id,
+                ),
+            )
+            return
+
+        target_conn = self._registry.get(target)
+        if target_conn is None:
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="not_connected",
+                    message=f"no {target.value} client registered for {env.type}",
+                    in_reply_to=env.id,
+                ),
+            )
+            return
+
+        # Track the pending request so responses route back correctly.
+        self._pending.put(env.id, requester_origin=env.origin)
+        await self._safe_send(target_conn, env)
+
+    async def _handle_hub_request(self, env: Envelope, conn: ClientConnection) -> None:
+        """Resolver stub — PR 3 wires the real coordinate mapper.
+
+        Until then every ``resolve_*`` request returns ``unresolvable``
+        so client code can compile against the request shapes without
+        silently looking like it succeeded.
+        """
+
+        await self._safe_send(
+            conn,
+            make_error(
+                origin=Origin.CLI,
+                code="unresolvable",
+                message=(
+                    f"hub-side resolver for {env.type} not yet implemented "
+                    "(PR 3 of rtl-buddy/rtl_buddy#115)"
+                ),
+                context=env.payload if isinstance(env.payload, dict) else None,
+                in_reply_to=env.id,
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # responses / errors
+    # ------------------------------------------------------------------
+
+    async def _handle_response_or_error(self, env: Envelope) -> None:
+        pending = self._pending.pop(env.id)
+        if pending is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "hub.response.no_matching_request",
+                id=env.id,
+                kind=env.kind.value,
+                type=env.type,
+            )
+            return
+
+        requester = self._registry.get(pending.requester_origin)
+        if requester is None:
+            log_event(
+                logger,
+                logging.INFO,
+                "hub.response.requester_gone",
+                id=env.id,
+                origin=pending.requester_origin.value,
+            )
+            return
+
+        await self._safe_send(requester, env)
+
+    # ------------------------------------------------------------------
+    # bookkeeping
+    # ------------------------------------------------------------------
+
+    async def _cleanup_connection(self, conn: ClientConnection) -> None:
+        if conn.origin is None:
+            conn.close()
+            return
+
+        registered = self._registry.pop(conn.origin, None)
+        if registered is not conn:
+            # Already cleaned up by a prior bye / disconnect.
+            conn.close()
+            return
+
+        self.state.registered_clients = set(self._registry.keys())
+        log_event(
+            logger,
+            logging.INFO,
+            "hub.client.disconnected",
+            origin=conn.origin.value,
+            peer=conn.peer,
+        )
+
+        # Broadcast bye to remaining clients carrying the leaving origin.
+        await self._broadcast(
+            self._bye_envelope(origin=conn.origin), suppress_origin=None
+        )
+        conn.close()
+
+    async def _safe_send(self, conn: ClientConnection, env: Envelope) -> None:
+        try:
+            await conn.send(env)
+        except (ConnectionResetError, BrokenPipeError):
+            await self._cleanup_connection(conn)
+        except Exception:
+            logger.exception("hub.send.unhandled_error peer=%s", conn.peer)
+            await self._cleanup_connection(conn)
+
+    def _bye_envelope(self, *, origin: Origin) -> Envelope:
+        return Envelope(
+            origin=origin,
+            kind=Kind.EVENT,
+            type="bye",
+            id=new_id(),
+            payload={},
+        )
+
+
+def _peer_repr(writer: asyncio.StreamWriter) -> str:
+    """Stable string for log lines: ``host:port`` or ``<unknown>``."""
+
+    info: Any = writer.get_extra_info("peername")
+    if info is None:
+        return "<unknown>"
+    if isinstance(info, tuple) and len(info) >= 2:
+        return f"{info[0]}:{info[1]}"
+    return str(info)
+
+
+__all__ = [
+    "STATE_EVENT_TYPES",
+    "REQUEST_ROUTING",
+    "HUB_HANDLED_REQUESTS",
+    "DEFAULT_DEDUPE_CAPACITY",
+    "DEFAULT_DEDUPE_TTL_SECONDS",
+    "HubServer",
+    "HubServerError",
+    "ClientConnection",
+]
