@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to use specs.yaml, models.yaml spec pointers, and tests.yaml covers fields to trace functional requirements through to tests.">
+        <meta name="description" content="rtl-buddy-hub is the broker that mediates between the rtl-buddy-view SPA, surfer (via rb wave), and editor adapters. Invocation, config, troubleshooting.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/">
       
       
-        <link rel="prev" href="../cocotb/">
+        <link rel="prev" href="../wave/">
       
       
-        <link rel="next" href="../wave/">
+        <link rel="next" href="../synthesis/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Spec Traceability - RTL Buddy</title>
+        <title>Hub - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#spec-traceability" class="md-skip">
+        <a href="#hub-rb-hub" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Spec Traceability
+              Hub
             
           </span>
         </div>
@@ -530,37 +530,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Spec Traceability
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../spec-traceability/" class="md-nav__link">
         
   
   
@@ -576,109 +549,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#workflow" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Workflow
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Workflow">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-write-the-spec" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Write the spec
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#2-link-the-design-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Link the design model
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#3-annotate-tests" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. Annotate tests
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#4-check-traceability" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Check traceability
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#multi-block-specsyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Multi-block specs.yaml
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#command-reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Command reference
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -716,10 +586,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../hub/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hub
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -735,6 +632,125 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI surface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery-rtl-buddyhubjson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discovery (.rtl-buddy/hub.json)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-rtl-buddyhubtoml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration (.rtl-buddy/hub.toml)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#peers-who-connects-to-the-hub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Peers (who connects to the hub)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-new-adapter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a new adapter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1197,71 +1213,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#workflow" class="md-nav__link">
+  <a href="#quick-start" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Workflow
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Workflow">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-write-the-spec" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Write the spec
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#2-link-the-design-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Link the design model
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#3-annotate-tests" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. Annotate tests
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#4-check-traceability" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Check traceability
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#multi-block-specsyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Multi-block specs.yaml
+        Quick start
       
     </span>
   </a>
@@ -1269,10 +1224,87 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#command-reference" class="md-nav__link">
+  <a href="#cli-surface" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Command reference
+        CLI surface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery-rtl-buddyhubjson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discovery (.rtl-buddy/hub.json)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-rtl-buddyhubtoml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration (.rtl-buddy/hub.toml)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#peers-who-connects-to-the-hub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Peers (who connects to the hub)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-new-adapter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a new adapter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
       
     </span>
   </a>
@@ -1299,120 +1331,147 @@
   
 
 
-<h1 id="spec-traceability">Spec Traceability</h1>
-<p><code>rtl_buddy</code> provides a lightweight traceability layer that links functional specification items to design models and tests. It is driven by three files across the three-tier ownership model:</p>
-<table>
-<thead>
-<tr>
-<th>Tier</th>
-<th>File</th>
-<th>Role</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>spec/&lt;block&gt;/</code></td>
-<td><code>specs.yaml</code></td>
-<td>Defines blocks and their functional coverage items</td>
-</tr>
-<tr>
-<td><code>design/&lt;block&gt;/</code></td>
-<td><code>models.yaml</code></td>
-<td>Links a design model to its spec block via <code>spec:</code></td>
-</tr>
-<tr>
-<td><code>verif/&lt;block&gt;/</code></td>
-<td><code>tests.yaml</code></td>
-<td>Declares which coverage items each test addresses via <code>covers:</code></td>
-</tr>
-</tbody>
-</table>
-<p>None of these fields affect simulation. They are consumed only by the <code>rb spec</code> commands.</p>
-<h2 id="workflow">Workflow</h2>
-<h3 id="1-write-the-spec">1. Write the spec</h3>
-<p>Create <code>spec/&lt;block&gt;/specs.yaml</code> with one or more blocks, each listing its functional coverage items:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spec_config</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">blocks</span><span class="p">:</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_block&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Brief</span><span class="nv"> </span><span class="s">description&quot;</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">docs</span><span class="p">:</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;README.md&quot;</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;behavior.md&quot;</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-01&quot;</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Normal</span><span class="nv"> </span><span class="s">operation</span><span class="nv"> </span><span class="s">path</span><span class="nv"> </span><span class="s">verified&quot;</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-02&quot;</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Error</span><span class="nv"> </span><span class="s">handling</span><span class="nv"> </span><span class="s">and</span><span class="nv"> </span><span class="s">recovery&quot;</span>
+<h1 id="hub-rb-hub">Hub (<code>rb hub</code>)</h1>
+<blockquote>
+<p><strong>Integration type:</strong> Integrated tool. Ships in-tree at <code>src/rtl_buddy/hub/</code>; invoked via <code>rb hub start|stop|status|log|config validate</code>.</p>
+<p><strong>External binary required:</strong> None for the hub itself. The wave adapter still needs the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork for live WCP integration; see <a href="../wave/">Waveform Viewer</a>.</p>
+<p><strong>Default install carries it:</strong> No external dependency; the hub is pure Python.</p>
+</blockquote>
+<p>The <strong>rtl-buddy-hub</strong> is the broker between the <a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a> schematic viewer, the surfer waveform viewer (via the <code>rb wave</code> bridge), and editor adapters (nvim today, VS Code later). It owns the live coordinate-system translation (view ↔ wave ↔ source) and routes selection / cursor / scope events between every connected peer.</p>
+<p>The hub is <strong>server-only</strong>: every external speaker connects <em>into</em> the hub. The hub itself never initiates an outbound connection. This keeps reconnection logic to a single "tolerate any peer reattaching at any time" rule and makes the dispatch surface transport-agnostic — TCP and WebSocket clients hit the same envelope router.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>        ┌──────────────────────────────────┐
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>        │   rtl-buddy-view (browser SPA)   │
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>        └─────────────┬────────────────────┘
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>                      │ WebSocket /ws
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>                      ▼
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        ┌──────────────────────────────────┐         ┌──────────────────────┐
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        │       rtl-buddy-hub              │◀──TCP──▶│  rb wave bridge     │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        │       .rtl-buddy/hub.json        │         │  (surfer WCP)        │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        │       .rtl-buddy/hub.toml        │         └──────────────────────┘
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        │                                  │         ┌──────────────────────┐
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        │                                  │◀──TCP──▶│  nvim Lua plugin     │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        │                                  │         │  rtl_buddy_wave.lua  │
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        └──────────────────────────────────┘         └──────────────────────┘
 </code></pre></div>
-<p>Coverage item IDs are arbitrary strings; a block-prefix convention (e.g. <code>MYBLK-COV-NN</code>) keeps them unique across a multi-block project.</p>
-<h3 id="2-link-the-design-model">2. Link the design model</h3>
-<p>Add a <code>spec:</code> field to the relevant entry in <code>design/&lt;block&gt;/models.yaml</code>, pointing to the <code>specs.yaml</code> relative to that <code>models.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">models</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_block&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;-F</span><span class="nv"> </span><span class="s">my_block.f&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../spec/my_block/specs.yaml&quot;</span>
+<h2 id="quick-start">Quick start</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>&lt;project_root&gt;
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w">                   </span><span class="c1"># foreground TCP server only</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w">    </span><span class="c1"># also expose the viewer HTTP+WS endpoint</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>status<span class="w">                  </span><span class="c1"># in another shell: who&#39;s connected</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>stop<span class="w">                    </span><span class="c1"># graceful shutdown via SIGTERM</span>
 </code></pre></div>
-<p>The model <code>name</code> is matched against the block <code>name</code> in the referenced <code>specs.yaml</code>. In a single-block <code>specs.yaml</code> the match is unconditional.</p>
-<h3 id="3-annotate-tests">3. Annotate tests</h3>
-<p>Add <code>covers:</code> to each test in <code>verif/&lt;block&gt;/tests.yaml</code> listing the IDs it exercises:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;basic&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_block&quot;</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/my_block/models.yaml&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">covers</span><span class="p">:</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-01&quot;</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;MYBLK-COV-02&quot;</span>
-</code></pre></div>
-<p>A single test can cover multiple items; multiple tests can cover the same item.</p>
-<h3 id="4-check-traceability">4. Check traceability</h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>spec<span class="w"> </span>list<span class="w">             </span><span class="c1"># discover all spec blocks in the project</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>spec<span class="w"> </span>check-design<span class="w">     </span><span class="c1"># which spec blocks have a linked design model</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>rb<span class="w"> </span>spec<span class="w"> </span>check-coverage<span class="w">   </span><span class="c1"># which coverage items are addressed by at least one test</span>
-</code></pre></div>
-<p><code>check-coverage</code> prints a table of all items with a <code>Covered: yes/no</code> column and calls out uncovered IDs at the end. Use <code>--machine</code> to get JSON output for programmatic consumption.</p>
-<h2 id="multi-block-specsyaml">Multi-block specs.yaml</h2>
-<p>A single <code>specs.yaml</code> can contain multiple blocks — useful when a directory holds several closely related IP:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">blocks</span><span class="p">:</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_sync&quot;</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Multi-flop</span><span class="nv"> </span><span class="s">level</span><span class="nv"> </span><span class="s">synchronizer&quot;</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDCSYNC-COV-01&quot;</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake&quot;</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Four-phase</span><span class="nv"> </span><span class="s">request/acknowledge</span><span class="nv"> </span><span class="s">CDC</span><span class="nv"> </span><span class="s">primitive&quot;</span>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDCHS-COV-01&quot;</span>
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span>
-</code></pre></div>
-<p>Each design model still points to the same <code>specs.yaml</code>; the model <code>name</code> selects the correct block.</p>
-<h2 id="command-reference">Command reference</h2>
+<p><code>rb hub start</code> runs in the foreground by default; backgrounding is the caller's job (<code>nohup rb hub start &amp;</code>, a process manager, or — on macOS, planned — a LaunchAgent). The server binds the OS-assigned port (TCP, and HTTP if <code>--serve-viewer</code> is set) unless <code>hub.toml</code> pins them; the resolved port is written to <code>.rtl-buddy/hub.json</code> so peers can discover it.</p>
+<h2 id="cli-surface">CLI surface</h2>
 <table>
 <thead>
 <tr>
 <th>Command</th>
-<th>What it checks</th>
+<th>Purpose</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>rb spec list</code></td>
-<td>Lists all spec blocks discovered under <code>spec/</code> (or <code>--spec-dir</code>)</td>
+<td><code>rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH]</code></td>
+<td>Bind the TCP server (and optionally the viewer HTTP+WS layer), write <code>.rtl-buddy/hub.json</code>, run the asyncio loop. Exits cleanly on <code>SIGINT</code> / <code>SIGTERM</code> / <code>rb hub stop</code> and removes its discovery file.</td>
 </tr>
 <tr>
-<td><code>rb spec check-design</code></td>
-<td>For every spec block, shows whether a design model references it</td>
+<td><code>rb hub stop</code></td>
+<td>Send <code>SIGTERM</code> to the PID in <code>.rtl-buddy/hub.json</code>.</td>
 </tr>
 <tr>
-<td><code>rb spec check-coverage</code></td>
-<td>For every coverage item, shows which tests cover it and flags uncovered items</td>
+<td><code>rb hub status</code></td>
+<td>Print the current discovery record + liveness. Reports stale records (PID gone) so users know to clear them.</td>
+</tr>
+<tr>
+<td><code>rb hub log [--lines N] [--follow]</code></td>
+<td>Tail <code>.rtl-buddy/hub.log</code>.</td>
+</tr>
+<tr>
+<td><code>rb hub config validate [--path PATH]</code></td>
+<td>Schema-check <code>hub.toml</code> and exit non-zero on the first error.</td>
 </tr>
 </tbody>
 </table>
-<p>All three commands accept <code>--spec-dir</code> to target a subdirectory. <code>check-design</code> also accepts <code>--design-dir</code>; <code>check-coverage</code> accepts <code>--verif-dir</code>.</p>
+<p><code>--daemon</code> is reserved; today it warns and runs in the foreground. Treat the explicit <code>--foreground</code> as load-bearing; future versions may detach when <code>--daemon</code> is given.</p>
+<p><code>--serve-viewer</code> enables the HTTP + WebSocket layer (<code>/</code>, <code>/ws</code>) used by the browser SPA. Without <code>--viewer-bundle PATH</code> it serves a small placeholder page that proves the transport works — pass the path to a built rtl-buddy-view SPA (a directory containing <code>index.html</code> or a single <code>index.html</code>) to serve the real UI.</p>
+<h2 id="discovery-rtl-buddyhubjson">Discovery (<code>.rtl-buddy/hub.json</code>)</h2>
+<p>When the hub binds, it writes a small JSON record under the project root's <code>.rtl-buddy/</code> directory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41231</span><span class="p">,</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">&quot;listen_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53201</span><span class="p">,</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">&quot;http_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53202</span><span class="p">,</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">&quot;started_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-19T12:34:56Z&quot;</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">&quot;project_root&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">}</span>
+</code></pre></div>
+<p>Peers (the viewer SPA, the <code>rb wave</code> bridge, the nvim plugin) read this file to find the hub. The hub deletes the record on clean shutdown; a stale record after a crash is detected by <code>rb hub status</code> (PID not live) and the next <code>rb hub start</code> overwrites it.</p>
+<p>Override discovery resolution with the <code>RTL_BUDDY_HUB</code> environment variable when running outside a project tree — it should point at a <code>hub.json</code> directly.</p>
+<h2 id="configuration-rtl-buddyhubtoml">Configuration (<code>.rtl-buddy/hub.toml</code>)</h2>
+<p>Optional; sensible defaults apply when the file is absent. Two top-level sections:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[hub]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">listen_port</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># 0 = OS-assigned (default). Pin to a specific port to survive across restarts.</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">http_port</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># Same, for the viewer HTTP+WS layer (only used with --serve-viewer).</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">log_path</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/hub.log&quot;</span><span class="w">   </span><span class="c1"># Relative paths resolve from the project root.</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="k">[mapping]</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">tb_prefix</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.&quot;</span><span class="w">  </span><span class="c1"># Stripped from wave-side signal paths before resolving to the view.</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">view_json</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/view.json&quot;</span><span class="w">  </span><span class="c1"># Snapshot the resolver consumes. Defaults shown.</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Optional pre-strip aliases — applied before tb_prefix is stripped.</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="k">[[mapping.signal_aliases]]</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">wave</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.legacy_dut.clk&quot;</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="n">view</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.clk&quot;</span>
+</code></pre></div>
+<p>Unknown top-level sections fail validation (typo guard). Unknown keys <em>inside</em> known sections are tolerated for forward-compat. <code>rb hub config validate</code> runs the same loader and reports errors with file:line context.</p>
+<h2 id="peers-who-connects-to-the-hub">Peers (who connects to the hub)</h2>
+<table>
+<thead>
+<tr>
+<th>Peer</th>
+<th>Transport</th>
+<th>How it connects</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>rtl-buddy-view SPA</strong> (browser)</td>
+<td>WebSocket <code>/ws</code> on the hub's <code>http_port</code></td>
+<td>Loaded from the bundle when <code>rb hub start --serve-viewer</code> is in use. The bundle is injected with <code>window.__RTL_BUDDY_HUB__</code> at serve time.</td>
+</tr>
+<tr>
+<td><strong><code>rb wave</code> bridge</strong> (<code>tools/wave_hub_bridge.py</code>)</td>
+<td>Line-delimited JSON over TCP on <code>listen_port</code></td>
+<td>Started by <code>rb wave</code>; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff.</td>
+</tr>
+<tr>
+<td><strong>nvim plugin</strong> (<code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code>)</td>
+<td>Line-delimited JSON over TCP on <code>listen_port</code></td>
+<td>Connects when the user opens a file rtl-buddy knows how to resolve.</td>
+</tr>
+</tbody>
+</table>
+<p>Each peer has a closed <code>Origin</code> enum value (<code>view</code>, <code>wave</code>, <code>nvim</code>, …); the hub allows at most one client per origin in v1.</p>
+<h2 id="protocol">Protocol</h2>
+<p>Wire envelope is line-delimited JSON, one record per line, UTF-8. The full spec lives in <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy/rtl-buddy-view#19</a>; the JSON Schema enforcing it ships at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code>. Encoded and decoded by <code>rtl_buddy.hub.protocol</code>, which validates on both sides — unknown fields are caller bugs, not forward-compat points.</p>
+<p>State events (selection_changed, signal_selected, cursor_moved, …) are broadcast to every connected peer <strong>except</strong> the origin. Requests (<code>resolve_*</code>, <code>goto_declaration</code>, …) are routed to the peer whose origin owns the target coordinate system; if no peer is registered for that origin, the hub replies with <code>error{code: "not_connected"}</code>. The <code>view ↔ wave ↔ src</code> resolver lives in <code>rtl_buddy.hub.resolver</code> and consumes the <code>view.json</code> snapshot pointed at by <code>mapping.view_json</code>.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong><code>rb hub start</code> exits with "already running"</strong> — <code>.rtl-buddy/hub.json</code> exists and its PID is live. If the prior daemon really is gone, the file is stale (clean shutdown didn't run); delete it and retry. <code>rb hub status</code> distinguishes the two cases.</p>
+<p><strong>Port already in use</strong> — pin <code>listen_port</code> (and <code>http_port</code> if using <code>--serve-viewer</code>) to a free port in <code>hub.toml</code>, or leave them at <code>0</code> to let the OS pick. The chosen port lands in <code>hub.json</code> either way.</p>
+<p><strong>Peer can't find the hub from outside the project tree</strong> — set <code>RTL_BUDDY_HUB=/path/to/.rtl-buddy/hub.json</code> in the peer's environment. The default discovery walks up from <code>cwd</code> looking for <code>.rtl-buddy/hub.json</code>, which doesn't work for processes launched from elsewhere.</p>
+<p><strong><code>rb wave</code> bridge reports surfer disconnected</strong> — the bridge owns the WCP TCP connection, not the hub. Check the surfer fork is on PATH and built with WCP support; see <a href="../wave/">Waveform Viewer</a>. The hub stays up regardless; reconnect is automatic.</p>
+<p><strong><code>rb hub config validate</code> reports "unknown section"</strong> — typo. The schema accepts exactly <code>[hub]</code> and <code>[mapping]</code>; everything else (surfer flags, nvim keymaps, …) belongs in the adapters' own config.</p>
+<p><strong>Hub log empty or absent</strong> — <code>rb hub log</code> tails <code>.rtl-buddy/hub.log</code> by default. The <code>[hub].log_path</code> setting controls the location; logs route through <code>log_event()</code> like the rest of <code>rtl_buddy</code>, so <code>--machine</code> mode produces JSON Lines.</p>
+<h2 id="writing-a-new-adapter">Writing a new adapter</h2>
+<p>Bring up a TCP client against the hub's <code>listen_port</code>, send the <code>hello</code> envelope claiming an origin, accept the <code>welcome</code> reply, then send / receive state events and requests per <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy-view#19</a>. The JSON Schema at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code> is the contract — validate against it on both sides and unknown <code>type</code> strings should be silently dropped (forward-compat rule from §11 of the spec).</p>
+<p>The existing peers — <code>tools/wave_hub_bridge.py</code> and <code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code> — are the reference adapters. Both stay narrow on purpose: parse the envelope, translate to the peer's native API, route, repeat.</p>
+<h2 id="reference">Reference</h2>
+<ul>
+<li>Wire protocol spec: <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy-view#19</a></li>
+<li>JSON Schema: <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code></li>
+<li>Implementation: <code>src/rtl_buddy/hub/</code></li>
+<li>Wave bridge: <code>src/rtl_buddy/tools/wave_hub_bridge.py</code>, <code>src/rtl_buddy/tools/wave_launcher.py</code></li>
+<li>nvim plugin: <code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code></li>
+</ul>
 
 
 
