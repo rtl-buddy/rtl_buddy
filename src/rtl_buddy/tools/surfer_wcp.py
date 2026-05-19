@@ -23,7 +23,7 @@ import socket
 import socket as _socket_mod
 import subprocess
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ..config.surfer import SurferConfig
@@ -667,6 +667,9 @@ class SurferWcpListener:
         self._wcp_conn: socket.socket | None = (
             None  # live connection to Surfer for sending commands
         )
+        self.event_observer: "Callable[[str, dict], None] | None" = None
+        """Optional callback invoked for relevant WCP events. The hub-bridge
+        adapter sets this; the listener stays free of hub awareness."""
 
     def send_to_surfer(self, obj: dict) -> None:
         """Send a WCP command frame to Surfer if connected."""
@@ -773,15 +776,27 @@ class SurferWcpListener:
                     self._editor.open(filepath, lineno, value)
                     if self._scope_annotation and self._value_reader is not None:
                         self._build_scope_cache(variable, timestamp)
+                self._notify_observer("goto_declaration", msg)
             elif msg.get("type") == "event" and msg.get("event") == "cursor_moved":
                 timestamp = msg.get("timestamp")
                 if timestamp is not None:
                     self._last_timestamp = timestamp
                 self._on_cursor_moved(timestamp)
+                self._notify_observer("cursor_moved", msg)
             elif msg.get("type") == "event" and msg.get("event") == "scope_changed":
                 scope = msg.get("scope", "")
                 if scope:
                     self._on_scope_changed(scope)
+                self._notify_observer("scope_changed", msg)
+
+    def _notify_observer(self, event_name: str, msg: dict) -> None:
+        observer = self.event_observer
+        if observer is None:
+            return
+        try:
+            observer(event_name, msg)
+        except Exception:
+            logger.exception("wave.event_observer.unhandled_error event=%s", event_name)
 
     def _emit_value(self, variable: str, timestamp: int | None) -> str | None:
         """Log the signal value at *timestamp* to the console. Returns the display string or None."""

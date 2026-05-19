@@ -29,6 +29,7 @@ from .surfer_wcp import (
     WaveControlServer,
     WaveformValueReader,
 )
+from .wave_hub_bridge import maybe_connect_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,11 @@ class WaveLauncher:
             ctrl = WaveControlServer(self._surfer_cfg.resolved_ctrl_sock, listener)
             ctrl.start()
 
+        # Opportunistic hub adapter: registers as the `wave` origin client
+        # when a project hub is running. Standalone behavior is unchanged
+        # when no hub is reachable (the bridge is None).
+        hub_bridge = maybe_connect_bridge(listener=listener)
+
         emit_console_text(
             f"Surfer open (PID {proc.pid}). "
             f"Right-click a signal → Go to declaration. "
@@ -131,6 +137,8 @@ class WaveLauncher:
             except subprocess.TimeoutExpired:
                 proc.kill()
         finally:
+            if hub_bridge is not None:
+                hub_bridge.stop()
             listener.stop()
             if ctrl:
                 ctrl.stop()
