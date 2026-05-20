@@ -96,9 +96,7 @@ def check_solver_pins(pins: dict[str, str]) -> dict[str, str]:
             )
             continue
         if got != expected:
-            failures.append(
-                f"  {solver}: pinned {expected!r}, found {got!r}"
-            )
+            failures.append(f"  {solver}: pinned {expected!r}, found {got!r}")
             continue
         resolved[solver] = got
     if failures:

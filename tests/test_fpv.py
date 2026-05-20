@@ -492,9 +492,7 @@ def test_fpv_tool_config_solver_versions_default_empty():
 
 def test_fpv_tool_config_solver_versions_round_trip():
     opts_file = FpvToolOptsFile(solver_versions={"yices": "2.6.4"})
-    tool_cfg = FpvToolConfig(
-        FpvToolConfigFile(name="sby", tool="sby", opts=opts_file)
-    )
+    tool_cfg = FpvToolConfig(FpvToolConfigFile(name="sby", tool="sby", opts=opts_file))
     assert tool_cfg.get_opts().solver_versions == {"yices": "2.6.4"}
 
 
@@ -502,9 +500,7 @@ def test_fpv_tool_config_solver_versions_override_replaces_base():
     """Per-verification overrides should replace, not merge — the pin
     semantics are "use exactly this set", not "add to whatever's pinned"."""
     opts_file = FpvToolOptsFile(solver_versions={"yices": "2.6.4", "z3": "4.13.0"})
-    tool_cfg = FpvToolConfig(
-        FpvToolConfigFile(name="sby", tool="sby", opts=opts_file)
-    )
+    tool_cfg = FpvToolConfig(FpvToolConfigFile(name="sby", tool="sby", opts=opts_file))
     opts = tool_cfg.get_opts({"solver_versions": {"z3": "4.12.0"}})
     assert opts.solver_versions == {"z3": "4.12.0"}
 
@@ -596,9 +592,7 @@ def test_check_solver_pins_all_match_returns_resolved():
         "probe_solver_version",
         side_effect=lambda s: {"yices": "2.6.4", "z3": "4.13.0"}[s],
     ):
-        resolved = fpv_solver_pin.check_solver_pins(
-            {"yices": "2.6.4", "z3": "4.13.0"}
-        )
+        resolved = fpv_solver_pin.check_solver_pins({"yices": "2.6.4", "z3": "4.13.0"})
     assert resolved == {"yices": "2.6.4", "z3": "4.13.0"}
 
 
@@ -613,9 +607,7 @@ def test_check_solver_pins_mismatch_raises_with_all_failures():
         side_effect=lambda s: {"yices": "2.6.3", "z3": "4.13.0"}[s],
     ):
         with pytest.raises(FatalRtlBuddyError) as exc_info:
-            fpv_solver_pin.check_solver_pins(
-                {"yices": "2.6.4", "z3": "4.12.0"}
-            )
+            fpv_solver_pin.check_solver_pins({"yices": "2.6.4", "z3": "4.12.0"})
     msg = str(exc_info.value)
     assert "yices" in msg and "2.6.3" in msg and "2.6.4" in msg
     assert "z3" in msg and "4.12.0" in msg
@@ -625,9 +617,7 @@ def test_check_solver_pins_missing_solver_raises():
     from rtl_buddy.errors import FatalRtlBuddyError
     from rtl_buddy.tools import fpv_solver_pin
 
-    with patch.object(
-        fpv_solver_pin, "probe_solver_version", return_value=None
-    ):
+    with patch.object(fpv_solver_pin, "probe_solver_version", return_value=None):
         with pytest.raises(FatalRtlBuddyError, match="yices"):
             fpv_solver_pin.check_solver_pins({"yices": "2.6.4"})
 
