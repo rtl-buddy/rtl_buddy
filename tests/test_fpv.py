@@ -272,7 +272,8 @@ def test_fpv_suite_config_constraints_resolved_relative_to_yaml(tmp_path):
     """A `constraints:` field in fpv.yaml is resolved relative to the yaml."""
     (tmp_path / "models.yaml").write_text(_MODELS_YAML)
     suite_yaml = tmp_path / "fpv.yaml"
-    suite_yaml.write_text(dedent("""\
+    suite_yaml.write_text(
+        dedent("""\
         rtl-buddy-filetype: fpv_config
 
         verifications:
@@ -290,7 +291,8 @@ def test_fpv_suite_config_constraints_resolved_relative_to_yaml(tmp_path):
             engines:
               - "smtbmc yices"
             reglvl: 0
-    """))
+    """)
+    )
     cfg = FpvSuiteConfig(str(suite_yaml))
     verif = cfg.get_verifications("fpv_with_constraints")[0]
     assert Path(verif.get_constraints()) == tmp_path / "shared_clock_reset.sv"
