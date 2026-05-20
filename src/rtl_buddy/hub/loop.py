@@ -20,7 +20,7 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
-from ..logging_utils import log_event
+from ..logging_utils import emit_console_text, log_event
 from .config import HubConfig
 from .discovery import delete_record_if_owner, write_record
 from .resolver import Resolver, default_view_json_path
@@ -36,6 +36,40 @@ def _server_version() -> str:
         return _pkg_version("rtl-buddy")
     except PackageNotFoundError:
         return "0.0.0+unknown"
+
+
+def _print_startup_banner(
+    *,
+    tcp_host: str,
+    tcp_port: int,
+    http_port: int | None,
+    view_json_path: Path | None,
+    log_path: Path | None,
+) -> None:
+    """Print connection info to stdout so the user isn't left guessing
+    after ``rb hub start`` blocks the terminal.
+
+    Adapter peers (nvim, ``rb wave``) auto-discover the hub via
+    ``.rtl-buddy/hub.json`` so they don't need this output — the
+    browser-bound viewer URL is the main thing we're surfacing. The
+    explicit "Press Ctrl-C" line documents that the foregrounded
+    process is by design (``--daemon`` warns and stays in foreground).
+    """
+    lines = ["rtl-buddy-hub running."]
+    if http_port is not None:
+        url = f"http://127.0.0.1:{http_port}/"
+        # Append the auto-load query string only when the view.json is
+        # actually servable — otherwise it'd 404 and the SPA would land
+        # in the empty state with a misleading URL on the user's first
+        # click.
+        if view_json_path is not None and view_json_path.is_file():
+            url += "?view=/view.json"
+        lines.append(f"  Viewer:   {url}")
+    lines.append(f"  TCP:      {tcp_host}:{tcp_port}")
+    if log_path is not None:
+        lines.append(f"  Logs:     {log_path}")
+    lines.append("Press Ctrl-C to stop.")
+    emit_console_text("\n".join(lines))
 
 
 def _discover_viewer_bundle() -> Path | None:
@@ -113,6 +147,16 @@ async def _run(
         tcp=f"{host}:{port}",
         server_version=server.server_version,
         http_port=http_port,
+    )
+
+    _print_startup_banner(
+        tcp_host=host,
+        tcp_port=port,
+        http_port=http_port,
+        view_json_path=view_json_path,
+        log_path=(project_root / config.hub.log_path).resolve()
+        if config.hub.log_path
+        else None,
     )
 
     loop = asyncio.get_running_loop()
