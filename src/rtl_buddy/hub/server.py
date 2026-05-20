@@ -44,6 +44,7 @@ from .protocol import (
     Origin,
     decode,
     encode,
+    make_diagnostics_set,
     make_error,
     make_welcome,
     new_id,
@@ -51,6 +52,7 @@ from .protocol import (
 from .resolver import Resolver
 from .state import (
     CursorTime,
+    DiagnosticsBundle,
     HubState,
     Selection,
     SignalSelection,
@@ -68,6 +70,7 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "cursor_time_changed",
         "scope_changed",
         "source_focused",
+        "diagnostics_set",
     }
 )
 """Event ``type`` strings that broadcast to all clients except origin.
@@ -366,6 +369,22 @@ class HubServer:
                 registered_clients=self.registered_origins,
             )
         )
+
+        # Replay cached diagnostics so this client sees the same set
+        # everyone else does. Empty-items bundles are replayed too so
+        # a "cleared" source remains visible as "cleared" to late
+        # joiners. We replay using each bundle's original origin so
+        # the loop-prevention origin tag is preserved.
+        for source, bundle in self.state.diagnostics.items():
+            await self._safe_send(
+                conn,
+                make_diagnostics_set(
+                    origin=bundle.origin,
+                    source=source,
+                    items=list(bundle.items),
+                ),
+            )
+
         log_event(
             logger,
             logging.INFO,
@@ -444,6 +463,12 @@ class HubServer:
             elif env.type == "scope_changed":
                 self.state.wave_scope = WaveScope(
                     wave_scope=env.payload["wave_scope"], origin=env.origin
+                )
+            elif env.type == "diagnostics_set":
+                source = env.payload["source"]
+                items = tuple(env.payload["items"])
+                self.state.diagnostics[source] = DiagnosticsBundle(
+                    items=items, origin=env.origin
                 )
         except (KeyError, TypeError) as exc:
             log_event(

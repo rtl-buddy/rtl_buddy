@@ -275,11 +275,76 @@ def make_welcome(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Diagnostic:
+    """One finding inside a ``diagnostics_set`` event payload.
+
+    The fields mirror the v1 schema; optional ones default to ``None``
+    and are stripped on the wire by :func:`make_diagnostics_set`.
+    """
+
+    file: str
+    line: int
+    severity: str  # "error" | "warning" | "info" | "hint"
+    message: str
+    col: int | None = None
+    end_line: int | None = None
+    end_col: int | None = None
+    code: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "file": self.file,
+            "line": self.line,
+            "severity": self.severity,
+            "message": self.message,
+        }
+        if self.col is not None:
+            out["col"] = self.col
+        if self.end_line is not None:
+            out["end_line"] = self.end_line
+        if self.end_col is not None:
+            out["end_col"] = self.end_col
+        if self.code is not None:
+            out["code"] = self.code
+        return out
+
+
+def make_diagnostics_set(
+    *,
+    origin: Origin,
+    source: str,
+    items: list[Diagnostic] | list[dict[str, Any]],
+) -> Envelope:
+    """Construct a ``diagnostics_set`` event envelope.
+
+    ``items`` may be a list of :class:`Diagnostic` dataclasses (which
+    get serialised) or already-dict-shaped payloads (passed through).
+    An empty list is the legal "clear all diagnostics for this source"
+    signal — see the v1 schema description for ``diagnostics_set``.
+    """
+
+    payload_items: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, Diagnostic):
+            payload_items.append(item.to_dict())
+        else:
+            payload_items.append(dict(item))
+    return Envelope(
+        origin=origin,
+        kind=Kind.EVENT,
+        type="diagnostics_set",
+        id=new_id(),
+        payload={"source": source, "items": payload_items},
+    )
+
+
 __all__ = [
     "PROTOCOL_VERSION",
     "Origin",
     "Kind",
     "Envelope",
+    "Diagnostic",
     "HubProtocolError",
     "decode",
     "encode",
@@ -288,4 +353,5 @@ __all__ = [
     "make_error",
     "make_hello",
     "make_welcome",
+    "make_diagnostics_set",
 ]
