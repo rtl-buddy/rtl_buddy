@@ -74,6 +74,19 @@ def test_placeholder_html_contains_injection_marker():
     assert "%HUB_INJECTION%" in PLACEHOLDER_HTML
 
 
+def test_render_index_html_injects_view_url_when_provided():
+    body = render_index_html(
+        bundle_index=None, hub_addr="127.0.0.1:1", view_url="/view.json"
+    )
+    assert b"window.__RTL_BUDDY_VIEW_URL__" in body
+    assert b"'/view.json'" in body
+
+
+def test_render_index_html_omits_view_url_when_absent():
+    body = render_index_html(bundle_index=None, hub_addr="127.0.0.1:1")
+    assert b"__RTL_BUDDY_VIEW_URL__" not in body
+
+
 # ---------------------------------------------------------------------------
 # combined HubServer + ViewerServer fixture
 # ---------------------------------------------------------------------------
@@ -152,6 +165,99 @@ async def test_http_404_for_unknown_path(hub_and_viewer):
         assert exc.code == 404
     else:
         pytest.fail("expected 404")
+
+
+@pytest.mark.asyncio
+async def test_http_view_json_404_when_path_unset(hub_and_viewer):
+    """No view_json_path configured → 404 (not a 500 or empty 200)."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}/view.json"
+    try:
+        await asyncio.to_thread(_http_get, url)
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 404
+    else:
+        pytest.fail("expected 404")
+
+
+@pytest.mark.asyncio
+async def test_http_view_json_404_when_file_missing(tmp_path: Path):
+    """view_json_path set but file doesn't exist → 404."""
+
+    hub = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
+    hub_host, hub_port = await hub.start()
+    hub_task = asyncio.create_task(hub.serve_forever())
+    viewer = ViewerServer(
+        hub_host=hub_host,
+        hub_port=hub_port,
+        http_port=0,
+        view_json_path=tmp_path / "missing.json",
+    )
+    await viewer.start()
+    vtask = asyncio.create_task(viewer.serve_forever())
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json"
+        try:
+            await asyncio.to_thread(_http_get, url)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            pytest.fail("expected 404")
+    finally:
+        await viewer.shutdown()
+        await hub.shutdown()
+        for t in (vtask, hub_task):
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+@pytest.mark.asyncio
+async def test_http_view_json_served_when_configured(tmp_path: Path):
+    """view_json_path points at an existing file → 200 with that JSON body
+    + index.html gets the __RTL_BUDDY_VIEW_URL__ injection."""
+
+    view_json = tmp_path / "view.json"
+    view_json.write_text(
+        '{"schema_version":"1.0.0","design":{"top":"x"},"nodes":[],"edges":[]}',
+        encoding="utf-8",
+    )
+
+    hub = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
+    hub_host, hub_port = await hub.start()
+    hub_task = asyncio.create_task(hub.serve_forever())
+    viewer = ViewerServer(
+        hub_host=hub_host,
+        hub_port=hub_port,
+        http_port=0,
+        view_json_path=view_json,
+    )
+    await viewer.start()
+    vtask = asyncio.create_task(viewer.serve_forever())
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json"
+        status, headers, body = await asyncio.to_thread(_http_get, url)
+        assert status == 200
+        assert "application/json" in headers.get("Content-Type", "")
+        assert body == view_json.read_bytes()
+
+        # Bonus: index.html gets the auto-load preamble.
+        url_root = f"http://127.0.0.1:{viewer.http_port}/"
+        _status, _, root_body = await asyncio.to_thread(_http_get, url_root)
+        assert b"window.__RTL_BUDDY_VIEW_URL__" in root_body
+        assert b"'/view.json'" in root_body
+    finally:
+        await viewer.shutdown()
+        await hub.shutdown()
+        for t in (vtask, hub_task):
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 @pytest.mark.asyncio

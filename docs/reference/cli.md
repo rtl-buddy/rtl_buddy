@@ -49,6 +49,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ hier               render module hierarchy via rtl-buddy-view                        │
 │ verible            run verible cmd                                                   │
 │ wave               open waveform viewer for a test                                   │
+│ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ wave-install-nvim  install nvim plugin for rb wave annotation                        │
 │ synth              run synthesis                                                     │
 │ synth-regression   run synthesis regression                                          │
