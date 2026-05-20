@@ -197,6 +197,24 @@ class SbyFpv:
                     f"{cfg.get_name()}: property file not found: {prop}"
                 )
 
+        opts = self.tool_cfg.get_opts(
+            cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+        )
+        if opts.solver_versions:
+            # Raises FatalRtlBuddyError on any mismatch so the user
+            # sees the drift before sby produces a wrong-looking
+            # PASS or timeout on a different solver version.
+            from .fpv_solver_pin import check_solver_pins
+
+            resolved = check_solver_pins(opts.solver_versions)
+            log_event(
+                logger,
+                logging.INFO,
+                "fpv.solver_pins_resolved",
+                verification=cfg.get_name(),
+                resolved=resolved,
+            )
+
         sby_path = self._write_sby_file(sources, incdirs)
         log_path = self._log_path()
         workdir = self._workdir_path()

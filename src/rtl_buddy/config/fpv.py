@@ -30,12 +30,20 @@ logger = logging.getLogger(__name__)
 class FpvToolOpts:
     timeout: int | None = None
     extra_args: str = ""
+    solver_versions: dict[str, str] = dc_field(default_factory=dict)
 
 
 @serde
 class FpvToolOptsFile:
     timeout: int | None = field(rename="timeout", default=None)
     extra_args: str = field(rename="extra-args", default="")
+    # Optional pins so CI proofs reproduce across machines. Map solver
+    # name (yices / z3 / boolector / btormc / abc) -> exact version
+    # string. SbyFpv probes each before running and hard-fails on
+    # mismatch.
+    solver_versions: dict[str, str] = field(
+        rename="solver-versions", default_factory=dict
+    )
 
 
 @serde
@@ -60,10 +68,17 @@ class FpvToolConfig:
     def get_opts(self, overrides: dict | None = None) -> FpvToolOpts:
         timeout = self._cfg.opts.timeout
         extra_args = self._cfg.opts.extra_args
+        solver_versions = dict(self._cfg.opts.solver_versions)
         if overrides:
             timeout = overrides.get("timeout", timeout)
             extra_args = overrides.get("extra_args", extra_args)
-        return FpvToolOpts(timeout=timeout, extra_args=extra_args)
+            if "solver_versions" in overrides:
+                solver_versions = dict(overrides["solver_versions"])
+        return FpvToolOpts(
+            timeout=timeout,
+            extra_args=extra_args,
+            solver_versions=solver_versions,
+        )
 
 
 # ---- per-verification config ----------------------------------------------
