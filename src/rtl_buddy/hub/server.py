@@ -394,6 +394,16 @@ class HubServer:
             version=conn.client_version,
             capabilities=list(conn.capabilities),
         )
+
+        # Tell already-registered peers that a new peer is online.
+        # The new peer learnt the current snapshot from `welcome`;
+        # this is the delta for the rest. ``suppress_origin=client``
+        # keeps the joining peer from receiving a peer_joined event
+        # about itself.
+        await self._broadcast(
+            self._peer_joined_envelope(origin=client),
+            suppress_origin=client,
+        )
         return True
 
     async def _dispatch_loop(self, conn: ClientConnection) -> None:
@@ -770,6 +780,24 @@ class HubServer:
             origin=origin,
             kind=Kind.EVENT,
             type="bye",
+            id=new_id(),
+            payload={},
+        )
+
+    def _peer_joined_envelope(self, *, origin: Origin) -> Envelope:
+        """Build a ``peer_joined`` event for the named origin.
+
+        Symmetric to :meth:`_bye_envelope` — the joining peer is in the
+        envelope's ``origin`` field, payload is empty. Consumers (the
+        SPA's useHub, the nvim plugin's hub.lua) treat this as the
+        join half of the lifecycle pair: ``welcome`` carries the
+        current snapshot, ``peer_joined`` is the delta for joiners
+        that arrive after.
+        """
+        return Envelope(
+            origin=origin,
+            kind=Kind.EVENT,
+            type="peer_joined",
             id=new_id(),
             payload={},
         )

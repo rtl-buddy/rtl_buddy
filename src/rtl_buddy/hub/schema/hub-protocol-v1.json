@@ -399,6 +399,21 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "peer_joined" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "description": "Empty (or absent). Hub broadcasts peer_joined to already-registered peers when a new client finishes its hello handshake; the joining peer's origin lives in the envelope's `origin` field, mirroring `bye`'s shape so consumers can treat join + leave symmetrically.",
+            "oneOf": [
+              { "type": "null" },
+              { "type": "object", "additionalProperties": false }
+            ]
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "diagnostics_set" } }, "required": ["type"] },
       "then": {
         "properties": {

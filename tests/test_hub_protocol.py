@@ -292,6 +292,7 @@ def test_vendored_schema_has_expected_types():
         "hello",
         "welcome",
         "bye",
+        "peer_joined",
         "error",
         "diagnostics_set",
     }

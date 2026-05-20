@@ -74,6 +74,20 @@ class MockClient:
             raise EOFError("connection closed without a message")
         return decode(line)
 
+    async def recv_until(self, type_: str, *, timeout: float = 1.0) -> Envelope:
+        """Read envelopes until one with ``type == type_`` arrives.
+
+        Used by multi-peer tests to skip past the ``peer_joined``
+        broadcasts each later-arriving peer triggers — the hub fires
+        one peer_joined per existing peer when a new peer hellos, so a
+        test that connects three peers and then expects a single
+        ``selection_changed`` has to filter past the peer_joined noise.
+        """
+        while True:
+            env = await self.recv(timeout=timeout)
+            if env.type == type_:
+                return env
+
     async def expect_no_message(self, *, within: float = 0.1) -> None:
         try:
             line = await asyncio.wait_for(self.reader.readline(), timeout=within)
@@ -206,18 +220,57 @@ async def test_state_event_broadcast_skips_origin(server: HubServer):
         )
         await view.send(evt)
 
-        # wave + src must receive it; view must not echo back.
-        got_wave = await wave.recv()
-        got_src = await src.recv()
+        # wave + src must receive it; view must not echo back. Use
+        # recv_until to skip past the peer_joined broadcasts each later
+        # peer triggered (view saw peer_joined(wave), peer_joined(src);
+        # wave saw peer_joined(src)) and assert on selection_changed.
+        got_wave = await wave.recv_until("selection_changed")
+        got_src = await src.recv_until("selection_changed")
         assert got_wave.id == evt.id
         assert got_src.id == evt.id
         assert got_wave.payload == {"instance_path": "top.u_fifo"}
 
+        # Drain the two peer_joined events view received during setup
+        # before asserting it didn't get an echoed selection_changed.
+        for _ in range(2):
+            joined = await view.recv()
+            assert joined.type == "peer_joined"
         await view.expect_no_message()
     finally:
         await view.close()
         await wave.close()
         await src.close()
+
+
+async def test_peer_joined_broadcast_to_existing_peers(server: HubServer):
+    """When a new peer hellos, every already-registered peer receives a
+    ``peer_joined`` event carrying the joining peer's origin. The
+    joining peer itself does not (suppress_origin=client in the hub's
+    hello handler).
+
+    Symmetric to ``bye`` so consumers can maintain a live peer list
+    without re-fetching ``registered_clients`` every time.
+    """
+    view = await MockClient.connect(server.host, server.port)
+    wave = await MockClient.connect(server.host, server.port)
+    try:
+        # view hellos first: registry is empty, no one to notify.
+        await view.hello(Origin.VIEW)
+
+        # wave hellos second: view must get peer_joined(wave); wave
+        # itself must not get a peer_joined about itself.
+        await wave.hello(Origin.WAVE)
+
+        joined = await view.recv()
+        assert joined.type == "peer_joined"
+        assert joined.kind is Kind.EVENT
+        assert joined.origin is Origin.WAVE
+        assert joined.payload == {}
+
+        await wave.expect_no_message()
+    finally:
+        await view.close()
+        await wave.close()
 
 
 async def test_state_is_recorded_after_event(server: HubServer):
@@ -296,10 +349,16 @@ async def test_diagnostics_set_broadcasts_and_caches(server: HubServer):
         evt = _diag_evt(Origin.CLI, "rtl-buddy-cdc", items)
         await publisher.send(evt)
 
-        got = await subscriber.recv()
-        assert got.type == "diagnostics_set"
+        # Skip the peer_joined(subscriber) the publisher already
+        # received when subscriber connected; assert the actual
+        # broadcast we care about lands at the subscriber.
+        got = await subscriber.recv_until("diagnostics_set")
         assert got.payload["source"] == "rtl-buddy-cdc"
         assert got.payload["items"] == items
+        # Publisher received peer_joined(subscriber) at setup time —
+        # drain it before asserting it got no echoed diagnostics_set.
+        joined = await publisher.recv()
+        assert joined.type == "peer_joined"
         await publisher.expect_no_message()  # origin gets suppressed
 
         await asyncio.sleep(0.05)
@@ -463,7 +522,14 @@ async def test_response_routed_back_to_requester(server: HubServer):
             payload={"variables": ["tb.dut.x"]},
         )
         await view.send(req)
-        forwarded = await wave.recv()
+        # wave received peer_joined(wave) for itself? no — suppress_origin
+        # skips that. But wave still has the peer_joined(view) it got at
+        # its own welcome time? Actually view registered first so when
+        # wave connected, view got peer_joined(wave) but wave got no
+        # peer_joined (no earlier peers). So wave.recv() here would be
+        # the forwarded request directly. Use recv_until anyway for
+        # robustness against future broadcasts that might interleave.
+        forwarded = await wave.recv_until("wave_add_variables")
         assert forwarded.id == req.id
 
         resp = Envelope(
@@ -475,7 +541,9 @@ async def test_response_routed_back_to_requester(server: HubServer):
         )
         await wave.send(resp)
 
-        got = await view.recv()
+        # view's queue has peer_joined(wave) from when wave connected.
+        # Skip it and assert on the response.
+        got = await view.recv_until("wave_add_variables")
         assert got.id == req.id
         assert got.kind is Kind.RESPONSE
         assert got.payload == {"ids": [17]}
