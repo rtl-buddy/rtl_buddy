@@ -1371,8 +1371,8 @@
 </thead>
 <tbody>
 <tr>
-<td><code>rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH]</code></td>
-<td>Bind the TCP server (and optionally the viewer HTTP+WS layer), write <code>.rtl-buddy/hub.json</code>, run the asyncio loop. Exits cleanly on <code>SIGINT</code> / <code>SIGTERM</code> / <code>rb hub stop</code> and removes its discovery file.</td>
+<td><code>rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH] [--listen-port N] [--http-port N]</code></td>
+<td>Bind the TCP server (and optionally the viewer HTTP+WS layer), write <code>.rtl-buddy/hub.json</code>, run the asyncio loop. <code>--listen-port</code> / <code>--http-port</code> override <code>[hub].listen_port</code> / <code>[hub].http_port</code> from <code>hub.toml</code> (default 0 = OS-assigned). When a pinned port is already in use, the command prints a one-line error and exits 1 without a traceback. Exits cleanly on <code>SIGINT</code> / <code>SIGTERM</code> / <code>rb hub stop</code> and removes its discovery file.</td>
 </tr>
 <tr>
 <td><code>rb hub stop</code></td>
