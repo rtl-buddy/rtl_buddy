@@ -96,6 +96,34 @@ def cmd_start(
             ),
         ),
     ] = None,
+    listen_port: Annotated[
+        int | None,
+        typer.Option(
+            "--listen-port",
+            help=(
+                "TCP port for adapter peers (nvim, rb wave). Overrides "
+                "[hub].listen_port from hub.toml. 0 = OS-assigned. Pin to a "
+                "specific number so peers' discovery records stay stable "
+                "across restarts."
+            ),
+            min=0,
+            max=65535,
+        ),
+    ] = None,
+    http_port: Annotated[
+        int | None,
+        typer.Option(
+            "--http-port",
+            help=(
+                "HTTP/WS port for the browser-side SPA. Overrides "
+                "[hub].http_port from hub.toml. 0 = OS-assigned. Pin to a "
+                "specific number so the SPA URL stays the same across "
+                "restarts. Only used with --serve-viewer."
+            ),
+            min=0,
+            max=65535,
+        ),
+    ] = None,
 ) -> None:
     """Bind, write ``hub.json``, run the server loop.
 
@@ -121,6 +149,23 @@ def cmd_start(
 
     project_root = _resolve_project_root()
     cfg = _resolve_config(project_root)
+
+    # CLI flags override hub.toml — the user typed them on this invocation
+    # and we should trust that over the on-disk default. Frozen config so
+    # we rebuild via dataclasses.replace.
+    if listen_port is not None or http_port is not None:
+        import dataclasses
+
+        cfg = dataclasses.replace(
+            cfg,
+            hub=dataclasses.replace(
+                cfg.hub,
+                listen_port=listen_port
+                if listen_port is not None
+                else cfg.hub.listen_port,
+                http_port=http_port if http_port is not None else cfg.hub.http_port,
+            ),
+        )
 
     existing = discovery.read_record(project_root)
     if existing is not None and discovery._pid_is_live(existing.pid):  # noqa: SLF001

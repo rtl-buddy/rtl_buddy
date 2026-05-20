@@ -46,7 +46,7 @@ uv run rb hub stop                    # graceful shutdown via SIGTERM
 
 | Command | Purpose |
 |---|---|
-| `rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH]` | Bind the TCP server (and optionally the viewer HTTP+WS layer), write `.rtl-buddy/hub.json`, run the asyncio loop. Exits cleanly on `SIGINT` / `SIGTERM` / `rb hub stop` and removes its discovery file. |
+| `rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH] [--listen-port N] [--http-port N]` | Bind the TCP server (and optionally the viewer HTTP+WS layer), write `.rtl-buddy/hub.json`, run the asyncio loop. `--listen-port` / `--http-port` override `[hub].listen_port` / `[hub].http_port` from `hub.toml` (default 0 = OS-assigned). When a pinned port is already in use, the command prints a one-line error and exits 1 without a traceback. Exits cleanly on `SIGINT` / `SIGTERM` / `rb hub stop` and removes its discovery file. |
 | `rb hub stop` | Send `SIGTERM` to the PID in `.rtl-buddy/hub.json`. |
 | `rb hub status` | Print the current discovery record + liveness. Reports stale records (PID gone) so users know to clear them. |
 | `rb hub log [--lines N] [--follow]` | Tail `.rtl-buddy/hub.log`. |

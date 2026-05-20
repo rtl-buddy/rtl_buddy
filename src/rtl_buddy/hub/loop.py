@@ -12,6 +12,7 @@ obviously-correct boot sequence.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import signal
@@ -29,6 +30,31 @@ from .viewer_http import ViewerServer
 
 
 logger = logging.getLogger(__name__)
+
+
+class _PortInUseError(Exception):
+    """Bind failed because the port is held by another process.
+
+    Carried from ``_run`` up to ``serve`` where it's translated into a
+    clean ``rb hub start`` error message + exit code 1 (no traceback).
+    """
+
+    def __init__(self, role: str, port: int) -> None:
+        self.role = role
+        self.port = port
+        super().__init__(f"{role} port {port} already in use")
+
+
+async def _start_listener(coro, *, role: str, port: int):
+    """Run a listener-bind coroutine, translating EADDRINUSE into a
+    clean :class:`_PortInUseError` so the CLI doesn't print a raw
+    websockets/asyncio traceback when a user pins a busy port."""
+    try:
+        return await coro
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            raise _PortInUseError(role=role, port=port) from exc
+        raise
 
 
 def _server_version() -> str:
@@ -110,7 +136,9 @@ async def _run(
         server_version=_server_version(),
         resolver=resolver,
     )
-    host, port = await server.start()
+    host, port = await _start_listener(
+        server.start(), role="TCP", port=config.hub.listen_port
+    )
 
     viewer: ViewerServer | None = None
     http_port: int | None = None
@@ -132,7 +160,9 @@ async def _run(
             viewer_bundle=resolved_bundle,
             view_json_path=view_json_path,
         )
-        _vhost, vport = await viewer.start()
+        _vhost, vport = await _start_listener(
+            viewer.start(), role="HTTP", port=config.hub.http_port
+        )
         http_port = vport
         log_event(
             logger,
@@ -220,14 +250,41 @@ def serve(
 ) -> int:
     """Run the hub event loop until exit. Returns the process exit code."""
 
-    return asyncio.run(
-        _run(
-            project_root,
-            config,
-            serve_viewer=serve_viewer,
-            viewer_bundle=viewer_bundle,
+    try:
+        return asyncio.run(
+            _run(
+                project_root,
+                config,
+                serve_viewer=serve_viewer,
+                viewer_bundle=viewer_bundle,
+            )
         )
-    )
+    except _PortInUseError as exc:
+        # Clean one-line error in place of a 20-line websockets traceback.
+        # The user pinned a port that's already held; tell them which port
+        # and where to change it, then exit 1 without a stack trace.
+        #
+        # Rich parses `[hub]` as a style tag and eats the brackets. Use
+        # `\[` to escape the opening bracket so the literal hub.toml
+        # section name renders.
+        which_toml = (
+            r"\[hub].http_port" if exc.role == "HTTP" else r"\[hub].listen_port"
+        )
+        which_flag = "--http-port" if exc.role == "HTTP" else "--listen-port"
+        emit_console_text(
+            f"rb hub start: {exc.role} port {exc.port} already in use. "
+            f"Pick another port in {which_toml} (hub.toml) or "
+            f"{which_flag} N, or stop the process holding it.",
+            style="red",
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "hub.bind.port_in_use",
+            role=exc.role,
+            port=exc.port,
+        )
+        return 1
 
 
 __all__ = ["serve"]
