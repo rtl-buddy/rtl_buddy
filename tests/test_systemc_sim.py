@@ -174,6 +174,58 @@ def test_compile_flags_embed_cflags_and_ldflags(tmp_path):
     assert "-lpthread" in ldflags_value
 
 
+def test_root_cflags_apply_as_project_default(tmp_path):
+    """Project-wide cflags from cfg-systemc apply even when the testbench
+    omits its own cflags."""
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(
+        tmp_path,
+        sc,
+        systemc_cfg=SystemCConfig(
+            home="/opt/sc",
+            cxx=None,
+            cflags=["-std=c++17"],
+            ldflags=["-lz"],
+        ),
+    )
+    flags = sim._get_extra_compile_flags()
+    assert "-std=c++17" in flags[flags.index("-CFLAGS") + 1]
+    assert "-lz" in flags[flags.index("-LDFLAGS") + 1]
+
+
+def test_testbench_cflags_append_to_root_cflags(tmp_path):
+    """Per-testbench cflags layer above the root-level default, not replace it."""
+    sc = SystemCTestbenchConfig(
+        sc_main="sc_main.cpp",
+        cflags=["-DTB_LOCAL=1"],
+        ldflags=["-lpthread"],
+    )
+    sim = _make_sim(
+        tmp_path,
+        sc,
+        systemc_cfg=SystemCConfig(
+            home="/opt/sc",
+            cxx=None,
+            cflags=["-std=c++17"],
+            ldflags=["-lz"],
+        ),
+    )
+    flags = sim._get_extra_compile_flags()
+    cflags_value = flags[flags.index("-CFLAGS") + 1]
+    ldflags_value = flags[flags.index("-LDFLAGS") + 1]
+
+    # Both layers present.
+    assert "-std=c++17" in cflags_value
+    assert "-DTB_LOCAL=1" in cflags_value
+    assert "-lz" in ldflags_value
+    assert "-lpthread" in ldflags_value
+
+    # Root tokens appear before testbench tokens, so testbench can override
+    # via "last wins" semantics on flags like -O2 / -DFOO.
+    assert cflags_value.index("-std=c++17") < cflags_value.index("-DTB_LOCAL=1")
+    assert ldflags_value.index("-lz") < ldflags_value.index("-lpthread")
+
+
 def test_pin_style_uint_adds_pins_sc_uint(tmp_path):
     sc = SystemCTestbenchConfig(sc_main="sc_main.cpp", pin_style="uint")
     sim = _make_sim(tmp_path, sc, systemc_cfg=SystemCConfig(home="/opt/sc", cxx=None))

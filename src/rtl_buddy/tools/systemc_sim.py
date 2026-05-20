@@ -101,12 +101,25 @@ class SystemCSim(VlogSim):
 
     def _get_extra_compile_flags(self) -> list:
         sc_cfg = self.testbench.systemc
+        root_sc_cfg = self._systemc_cfg()
         home = self._systemc_home()
         include_dir = str(Path(home) / "include")
         lib_dir = str(Path(home) / "lib")
 
-        cflag_tokens = [f"-I{include_dir}", *sc_cfg.cflags]
-        ldflag_tokens = [f"-L{lib_dir}", "-lsystemc", *sc_cfg.ldflags]
+        # SystemC include + libsystemc are always auto-emitted; root-level
+        # cflags/ldflags are project-wide defaults; per-testbench tokens
+        # append on top so testbench-specific defines layer above the default.
+        cflag_tokens = [
+            f"-I{include_dir}",
+            *root_sc_cfg.get_cflags(),
+            *sc_cfg.cflags,
+        ]
+        ldflag_tokens = [
+            f"-L{lib_dir}",
+            "-lsystemc",
+            *root_sc_cfg.get_ldflags(),
+            *sc_cfg.ldflags,
+        ]
 
         flags = [
             "--sc",
