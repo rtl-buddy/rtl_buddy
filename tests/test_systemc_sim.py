@@ -322,3 +322,34 @@ def test_home_expands_variables_and_user(tmp_path, monkeypatch):
     )
     env = sim._get_extra_compile_env()
     assert env["SYSTEMC_HOME"] == "/expanded/systemc"
+
+
+def test_home_with_unresolved_var_falls_through_to_env(tmp_path, monkeypatch):
+    """If the configured ${VAR} doesn't resolve, the env-var fallback still runs.
+
+    Without this, os.path.expandvars would leave the literal "${VAR}" and
+    SystemCSim would pass that to Verilator as a path, producing a confusing
+    "include not found at ${SYSTEMC_HOME}/include" instead of the clean
+    home_unresolved error.
+    """
+    monkeypatch.delenv("MY_CUSTOM_ROOT", raising=False)
+    monkeypatch.setenv("SYSTEMC_HOME", "/fallback/sc")
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(
+        tmp_path, sc, systemc_cfg=SystemCConfig(home="${MY_CUSTOM_ROOT}", cxx=None)
+    )
+    env = sim._get_extra_compile_env()
+    assert env["SYSTEMC_HOME"] == "/fallback/sc"
+
+
+def test_home_with_unresolved_var_and_no_fallback_raises(tmp_path, monkeypatch):
+    """Unresolved ${VAR} + unset SYSTEMC_HOME → clean home_unresolved error,
+    not a literal "${VAR}" propagated as a path."""
+    monkeypatch.delenv("MY_CUSTOM_ROOT", raising=False)
+    monkeypatch.delenv("SYSTEMC_HOME", raising=False)
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    sim = _make_sim(
+        tmp_path, sc, systemc_cfg=SystemCConfig(home="${MY_CUSTOM_ROOT}", cxx=None)
+    )
+    with pytest.raises(FatalRtlBuddyError, match="SYSTEMC_HOME"):
+        sim._get_extra_compile_flags()

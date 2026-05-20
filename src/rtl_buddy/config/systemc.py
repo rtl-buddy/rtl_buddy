@@ -21,13 +21,25 @@ are always auto-emitted; users never need to repeat those.
 Resolution order for `home`: config value (with ~ and $VAR expansion) →
 $SYSTEMC_HOME env var → None. SystemCSim is responsible for failing fast
 when a SystemC testbench is requested but home cannot be resolved.
+
+An unresolved `${VAR}` (env var not set) is treated as if `home` was
+unset, so the env-var fallback still runs and the existing
+`systemc.home_unresolved` error fires instead of Verilator failing later
+with a confusing "include not found at ${SYSTEMC_HOME}/include".
 """
 
 import os
 import pprint
+import re
 from dataclasses import dataclass, field
 
 from serde import serde
+
+
+# Matches `${VAR}` and `$VAR` (identifier form). If `os.path.expandvars`
+# leaves either of these in the output, the env var was unset — POSIX
+# expandvars semantics return the literal rather than raising.
+_UNRESOLVED_VAR_RE = re.compile(r"\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*")
 
 
 @dataclass
@@ -42,11 +54,19 @@ class SystemCConfig:
     def get_home(self) -> str | None:
         """Configured SystemC install root, with ~ and $VAR expanded.
 
-        Falls back to $SYSTEMC_HOME when not set in config. Returns None if
-        neither is available; SystemCSim raises a fatal error in that case.
+        Falls back to $SYSTEMC_HOME when not set in config, or when the
+        config value contained a $VAR that did not resolve (env var unset).
+        Returns None if neither is available; SystemCSim raises a fatal
+        error in that case.
         """
         if self.home is not None:
-            return os.path.expanduser(os.path.expandvars(self.home))
+            expanded = os.path.expanduser(os.path.expandvars(self.home))
+            if not _UNRESOLVED_VAR_RE.search(expanded):
+                return expanded
+            # The configured value referenced an unset env var. Treat as
+            # if `home` was unset and let the env-var fallback / None path
+            # handle it, so SystemCSim's home_unresolved error fires
+            # instead of Verilator failing later on a literal "${...}" path.
         env_home = os.environ.get("SYSTEMC_HOME")
         return env_home if env_home else None
 
