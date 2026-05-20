@@ -894,6 +894,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#opening-counterexamples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening counterexamples
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#out-of-scope-today" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1391,6 +1402,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#opening-counterexamples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening counterexamples
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#out-of-scope-today" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1627,8 +1649,13 @@
 </table>
 <h2 id="passfail-detection">Pass/fail detection</h2>
 <p>A run is PASS when <code>sby</code> writes <code>PASS</code> to <code>sby_workdir/status</code> (or returns exit code 0 when the status file is missing).</p>
-<p>A run is FAIL when sby writes <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>, or when it exits non-zero. The failure description points at the counterexample trace inside <code>sby_workdir/engine_&lt;N&gt;/</code> so the user can open it in <code>gtkwave</code> or via <code>rb wave</code>.</p>
+<p>A run is FAIL when sby writes <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>, or when it exits non-zero. The failure description points at the counterexample trace inside <code>sby_workdir/engine_&lt;N&gt;/</code> so the user can open it in <code>gtkwave</code>, <code>surfer</code>, or via <code>rb wave-fpv</code> (below).</p>
 <p>SKIP is returned when the run's <code>reglvl</code> is above the <code>-l</code> filter passed to <code>rb fpv-regression</code>.</p>
+<h2 id="opening-counterexamples">Opening counterexamples</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Open the CEX VCD for a failed verification in the configured surfer.</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
+</code></pre></div>
+<p><code>rb wave-fpv</code> resolves the trace at <code>fpv/&lt;suite&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine wins when more than one produced a trace). The configured surfer comes from the same <code>cfg-surfer</code> entry that <code>rb wave</code> uses; override with <code>--surfer &lt;name&gt;</code>. Raises if the verification has not been run yet or the proof passed (no CEX was produced).</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
 <li><strong>SymbiYosys-only.</strong> Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up — adding them parallels the pattern documented for <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">SpyGlass in <code>rb cdc</code></a>.</li>
