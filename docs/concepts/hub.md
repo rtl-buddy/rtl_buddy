@@ -56,6 +56,8 @@ uv run rb hub stop                    # graceful shutdown via SIGTERM
 
 `--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/ws`) used by the browser SPA. Without `--viewer-bundle PATH` it serves a small placeholder page that proves the transport works — pass the path to a built rtl-buddy-view SPA (a directory containing `index.html` or a single `index.html`) to serve the real UI.
 
+When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing, `/view.json` returns 404 and the SPA falls back to the empty state.
+
 ## Discovery (`.rtl-buddy/hub.json`)
 
 When the hub binds, it writes a small JSON record under the project root's `.rtl-buddy/` directory:

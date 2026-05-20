@@ -67,6 +67,7 @@ async def _run(
             hub_port=port,
             http_port=config.hub.http_port,
             viewer_bundle=viewer_bundle,
+            view_json_path=view_json_path,
         )
         _vhost, vport = await viewer.start()
         http_port = vport
