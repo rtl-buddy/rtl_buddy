@@ -107,7 +107,12 @@ PLACEHOLDER_HTML = """<!doctype html>
 """
 
 
-def render_index_html(*, bundle_index: Path | None, hub_addr: str) -> bytes:
+def render_index_html(
+    *,
+    bundle_index: Path | None,
+    hub_addr: str,
+    view_url: str | None = None,
+) -> bytes:
     """Return the HTML body served at ``/`` with hub address injected.
 
     When ``bundle_index`` points at an existing file, its contents are
@@ -115,6 +120,10 @@ def render_index_html(*, bundle_index: Path | None, hub_addr: str) -> bytes:
     insertion when the placeholder is absent) replaced by the script
     preamble. Otherwise the built-in placeholder is served — same
     injection rules.
+
+    When ``view_url`` is provided, ``window.__RTL_BUDDY_VIEW_URL__`` is
+    set alongside ``__RTL_BUDDY_HUB__`` so the SPA bootstrap can fetch
+    the view.json without the user passing ``?view=`` in the URL.
     """
 
     if bundle_index is not None and bundle_index.is_file():
@@ -122,7 +131,10 @@ def render_index_html(*, bundle_index: Path | None, hub_addr: str) -> bytes:
     else:
         html = PLACEHOLDER_HTML
 
-    preamble = f"window.__RTL_BUDDY_HUB__ = {hub_addr!r};"
+    parts = [f"window.__RTL_BUDDY_HUB__ = {hub_addr!r};"]
+    if view_url is not None:
+        parts.append(f"window.__RTL_BUDDY_VIEW_URL__ = {view_url!r};")
+    preamble = "\n".join(parts)
 
     if "%HUB_INJECTION%" in html:
         html = html.replace("%HUB_INJECTION%", preamble)
@@ -156,12 +168,14 @@ class ViewerServer:
         hub_port: int,
         http_port: int = 0,
         viewer_bundle: Path | None = None,
+        view_json_path: Path | None = None,
     ) -> None:
         self.hub_host = hub_host
         self.hub_port = hub_port
         self.requested_http_port = http_port
         self.http_port = http_port
         self.viewer_bundle = viewer_bundle
+        self.view_json_path = view_json_path
         self._server: Any | None = None
         self._bundle_index = self._resolve_bundle_index(viewer_bundle)
 
@@ -179,6 +193,9 @@ class ViewerServer:
     @property
     def hub_address(self) -> str:
         return f"{self.hub_host}:{self.hub_port}"
+
+    def _has_view_json(self) -> bool:
+        return self.view_json_path is not None and self.view_json_path.is_file()
 
     async def start(self) -> tuple[str, int]:
         """Bind the HTTP+WS listener; return ``(host, port)``."""
@@ -240,7 +257,9 @@ class ViewerServer:
         # Plain HTTP.
         if path in ("/", "/index.html"):
             body = render_index_html(
-                bundle_index=self._bundle_index, hub_addr=self.hub_address
+                bundle_index=self._bundle_index,
+                hub_addr=self.hub_address,
+                view_url="/view.json" if self._has_view_json() else None,
             )
             return _http_response(
                 connection, 200, body, content_type="text/html; charset=utf-8"
@@ -248,6 +267,22 @@ class ViewerServer:
 
         if path == "/healthz":
             return _http_response(connection, 200, b"ok\n", content_type="text/plain")
+
+        if path == "/view.json":
+            # The resolver already reads this file from disk on every hub
+            # restart and on mtime change; serving it here lets the SPA
+            # auto-load without standing up a CORS side-server.
+            if not self._has_view_json():
+                return _http_response(
+                    connection, 404, b"no view.json configured for this hub"
+                )
+            assert self.view_json_path is not None
+            return _http_response(
+                connection,
+                200,
+                self.view_json_path.read_bytes(),
+                content_type="application/json",
+            )
 
         # Bundle static assets: only served when the bundle is a directory.
         if self.viewer_bundle and self.viewer_bundle.is_dir():

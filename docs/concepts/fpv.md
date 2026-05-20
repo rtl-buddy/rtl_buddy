@@ -101,6 +101,9 @@ cfg-fpv-tools:
     opts:
       timeout: 600       # seconds per task; optional
       extra-args: ""     # appended to sby invocation; optional
+      solver-versions:   # optional pins for reproducible CI; map
+        yices: "2.6.4"   # solver name -> exact version string
+        z3: "4.13.0"
 ```
 
 | Field | Description |
@@ -109,6 +112,11 @@ cfg-fpv-tools:
 | `tool` | Binary name (PATH-resolved) or absolute path |
 | `opts.timeout` | Per-task timeout in seconds, written to the sby `[options]` block |
 | `opts.extra-args` | Passed through verbatim to the sby command line |
+| `opts.solver-versions` | Optional map of solver name → exact version. Probed before every run; hard-fails on mismatch. Known solvers: `yices`, `z3`, `boolector`, `bitwuzla`, `btormc`, `abc` |
+
+### Solver version pinning
+
+`sby` happily picks whatever solver binary it finds on PATH. On CI, different runners can resolve to different versions and silently change proof outcomes — a proof that passes at depth 32 on one machine can time out on another. Set `opts.solver-versions` to lock the resolution: before each run, each pinned solver is probed (`yices-smt2 --version` etc.) and the run hard-fails with a one-shot summary of every mismatch if any pin doesn't match exactly. Resolved versions are logged as `fpv.solver_pins_resolved` so the run artefacts capture exactly what was used.
 
 ## Running FPV
 
@@ -160,9 +168,18 @@ Per-run outputs land under `fpv/<run>/artefacts/`:
 
 A run is PASS when `sby` writes `PASS` to `sby_workdir/status` (or returns exit code 0 when the status file is missing).
 
-A run is FAIL when sby writes `FAIL`, `UNKNOWN`, or `ERROR`, or when it exits non-zero. The failure description points at the counterexample trace inside `sby_workdir/engine_<N>/` so the user can open it in `gtkwave` or via `rb wave`.
+A run is FAIL when sby writes `FAIL`, `UNKNOWN`, or `ERROR`, or when it exits non-zero. The failure description points at the counterexample trace inside `sby_workdir/engine_<N>/` so the user can open it in `gtkwave`, `surfer`, or via `rb wave-fpv` (below).
 
 SKIP is returned when the run's `reglvl` is above the `-l` filter passed to `rb fpv-regression`.
+
+## Opening counterexamples
+
+```bash
+# Open the CEX VCD for a failed verification in the configured surfer.
+rb wave-fpv demo_fpv_counter_safety
+```
+
+`rb wave-fpv` resolves the trace at `fpv/<suite>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd` (first engine wins when more than one produced a trace). The configured surfer comes from the same `cfg-surfer` entry that `rb wave` uses; override with `--surfer <name>`. Raises if the verification has not been run yet or the proof passed (no CEX was produced).
 
 ## Out of scope (today)
 

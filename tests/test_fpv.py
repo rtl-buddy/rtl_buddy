@@ -599,3 +599,228 @@ def test_fpv_runner_dispatches_to_sby_backend(tmp_path):
     assert mocked.called
     assert result.results["result"] == "PASS"
     assert result.results["mode"] == "bmc"
+
+
+# ---------------------------------------------------------------------------
+# FpvToolOpts — solver_versions pin field carries through
+# ---------------------------------------------------------------------------
+
+
+def test_fpv_tool_config_solver_versions_default_empty():
+    cfg = _tool_cfg()
+    assert cfg.get_opts().solver_versions == {}
+
+
+def test_fpv_tool_config_solver_versions_round_trip():
+    opts_file = FpvToolOptsFile(solver_versions={"yices": "2.6.4"})
+    tool_cfg = FpvToolConfig(FpvToolConfigFile(name="sby", tool="sby", opts=opts_file))
+    assert tool_cfg.get_opts().solver_versions == {"yices": "2.6.4"}
+
+
+def test_fpv_tool_config_solver_versions_override_replaces_base():
+    """Per-verification overrides should replace, not merge — the pin
+    semantics are "use exactly this set", not "add to whatever's pinned"."""
+    opts_file = FpvToolOptsFile(solver_versions={"yices": "2.6.4", "z3": "4.13.0"})
+    tool_cfg = FpvToolConfig(FpvToolConfigFile(name="sby", tool="sby", opts=opts_file))
+    opts = tool_cfg.get_opts({"solver_versions": {"z3": "4.12.0"}})
+    assert opts.solver_versions == {"z3": "4.12.0"}
+
+
+def test_fpv_tool_config_solver_versions_yaml_dash_separator(tmp_path):
+    """The YAML key is `solver-versions` (dash); confirm round-trip from
+    a real fpv.yaml-style cfg loads it into the dict."""
+    from serde.yaml import from_yaml
+
+    yaml_text = dedent("""\
+        name: sby
+        tool: sby
+        opts:
+          solver-versions:
+            yices: "2.6.4"
+            z3: "4.13.0"
+    """)
+    parsed = from_yaml(FpvToolConfigFile, yaml_text)
+    assert parsed.opts.solver_versions == {"yices": "2.6.4", "z3": "4.13.0"}
+
+
+# ---------------------------------------------------------------------------
+# fpv_solver_pin — version probe + pin enforcement
+# ---------------------------------------------------------------------------
+
+
+def _fake_completed(stdout="", stderr="", returncode=0):
+    """Minimal stand-in for subprocess.CompletedProcess."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def test_probe_solver_version_yices_extracts_first_token():
+    from rtl_buddy.tools import fpv_solver_pin
+
+    with patch.object(
+        fpv_solver_pin.subprocess,
+        "run",
+        return_value=_fake_completed(stdout="Yices 2.6.4\nCopyright ..."),
+    ):
+        assert fpv_solver_pin.probe_solver_version("yices") == "2.6.4"
+
+
+def test_probe_solver_version_z3_extracts_version():
+    from rtl_buddy.tools import fpv_solver_pin
+
+    with patch.object(
+        fpv_solver_pin.subprocess,
+        "run",
+        return_value=_fake_completed(stdout="Z3 version 4.13.0 - 64 bit\n"),
+    ):
+        assert fpv_solver_pin.probe_solver_version("z3") == "4.13.0"
+
+
+def test_probe_solver_version_unknown_returns_none():
+    from rtl_buddy.tools import fpv_solver_pin
+
+    assert fpv_solver_pin.probe_solver_version("not-a-real-solver") is None
+
+
+def test_probe_solver_version_binary_missing_returns_none():
+    from rtl_buddy.tools import fpv_solver_pin
+
+    with patch.object(
+        fpv_solver_pin.subprocess,
+        "run",
+        side_effect=FileNotFoundError("yices-smt2"),
+    ):
+        assert fpv_solver_pin.probe_solver_version("yices") is None
+
+
+def test_probe_solver_version_unparseable_output_returns_none():
+    from rtl_buddy.tools import fpv_solver_pin
+
+    with patch.object(
+        fpv_solver_pin.subprocess,
+        "run",
+        return_value=_fake_completed(stdout="garbage output"),
+    ):
+        assert fpv_solver_pin.probe_solver_version("yices") is None
+
+
+def test_check_solver_pins_all_match_returns_resolved():
+    from rtl_buddy.tools import fpv_solver_pin
+
+    with patch.object(
+        fpv_solver_pin,
+        "probe_solver_version",
+        side_effect=lambda s: {"yices": "2.6.4", "z3": "4.13.0"}[s],
+    ):
+        resolved = fpv_solver_pin.check_solver_pins({"yices": "2.6.4", "z3": "4.13.0"})
+    assert resolved == {"yices": "2.6.4", "z3": "4.13.0"}
+
+
+def test_check_solver_pins_mismatch_raises_with_all_failures():
+    """All failures should be listed in one error so the user reruns once."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools import fpv_solver_pin
+
+    with patch.object(
+        fpv_solver_pin,
+        "probe_solver_version",
+        side_effect=lambda s: {"yices": "2.6.3", "z3": "4.13.0"}[s],
+    ):
+        with pytest.raises(FatalRtlBuddyError) as exc_info:
+            fpv_solver_pin.check_solver_pins({"yices": "2.6.4", "z3": "4.12.0"})
+    msg = str(exc_info.value)
+    assert "yices" in msg and "2.6.3" in msg and "2.6.4" in msg
+    assert "z3" in msg and "4.12.0" in msg
+
+
+def test_check_solver_pins_missing_solver_raises():
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools import fpv_solver_pin
+
+    with patch.object(fpv_solver_pin, "probe_solver_version", return_value=None):
+        with pytest.raises(FatalRtlBuddyError, match="yices"):
+            fpv_solver_pin.check_solver_pins({"yices": "2.6.4"})
+
+
+def test_check_solver_pins_empty_is_noop():
+    from rtl_buddy.tools import fpv_solver_pin
+
+    assert fpv_solver_pin.check_solver_pins({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# fpv_cex_finder — CEX VCD path resolution for `rb wave-fpv`
+# ---------------------------------------------------------------------------
+
+
+def test_find_cex_vcd_returns_trace_from_first_engine(tmp_path):
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "engine_0").mkdir(parents=True)
+    (workdir / "engine_0" / "trace.vcd").write_text("$dummy\n")
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") == str(
+        workdir / "engine_0" / "trace.vcd"
+    )
+
+
+def test_find_cex_vcd_prefers_lowest_engine_number(tmp_path):
+    """Multiple engines can each emit a trace; the sorted-first one wins."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    for engine in ("engine_0", "engine_1", "engine_2"):
+        (workdir / engine).mkdir(parents=True)
+        (workdir / engine / "trace.vcd").write_text("$dummy\n")
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") == str(
+        workdir / "engine_0" / "trace.vcd"
+    )
+
+
+def test_find_cex_vcd_skips_engines_without_trace(tmp_path):
+    """Engine dirs without trace.vcd (e.g. proof passed in that engine)
+    should be skipped, not returned as a hit."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "engine_0").mkdir(parents=True)  # no trace.vcd
+    (workdir / "engine_1").mkdir(parents=True)
+    (workdir / "engine_1" / "trace.vcd").write_text("$dummy\n")
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") == str(
+        workdir / "engine_1" / "trace.vcd"
+    )
+
+
+def test_find_cex_vcd_returns_none_when_workdir_missing(tmp_path):
+    """Verification hasn't been run yet -> no workdir -> None."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    assert find_cex_vcd(str(tmp_path), "never_ran") is None
+
+
+def test_find_cex_vcd_returns_none_when_no_engine_has_trace(tmp_path):
+    """Proof passed (no CEX emitted) -> engine dirs present but no trace -> None."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "engine_0").mkdir(parents=True)  # no trace.vcd
+    (workdir / "engine_1").mkdir(parents=True)  # no trace.vcd
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") is None
+
+
+def test_find_cex_vcd_ignores_non_engine_dirs(tmp_path):
+    """Sby writes `src/`, `model/`, etc. alongside `engine_N/` — those
+    should not be probed for trace files."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "src").mkdir(parents=True)
+    (workdir / "src" / "trace.vcd").write_text("$dummy\n")
+    (workdir / "model").mkdir(parents=True)
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") is None
