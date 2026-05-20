@@ -119,7 +119,9 @@ def test_from_dict_parses_minimal_payload(tmp_path: Path):
 
     u_ff = model.nodes_by_path["counter.u_ff"]
     assert u_ff.port_connections == (("clk", "clk"), ("q", "q"))
-    assert u_ff.location == SourceAnchor(file="/abs/rtl/counter.sv", line=10, col=16)
+    assert u_ff.location == SourceAnchor(
+        file="/abs/rtl/counter.sv", line=10, col=16, end_line=10, end_col=39
+    )
 
 
 def test_from_dict_rejects_unsupported_schema_major():
@@ -244,7 +246,9 @@ def test_view_to_src_returns_anchor(tmp_path: Path):
         view_json_path=_write_view_json(tmp_path), tb_prefix="tb.dut."
     )
     anchor = resolver.view_to_src("counter.u_ff")
-    assert anchor == SourceAnchor(file="/abs/rtl/counter.sv", line=10, col=16)
+    assert anchor == SourceAnchor(
+        file="/abs/rtl/counter.sv", line=10, col=16, end_line=10, end_col=39
+    )
 
 
 def test_view_to_src_missing_path_returns_none(tmp_path: Path):
@@ -257,6 +261,139 @@ def test_view_to_src_missing_path_returns_none(tmp_path: Path):
 def test_view_to_src_returns_none_without_view_json(tmp_path: Path):
     resolver = resolver_from_paths(view_json_path=None)
     assert resolver.view_to_src("counter.u_ff") is None
+
+
+# ---------------------------------------------------------------------------
+# canonical view-json-v1 schema (top + id + source) parsing
+# ---------------------------------------------------------------------------
+
+
+def _canonical_view_json() -> dict:
+    """Matches rtl-buddy-view's documented schema (view-json-v1.md):
+    flat ``top``, per-node ``id`` + ``source`` with start+end positions,
+    ``ports`` (not legacy ``port_connections``), ``{from, to}`` edges.
+    """
+    return {
+        "schema_version": "1.0",
+        "tool": {"name": "rtl-buddy-view", "version": "0.1.0"},
+        "top": "counter",
+        "nodes": [
+            {
+                "id": "counter",
+                "module": "counter",
+                "source": {
+                    "file": "/abs/rtl/counter.sv",
+                    "start_line": 5,
+                    "start_column": 1,
+                    "end_line": 50,
+                    "end_column": 10,
+                },
+                "ports": [],
+            },
+            {
+                "id": "counter.u_ff",
+                "module": "counter_ff",
+                "source": {
+                    "file": "/abs/rtl/counter.sv",
+                    "start_line": 20,
+                    "start_column": 16,
+                    "end_line": 25,
+                    "end_column": 4,
+                },
+                "ports": [
+                    {"name": "clk", "expr": "clk"},
+                    {"name": "q", "expr": "q"},
+                ],
+            },
+        ],
+        "edges": [{"from": "counter", "to": "counter.u_ff"}],
+    }
+
+
+def test_from_dict_parses_canonical_schema():
+    """The schema rtl-buddy-view actually emits — `top`, `id`, `source`,
+    `ports`, `{from, to}` edges. The legacy fixture covered the other
+    branch."""
+
+    model = ViewModel.from_dict(_canonical_view_json())
+    assert model.top == "counter"
+    assert set(model.nodes_by_path) == {"counter", "counter.u_ff"}
+    u_ff = model.nodes_by_path["counter.u_ff"]
+    assert u_ff.location == SourceAnchor(
+        file="/abs/rtl/counter.sv", line=20, col=16, end_line=25, end_col=4
+    )
+    assert u_ff.port_connections == (("clk", "clk"), ("q", "q"))
+    assert model.edges_parent_to_children["counter"] == ("counter.u_ff",)
+
+
+# ---------------------------------------------------------------------------
+# src → view  (cursor file/line/col → instance path)
+# ---------------------------------------------------------------------------
+
+
+def _write_canonical(tmp_path: Path) -> Path:
+    out = tmp_path / "view.json"
+    out.write_text(json.dumps(_canonical_view_json()))
+    return out
+
+
+def test_src_to_view_returns_containing_instance(tmp_path: Path):
+    resolver = resolver_from_paths(view_json_path=_write_canonical(tmp_path))
+    # Line 22 falls inside u_ff's [20, 25] range AND counter's [5, 50]
+    # range. Both qualify; the smaller (u_ff) wins on the size tiebreak.
+    matches = resolver.src_to_view(file="/abs/rtl/counter.sv", line=22)
+    assert matches == ("counter.u_ff", "counter")
+
+
+def test_src_to_view_returns_outer_instance_when_only_outer_matches(
+    tmp_path: Path,
+):
+    resolver = resolver_from_paths(view_json_path=_write_canonical(tmp_path))
+    # Line 7 is inside counter's [5, 50] but outside u_ff's [20, 25].
+    matches = resolver.src_to_view(file="/abs/rtl/counter.sv", line=7)
+    assert matches == ("counter",)
+
+
+def test_src_to_view_empty_when_line_outside_all_ranges(tmp_path: Path):
+    resolver = resolver_from_paths(view_json_path=_write_canonical(tmp_path))
+    # Line 999 is past every node's end_line.
+    assert resolver.src_to_view(file="/abs/rtl/counter.sv", line=999) == ()
+
+
+def test_src_to_view_empty_when_file_does_not_match(tmp_path: Path):
+    resolver = resolver_from_paths(view_json_path=_write_canonical(tmp_path))
+    assert resolver.src_to_view(file="/abs/rtl/other.sv", line=22) == ()
+
+
+def test_src_to_view_normalises_path(tmp_path: Path):
+    # The cursor's file is an absolute path; view.json's `source.file`
+    # was emitted as a relative path. Resolver normalises both via
+    # Path.resolve() so they compare equal.
+    rel = tmp_path / "rtl"
+    rel.mkdir()
+    (rel / "counter.sv").write_text("// content")
+    payload = _canonical_view_json()
+    payload["nodes"][1]["source"]["file"] = "rtl/counter.sv"
+
+    cwd_path = tmp_path / "view.json"
+    cwd_path.write_text(json.dumps(payload))
+
+    import os
+
+    prev = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        resolver = resolver_from_paths(view_json_path=cwd_path)
+        absolute = str(rel / "counter.sv")
+        matches = resolver.src_to_view(file=absolute, line=22)
+    finally:
+        os.chdir(prev)
+    assert "counter.u_ff" in matches
+
+
+def test_src_to_view_empty_without_view_json():
+    resolver = resolver_from_paths(view_json_path=None)
+    assert resolver.src_to_view(file="/abs/rtl/x.sv", line=1) == ()
 
 
 # ---------------------------------------------------------------------------

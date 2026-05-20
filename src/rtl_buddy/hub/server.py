@@ -449,10 +449,80 @@ class HubServer:
         if env.type in STATE_EVENT_TYPES:
             self._update_state(env)
             await self._broadcast(env, suppress_origin=env.origin)
+            if env.type == "source_focused":
+                await self._augment_source_focused(env)
             return
 
         # Unknown event types are silently dropped per §11.
         log_event(logger, logging.DEBUG, "hub.event.dropped_unknown", type=env.type)
+
+    async def _augment_source_focused(self, env: Envelope) -> None:
+        """Derive a ``selection_changed`` from ``source_focused`` and
+        broadcast it.
+
+        Without this, the SPA receives ``source_focused {file, line, col}``
+        and silently drops it (its switch statement has no case). The
+        schematic SPA already handles ``selection_changed`` — pan/highlight
+        the matching instance — so resolving file/line/col → instance_path
+        on the hub side lets ``:RtlBuddyShow`` from nvim light up the
+        schematic with no SPA-side protocol changes.
+
+        Multiple matches can occur (nested instances); the resolver returns
+        them smallest-range-first, and we forward the full list so the SPA
+        picks the most-specific (per its existing ``Array.isArray ? [0] : ip``
+        logic in ``useHub.applyEnvelope``).
+        """
+        if self.resolver is None:
+            return
+        payload = env.payload or {}
+        file = payload.get("file")
+        line = payload.get("line")
+        col = payload.get("col")
+        if not (isinstance(file, str) and isinstance(line, int)):
+            return
+        try:
+            matches = self.resolver.src_to_view(
+                file=file,
+                line=line,
+                col=col if isinstance(col, int) else None,
+            )
+        except Exception:  # noqa: BLE001 — resolver errors mustn't abort the loop
+            log_event(
+                logger,
+                logging.WARNING,
+                "hub.augment.src_to_view_failed",
+                file=file,
+                line=line,
+            )
+            return
+        if not matches:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "hub.augment.src_to_view_empty",
+                file=file,
+                line=line,
+            )
+            return
+
+        instance_path: object = matches[0] if len(matches) == 1 else list(matches)
+        derived = Envelope(
+            origin=Origin.CLI,
+            kind=Kind.EVENT,
+            type="selection_changed",
+            id=new_id(),
+            payload={"instance_path": instance_path},
+        )
+        self._update_state(derived)
+        await self._broadcast(derived, suppress_origin=None)
+        log_event(
+            logger,
+            logging.INFO,
+            "hub.augment.src_to_view_resolved",
+            file=file,
+            line=line,
+            instance_path=instance_path,
+        )
 
     def _update_state(self, env: Envelope) -> None:
         try:

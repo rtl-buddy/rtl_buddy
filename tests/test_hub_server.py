@@ -242,6 +242,178 @@ async def test_state_event_broadcast_skips_origin(server: HubServer):
         await src.close()
 
 
+async def test_source_focused_derives_selection_changed_via_resolver(
+    tmp_path,
+):
+    """When a `src` peer sends source_focused and the resolver has a
+    view.json that contains an instance whose source range covers the
+    point, the hub augments by broadcasting a derived selection_changed
+    with origin=cli. The SPA already handles selection_changed — this
+    bridge is what makes `:RtlBuddyShow` light up the schematic without
+    a SPA-side protocol change.
+    """
+
+    import json
+    from rtl_buddy.hub.config import HubMappingConfig
+    from rtl_buddy.hub.resolver import Resolver
+
+    view_json = tmp_path / "view.json"
+    view_json.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "top": "counter",
+                "nodes": [
+                    {
+                        "id": "counter",
+                        "source": {
+                            "file": "/abs/rtl/counter.sv",
+                            "start_line": 5,
+                            "start_column": 1,
+                            "end_line": 50,
+                            "end_column": 10,
+                        },
+                    },
+                    {
+                        "id": "counter.u_ff",
+                        "source": {
+                            "file": "/abs/rtl/counter.sv",
+                            "start_line": 20,
+                            "start_column": 16,
+                            "end_line": 25,
+                            "end_column": 4,
+                        },
+                    },
+                ],
+                "edges": [{"from": "counter", "to": "counter.u_ff"}],
+            }
+        )
+    )
+
+    resolver = Resolver(view_json_path=view_json, mapping=HubMappingConfig())
+    s = HubServer(
+        host="127.0.0.1", port=0, server_version="0.0.0+test", resolver=resolver
+    )
+    await s.start()
+    task = asyncio.create_task(s.serve_forever())
+    try:
+        view = await MockClient.connect(s.host, s.port)
+        src = await MockClient.connect(s.host, s.port)
+        try:
+            await view.hello(Origin.VIEW)
+            await src.hello(Origin.SRC)
+
+            evt = Envelope(
+                origin=Origin.SRC,
+                kind=Kind.EVENT,
+                type="source_focused",
+                id=new_id(),
+                payload={"file": "/abs/rtl/counter.sv", "line": 22, "col": 1},
+            )
+            await src.send(evt)
+
+            # View receives both the raw source_focused and the
+            # derived selection_changed. Order: source_focused first
+            # (broadcast in the STATE_EVENT_TYPES path), then the
+            # augmentation. Use recv_until to skip past peer_joined.
+            raw = await view.recv_until("source_focused")
+            assert raw.payload == {
+                "file": "/abs/rtl/counter.sv",
+                "line": 22,
+                "col": 1,
+            }
+
+            derived = await view.recv_until("selection_changed")
+            assert derived.origin is Origin.CLI
+            # u_ff's [20, 25] range encloses line 22 and is smaller
+            # than counter's [5, 50]; smallest-range-first ordering
+            # means the resolver returns u_ff first.
+            assert derived.payload == {"instance_path": ["counter.u_ff", "counter"]}
+        finally:
+            await view.close()
+            await src.close()
+    finally:
+        await s.shutdown()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def test_source_focused_with_no_match_does_not_broadcast_selection(
+    tmp_path,
+):
+    """If the resolver returns no matches, the augmentation is silent —
+    the raw source_focused is still broadcast (downstream may have its
+    own use for it), but no spurious selection_changed is emitted.
+    """
+
+    import json
+    from rtl_buddy.hub.config import HubMappingConfig
+    from rtl_buddy.hub.resolver import Resolver
+
+    view_json = tmp_path / "view.json"
+    view_json.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "top": "counter",
+                "nodes": [
+                    {
+                        "id": "counter",
+                        "source": {
+                            "file": "/abs/rtl/counter.sv",
+                            "start_line": 5,
+                            "start_column": 1,
+                            "end_line": 10,
+                            "end_column": 10,
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+    )
+
+    resolver = Resolver(view_json_path=view_json, mapping=HubMappingConfig())
+    s = HubServer(
+        host="127.0.0.1", port=0, server_version="0.0.0+test", resolver=resolver
+    )
+    await s.start()
+    task = asyncio.create_task(s.serve_forever())
+    try:
+        view = await MockClient.connect(s.host, s.port)
+        src = await MockClient.connect(s.host, s.port)
+        try:
+            await view.hello(Origin.VIEW)
+            await src.hello(Origin.SRC)
+
+            evt = Envelope(
+                origin=Origin.SRC,
+                kind=Kind.EVENT,
+                type="source_focused",
+                id=new_id(),
+                payload={"file": "/abs/rtl/other.sv", "line": 1, "col": 1},
+            )
+            await src.send(evt)
+
+            raw = await view.recv_until("source_focused")
+            assert raw.id == evt.id
+            # No derived selection_changed should follow.
+            await view.expect_no_message()
+        finally:
+            await view.close()
+            await src.close()
+    finally:
+        await s.shutdown()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
 async def test_peer_joined_broadcast_to_existing_peers(server: HubServer):
     """When a new peer hellos, every already-registered peer receives a
     ``peer_joined`` event carrying the joining peer's origin. The

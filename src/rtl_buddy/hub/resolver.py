@@ -57,21 +57,65 @@ class ResolverError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class SourceAnchor:
-    """A ``view.json`` ``location`` value — translated to wire shape.
+    """A ``view.json`` ``source`` value — translated to wire shape.
 
     The wire protocol's ``open_source`` / ``source_focused`` payloads
-    are ``{file, line, col}``; ``view.json`` uses ``start_line`` /
-    ``start_column`` (with end positions too). This dataclass holds
-    the canonical wire shape so the server doesn't have to translate
-    on every request.
+    are ``{file, line, col}`` — single point. ``view.json``'s
+    ``source_block`` is a range with ``start_line`` / ``start_column``
+    + optional ``end_line`` / ``end_column``. This dataclass keeps both
+    so :meth:`as_payload` returns the wire shape (start point) while
+    :meth:`contains` enables range queries for ``src_to_view``.
     """
 
     file: str
     line: int
     col: int
+    end_line: int | None = None
+    end_col: int | None = None
 
     def as_payload(self) -> dict[str, object]:
         return {"file": self.file, "line": self.line, "col": self.col}
+
+    def contains(self, *, line: int, col: int | None = None) -> bool:
+        """Return True when ``(line, col)`` falls inside the source
+        range, with a deliberate UX choice: line-only matching for
+        multi-line ranges.
+
+        Strict column checks at the start/end lines would reject the
+        common "cursor at column 1 on the instantiation line" case —
+        editors often park the cursor at indentation while the actual
+        instance keyword is much further right. A line-inside-range
+        match keeps ``src_to_view`` useful for `:RtlBuddyShow` without
+        forcing the user to land on the exact column.
+
+        For single-line ranges (``end_line == start_line``), columns
+        are still consulted to disambiguate adjacent instances on the
+        same line (rare but does happen with generate blocks).
+        """
+        if self.end_line is None:
+            # Point anchor (no range) — match exact line only.
+            return line == self.line
+        if not (self.line <= line <= self.end_line):
+            return False
+        # Multi-line range: line membership is enough. The
+        # smallest-range tiebreak in :meth:`Resolver.src_to_view`
+        # already favours the most-specific instance.
+        if self.end_line != self.line:
+            return True
+        # Single-line range: column boundaries matter (otherwise two
+        # instantiations on one line would both match every cursor on
+        # that line).
+        if col is None or self.end_col is None:
+            return True
+        return self.col <= col <= self.end_col
+
+    def range_size(self) -> int:
+        """Total covered lines, used to break ties when multiple
+        anchors contain the same point — the smaller range is the
+        more-specific match (a nested instance over its parent)."""
+        if self.end_line is None:
+            return 1
+        return max(1, self.end_line - self.line + 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,32 +161,64 @@ class ViewModel:
                 f"(expected {SUPPORTED_VIEW_SCHEMA_MAJOR})"
             )
 
-        top = raw.get("design", {}).get("top")
+        # Canonical schema lives in rtl-buddy-view/docs/view-json-v1.md
+        # and emits `top` flat at the root. Hand-rolled fixtures from
+        # before that doc was written use the older `design.top` shape,
+        # so we accept both rather than break legacy tests / projects.
+        top = raw.get("top")
+        if not (isinstance(top, str) and top):
+            top = (
+                raw.get("design", {}).get("top")
+                if isinstance(raw.get("design"), dict)
+                else None
+            )
         if not isinstance(top, str) or not top:
-            raise ResolverError("view.json missing design.top")
+            raise ResolverError("view.json missing top (or design.top)")
 
+        # Same dual-schema acceptance for nodes: canonical uses `id` +
+        # `source`; legacy fixtures use `instance_path` + `location`.
         nodes_by_path: dict[str, Node] = {}
         for entry in raw.get("nodes", []):
-            ip = entry.get("instance_path")
+            ip = entry.get("id")
+            if not (isinstance(ip, str) and ip):
+                ip = entry.get("instance_path")
             if not isinstance(ip, str) or not ip:
                 continue
-            loc = _location_to_anchor(entry.get("location"))
+            loc = _location_to_anchor(entry.get("source") or entry.get("location"))
             ports: list[tuple[str, str]] = []
-            for pc in entry.get("port_connections", []):
-                if not isinstance(pc, dict):
-                    continue
-                pn = pc.get("port_name")
-                ne = pc.get("net_expr_text")
-                if isinstance(pn, str) and isinstance(ne, str):
-                    ports.append((pn, ne))
+            # Canonical schema uses `ports` with `{name, expr}`; legacy
+            # fixtures use `port_connections` with `{port_name, net_expr_text}`.
+            ports_raw = entry.get("ports")
+            if isinstance(ports_raw, list):
+                for p in ports_raw:
+                    if not isinstance(p, dict):
+                        continue
+                    pn = p.get("name")
+                    ne = p.get("expr")
+                    if isinstance(pn, str) and isinstance(ne, str):
+                        ports.append((pn, ne))
+            else:
+                for pc in entry.get("port_connections", []):
+                    if not isinstance(pc, dict):
+                        continue
+                    pn = pc.get("port_name")
+                    ne = pc.get("net_expr_text")
+                    if isinstance(pn, str) and isinstance(ne, str):
+                        ports.append((pn, ne))
             nodes_by_path[ip] = Node(
                 instance_path=ip, location=loc, port_connections=tuple(ports)
             )
 
+        # Edges: canonical uses `{from, to}`; legacy uses `{parent, child}`.
         edges: dict[str, list[str]] = {}
         for e in raw.get("edges", []):
-            parent = e.get("parent")
-            child = e.get("child")
+            if not isinstance(e, dict):
+                continue
+            parent = e.get("from")
+            child = e.get("to")
+            if not (isinstance(parent, str) and isinstance(child, str)):
+                parent = e.get("parent")
+                child = e.get("child")
             if not (isinstance(parent, str) and isinstance(child, str)):
                 continue
             edges.setdefault(parent, []).append(child)
@@ -157,18 +233,34 @@ class ViewModel:
 
 
 def _location_to_anchor(raw: object) -> SourceAnchor | None:
+    """Translate a view.json ``source_block`` (or legacy ``location``)
+    into a :class:`SourceAnchor`.
+
+    Accepts both the canonical schema from rtl-buddy-view's
+    ``view-json-v1.md`` (``start_line`` + ``start_column`` + optional
+    ``end_line`` / ``end_column``) and the historical ``line`` / ``col``
+    shorthand used by hand-rolled test fixtures.
+    """
     if not isinstance(raw, dict):
         return None
     file = raw.get("file")
     line = raw.get("start_line", raw.get("line"))
     col = raw.get("start_column", raw.get("col"))
+    end_line = raw.get("end_line")
+    end_col = raw.get("end_column")
     if (
         not isinstance(file, str)
         or not isinstance(line, int)
         or not isinstance(col, int)
     ):
         return None
-    return SourceAnchor(file=file, line=line, col=col)
+    return SourceAnchor(
+        file=file,
+        line=line,
+        col=col,
+        end_line=end_line if isinstance(end_line, int) else None,
+        end_col=end_col if isinstance(end_col, int) else None,
+    )
 
 
 class Resolver:
@@ -299,6 +391,55 @@ class Resolver:
         if node is None:
             return None
         return node.location
+
+    # ------------------------------------------------------------------
+    # src → view  (`:RtlBuddyShow` from nvim → schematic selection)
+    # ------------------------------------------------------------------
+
+    def src_to_view(
+        self, *, file: str, line: int, col: int | None = None
+    ) -> tuple[str, ...]:
+        """Return instance paths whose source range contains the point.
+
+        Used to translate the editor's ``source_focused {file, line, col}``
+        event into a ``selection_changed`` the schematic SPA can act on.
+        Path matching is on absolute, normalised form (``Path.resolve``)
+        so a relative path in ``view.json`` matches an absolute path
+        from the editor — and vice versa.
+
+        Multiple matches can occur because a child instance's range is
+        nested in its parent's; results are ordered smallest range first
+        so the caller can pick the most-specific match (typically the
+        instance being clicked, not the surrounding module).
+        """
+        model = self._load_if_possible()
+        if model is None:
+            return ()
+
+        target = self._normalise_path(file)
+        if target is None:
+            return ()
+
+        matches: list[tuple[int, str]] = []
+        for ip, node in model.nodes_by_path.items():
+            anchor = node.location
+            if anchor is None:
+                continue
+            if self._normalise_path(anchor.file) != target:
+                continue
+            if not anchor.contains(line=line, col=col):
+                continue
+            matches.append((anchor.range_size(), ip))
+
+        matches.sort()
+        return tuple(ip for _size, ip in matches)
+
+    @staticmethod
+    def _normalise_path(p: str) -> str | None:
+        try:
+            return str(Path(p).resolve())
+        except (OSError, RuntimeError):
+            return None
 
     # ------------------------------------------------------------------
     # signal → drivers (the spec's resolve_signal_to_view)

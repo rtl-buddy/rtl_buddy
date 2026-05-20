@@ -116,6 +116,8 @@ State events (selection_changed, signal_selected, cursor_moved, …) are broadca
 
 Lifecycle events (`hello` / `welcome` / `peer_joined` / `bye`) keep each peer's view of the registry live without re-fetching: `welcome` carries the snapshot at handshake time, and `peer_joined` / `bye` are deltas the hub broadcasts when later peers connect or disconnect. The joining or leaving peer's origin is in the envelope's `origin` field (payload is empty). Consumers should react to all three to maintain a current peer list — relying on `welcome` alone leaves the list frozen at handshake time.
 
+The hub also **augments `source_focused`**: when a `src` peer (e.g. nvim's `:RtlBuddyShow`) broadcasts `{file, line, col}`, the resolver looks up the instance(s) whose `source` range in `view.json` contains the point and the hub emits a derived `selection_changed { instance_path: [...] }` with `origin: "cli"`. The schematic SPA already handles `selection_changed` — pan/highlight the matching instance — so this bridge makes editor cursor movement light up the schematic without a SPA-side protocol change. Multiple matches (nested instances) come back smallest-range first; consumers picking element `[0]` get the most-specific instance. Line-only matching is used for multi-line ranges (cursor at column 1 still finds an instantiation whose keyword sits further right); single-line ranges still use columns so two instantiations on the same line resolve distinctly.
+
 ## Troubleshooting
 
 **`rb hub start` exits with "already running"** — `.rtl-buddy/hub.json` exists and its PID is live. If the prior daemon really is gone, the file is stale (clean shutdown didn't run); delete it and retry. `rb hub status` distinguishes the two cases.
