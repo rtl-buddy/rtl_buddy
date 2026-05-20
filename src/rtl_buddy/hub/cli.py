@@ -76,8 +76,9 @@ def cmd_start(
             "--serve-viewer/--no-serve-viewer",
             help=(
                 "Also serve the viewer HTTP+WebSocket layer at the http_port. "
-                "When no --viewer-bundle is given, a placeholder page proves "
-                "the transport works."
+                "When no --viewer-bundle is given, the hub auto-discovers the "
+                "SPA shipped by rtl-buddy-view (if installed) and falls back "
+                "to a placeholder page if neither is available."
             ),
         ),
     ] = False,
@@ -86,9 +87,12 @@ def cmd_start(
         typer.Option(
             "--viewer-bundle",
             help=(
-                "Path to a rtl-buddy-view SPA build (directory containing "
-                "index.html, or a path to a single index.html). Only used "
-                "with --serve-viewer."
+                "Override the auto-discovered SPA with this path (directory "
+                "containing index.html, or a path to a single index.html). "
+                "Use this when iterating on the SPA from a checkout — the "
+                "auto-discovered bundle ships with the installed wheel and "
+                "won't reflect uncommitted viewer/ changes. Only used with "
+                "--serve-viewer."
             ),
         ),
     ] = None,

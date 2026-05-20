@@ -38,6 +38,25 @@ def _server_version() -> str:
         return "0.0.0+unknown"
 
 
+def _discover_viewer_bundle() -> Path | None:
+    """Return the SPA bundle shipped by rtl-buddy-view, or ``None``.
+
+    Lets ``rb hub start --serve-viewer`` work without ``--viewer-bundle``
+    when the user has rtl-buddy-view installed alongside rtl-buddy. The
+    package is an optional runtime peer — the hub doesn't declare it as
+    a hard dep, so the import is wrapped and a missing module is just
+    "no bundle here, use the placeholder."
+    """
+    try:
+        from rtl_buddy_view import viewer_bundle  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    try:
+        return viewer_bundle.path()
+    except Exception:  # noqa: BLE001 - defensive against API drift in the peer package
+        return None
+
+
 async def _run(
     project_root: Path,
     config: HubConfig,
@@ -62,11 +81,21 @@ async def _run(
     viewer: ViewerServer | None = None
     http_port: int | None = None
     if serve_viewer:
+        resolved_bundle = viewer_bundle
+        if resolved_bundle is None:
+            resolved_bundle = _discover_viewer_bundle()
+            if resolved_bundle is not None:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "hub.viewer.bundle_auto_discovered",
+                    path=str(resolved_bundle),
+                )
         viewer = ViewerServer(
             hub_host=host,
             hub_port=port,
             http_port=config.hub.http_port,
-            viewer_bundle=viewer_bundle,
+            viewer_bundle=resolved_bundle,
         )
         _vhost, vport = await viewer.start()
         http_port = vport

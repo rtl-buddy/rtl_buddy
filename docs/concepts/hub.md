@@ -54,7 +54,7 @@ uv run rb hub stop                    # graceful shutdown via SIGTERM
 
 `--daemon` is reserved; today it warns and runs in the foreground. Treat the explicit `--foreground` as load-bearing; future versions may detach when `--daemon` is given.
 
-`--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/ws`) used by the browser SPA. Without `--viewer-bundle PATH` it serves a small placeholder page that proves the transport works — pass the path to a built rtl-buddy-view SPA (a directory containing `index.html` or a single `index.html`) to serve the real UI.
+`--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/ws`) used by the browser SPA. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
 
 ## Discovery (`.rtl-buddy/hub.json`)
 
