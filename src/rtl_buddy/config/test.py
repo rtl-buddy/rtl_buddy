@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from typing import Literal
 from serde import serde, field
 from .model import ModelConfig, ModelConfigLoader
 from .uvm import UVMConfig
@@ -31,6 +32,31 @@ class CocotbTestbenchConfig:
 
 
 @serde
+class SystemCTestbenchConfig:
+    """
+    SystemC-specific configuration nested under a testbench.
+
+    Presence signals that Verilator should emit the DUT as an sc_module and
+    link it against a user-provided sc_main(). Mirrors CocotbTestbenchConfig.
+
+    Attributes:
+      sc_main (str): C++ source file containing sc_main(), relative to suite dir.
+      sc_extra (list[str]): Additional C++ translation units to compile and link.
+      cflags (list[str]): Tokens appended to -CFLAGS at verilator invocation.
+      ldflags (list[str]): Tokens appended to -LDFLAGS at verilator invocation.
+      pin_style (str | None): One of "uint" | "bv" | "biguint" — maps to
+        --pins-sc-uint / --pins-sc-biguint / (no flag for "bv"). None leaves
+        Verilator's default emission (uint32_t for ≤32-bit, sc_bv for wider).
+    """
+
+    sc_main: str
+    sc_extra: list[str] = field(default_factory=list)
+    cflags: list[str] = field(default_factory=list)
+    ldflags: list[str] = field(default_factory=list)
+    pin_style: Literal["uint", "bv", "biguint"] | None = None
+
+
+@serde
 class TestbenchConfig:
     """
     Configuration for a single testbench within a test suite.
@@ -38,23 +64,37 @@ class TestbenchConfig:
     Attributes:
       name (str): Unique testbench identifier.
       filelist (list[str]): List of paths to files involved in running the testbench.
-      toplevel (str | None): Top-level DUT module name. Required for cocotb testbenches.
+      toplevel (str | None): Top-level DUT module name. Required for cocotb and SystemC testbenches.
       cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
+      systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
     """
 
     name: str
     filelist: list[str]
     toplevel: str | None = None
     cocotb: CocotbTestbenchConfig | None = None
+    systemc: SystemCTestbenchConfig | None = None
 
     def __post_init__(self):
+        if self.cocotb is not None and self.systemc is not None:
+            raise FatalRtlBuddyError(
+                f"testbench '{self.name}': cocotb: and systemc: are mutually exclusive "
+                "(different host kernels cannot share one Verilator build)"
+            )
         if self.cocotb is not None and self.toplevel is None:
             raise FatalRtlBuddyError(
                 f"testbench '{self.name}': toplevel is required when cocotb: is present"
             )
+        if self.systemc is not None and self.toplevel is None:
+            raise FatalRtlBuddyError(
+                f"testbench '{self.name}': toplevel is required when systemc: is present"
+            )
 
     def is_cocotb(self) -> bool:
         return self.cocotb is not None
+
+    def is_systemc(self) -> bool:
+        return self.systemc is not None
 
     def get_name(self):
         """

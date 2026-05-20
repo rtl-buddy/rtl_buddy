@@ -17,7 +17,7 @@ from rtl_buddy.config.root import (
 from rtl_buddy.config.suite import SuiteConfig
 
 # Alias imports so pytest does not try to collect them as test classes.
-from rtl_buddy.config.test import CocotbTestbenchConfig
+from rtl_buddy.config.test import CocotbTestbenchConfig, SystemCTestbenchConfig
 from rtl_buddy.config.test import TestConfig as TC
 from rtl_buddy.config.test import TestbenchConfig as TB
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -117,6 +117,52 @@ def test_testbench_is_cocotb_flag():
         cocotb=CocotbTestbenchConfig(module="tb_mod"),
     )
     assert cocotb.is_cocotb() is True
+
+
+# ---------------------------------------------------------------------------
+# SystemCTestbenchConfig
+# ---------------------------------------------------------------------------
+
+
+def test_systemc_testbench_requires_toplevel():
+    with pytest.raises(FatalRtlBuddyError, match="toplevel is required"):
+        TB(
+            name="tb",
+            filelist=["a.sv"],
+            systemc=SystemCTestbenchConfig(sc_main="sc_main.cpp"),
+        )
+
+
+def test_systemc_and_cocotb_are_mutually_exclusive():
+    with pytest.raises(FatalRtlBuddyError, match="mutually exclusive"):
+        TB(
+            name="tb",
+            filelist=["a.sv"],
+            toplevel="dut",
+            cocotb=CocotbTestbenchConfig(module="tb_mod"),
+            systemc=SystemCTestbenchConfig(sc_main="sc_main.cpp"),
+        )
+
+
+def test_testbench_is_systemc_flag():
+    plain = TB(name="tb", filelist=["a.sv"])
+    assert plain.is_systemc() is False
+    sc = TB(
+        name="tb",
+        filelist=["a.sv"],
+        toplevel="dut",
+        systemc=SystemCTestbenchConfig(sc_main="sc_main.cpp"),
+    )
+    assert sc.is_systemc() is True
+    assert sc.is_cocotb() is False
+
+
+def test_systemc_default_fields_are_empty():
+    sc = SystemCTestbenchConfig(sc_main="sc_main.cpp")
+    assert sc.sc_extra == []
+    assert sc.cflags == []
+    assert sc.ldflags == []
+    assert sc.pin_style is None
 
 
 # ---------------------------------------------------------------------------
