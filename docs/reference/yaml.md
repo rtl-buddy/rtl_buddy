@@ -621,6 +621,7 @@ verifications:
     model: "demo_fifo"
     model_path: "../../design/demo_fifo/models.yaml"
     top: "demo_fifo"
+    constraints: "shared_clock_reset.sv"   # optional environment assumes
     properties:
       - "demo_fifo_props.sv"
     mode: "bmc"
@@ -661,6 +662,7 @@ verifications:
 | `model_path` | string | Path to `models.yaml`, resolved relative to the `fpv.yaml` file |
 | `top` | string | Top module name passed to `prep -top`; defaults to `model` |
 | `properties` | list | SystemVerilog files containing SVA properties / bound checkers, resolved relative to `fpv.yaml`. Optional when properties are in-RTL under `` `ifdef FORMAL `` guards |
+| `constraints` | string | Optional path to a single `.sv` file with environment `assume property` statements (clock toggle, reset sequence, etc.). Read into the sby script *before* `properties:` so the assumes are in scope when asserts elaborate. Resolved relative to `fpv.yaml`. Analogous to `constraints:` in `pnr.yaml` — separates "environment" from "what to prove" and lets multiple verifications share one clock/reset boilerplate. |
 | `mode` | string | One of `bmc`, `prove`, `cover`, `live`; defaults to `bmc` |
 | `depth` | int | Cycle depth for the proof; defaults to 20 |
 | `engines` | list | Sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |

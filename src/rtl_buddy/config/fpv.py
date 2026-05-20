@@ -81,6 +81,13 @@ class FpvConfigFile:
     tool: str
     top: str | None = None
     properties: list[str] = field(default_factory=list)
+    # Optional SVA/Verilog file with clock and reset `assume property`
+    # statements (and any other environment constraints). Read into the
+    # sby script *before* `properties:` so the assumes are in scope
+    # when the assertions are elaborated. Analogous to `constraints:`
+    # in `pnr.yaml` — separating intent ("environment") from "what to
+    # prove" lets multiple verifications share one boilerplate file.
+    constraints: str | None = None
     mode: str = "bmc"
     depth: int = 20
     engines: list[str] = field(default_factory=lambda: ["smtbmc yices"])
@@ -92,6 +99,9 @@ class FpvConfigFile:
             self.model
         )
         properties = [os.path.join(config_dir, p) for p in self.properties]
+        constraints = (
+            os.path.join(config_dir, self.constraints) if self.constraints else None
+        )
         if self.mode not in _VALID_MODES:
             raise FatalRtlBuddyError(
                 f"{self.name}: fpv mode '{self.mode}' is not one of "
@@ -104,6 +114,7 @@ class FpvConfigFile:
             tool=self.tool,
             top=self.top or self.model,
             properties=properties,
+            constraints=constraints,
             mode=self.mode,
             depth=self.depth,
             engines=list(self.engines),
@@ -124,6 +135,7 @@ class FpvConfig:
     depth: int
     engines: list[str]
     _reglvl: int | dict | None
+    constraints: str | None = dc_field(default=None)
     tool_overrides: dict | None = dc_field(default=None)
 
     def get_name(self) -> str:
@@ -140,6 +152,9 @@ class FpvConfig:
 
     def get_properties(self) -> list[str]:
         return self.properties
+
+    def get_constraints(self) -> str | None:
+        return self.constraints
 
     def get_mode(self) -> str:
         return self.mode

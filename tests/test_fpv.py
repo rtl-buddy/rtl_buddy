@@ -36,6 +36,7 @@ def _make_fpv_cfg(
     tool="sby",
     top=None,
     properties=None,
+    constraints=None,
     mode="bmc",
     depth=20,
     engines=None,
@@ -52,6 +53,7 @@ def _make_fpv_cfg(
         tool=tool,
         top=top or model_name,
         properties=list(properties or []),
+        constraints=constraints,
         mode=mode,
         depth=depth,
         engines=list(engines or ["smtbmc yices"]),
@@ -256,6 +258,44 @@ def test_fpv_suite_config_paths_resolved_relative_to_yaml(tmp_path):
     assert Path(fpv_b.get_properties()[0]) == tmp_path / "mod_b_props.sv"
 
 
+def test_fpv_config_constraints_default_none():
+    cfg = _make_fpv_cfg()
+    assert cfg.get_constraints() is None
+
+
+def test_fpv_config_constraints_set_via_make():
+    cfg = _make_fpv_cfg(constraints="/abs/clock_reset.sv")
+    assert cfg.get_constraints() == "/abs/clock_reset.sv"
+
+
+def test_fpv_suite_config_constraints_resolved_relative_to_yaml(tmp_path):
+    """A `constraints:` field in fpv.yaml is resolved relative to the yaml."""
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "fpv.yaml"
+    suite_yaml.write_text(dedent("""\
+        rtl-buddy-filetype: fpv_config
+
+        verifications:
+          - name: "fpv_with_constraints"
+            desc: "Has a shared constraints file"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "sby"
+            top: "mod_a"
+            constraints: "shared_clock_reset.sv"
+            properties:
+              - "mod_a_props.sv"
+            mode: "bmc"
+            depth: 16
+            engines:
+              - "smtbmc yices"
+            reglvl: 0
+    """))
+    cfg = FpvSuiteConfig(str(suite_yaml))
+    verif = cfg.get_verifications("fpv_with_constraints")[0]
+    assert Path(verif.get_constraints()) == tmp_path / "shared_clock_reset.sv"
+
+
 def test_fpv_suite_config_missing_name_raises(tmp_path):
     from rtl_buddy.errors import FatalRtlBuddyError
 
@@ -371,6 +411,85 @@ def test_sby_fpv_writes_sby_file_with_expected_sections(tmp_path):
     assert "[files]" in content
     assert str(src) in content
     assert str(props) in content
+
+
+def test_sby_fpv_writes_constraints_before_properties(tmp_path):
+    """When `constraints:` is set, it must be read into the sby script
+    BEFORE properties so the assumes are in scope when the asserts
+    elaborate."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("module design(); endmodule\n")
+    constraints = tmp_path / "clock_reset.sv"
+    constraints.write_text("// clock + reset assumes\n")
+    props = tmp_path / "props.sv"
+    props.write_text("// SVA properties\n")
+    fl = tmp_path / "artefacts" / "demo" / "fpv.f"
+    fl.parent.mkdir(parents=True)
+    fl.write_text(f"{src}\n")
+
+    fpv_cfg = _make_fpv_cfg(
+        name="demo",
+        top="design",
+        properties=[str(props)],
+        constraints=str(constraints),
+    )
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=fpv_cfg,
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    sources, incdirs = sby._parse_filelist(str(fl))
+    sby_path = sby._write_sby_file(sources, incdirs)
+    content = Path(sby_path).read_text()
+
+    # All three files appear in [script] and [files].
+    assert "read -sv -formal design.sv" in content
+    assert "read -sv -formal clock_reset.sv" in content
+    assert "read -sv -formal props.sv" in content
+    assert str(constraints) in content
+    # Constraints come before properties.
+    script_section = content.split("[script]")[1].split("[files]")[0]
+    constraints_pos = script_section.index("read -sv -formal clock_reset.sv")
+    props_pos = script_section.index("read -sv -formal props.sv")
+    assert constraints_pos < props_pos
+    # Files section preserves the same order.
+    files_section = content.split("[files]")[1]
+    files_constraints_pos = files_section.index(str(constraints))
+    files_props_pos = files_section.index(str(props))
+    assert files_constraints_pos < files_props_pos
+
+
+def test_sby_fpv_constraints_optional_default_unchanged(tmp_path):
+    """Without `constraints:` the script must not gain an extra read."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("module design(); endmodule\n")
+    props = tmp_path / "props.sv"
+    props.write_text("// SVA properties\n")
+    fl = tmp_path / "artefacts" / "demo" / "fpv.f"
+    fl.parent.mkdir(parents=True)
+    fl.write_text(f"{src}\n")
+
+    fpv_cfg = _make_fpv_cfg(
+        name="demo",
+        top="design",
+        properties=[str(props)],
+        constraints=None,
+    )
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=fpv_cfg,
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    sources, incdirs = sby._parse_filelist(str(fl))
+    content = Path(sby._write_sby_file(sources, incdirs)).read_text()
+    # Exactly two read statements: design + props.
+    assert content.count("read -sv -formal ") == 2
 
 
 def test_sby_fpv_parse_filelist_extracts_incdirs(tmp_path):

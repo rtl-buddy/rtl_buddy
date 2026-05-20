@@ -58,6 +58,7 @@ verifications:
     model: "demo_fifo"
     model_path: "../../design/demo_fifo/models.yaml"
     top: "demo_fifo"
+    constraints: "shared_clock_reset.sv"     # optional
     properties:
       - "demo_fifo_props.sv"
     mode: "bmc"
@@ -78,6 +79,7 @@ verifications:
 | `model_path` | Path to `models.yaml`, resolved relative to `fpv.yaml` |
 | `top` | Top module passed to `prep -top`; defaults to `model` when omitted |
 | `properties` | List of `.sv` files containing SVA properties / bound checker modules, resolved relative to `fpv.yaml`. Optional when properties are in-RTL under `` `ifdef FORMAL `` guards |
+| `constraints` | Optional path to a single `.sv` file containing environment `assume property` statements (clock toggle, reset sequence, etc.) — analogous to `constraints:` in `pnr.yaml`. Read into the sby script *before* `properties:` so the assumes are in scope when the asserts elaborate. Lets multiple verifications share one clock/reset boilerplate file instead of duplicating it across every bound checker. |
 | `mode` | One of `bmc` (bounded), `prove` (k-induction), `cover`, `live` |
 | `depth` | Cycle depth passed to sby; defaults to 20 |
 | `engines` | List of sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |
@@ -86,7 +88,7 @@ verifications:
 
 ### Where inputs come from
 
-The runner reads the model's filelist via `VlogFilelist` (the same helper `rb synth` and `rb cdc` use), extracts source files and `+incdir+` entries, and emits them under the sby config's `[files]` and `[script]` sections respectively. Property files are appended to the same `read -sv -formal` block — they can be in-RTL with `` `ifdef FORMAL `` guards or standalone bound checker modules.
+The runner reads the model's filelist via `VlogFilelist` (the same helper `rb synth` and `rb cdc` use), extracts source files and `+incdir+` entries, and emits them under the sby config's `[files]` and `[script]` sections respectively. The script reads, in order: design sources → `constraints:` (if set) → `properties:`. Putting constraints before properties ensures their `assume property` statements are in scope when the assertions are elaborated. Property files can be in-RTL with `` `ifdef FORMAL `` guards or standalone bound checker modules.
 
 ## Root config: `cfg-fpv-tools`
 
