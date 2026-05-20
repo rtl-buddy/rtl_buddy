@@ -478,3 +478,80 @@ def test_fpv_runner_dispatches_to_sby_backend(tmp_path):
     assert mocked.called
     assert result.results["result"] == "PASS"
     assert result.results["mode"] == "bmc"
+
+
+# ---------------------------------------------------------------------------
+# fpv_cex_finder — CEX VCD path resolution for `rb wave-fpv`
+# ---------------------------------------------------------------------------
+
+
+def test_find_cex_vcd_returns_trace_from_first_engine(tmp_path):
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "engine_0").mkdir(parents=True)
+    (workdir / "engine_0" / "trace.vcd").write_text("$dummy\n")
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") == str(
+        workdir / "engine_0" / "trace.vcd"
+    )
+
+
+def test_find_cex_vcd_prefers_lowest_engine_number(tmp_path):
+    """Multiple engines can each emit a trace; the sorted-first one wins."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    for engine in ("engine_0", "engine_1", "engine_2"):
+        (workdir / engine).mkdir(parents=True)
+        (workdir / engine / "trace.vcd").write_text("$dummy\n")
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") == str(
+        workdir / "engine_0" / "trace.vcd"
+    )
+
+
+def test_find_cex_vcd_skips_engines_without_trace(tmp_path):
+    """Engine dirs without trace.vcd (e.g. proof passed in that engine)
+    should be skipped, not returned as a hit."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "engine_0").mkdir(parents=True)  # no trace.vcd
+    (workdir / "engine_1").mkdir(parents=True)
+    (workdir / "engine_1" / "trace.vcd").write_text("$dummy\n")
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") == str(
+        workdir / "engine_1" / "trace.vcd"
+    )
+
+
+def test_find_cex_vcd_returns_none_when_workdir_missing(tmp_path):
+    """Verification hasn't been run yet -> no workdir -> None."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    assert find_cex_vcd(str(tmp_path), "never_ran") is None
+
+
+def test_find_cex_vcd_returns_none_when_no_engine_has_trace(tmp_path):
+    """Proof passed (no CEX emitted) -> engine dirs present but no trace -> None."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "engine_0").mkdir(parents=True)  # no trace.vcd
+    (workdir / "engine_1").mkdir(parents=True)  # no trace.vcd
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") is None
+
+
+def test_find_cex_vcd_ignores_non_engine_dirs(tmp_path):
+    """Sby writes `src/`, `model/`, etc. alongside `engine_N/` — those
+    should not be probed for trace files."""
+    from rtl_buddy.tools.fpv_cex_finder import find_cex_vcd
+
+    workdir = tmp_path / "artefacts" / "demo_safety" / "sby_workdir"
+    (workdir / "src").mkdir(parents=True)
+    (workdir / "src" / "trace.vcd").write_text("$dummy\n")
+    (workdir / "model").mkdir(parents=True)
+
+    assert find_cex_vcd(str(tmp_path), "demo_safety") is None

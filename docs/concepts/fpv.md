@@ -158,9 +158,18 @@ Per-run outputs land under `fpv/<run>/artefacts/`:
 
 A run is PASS when `sby` writes `PASS` to `sby_workdir/status` (or returns exit code 0 when the status file is missing).
 
-A run is FAIL when sby writes `FAIL`, `UNKNOWN`, or `ERROR`, or when it exits non-zero. The failure description points at the counterexample trace inside `sby_workdir/engine_<N>/` so the user can open it in `gtkwave` or via `rb wave`.
+A run is FAIL when sby writes `FAIL`, `UNKNOWN`, or `ERROR`, or when it exits non-zero. The failure description points at the counterexample trace inside `sby_workdir/engine_<N>/` so the user can open it in `gtkwave`, `surfer`, or via `rb wave-fpv` (below).
 
 SKIP is returned when the run's `reglvl` is above the `-l` filter passed to `rb fpv-regression`.
+
+## Opening counterexamples
+
+```bash
+# Open the CEX VCD for a failed verification in the configured surfer.
+rb wave-fpv demo_fpv_counter_safety
+```
+
+`rb wave-fpv` resolves the trace at `fpv/<suite>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd` (first engine wins when more than one produced a trace). The configured surfer comes from the same `cfg-surfer` entry that `rb wave` uses; override with `--surfer <name>`. Raises if the verification has not been run yet or the proof passed (no CEX was produced).
 
 ## Out of scope (today)
 
