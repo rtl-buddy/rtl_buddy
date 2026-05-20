@@ -847,6 +847,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Root config: cfg-fpv-tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#solver-version-pinning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solver version pinning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1355,6 +1372,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Root config: cfg-fpv-tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#solver-version-pinning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solver version pinning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1557,6 +1591,9 @@
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
 <a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">      </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span><span class="w">       </span><span class="c1"># seconds per task; optional</span>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">     </span><span class="c1"># appended to sby invocation; optional</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">      </span><span class="nt">solver-versions</span><span class="p">:</span><span class="w">   </span><span class="c1"># optional pins for reproducible CI; map</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">        </span><span class="nt">yices</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;2.6.4&quot;</span><span class="w">   </span><span class="c1"># solver name -&gt; exact version string</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">        </span><span class="nt">z3</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;4.13.0&quot;</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1582,8 +1619,14 @@
 <td><code>opts.extra-args</code></td>
 <td>Passed through verbatim to the sby command line</td>
 </tr>
+<tr>
+<td><code>opts.solver-versions</code></td>
+<td>Optional map of solver name → exact version. Probed before every run; hard-fails on mismatch. Known solvers: <code>yices</code>, <code>z3</code>, <code>boolector</code>, <code>bitwuzla</code>, <code>btormc</code>, <code>abc</code></td>
+</tr>
 </tbody>
 </table>
+<h3 id="solver-version-pinning">Solver version pinning</h3>
+<p><code>sby</code> happily picks whatever solver binary it finds on PATH. On CI, different runners can resolve to different versions and silently change proof outcomes — a proof that passes at depth 32 on one machine can time out on another. Set <code>opts.solver-versions</code> to lock the resolution: before each run, each pinned solver is probed (<code>yices-smt2 --version</code> etc.) and the run hard-fails with a one-shot summary of every mismatch if any pin doesn't match exactly. Resolved versions are logged as <code>fpv.solver_pins_resolved</code> so the run artefacts capture exactly what was used.</p>
 <h2 id="running-fpv">Running FPV</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># All verifications in the default ./fpv.yaml</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>fpv
