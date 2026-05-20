@@ -1656,9 +1656,13 @@
 </code></pre></div>
 <ul>
 <li><strong>Mode / Depth / Engines</strong> — what was actually run, surfaced for quick triage.</li>
+<li><strong>Engine Results</strong> — per-engine verdict mix parsed from <code>&lt;workdir&gt;/logfile.txt</code>'s <code>summary: engine_&lt;N&gt; (...) returned &lt;verdict&gt;</code> lines. Renders compactly: <code>1/1 pass (smtbmc yices)</code> for single-engine runs, <code>2/2 pass</code> when all of multiple engines agree, <code>1/2 pass (smtbmc yices won)</code> when only some succeed. Shows <code>-</code> when sby died before producing a logfile.</li>
 <li><strong>Runtime</strong> — wall-clock seconds for the sby invocation.</li>
 <li><strong>Description</strong> — <code>property proved (...)</code> on pass; on fail, the path to the counterexample VCD when available.</li>
 </ul>
+<blockquote>
+<p><strong>Per-property granularity is not surfaced.</strong> Sby has no structured per-assertion output today — <code>fpv.xml</code> is JUnit-style per-task only and the prose log doesn't tag individual assertions. Per-engine status is the finest grain <code>rb fpv</code> exposes; per-property aggregation would need a yosys-frontend change to dump assertion identifiers + per-COI status.</p>
+</blockquote>
 <h2 id="artefacts">Artefacts</h2>
 <p>Per-run outputs land under <code>fpv/&lt;run&gt;/artefacts/</code>:</p>
 <table>
