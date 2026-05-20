@@ -1514,13 +1514,14 @@
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_fifo/models.yaml&quot;</span>
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">top</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;demo_fifo_props.sv&quot;</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bmc&quot;</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">yices&quot;</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;shared_clock_reset.sv&quot;</span><span class="w">     </span><span class="c1"># optional</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;demo_fifo_props.sv&quot;</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bmc&quot;</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">yices&quot;</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 </code></pre></div>
 <h3 id="fields">Fields</h3>
 <table>
@@ -1560,6 +1561,10 @@
 <td>List of <code>.sv</code> files containing SVA properties / bound checker modules, resolved relative to <code>fpv.yaml</code>. Optional when properties are in-RTL under <code>`ifdef FORMAL</code> guards</td>
 </tr>
 <tr>
+<td><code>constraints</code></td>
+<td>Optional path to a single <code>.sv</code> file containing environment <code>assume property</code> statements (clock toggle, reset sequence, etc.) — analogous to <code>constraints:</code> in <code>pnr.yaml</code>. Read into the sby script <em>before</em> <code>properties:</code> so the assumes are in scope when the asserts elaborate. Lets multiple verifications share one clock/reset boilerplate file instead of duplicating it across every bound checker.</td>
+</tr>
+<tr>
 <td><code>mode</code></td>
 <td>One of <code>bmc</code> (bounded), <code>prove</code> (k-induction), <code>cover</code>, <code>live</code></td>
 </tr>
@@ -1582,7 +1587,7 @@
 </tbody>
 </table>
 <h3 id="where-inputs-come-from">Where inputs come from</h3>
-<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb cdc</code> use), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. Property files are appended to the same <code>read -sv -formal</code> block — they can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
+<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb cdc</code> use), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. The script reads, in order: design sources → <code>constraints:</code> (if set) → <code>properties:</code>. Putting constraints before properties ensures their <code>assume property</code> statements are in scope when the assertions are elaborated. Property files can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
 <h2 id="root-config-cfg-fpv-tools">Root config: <code>cfg-fpv-tools</code></h2>
 <p><code>cfg-fpv-tools</code> declares the FPV tools available to all suites in this project:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-fpv-tools</span><span class="p">:</span>
