@@ -58,6 +58,14 @@ In machine mode:
 
 This makes it reliable to parse outcomes from `rtl_buddy.log` without screen-scraping.
 
+## Working directory rules
+
+Use the command from the directory that matches its scope:
+
+- Run single-suite commands such as `test`, `randtest`, `wave`, and `fpv` from the suite directory that contains the relevant `tests.yaml` or `fpv.yaml`.
+- Run project-wide commands such as `regression`, `synth-regression`, `cdc-regression`, `fpv-regression`, `spec ...`, and `docs ...` from the project root unless you are intentionally narrowing scope.
+- Multi-suite commands change into each suite as they execute, so their `rtl_buddy.log` and `artefacts/` outputs are written per suite, not only in the repo-root directory where you launched the command.
+
 ## Log file locations
 
 | File | Description |
@@ -73,7 +81,7 @@ This makes it reliable to parse outcomes from `rtl_buddy.log` without screen-scr
 | `test.err` | Symlink to the most recent test's stderr |
 | `test.randseed` | Symlink to the most recent test's seed |
 
-All files are written relative to the suite directory where `rtl_buddy` is invoked.
+For single-suite commands, these files are written relative to the suite directory where you ran `rtl_buddy`. For multi-suite commands such as `regression`, each suite gets its own `rtl_buddy.log`, `artefacts/`, and latest-run symlinks inside that suite directory even though the command was launched from the project root.
 
 ## Machine mode log format
 
