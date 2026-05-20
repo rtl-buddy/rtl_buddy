@@ -262,6 +262,7 @@ class SbyFpv:
             runtime_s = time.monotonic() - start
 
         status = self._read_status(workdir)
+        per_engine = self._read_per_engine(workdir)
 
         # Sby exit code conventions:
         #   0 -> PASS, 1 -> FAIL, 2 -> UNKNOWN/timeout, other -> ERROR.
@@ -274,6 +275,7 @@ class SbyFpv:
                 depth=cfg.get_depth(),
                 engines=cfg.get_engines(),
                 runtime_s=round(runtime_s, 2),
+                per_engine=per_engine,
             )
 
         if status == "FAIL":
@@ -284,6 +286,7 @@ class SbyFpv:
                 engines=cfg.get_engines(),
                 runtime_s=round(runtime_s, 2),
                 desc=self._counterexample_desc(workdir),
+                per_engine=per_engine,
             )
 
         desc_status = status or f"sby exit code {proc.returncode}"
@@ -294,6 +297,7 @@ class SbyFpv:
             engines=cfg.get_engines(),
             runtime_s=round(runtime_s, 2),
             desc=f"sby reported {desc_status} (see {log_path})",
+            per_engine=per_engine,
         )
 
     # --- result helpers -----------------------------------------------------
@@ -313,6 +317,21 @@ class SbyFpv:
         # Status lines look like "PASS" or "PASS (engine_0)" — keep the
         # first whitespace-delimited token.
         return text.split()[0] if text else None
+
+    @staticmethod
+    def _read_per_engine(workdir: str) -> list[dict]:
+        """Parse per-engine status from ``<workdir>/logfile.txt``.
+
+        Returns an empty list when the logfile is missing (sby died
+        before producing one) — callers treat that as "no engine data
+        available" and surface the overall verdict only.
+        """
+        from .fpv_log_parse import parse_engine_summary, read_workdir_log
+
+        log_text = read_workdir_log(workdir)
+        if log_text is None:
+            return []
+        return parse_engine_summary(log_text)
 
     @staticmethod
     def _counterexample_desc(workdir: str) -> str:

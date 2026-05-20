@@ -2342,11 +2342,14 @@ class RtlBuddy:
     # --- FPV subcommands ----------------------------------------------------
 
     def _render_fpv_summary(self, title, fpv_results, *, metadata=None):
+        from .tools.fpv_log_parse import summarize_engines
+
         rows = []
         for r in fpv_results:
             res = r["results"].results
             engines = res.get("engines") or []
             runtime = res.get("runtime_s")
+            per_engine = res.get("per_engine") or []
             row = {
                 "fpv_name": r["fpv_name"],
                 "result": res["result"],
@@ -2354,6 +2357,7 @@ class RtlBuddy:
                 "mode": str(res.get("mode", "-")),
                 "depth": str(res.get("depth", "-")),
                 "engines": ", ".join(engines) if engines else "-",
+                "engine_results": summarize_engines(per_engine) if per_engine else "-",
                 "runtime": f"{runtime:.1f}s" if runtime is not None else "-",
             }
             rows.append(row)
@@ -2365,6 +2369,7 @@ class RtlBuddy:
             ("mode", "Mode"),
             ("depth", "Depth"),
             ("engines", "Engines"),
+            ("engine_results", "Engine Results"),
             ("runtime", "Runtime"),
         ]
         render_summary(

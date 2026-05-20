@@ -30,6 +30,7 @@ class FpvPassResults(FpvResults):
         depth: int,
         engines: list[str] | None = None,
         runtime_s: float | None = None,
+        per_engine: list[dict] | None = None,
     ):
         desc = f"property proved ({mode}, depth {depth})"
         super().__init__(
@@ -41,6 +42,10 @@ class FpvPassResults(FpvResults):
         self.results["engines"] = list(engines) if engines is not None else []
         if runtime_s is not None:
             self.results["runtime_s"] = runtime_s
+        # per_engine carries the parsed `summary: engine_<N> ...`
+        # lines from sby's logfile.txt: list of dicts with idx, spec,
+        # verdict, trace_count. Empty when no logfile was produced.
+        self.results["per_engine"] = list(per_engine) if per_engine is not None else []
 
 
 class FpvFailResults(FpvResults):
@@ -53,6 +58,7 @@ class FpvFailResults(FpvResults):
         engines: list[str] | None = None,
         runtime_s: float | None = None,
         desc: str | None = None,
+        per_engine: list[dict] | None = None,
     ):
         msg = desc or f"property disproved ({mode}, depth {depth})"
         super().__init__(
@@ -64,6 +70,7 @@ class FpvFailResults(FpvResults):
         self.results["engines"] = list(engines) if engines is not None else []
         if runtime_s is not None:
             self.results["runtime_s"] = runtime_s
+        self.results["per_engine"] = list(per_engine) if per_engine is not None else []
 
 
 class FpvSkipResults(FpvResults):

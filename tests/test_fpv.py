@@ -824,3 +824,180 @@ def test_find_cex_vcd_ignores_non_engine_dirs(tmp_path):
     (workdir / "model").mkdir(parents=True)
 
     assert find_cex_vcd(str(tmp_path), "demo_safety") is None
+
+
+# ---------------------------------------------------------------------------
+# fpv_log_parse — per-engine summary extraction from sby logfile.txt
+# ---------------------------------------------------------------------------
+
+
+_REAL_LOG_PASS = dedent("""\
+    SBY 11:10:18 [wd] Removing directory 'wd'.
+    SBY 11:10:18 [wd] engine_0: smtbmc yices
+    SBY 11:10:18 [wd] engine_0: starting process "..."
+    SBY 11:10:18 [wd] engine_0: ##   0:00:00  Status: passed
+    SBY 11:10:18 [wd] engine_0: finished (returncode=0)
+    SBY 11:10:18 [wd] summary: Elapsed clock time [H:MM:SS (secs)]: 0:00:00 (0)
+    SBY 11:10:18 [wd] summary: Elapsed process time [H:MM:SS (secs)]: 0:00:00 (0)
+    SBY 11:10:18 [wd] summary: engine_0 (smtbmc yices) returned pass
+    SBY 11:10:18 [wd] summary: engine_0 did not produce any traces
+    SBY 11:10:18 [wd] DONE (PASS, rc=0)
+""")
+
+
+def test_parse_engine_summary_single_engine_pass():
+    from rtl_buddy.tools.fpv_log_parse import parse_engine_summary
+
+    engines = parse_engine_summary(_REAL_LOG_PASS)
+    assert engines == [
+        {"idx": 0, "spec": "smtbmc yices", "verdict": "pass", "trace_count": 0}
+    ]
+
+
+def test_parse_engine_summary_multi_engine_mixed():
+    log = dedent("""\
+        SBY summary: engine_0 (smtbmc yices) returned pass
+        SBY summary: engine_0 did not produce any traces
+        SBY summary: engine_1 (smtbmc z3) returned fail
+        SBY summary: engine_1 produced 1 trace
+        SBY summary: engine_2 (abc pdr) returned pass
+        SBY summary: engine_2 did not produce any traces
+    """)
+    from rtl_buddy.tools.fpv_log_parse import parse_engine_summary
+
+    engines = parse_engine_summary(log)
+    assert engines == [
+        {"idx": 0, "spec": "smtbmc yices", "verdict": "pass", "trace_count": 0},
+        {"idx": 1, "spec": "smtbmc z3", "verdict": "fail", "trace_count": 1},
+        {"idx": 2, "spec": "abc pdr", "verdict": "pass", "trace_count": 0},
+    ]
+
+
+def test_parse_engine_summary_unsorted_lines_sort_by_index():
+    log = dedent("""\
+        SBY summary: engine_2 (abc pdr) returned pass
+        SBY summary: engine_0 (smtbmc yices) returned pass
+        SBY summary: engine_1 (smtbmc z3) returned pass
+    """)
+    from rtl_buddy.tools.fpv_log_parse import parse_engine_summary
+
+    engines = parse_engine_summary(log)
+    assert [e["idx"] for e in engines] == [0, 1, 2]
+
+
+def test_parse_engine_summary_multiple_traces():
+    log = "SBY summary: engine_0 produced 3 traces\n"
+    from rtl_buddy.tools.fpv_log_parse import parse_engine_summary
+
+    engines = parse_engine_summary(log)
+    assert engines == [{"idx": 0, "spec": None, "verdict": None, "trace_count": 3}]
+
+
+def test_parse_engine_summary_empty_log_returns_empty():
+    from rtl_buddy.tools.fpv_log_parse import parse_engine_summary
+
+    assert parse_engine_summary("") == []
+    assert parse_engine_summary("no summary lines here\n") == []
+
+
+def test_parse_elapsed_seconds_extracts_secs():
+    from rtl_buddy.tools.fpv_log_parse import parse_elapsed_seconds
+
+    assert parse_elapsed_seconds(_REAL_LOG_PASS) == 0
+    assert (
+        parse_elapsed_seconds(
+            "SBY summary: Elapsed clock time [H:MM:SS (secs)]: 0:01:23 (83)\n"
+        )
+        == 83
+    )
+
+
+def test_parse_elapsed_seconds_missing_returns_none():
+    from rtl_buddy.tools.fpv_log_parse import parse_elapsed_seconds
+
+    assert parse_elapsed_seconds("no elapsed line\n") is None
+
+
+def test_read_workdir_log_missing_file_returns_none(tmp_path):
+    from rtl_buddy.tools.fpv_log_parse import read_workdir_log
+
+    assert read_workdir_log(str(tmp_path)) is None
+
+
+def test_read_workdir_log_returns_file_contents(tmp_path):
+    from rtl_buddy.tools.fpv_log_parse import read_workdir_log
+
+    (tmp_path / "logfile.txt").write_text("hello\n")
+    assert read_workdir_log(str(tmp_path)) == "hello\n"
+
+
+def test_summarize_engines_no_data():
+    from rtl_buddy.tools.fpv_log_parse import summarize_engines
+
+    assert summarize_engines([]) == "no engine data"
+
+
+def test_summarize_engines_single_engine_named():
+    from rtl_buddy.tools.fpv_log_parse import summarize_engines
+
+    assert (
+        summarize_engines(
+            [{"idx": 0, "spec": "smtbmc yices", "verdict": "pass", "trace_count": 0}]
+        )
+        == "1/1 pass (smtbmc yices)"
+    )
+
+
+def test_summarize_engines_all_pass_multi():
+    from rtl_buddy.tools.fpv_log_parse import summarize_engines
+
+    engines = [
+        {"idx": 0, "spec": "smtbmc yices", "verdict": "pass", "trace_count": 0},
+        {"idx": 1, "spec": "smtbmc z3", "verdict": "pass", "trace_count": 0},
+    ]
+    assert summarize_engines(engines) == "2/2 pass"
+
+
+def test_summarize_engines_partial_pass_names_winner():
+    from rtl_buddy.tools.fpv_log_parse import summarize_engines
+
+    engines = [
+        {"idx": 0, "spec": "smtbmc yices", "verdict": "pass", "trace_count": 0},
+        {"idx": 1, "spec": "smtbmc z3", "verdict": "fail", "trace_count": 1},
+    ]
+    assert summarize_engines(engines) == "1/2 pass (smtbmc yices won)"
+
+
+def test_summarize_engines_all_fail():
+    from rtl_buddy.tools.fpv_log_parse import summarize_engines
+
+    engines = [
+        {"idx": 0, "spec": "smtbmc yices", "verdict": "fail", "trace_count": 1},
+        {"idx": 1, "spec": "smtbmc z3", "verdict": "fail", "trace_count": 1},
+    ]
+    assert summarize_engines(engines) == "0/2 pass"
+
+
+# ---------------------------------------------------------------------------
+# SbyFpv._read_per_engine — integration with the workdir
+# ---------------------------------------------------------------------------
+
+
+def test_sby_fpv_read_per_engine_parses_real_log(tmp_path):
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    workdir = tmp_path / "sby_workdir"
+    workdir.mkdir()
+    (workdir / "logfile.txt").write_text(_REAL_LOG_PASS)
+    engines = SbyFpv._read_per_engine(str(workdir))
+    assert engines == [
+        {"idx": 0, "spec": "smtbmc yices", "verdict": "pass", "trace_count": 0}
+    ]
+
+
+def test_sby_fpv_read_per_engine_no_logfile_returns_empty(tmp_path):
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    workdir = tmp_path / "sby_workdir"
+    workdir.mkdir()
+    assert SbyFpv._read_per_engine(str(workdir)) == []
