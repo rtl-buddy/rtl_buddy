@@ -1,7 +1,7 @@
 import logging
+import os
 
 logger = logging.getLogger(__name__)
-import os
 import pprint
 
 from serde import serde, field
@@ -10,6 +10,48 @@ from typing import Literal
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+
+
+def split_back_pointer(value: str) -> tuple[str, str | None]:
+    """Split a ``cdc:``/``synth:``/``tests:`` back-pointer into
+    ``(path, entry_name | None)``.
+
+    The path side is the relative location of the downstream YAML
+    (resolved by the caller against the parent ``models.yaml``).
+    The optional ``#entry_name`` fragment names a single analysis /
+    synthesis / test inside that file — useful when one file holds
+    multiple and the model wants to pin one as canonical.
+    """
+    if "#" in value:
+        path, _, entry = value.partition("#")
+        entry = entry.strip()
+        return path, (entry if entry else None)
+    return value, None
+
+
+def resolve_back_pointer(
+    model: "ModelConfig", field_name: str
+) -> tuple[str, str | None] | None:
+    """Resolve ``model.<field_name>`` (one of ``cdc``/``synth``/``tests``)
+    into an absolute ``(path, entry_name | None)`` tuple.
+
+    Returns ``None`` when the field is unset on the model. Raises
+    ``FatalRtlBuddyError`` when the field is set but ``model.path``
+    is missing (loader didn't tag the model — programming error).
+    Delegates path resolution to ``ModelConfig._resolve_relative`` so
+    the cdc/synth/tests fields share semantics with the existing
+    ``axi_bundles`` / ``axi_monitor_out`` resolution.
+    """
+    raw = getattr(model, field_name, None)
+    if not raw:
+        return None
+    if not model.path:
+        raise FatalRtlBuddyError(
+            f"resolve_back_pointer: model {model.name!r} has no path "
+            f"attribute; cannot resolve {field_name}={raw!r}"
+        )
+    rel, entry = split_back_pointer(raw)
+    return model._resolve_relative(rel), entry
 
 
 @serde
@@ -30,6 +72,18 @@ class ModelConfig:
         SystemVerilog monitor file. Typically points into the verif
         testbench source tree so the file is picked up by the tb's
         filelist (e.g. ``../verif/soc_top/gen/axi_perf_mon.sv``).
+      cdc (str|None): Relative path from models.yaml to the cdc.yaml that owns
+        this model's CDC analysis. Optional ``#analysis_name`` fragment picks one
+        entry from a multi-analysis file (e.g. ``cdc.yaml#full_design``). Read by
+        ``rb hub`` to wire up the clock-domain overlay; absent → overlay
+        unavailable.
+      synth (str|None): Relative path from models.yaml to the synth.yaml that
+        owns this model's synthesis flow. Same ``#synth_name`` fragment semantics.
+        Not consumed by any tool yet — declared now so the schema doesn't churn
+        when future hub overlays (e.g. synthesis QoR) want to look it up.
+      tests (str|None): Relative path from models.yaml to the tests.yaml that
+        owns this model's testbench/test suite. Same ``#test_name`` fragment
+        semantics. Not consumed by any tool yet.
       path (str|None): Path to the model config file. Will usually be set by the loader.
     """
 
@@ -39,6 +93,9 @@ class ModelConfig:
     spec: str | None = None
     axi_bundles: str | None = None
     axi_monitor_out: str | None = None
+    cdc: str | None = None
+    synth: str | None = None
+    tests: str | None = None
     path: str | None = None
 
     def _resolve_relative(self, rel: str) -> str:

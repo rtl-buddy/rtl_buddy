@@ -394,6 +394,110 @@ models:
 
 
 # ---------------------------------------------------------------------------
+# ModelConfig back-pointers (cdc / synth / tests)
+# ---------------------------------------------------------------------------
+
+
+def test_model_config_back_pointers_default_to_none(tmp_path):
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    body = """\
+rtl-buddy-filetype: model_config
+models:
+  - name: mod_a
+    filelist: [a.sv]
+"""
+    path = tmp_path / "models.yaml"
+    path.write_text(body)
+    loader = ModelConfigLoader(str(path))
+    mod = loader.get_model("mod_a")
+    assert mod.cdc is None
+    assert mod.synth is None
+    assert mod.tests is None
+
+
+def test_model_config_back_pointers_loaded(tmp_path):
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    body = """\
+rtl-buddy-filetype: model_config
+models:
+  - name: mod_a
+    filelist: [a.sv]
+    cdc: cdc.yaml
+    synth: synth.yaml#fast
+    tests: tests.yaml#smoke
+"""
+    path = tmp_path / "models.yaml"
+    path.write_text(body)
+    loader = ModelConfigLoader(str(path))
+    mod = loader.get_model("mod_a")
+    assert mod.cdc == "cdc.yaml"
+    assert mod.synth == "synth.yaml#fast"
+    assert mod.tests == "tests.yaml#smoke"
+
+
+def test_split_back_pointer_no_fragment():
+    from rtl_buddy.config.model import split_back_pointer
+
+    assert split_back_pointer("cdc.yaml") == ("cdc.yaml", None)
+
+
+def test_split_back_pointer_with_fragment():
+    from rtl_buddy.config.model import split_back_pointer
+
+    assert split_back_pointer("cdc.yaml#full_design") == ("cdc.yaml", "full_design")
+
+
+def test_split_back_pointer_empty_fragment_is_none():
+    """``cdc.yaml#`` parses to ``("cdc.yaml", None)`` — an empty fragment
+    is treated as "no entry specified" rather than "entry named the empty
+    string", which would fail downstream lookups with a confusing error."""
+    from rtl_buddy.config.model import split_back_pointer
+
+    assert split_back_pointer("cdc.yaml#") == ("cdc.yaml", None)
+
+
+def test_resolve_back_pointer_absent_returns_none(tmp_path):
+    from rtl_buddy.config.model import ModelConfig, resolve_back_pointer
+
+    model = ModelConfig(name="m", filelist=[], path=str(tmp_path / "models.yaml"))
+    assert resolve_back_pointer(model, "cdc") is None
+
+
+def test_resolve_back_pointer_relative_to_models_yaml(tmp_path):
+    """``cdc: ../shared/cdc.yaml#foo`` from a models.yaml at
+    ``<root>/blocks/dma/models.yaml`` resolves to
+    ``<root>/blocks/shared/cdc.yaml``, entry ``foo``."""
+    from rtl_buddy.config.model import ModelConfig, resolve_back_pointer
+
+    models_path = tmp_path / "blocks" / "dma" / "models.yaml"
+    models_path.parent.mkdir(parents=True)
+    model = ModelConfig(
+        name="m",
+        filelist=[],
+        cdc="../shared/cdc.yaml#foo",
+        path=str(models_path),
+    )
+    resolved = resolve_back_pointer(model, "cdc")
+    assert resolved is not None
+    abs_path, entry = resolved
+    assert Path(abs_path) == tmp_path / "blocks" / "shared" / "cdc.yaml"
+    assert entry == "foo"
+
+
+def test_resolve_back_pointer_no_path_raises():
+    """A ModelConfig that the loader never tagged (no ``.path``) is a
+    programming error — ``resolve_back_pointer`` can't anchor the
+    relative cdc/synth/tests path without it."""
+    from rtl_buddy.config.model import ModelConfig, resolve_back_pointer
+
+    model = ModelConfig(name="m", filelist=[], cdc="cdc.yaml", path=None)
+    with pytest.raises(FatalRtlBuddyError, match="has no path"):
+        resolve_back_pointer(model, "cdc")
+
+
+# ---------------------------------------------------------------------------
 # Project-root discovery
 # ---------------------------------------------------------------------------
 
