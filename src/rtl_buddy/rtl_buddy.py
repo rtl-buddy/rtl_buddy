@@ -47,6 +47,7 @@ from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
+from .tools.axi_profile_rtl_buddy import RtlBuddyAxiProfile
 from .tools.hier_rtl_buddy_view import RtlBuddyView
 from .tools.spec_trace import (
     all_spec_blocks,
@@ -85,6 +86,7 @@ class RtlBuddy:
         "fpv",
         "fpv-regression",
         "hier",
+        "axi-profile",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -129,6 +131,10 @@ class RtlBuddy:
         self.app.command("hier", help="render module hierarchy via rtl-buddy-view")(
             self.do_cmd_hier
         )
+        self.app.command(
+            "axi-profile",
+            help="discover AXI bundles in a model via rtl-buddy-axi-profiler",
+        )(self.do_cmd_axi_profile)
         self.app.command("verible", help="run verible cmd")(self.do_verible)
         self.app.command("wave", help="open waveform viewer for a test")(
             self.do_cmd_wave
@@ -1179,6 +1185,61 @@ class RtlBuddy:
             executable=tool,
         )
         raise typer.Exit(view.run())
+
+    def do_cmd_axi_profile(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help="output path for axi-bundles.yaml "
+                "(default: artefacts/axi/<model>/axi-bundles.yaml)",
+            ),
+        ] = None,
+        amend: Annotated[
+            str | None,
+            typer.Option(
+                "--amend",
+                help="existing axi-bundles.yaml to merge user edits from "
+                "(deferred to a follow-up; warns if passed)",
+            ),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the axi-profiler binary"),
+        ] = "axi-profiler",
+    ):
+        """
+        discover AXI bundles in a model via rtl-buddy-axi-profiler
+
+        v1 wraps the discover stage only. The full pipeline (run /
+        gen-monitor) is exposed via the standalone ``axi-profiler``
+        binary until #3 / #4 land — the rb-wrapping of those modes
+        is a follow-up to rtl-buddy/rtl_buddy#157.
+        """
+        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile",
+            command="axi-profile",
+            model=model_name,
+            output=output,
+        )
+        profiler = RtlBuddyAxiProfile(
+            name=self.name + "/axi-profile",
+            model_cfg=model_cfg,
+            suite_dir=os.getcwd(),
+            output=output,
+            amend=amend,
+            executable=tool,
+        )
+        raise typer.Exit(profiler.run())
 
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]

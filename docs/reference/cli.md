@@ -47,6 +47,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ regression         run rtl regression                                                │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
+│ axi-profile        discover AXI bundles in a model via rtl-buddy-axi-profiler        │
 │ verible            run verible cmd                                                   │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
