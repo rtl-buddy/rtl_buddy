@@ -2,90 +2,94 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/CONTRIBUTING/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/agents/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/install/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/known-issues/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/quickstart/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/cocotb/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/coverage/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/fpv/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/hub/</loc>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/plugins/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/pnr/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/power/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/regressions/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/root-config/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/spec-traceability/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/synthesis/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/tests/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/concepts/wave/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/migrations/submodule-to-uv/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/migrations/v2-to-v3/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/reference/cli/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/v4/reference/yaml/</loc>
-         <lastmod>2026-05-18</lastmod>
+         <lastmod>2026-05-21</lastmod>
     </url>
 </urlset>

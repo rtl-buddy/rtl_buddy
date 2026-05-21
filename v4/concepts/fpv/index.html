@@ -589,6 +589,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../hub/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../synthesis/" class="md-nav__link">
         
   
@@ -819,6 +847,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Root config: cfg-fpv-tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#solver-version-pinning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solver version pinning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -859,6 +904,17 @@
     <span class="md-ellipsis">
       
         Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#opening-counterexamples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening counterexamples
       
     </span>
   </a>
@@ -1316,6 +1372,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Root config: cfg-fpv-tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#solver-version-pinning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Solver version pinning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1356,6 +1429,17 @@
     <span class="md-ellipsis">
       
         Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#opening-counterexamples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening counterexamples
       
     </span>
   </a>
@@ -1430,13 +1514,14 @@
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_fifo/models.yaml&quot;</span>
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">top</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;demo_fifo_props.sv&quot;</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bmc&quot;</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">yices&quot;</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;shared_clock_reset.sv&quot;</span><span class="w">     </span><span class="c1"># optional</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;demo_fifo_props.sv&quot;</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bmc&quot;</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">yices&quot;</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 </code></pre></div>
 <h3 id="fields">Fields</h3>
 <table>
@@ -1476,6 +1561,10 @@
 <td>List of <code>.sv</code> files containing SVA properties / bound checker modules, resolved relative to <code>fpv.yaml</code>. Optional when properties are in-RTL under <code>`ifdef FORMAL</code> guards</td>
 </tr>
 <tr>
+<td><code>constraints</code></td>
+<td>Optional path to a single <code>.sv</code> file containing environment <code>assume property</code> statements (clock toggle, reset sequence, etc.) — analogous to <code>constraints:</code> in <code>pnr.yaml</code>. Read into the sby script <em>before</em> <code>properties:</code> so the assumes are in scope when the asserts elaborate. Lets multiple verifications share one clock/reset boilerplate file instead of duplicating it across every bound checker.</td>
+</tr>
+<tr>
 <td><code>mode</code></td>
 <td>One of <code>bmc</code> (bounded), <code>prove</code> (k-induction), <code>cover</code>, <code>live</code></td>
 </tr>
@@ -1498,7 +1587,7 @@
 </tbody>
 </table>
 <h3 id="where-inputs-come-from">Where inputs come from</h3>
-<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb cdc</code> use), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. Property files are appended to the same <code>read -sv -formal</code> block — they can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
+<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb cdc</code> use), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. The script reads, in order: design sources → <code>constraints:</code> (if set) → <code>properties:</code>. Putting constraints before properties ensures their <code>assume property</code> statements are in scope when the assertions are elaborated. Property files can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
 <h2 id="root-config-cfg-fpv-tools">Root config: <code>cfg-fpv-tools</code></h2>
 <p><code>cfg-fpv-tools</code> declares the FPV tools available to all suites in this project:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-fpv-tools</span><span class="p">:</span>
@@ -1507,6 +1596,9 @@
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
 <a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">      </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span><span class="w">       </span><span class="c1"># seconds per task; optional</span>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">     </span><span class="c1"># appended to sby invocation; optional</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">      </span><span class="nt">solver-versions</span><span class="p">:</span><span class="w">   </span><span class="c1"># optional pins for reproducible CI; map</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">        </span><span class="nt">yices</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;2.6.4&quot;</span><span class="w">   </span><span class="c1"># solver name -&gt; exact version string</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">        </span><span class="nt">z3</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;4.13.0&quot;</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1532,8 +1624,14 @@
 <td><code>opts.extra-args</code></td>
 <td>Passed through verbatim to the sby command line</td>
 </tr>
+<tr>
+<td><code>opts.solver-versions</code></td>
+<td>Optional map of solver name → exact version. Probed before every run; hard-fails on mismatch. Known solvers: <code>yices</code>, <code>z3</code>, <code>boolector</code>, <code>bitwuzla</code>, <code>btormc</code>, <code>abc</code></td>
+</tr>
 </tbody>
 </table>
+<h3 id="solver-version-pinning">Solver version pinning</h3>
+<p><code>sby</code> happily picks whatever solver binary it finds on PATH. On CI, different runners can resolve to different versions and silently change proof outcomes — a proof that passes at depth 32 on one machine can time out on another. Set <code>opts.solver-versions</code> to lock the resolution: before each run, each pinned solver is probed (<code>yices-smt2 --version</code> etc.) and the run hard-fails with a one-shot summary of every mismatch if any pin doesn't match exactly. Resolved versions are logged as <code>fpv.solver_pins_resolved</code> so the run artefacts capture exactly what was used.</p>
 <h2 id="running-fpv">Running FPV</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># All verifications in the default ./fpv.yaml</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>fpv
@@ -1558,9 +1656,13 @@
 </code></pre></div>
 <ul>
 <li><strong>Mode / Depth / Engines</strong> — what was actually run, surfaced for quick triage.</li>
+<li><strong>Engine Results</strong> — per-engine verdict mix parsed from <code>&lt;workdir&gt;/logfile.txt</code>'s <code>summary: engine_&lt;N&gt; (...) returned &lt;verdict&gt;</code> lines. Renders compactly: <code>1/1 pass (smtbmc yices)</code> for single-engine runs, <code>2/2 pass</code> when all of multiple engines agree, <code>1/2 pass (smtbmc yices won)</code> when only some succeed. Shows <code>-</code> when sby died before producing a logfile.</li>
 <li><strong>Runtime</strong> — wall-clock seconds for the sby invocation.</li>
 <li><strong>Description</strong> — <code>property proved (...)</code> on pass; on fail, the path to the counterexample VCD when available.</li>
 </ul>
+<blockquote>
+<p><strong>Per-property granularity is not surfaced.</strong> Sby has no structured per-assertion output today — <code>fpv.xml</code> is JUnit-style per-task only and the prose log doesn't tag individual assertions. Per-engine status is the finest grain <code>rb fpv</code> exposes; per-property aggregation would need a yosys-frontend change to dump assertion identifiers + per-COI status.</p>
+</blockquote>
 <h2 id="artefacts">Artefacts</h2>
 <p>Per-run outputs land under <code>fpv/&lt;run&gt;/artefacts/</code>:</p>
 <table>
@@ -1599,8 +1701,13 @@
 </table>
 <h2 id="passfail-detection">Pass/fail detection</h2>
 <p>A run is PASS when <code>sby</code> writes <code>PASS</code> to <code>sby_workdir/status</code> (or returns exit code 0 when the status file is missing).</p>
-<p>A run is FAIL when sby writes <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>, or when it exits non-zero. The failure description points at the counterexample trace inside <code>sby_workdir/engine_&lt;N&gt;/</code> so the user can open it in <code>gtkwave</code> or via <code>rb wave</code>.</p>
+<p>A run is FAIL when sby writes <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>, or when it exits non-zero. The failure description points at the counterexample trace inside <code>sby_workdir/engine_&lt;N&gt;/</code> so the user can open it in <code>gtkwave</code>, <code>surfer</code>, or via <code>rb wave-fpv</code> (below).</p>
 <p>SKIP is returned when the run's <code>reglvl</code> is above the <code>-l</code> filter passed to <code>rb fpv-regression</code>.</p>
+<h2 id="opening-counterexamples">Opening counterexamples</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Open the CEX VCD for a failed verification in the configured surfer.</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
+</code></pre></div>
+<p><code>rb wave-fpv</code> resolves the trace at <code>fpv/&lt;suite&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine wins when more than one produced a trace). The configured surfer comes from the same <code>cfg-surfer</code> entry that <code>rb wave</code> uses; override with <code>--surfer &lt;name&gt;</code>. Raises if the verification has not been run yet or the proof passed (no CEX was produced).</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
 <li><strong>SymbiYosys-only.</strong> Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up — adding them parallels the pattern documented for <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">SpyGlass in <code>rb cdc</code></a>.</li>
