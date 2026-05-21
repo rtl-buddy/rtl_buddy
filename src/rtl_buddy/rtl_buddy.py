@@ -47,6 +47,7 @@ from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
 from .tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileDiscover,
+    RtlBuddyAxiProfileGenMonitor,
     RtlBuddyAxiProfileRun,
 )
 from .tools.coverage import CoverageReporter
@@ -145,6 +146,10 @@ class RtlBuddy:
             "discover",
             help="parse RTL to (re)generate the model's axi-bundles.yaml manifest",
         )(self.do_cmd_axi_profile_discover)
+        self.axi_profile_app.command(
+            "gen-monitor",
+            help="emit the SV bind-style AXI monitor for the model's testbench",
+        )(self.do_cmd_axi_profile_gen_monitor)
         self.app.add_typer(
             self.axi_profile_app,
             name="axi-profile",
@@ -1317,6 +1322,77 @@ class RtlBuddy:
             suite_dir=os.path.dirname(os.path.abspath(test_config)),
             output=output,
             tb_prefix_override=tb_prefix,
+            executable=tool,
+        )
+        raise typer.Exit(profiler.run())
+
+    def do_cmd_axi_profile_gen_monitor(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "output path for the generated SV monitor "
+                    "(default: the model's `axi_monitor_out:` "
+                    "from models.yaml)"
+                ),
+            ),
+        ] = None,
+        time_precision: Annotated[
+            str | None,
+            typer.Option(
+                "--time-precision",
+                help=(
+                    "IEEE-1800 timeprecision atom (1ns / 100ps / 1ps / ...). "
+                    "Must match the testbench's `timeprecision."
+                ),
+            ),
+        ] = None,
+        buffer_cap: Annotated[
+            int | None,
+            typer.Option(
+                "--buffer-cap",
+                help="Per-bundle FIFO depth cap. Drained only at $finish.",
+            ),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the axi-profiler binary"),
+        ] = "axi-profiler",
+    ):
+        """
+        emit the SV bind-style AXI monitor for the model's testbench
+
+        Reads the manifest path from `model.axi_bundles` and the
+        output path from `model.axi_monitor_out` (both in
+        models.yaml). The generated SV must be added to the
+        testbench's filelist; pointing `axi_monitor_out:` at the
+        verif tree (e.g. `../verif/<tb>/gen/axi_perf_mon.sv`) makes
+        that a one-time step.
+        """
+        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_gen_monitor",
+            command="axi-profile",
+            subcommand="gen-monitor",
+            model=model_name,
+            output=output,
+        )
+        profiler = RtlBuddyAxiProfileGenMonitor(
+            name=self.name + "/axi-profile/gen-monitor",
+            model_cfg=model_cfg,
+            suite_dir=os.getcwd(),
+            output=output,
+            time_precision=time_precision,
+            buffer_cap=buffer_cap,
             executable=tool,
         )
         raise typer.Exit(profiler.run())

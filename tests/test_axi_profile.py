@@ -24,6 +24,7 @@ from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileDiscover,
+    RtlBuddyAxiProfileGenMonitor,
     RtlBuddyAxiProfileRun,
 )
 
@@ -488,3 +489,215 @@ def test_rb_axi_profile_no_subcommand_shows_help(minimal_project: Path) -> None:
     assert result.exit_code != 0
     assert "discover" in result.output
     assert "run" in result.output
+    assert "gen-monitor" in result.output
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyAxiProfileGenMonitor (unit)
+# ---------------------------------------------------------------------------
+
+
+def _make_gen_monitor_model(
+    tmp_path: Path,
+    *,
+    axi_bundles_present: bool = True,
+    axi_monitor_out: str | None = "../verif/soc_top/gen/axi_perf_mon.sv",
+    create_manifest_file: bool = True,
+) -> ModelConfig:
+    """Build a ModelConfig + on-disk manifest for gen-monitor tests."""
+    design = tmp_path / "design" / "soc"
+    design.mkdir(parents=True)
+    src = design / "soc.sv"
+    src.write_text("module soc; endmodule\n")
+
+    axi_bundles_field = "src/axi-bundles.yaml" if axi_bundles_present else None
+    if axi_bundles_present and create_manifest_file:
+        manifest = design / "src" / "axi-bundles.yaml"
+        manifest.parent.mkdir(exist_ok=True)
+        manifest.write_text("schema_version: '1.0'\nbundles: []\n")
+
+    return ModelConfig(
+        name="soc",
+        filelist=[str(src)],
+        axi_bundles=axi_bundles_field,
+        axi_monitor_out=axi_monitor_out,
+        path=str(design / "models.yaml"),
+    )
+
+
+def test_gen_monitor_wrapper_builds_expected_argv(tmp_path: Path) -> None:
+    model = _make_gen_monitor_model(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+
+    argv = json.loads(record.read_text())
+    # `gen-monitor <manifest> --output <out>` (manifest is positional).
+    assert argv[0] == "gen-monitor"
+    assert argv[1].endswith("src/axi-bundles.yaml")
+    assert argv[argv.index("--output") + 1].endswith(
+        "verif/soc_top/gen/axi_perf_mon.sv"
+    )
+    # Both flags optional; omitted when not set.
+    assert "--time-precision" not in argv
+    assert "--buffer-cap" not in argv
+
+
+def test_gen_monitor_wrapper_forwards_optional_flags(tmp_path: Path) -> None:
+    model = _make_gen_monitor_model(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        time_precision="100ps",
+        buffer_cap=4096,
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--time-precision") + 1] == "100ps"
+    assert argv[argv.index("--buffer-cap") + 1] == "4096"
+
+
+def test_gen_monitor_wrapper_output_override(tmp_path: Path) -> None:
+    """--output overrides the `axi_monitor_out:` default."""
+    model = _make_gen_monitor_model(tmp_path)
+    custom_out = tmp_path / "elsewhere" / "mon.sv"
+    custom_out.parent.mkdir()
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        output=str(custom_out),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--output") + 1] == str(custom_out)
+
+
+def test_gen_monitor_wrapper_errors_when_axi_bundles_unset(tmp_path: Path) -> None:
+    model = _make_gen_monitor_model(tmp_path, axi_bundles_present=False)
+    script, _ = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    msg = str(info.value)
+    assert "axi_bundles" in msg
+    assert "rb axi-profile discover soc" in msg
+
+
+def test_gen_monitor_wrapper_errors_when_manifest_file_missing(tmp_path: Path) -> None:
+    model = _make_gen_monitor_model(
+        tmp_path, axi_bundles_present=True, create_manifest_file=False
+    )
+    script, _ = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    msg = str(info.value)
+    assert "manifest not found" in msg
+
+
+def test_gen_monitor_wrapper_errors_when_monitor_out_unset(tmp_path: Path) -> None:
+    """Model without `axi_monitor_out:` AND no --output → hint."""
+    model = _make_gen_monitor_model(tmp_path, axi_monitor_out=None)
+    script, _ = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    msg = str(info.value)
+    assert "axi_monitor_out" in msg
+
+
+def test_gen_monitor_wrapper_creates_parent_dirs(tmp_path: Path) -> None:
+    """The output's parent dir is created so first run doesn't fail."""
+    model = _make_gen_monitor_model(tmp_path)
+    script, _ = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    # Parent of axi_monitor_out (../verif/soc_top/gen/) should exist.
+    out_parent = (tmp_path / "design" / "verif" / "soc_top" / "gen").resolve()
+    assert out_parent.is_dir()
+
+
+def test_gen_monitor_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
+    model = _make_gen_monitor_model(tmp_path)
+    script, _ = _make_fake_profiler(tmp_path, exit_code=2)
+
+    profiler = RtlBuddyAxiProfileGenMonitor(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 2
+
+
+def test_rb_axi_profile_gen_monitor_invokes_stubbed_profiler(
+    minimal_project: Path,
+) -> None:
+    """End-to-end: rb axi-profile gen-monitor <model> through the Typer app."""
+    models_yaml = minimal_project / "models.yaml"
+    models_yaml.write_text(
+        models_yaml.read_text()
+        + "    axi_bundles: src/axi-bundles.yaml\n"
+        + "    axi_monitor_out: gen/axi_perf_mon.sv\n"
+    )
+    (minimal_project / "src" / "axi-bundles.yaml").write_text(
+        "schema_version: '1.0'\nbundles: []\n"
+    )
+
+    script, record = _make_fake_profiler(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "axi-profile",
+            "gen-monitor",
+            "example",
+            "-c",
+            "models.yaml",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[0] == "gen-monitor"
+    assert argv[1].endswith("src/axi-bundles.yaml")
+    assert argv[argv.index("--output") + 1].endswith("gen/axi_perf_mon.sv")

@@ -24,7 +24,12 @@ Two wrappers, one per ``rb axi-profile`` subcommand:
   value when the wrapping scope name diverges from the testbench
   name (e.g. a custom Verilator wrapper).
 
-The ``gen-monitor`` subcommand wrapper lands separately (#163).
+* :class:`RtlBuddyAxiProfileGenMonitor` — ``rb axi-profile gen-monitor
+  <model>``: emits a SystemVerilog bind-style monitor for the stream
+  ingest path. Reads the manifest from ``model.axi_bundles`` and
+  writes to ``model.axi_monitor_out`` — both come from the
+  ``models.yaml`` entry so the testbench's filelist can pick up the
+  generated file without per-test config.
 """
 
 from __future__ import annotations
@@ -313,6 +318,127 @@ class RtlBuddyAxiProfileRun:
             logging.INFO,
             "axi_profile_run.done",
             test=self.test_name,
+            output=out_path,
+            returncode=proc.returncode,
+        )
+        return proc.returncode
+
+
+class RtlBuddyAxiProfileGenMonitor:
+    """Emit the SV bind-style monitor for a model via ``axi-profiler gen-monitor``.
+
+    Single-shot. Both the manifest input and the SV output path are
+    looked up in ``models.yaml`` (``axi_bundles`` /
+    ``axi_monitor_out``), so the user just types
+    ``rb axi-profile gen-monitor <model>`` and the wrapper handles
+    discovery + destination. The user is responsible for adding the
+    generated SV to the testbench's filelist once.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        model_cfg: ModelConfig,
+        *,
+        suite_dir: str,
+        output: str | None = None,
+        time_precision: str | None = None,
+        buffer_cap: int | None = None,
+        executable: str = "axi-profiler",
+    ):
+        self.name = name
+        self.model_cfg = model_cfg
+        self.output_override = output
+        self.time_precision = time_precision
+        self.buffer_cap = buffer_cap
+        self.executable = executable
+
+        artefact_root = Path(suite_dir) / "artefacts" / "axi" / model_cfg.name
+        artefact_root.mkdir(parents=True, exist_ok=True)
+        self.artefact_dir = str(artefact_root)
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi-profile-gen-monitor.log")
+
+    def _resolve_manifest_path(self) -> str:
+        manifest = self.model_cfg.get_axi_bundles_path()
+        if manifest is None:
+            raise FatalRtlBuddyError(
+                f"axi-profile gen-monitor: model '{self.model_cfg.name}' "
+                "has no `axi_bundles:` in models.yaml. Add the field "
+                "pointing at the checked-in axi-bundles.yaml manifest, "
+                "then run "
+                f"`rb axi-profile discover {self.model_cfg.name}` to "
+                "generate one if it doesn't exist."
+            )
+        if not os.path.isfile(manifest):
+            raise FatalRtlBuddyError(
+                f"axi-profile gen-monitor: manifest not found at "
+                f"{manifest}. "
+                f"Run `rb axi-profile discover {self.model_cfg.name}` first."
+            )
+        return manifest
+
+    def _resolve_output_path(self) -> str:
+        if self.output_override:
+            return self.output_override
+        configured = self.model_cfg.get_axi_monitor_out_path()
+        if configured is None:
+            raise FatalRtlBuddyError(
+                f"axi-profile gen-monitor: model '{self.model_cfg.name}' "
+                "has no `axi_monitor_out:` in models.yaml. Add the "
+                "field pointing at the SV path inside your testbench "
+                "tree (e.g. `../verif/<tb>/gen/axi_perf_mon.sv`) or "
+                "pass `--output <path>` explicitly."
+            )
+        return configured
+
+    def _build_cmd(self, manifest: str, out_path: str) -> list[str]:
+        cmd = [
+            self.executable,
+            "gen-monitor",
+            manifest,
+            "--output",
+            out_path,
+        ]
+        if self.time_precision:
+            cmd += ["--time-precision", self.time_precision]
+        if self.buffer_cap is not None:
+            cmd += ["--buffer-cap", str(self.buffer_cap)]
+        return cmd
+
+    def run(self) -> int:
+        _require_axi_profiler(self.executable)
+
+        manifest = self._resolve_manifest_path()
+        out_path = self._resolve_output_path()
+        # The downstream gen-monitor opens the output for write; make
+        # sure the parent directory exists so a typical
+        # `../verif/<tb>/gen/...` path doesn't fail on first run.
+        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+
+        cmd = self._build_cmd(manifest, out_path)
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_gen_monitor.start",
+            model=self.model_cfg.name,
+            cmd=" ".join(cmd),
+            output=out_path,
+        )
+
+        log_path = self._log_path()
+        with task_status(f"axi-profile gen-monitor {self.model_cfg.name}"):
+            with open(log_path, "w") as log_f:
+                log_f.write("$ " + " ".join(cmd) + "\n")
+                log_f.flush()
+                proc = run_managed_process(cmd, stdout=None, stderr=log_f)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_gen_monitor.done",
+            model=self.model_cfg.name,
             output=out_path,
             returncode=proc.returncode,
         )
