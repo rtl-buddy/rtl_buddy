@@ -65,7 +65,23 @@ def build_view_json(
     and return it. Raises ``FatalRtlBuddyError`` when the
     rtl-buddy-view subprocess fails — the hub treats a missing
     view.json as a fatal startup error, not a degraded mode.
+
+    When ``model_cfg.cdc`` is set, the builder first calls
+    ``cdc_builder.build_domain_map`` to produce the clock-domain map
+    via ``rtl-buddy-cdc --emit-domain-map`` and feeds the result as
+    ``--cdc-annotations`` to rtl-buddy-view. The SPA's clock overlay
+    toggle then has data to render against. Models without ``cdc:``
+    fall through to the no-overlay path unchanged.
     """
+
+    # Build the domain map FIRST so a misconfigured cdc: back-pointer
+    # fails before we spend cycles on rtl-buddy-view. Import locally
+    # to avoid a hub→cdc import cycle.
+    from . import cdc_builder
+
+    domain_map = cdc_builder.build_domain_map(
+        project_root=project_root, model_cfg=model_cfg
+    )
 
     cache = cache_dir(project_root)
     cache.mkdir(parents=True, exist_ok=True)
@@ -79,6 +95,7 @@ def build_view_json(
         "hub.view_builder.generating",
         model=model_cfg.name,
         path=str(out_path),
+        cdc_annotations=str(domain_map) if domain_map else "",
     )
     runner = RtlBuddyView(
         name=f"hub/view/{model_cfg.name}",
@@ -87,6 +104,7 @@ def build_view_json(
         format="json",
         output=str(out_path),
         executable=viewer_exe,
+        cdc_annotations=str(domain_map) if domain_map else None,
     )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():

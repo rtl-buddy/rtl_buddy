@@ -79,6 +79,28 @@ Resolution rules:
 
 The view.json regenerates on every `rb hub start --model` invocation. Cache invalidation isn't modelled yet — restart the hub to pick up source-tree changes.
 
+### Clock-domain overlay (`cdc:` back-pointer)
+
+When the chosen model's `models.yaml` entry has a `cdc:` field, the hub also generates a clock-domain map and feeds it to the view-builder as `--cdc-annotations`:
+
+```yaml
+# models.yaml
+rtl-buddy-filetype: model_config
+models:
+  - name: ip_demo_tiny_npu
+    filelist: [...]
+    cdc: cdc.yaml          # or cdc.yaml#analysis_name to pin one analysis
+```
+
+The hub:
+
+1. Resolves the `cdc:` back-pointer to a `cdc.yaml` file.
+2. Picks the analysis — either the one named by the optional `#fragment`, or the one whose `model:` field matches the model name. Ambiguity is a hard error (the message tells you to add a `#fragment`).
+3. Invokes `rtl-buddy-cdc lint --emit-domain-map .rtl-buddy/cache/domain-<model>.json ...` with the analysis's SDC + waivers.
+4. Passes the resulting domain map to `rtl-buddy-view --cdc-annotations`. The clock overlay toggle in the SPA then has data to render.
+
+Models without a `cdc:` field skip this step entirely — view.json is generated without overlays and the toggle stays dark. `rtl-buddy-cdc` must be on `PATH` when the `cdc:` field is present; absence is a hub-start error (no silent dark toggle).
+
 ## Discovery (`.rtl-buddy/hub.json`)
 
 When the hub binds, it writes a small JSON record under the project root's `.rtl-buddy/` directory:

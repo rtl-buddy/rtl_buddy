@@ -114,3 +114,75 @@ def test_build_view_json_creates_cache_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
     view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
     assert view_builder.cache_dir(tmp_path).is_dir()
+
+
+def test_build_view_json_passes_cdc_annotations_when_back_pointer_set(
+    tmp_path, monkeypatch
+):
+    """When ``model.cdc`` is set, the view builder routes through
+    cdc_builder to produce a domain map and feeds the path to
+    rtl-buddy-view as ``--cdc-annotations``. Tested at the
+    integration boundary by stubbing cdc_builder."""
+    from rtl_buddy.hub import cdc_builder
+
+    fake_domain = tmp_path / ".rtl-buddy" / "cache" / "domain-demo.json"
+    monkeypatch.setattr(
+        cdc_builder,
+        "build_domain_map",
+        lambda **kwargs: fake_domain,
+    )
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+
+    captured = {}
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out = Path(captured["kwargs"]["output"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text('{"schema_version": "1.0"}')
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
+
+    model = ModelConfig(
+        name="demo",
+        filelist=[],
+        cdc="cdc.yaml",
+        path=str(tmp_path / "models.yaml"),
+    )
+    view_builder.build_view_json(project_root=tmp_path, model_cfg=model)
+    assert captured["kwargs"]["cdc_annotations"] == str(fake_domain)
+
+
+def test_build_view_json_no_cdc_annotations_when_back_pointer_absent(
+    tmp_path, monkeypatch
+):
+    """Without ``model.cdc`` the cdc_builder returns ``None`` and
+    rtl-buddy-view runs without ``--cdc-annotations``."""
+    from rtl_buddy.hub import cdc_builder
+
+    monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+
+    captured = {}
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out = Path(captured["kwargs"]["output"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("{}")
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
+    view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+    assert captured["kwargs"]["cdc_annotations"] is None
