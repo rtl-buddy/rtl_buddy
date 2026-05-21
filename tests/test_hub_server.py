@@ -97,18 +97,26 @@ class MockClient:
             pytest.fail(f"expected no message but got: {line!r}")
 
     async def hello(
-        self, origin: Origin, *, version: str = "0.1.0", caps: list[str] | None = None
+        self,
+        origin: Origin,
+        *,
+        version: str = "0.1.0",
+        caps: list[str] | None = None,
+        takeover: bool = False,
     ) -> Envelope:
+        payload: dict = {
+            "client": origin.value,
+            "version": version,
+            "capabilities": caps or [],
+        }
+        if takeover:
+            payload["takeover"] = True
         hello = Envelope(
             origin=origin,
             kind=Kind.REQUEST,
             type="hello",
             id=new_id(),
-            payload={
-                "client": origin.value,
-                "version": version,
-                "capabilities": caps or [],
-            },
+            payload=payload,
         )
         await self.send(hello)
         return await self.recv()
@@ -184,6 +192,62 @@ async def test_duplicate_origin_refused(server: HubServer):
     finally:
         await a.close()
         await b.close()
+
+
+async def test_takeover_kicks_existing_registration(server: HubServer):
+    """A second client may take over an in-use origin slot by
+    setting ``payload.takeover=true`` on its hello. The old
+    registration is replaced: its socket gets an ``error`` envelope
+    with code ``superseded`` and is closed; remaining peers receive
+    a ``bye`` for the displaced origin; the new client gets the
+    usual welcome.
+    """
+    src = await MockClient.connect(server.host, server.port)
+    old_view = await MockClient.connect(server.host, server.port)
+    new_view = await MockClient.connect(server.host, server.port)
+    try:
+        # Register a sibling so we can observe the bye broadcast.
+        await src.hello(Origin.SRC)
+        await old_view.hello(Origin.VIEW)
+        # Drain the peer_joined event src received when view joined.
+        await src.recv_until("peer_joined")
+
+        welcome = await new_view.hello(Origin.VIEW, takeover=True)
+        assert welcome.type == "welcome", (
+            f"takeover hello should be welcomed, got {welcome}"
+        )
+
+        # Old view receives the superseded error.
+        kick = await old_view.recv()
+        assert kick.type == "error"
+        assert kick.payload["code"] == "superseded"
+        # And its socket closes shortly after — readline returns
+        # ``b""`` once the peer FIN'd.
+        trailing = await asyncio.wait_for(old_view.reader.readline(), timeout=1.0)
+        assert trailing == b"", f"expected EOF, got {trailing!r}"
+
+        # Sibling sees bye(view) and then peer_joined(view) for the
+        # new registration.
+        bye = await src.recv_until("bye")
+        assert bye.origin is Origin.VIEW
+    finally:
+        await src.close()
+        await old_view.close()
+        await new_view.close()
+
+
+async def test_takeover_without_existing_registration_is_a_normal_hello(
+    server: HubServer,
+):
+    """``takeover=true`` is harmless when the slot is empty —
+    behaves like a regular hello, no spurious bye broadcast.
+    """
+    client = await MockClient.connect(server.host, server.port)
+    try:
+        welcome = await client.hello(Origin.VIEW, takeover=True)
+        assert welcome.type == "welcome"
+    finally:
+        await client.close()
 
 
 async def test_bad_request_on_malformed_handshake(server: HubServer):

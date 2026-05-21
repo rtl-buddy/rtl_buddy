@@ -357,7 +357,8 @@
             "properties": {
               "client": { "enum": ["view", "wave", "src", "cli"] },
               "version": { "type": "string", "minLength": 1, "description": "Semver of the client implementation." },
-              "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+              "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+              "takeover": { "type": "boolean", "description": "When true, instructs the hub to disconnect any existing registration for the same client slot before accepting this hello. Used by browser tabs that find an older tab already attached: the new tab requests takeover, the old tab gets bye-broadcast and its socket closed. Optional; default false." }
             }
           }
         }
@@ -463,8 +464,8 @@
             "additionalProperties": false,
             "properties": {
               "code": {
-                "enum": ["unresolvable", "not_connected", "bad_request", "protocol_mismatch"],
-                "description": "`timeout` is a client-side-only code and is never sent on the wire."
+                "enum": ["unresolvable", "not_connected", "bad_request", "protocol_mismatch", "superseded"],
+                "description": "`timeout` is a client-side-only code and is never sent on the wire. `superseded` is sent by the hub to a client whose origin slot was just taken over by a newer hello (see hello.payload.takeover)."
               },
               "message": { "type": "string", "minLength": 1 },
               "context": { "type": "object", "description": "Arbitrary structured context for the error; e.g. the offending input." }

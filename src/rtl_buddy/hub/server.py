@@ -344,17 +344,52 @@ class HubServer:
             return False
 
         client = Origin(env.payload["client"])
+        takeover = bool(env.payload.get("takeover", False))
         if client in self._registry:
-            await self._safe_send(
-                conn,
-                make_error(
-                    origin=Origin.CLI,
-                    code="not_connected",
-                    message=f"{client.value} client already registered",
-                    in_reply_to=env.id,
-                ),
+            if not takeover:
+                await self._safe_send(
+                    conn,
+                    make_error(
+                        origin=Origin.CLI,
+                        code="not_connected",
+                        message=f"{client.value} client already registered",
+                        in_reply_to=env.id,
+                    ),
+                )
+                return False
+            # Takeover path: the incoming hello asked to replace any
+            # existing registration for this client slot (e.g. a fresh
+            # browser tab supersedes a stale one). Bye-broadcast the
+            # outgoing peer to everyone else so listeners refresh
+            # their peer indicators, close its socket, and drop it
+            # from the registry before the new connection registers.
+            existing = self._registry.pop(client)
+            self.state.registered_clients = set(self._registry.keys())
+            log_event(
+                logger,
+                logging.INFO,
+                "hub.client.superseded",
+                origin=client.value,
+                old_peer=existing.peer,
+                new_peer=conn.peer,
             )
-            return False
+            await self._broadcast(
+                self._bye_envelope(origin=client), suppress_origin=None
+            )
+            try:
+                await self._safe_send(
+                    existing,
+                    make_error(
+                        origin=Origin.CLI,
+                        code="superseded",
+                        message=(
+                            f"{client.value} client replaced by a newer registration"
+                        ),
+                    ),
+                )
+            except Exception:
+                pass
+            existing.close()
 
         conn.origin = client
         conn.capabilities = tuple(env.payload.get("capabilities", []))
