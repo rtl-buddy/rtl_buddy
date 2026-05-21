@@ -32,7 +32,9 @@ from . import config as hub_config
 from . import discovery
 from . import launchagent
 from . import loop as hub_loop
+from . import model_discovery as hub_model_discovery
 from . import status_client
+from . import view_builder as hub_view_builder
 
 
 logger = logging.getLogger(__name__)
@@ -124,6 +126,31 @@ def cmd_start(
             max=65535,
         ),
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help=(
+                "Generate view.json on hub start for this model name (looked "
+                "up in models.yaml). Replaces the legacy workflow of running "
+                "`rb hier <model> --format json -o .rtl-buddy/view.json` "
+                "manually before each hub start. When unset the hub falls "
+                "back to [mapping].view_json from hub.toml. Requires "
+                "--serve-viewer."
+            ),
+        ),
+    ] = None,
+    models_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--models-file",
+            help=(
+                "Explicit models.yaml that owns the --model entry. Skips the "
+                "project-tree discovery walk. Use this to disambiguate when "
+                "the same model name exists in more than one models.yaml."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Bind, write ``hub.json``, run the server loop.
 
@@ -144,6 +171,19 @@ def cmd_start(
     if viewer_bundle is not None and not serve_viewer:
         emit_console_text(
             "rb hub start --viewer-bundle: ignored without --serve-viewer.",
+            style="yellow",
+        )
+    if model is not None and not serve_viewer:
+        # The view.json is only served by the viewer HTTP layer;
+        # generating it without --serve-viewer would silently
+        # discard the work. Fail loud instead.
+        raise FatalRtlBuddyError(
+            "rb hub start --model: requires --serve-viewer "
+            "(the generated view.json is only served via the SPA HTTP layer)."
+        )
+    if models_file is not None and model is None:
+        emit_console_text(
+            "rb hub start --models-file: ignored without --model.",
             style="yellow",
         )
 
@@ -173,6 +213,24 @@ def cmd_start(
             existing.pid, discovery.discovery_path(project_root)
         )
 
+    # When --model is given, resolve and generate the view.json
+    # before the asyncio loop starts so a missing model or a tool
+    # failure surfaces synchronously with a clear error, not as a
+    # 404 the user discovers in the browser later.
+    view_json_override: Path | None = None
+    if model is not None:
+        _models_yaml, loader = hub_model_discovery.resolve_model(
+            project_root, model, models_file=models_file
+        )
+        model_cfg = loader.get_model(model)
+        view_json_override = hub_view_builder.build_view_json(
+            project_root=project_root, model_cfg=model_cfg
+        )
+        emit_console_text(
+            f"rb hub: generated view.json for {model!r} at {view_json_override}",
+            style="green",
+        )
+
     log_event(
         logger,
         logging.INFO,
@@ -183,6 +241,7 @@ def cmd_start(
         foreground=foreground,
         serve_viewer=serve_viewer,
         viewer_bundle=str(viewer_bundle) if viewer_bundle else "",
+        model=model or "",
     )
     raise typer.Exit(
         code=hub_loop.serve(
@@ -190,6 +249,7 @@ def cmd_start(
             cfg,
             serve_viewer=serve_viewer,
             viewer_bundle=viewer_bundle,
+            view_json_override=view_json_override,
         )
     )
 

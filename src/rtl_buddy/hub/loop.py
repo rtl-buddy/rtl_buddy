@@ -123,8 +123,14 @@ async def _run(
     *,
     serve_viewer: bool = False,
     viewer_bundle: Path | None = None,
+    view_json_override: Path | None = None,
 ) -> int:
-    if config.mapping.view_json:
+    if view_json_override is not None:
+        # ``rb hub start --model`` already resolved + generated the
+        # view.json before we got here. Use it as-is, ignoring
+        # hub.toml's [mapping].view_json — the CLI flag wins.
+        view_json_path = view_json_override
+    elif config.mapping.view_json:
         view_json_path = (project_root / config.mapping.view_json).resolve()
     else:
         view_json_path = default_view_json_path(project_root)
@@ -247,8 +253,15 @@ def serve(
     *,
     serve_viewer: bool = False,
     viewer_bundle: Path | None = None,
+    view_json_override: Path | None = None,
 ) -> int:
-    """Run the hub event loop until exit. Returns the process exit code."""
+    """Run the hub event loop until exit. Returns the process exit code.
+
+    ``view_json_override`` takes precedence over ``[mapping].view_json``
+    from hub.toml — used by ``rb hub start --model NAME`` to feed in
+    the freshly-generated cache path without touching the user's
+    hub.toml.
+    """
 
     try:
         return asyncio.run(
@@ -257,6 +270,7 @@ def serve(
                 config,
                 serve_viewer=serve_viewer,
                 viewer_bundle=viewer_bundle,
+                view_json_override=view_json_override,
             )
         )
     except _PortInUseError as exc:

@@ -157,6 +157,81 @@ def test_start_runs_preflight_only_when_blocked(runner: CliRunner, project_root:
     assert "already running" in str(result.exception)
 
 
+def test_start_model_requires_serve_viewer(runner: CliRunner, project_root: Path):
+    """``--model`` without ``--serve-viewer`` is a configuration error
+    — the generated view.json is only served by the SPA HTTP layer,
+    so producing it without ``--serve-viewer`` would be silent waste."""
+    result = runner.invoke(hub_app, ["start", "--model", "demo"])
+    assert result.exit_code != 0
+    assert "requires --serve-viewer" in str(result.exception)
+
+
+def test_start_models_file_without_model_warns(
+    runner: CliRunner, project_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``--models-file`` is only meaningful as a disambiguator for
+    ``--model``. Used alone it's almost certainly a mistake."""
+    # Use a live-record block so cmd_start exits before reaching
+    # serve(); we just want to observe the warning emitted by the
+    # preamble.
+    discovery.write_record(
+        project_root,
+        pid=os.getpid(),
+        tcp="127.0.0.1:65001",
+        server_version="0.0.0+test",
+    )
+    result = runner.invoke(
+        hub_app, ["start", "--models-file", str(project_root / "missing.yaml")]
+    )
+    assert "--models-file: ignored without --model" in result.output
+
+
+def test_start_model_resolves_and_generates_view_json(
+    runner: CliRunner,
+    project_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Happy path: discovery finds the models.yaml, the (mocked)
+    view-builder writes view.json at the cache path, and serve() is
+    invoked with that override. We block at serve() so we don't have
+    to actually run the asyncio loop in CliRunner."""
+    (project_root / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n  - name: demo\n    filelist: []\n"
+    )
+    served_with = {}
+
+    def fake_serve(*args, **kwargs):
+        served_with["kwargs"] = kwargs
+        return 0
+
+    from rtl_buddy.hub import cli as hub_cli
+    from rtl_buddy.hub import view_builder as hub_view_builder
+
+    monkeypatch.setattr(hub_cli.hub_loop, "serve", fake_serve)
+    # Pretend rtl-buddy-view is on PATH and writes a JSON blob.
+    monkeypatch.setattr(
+        hub_view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view"
+    )
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(project_root / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+            self._out = Path(kwargs["output"])
+
+        def run(self) -> int:
+            self._out.write_text('{"schema_version": "1.0", "top": "demo"}')
+            return 0
+
+    monkeypatch.setattr(hub_view_builder, "RtlBuddyView", FakeRunner)
+
+    result = runner.invoke(hub_app, ["start", "--serve-viewer", "--model", "demo"])
+    assert result.exit_code == 0, result.output
+    expected_path = project_root / ".rtl-buddy" / "cache" / "view-demo.json"
+    assert expected_path.is_file()
+    assert served_with["kwargs"]["view_json_override"] == expected_path
+
+
 def test_log_missing_file(runner: CliRunner, project_root: Path):
     result = runner.invoke(hub_app, ["log"])
     assert result.exit_code == 1, result.output
