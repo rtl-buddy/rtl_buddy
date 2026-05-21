@@ -1209,6 +1209,18 @@ class RtlBuddy:
                 "(deferred to a follow-up; warns if passed)",
             ),
         ] = None,
+        tb_prefix: Annotated[
+            str | None,
+            typer.Option(
+                "--tb-prefix",
+                help="Hierarchical prefix prepended to manifest signal "
+                "paths when looking them up in the trace. Typical: "
+                "'tb_<test>' — whatever Verilator names the top "
+                "module after compile. Empty = use manifest paths "
+                "verbatim. Auto-extraction from tests.yaml is a "
+                "follow-up to rtl-buddy/rtl_buddy#157.",
+            ),
+        ] = None,
         tool: Annotated[
             str,
             typer.Option("--tool", help="path to the axi-profiler binary"),
@@ -1230,6 +1242,7 @@ class RtlBuddy:
             command="axi-profile",
             model=model_name,
             output=output,
+            tb_prefix=tb_prefix,
         )
         profiler = RtlBuddyAxiProfile(
             name=self.name + "/axi-profile",
@@ -1237,6 +1250,7 @@ class RtlBuddy:
             suite_dir=os.getcwd(),
             output=output,
             amend=amend,
+            tb_prefix=tb_prefix,
             executable=tool,
         )
         raise typer.Exit(profiler.run())

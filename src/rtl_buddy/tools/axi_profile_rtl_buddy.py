@@ -44,12 +44,14 @@ class RtlBuddyAxiProfile:
         suite_dir: str,
         output: str | None = None,
         amend: str | None = None,
+        tb_prefix: str | None = None,
         executable: str = "axi-profiler",
     ):
         self.name = name
         self.model_cfg = model_cfg
         self.output = output
         self.amend = amend
+        self.tb_prefix = tb_prefix
         self.executable = executable
 
         artefact_root = Path(suite_dir) / "artefacts" / "axi" / model_cfg.name
@@ -92,6 +94,14 @@ class RtlBuddyAxiProfile:
         ]
         if self.amend:
             cmd += ["--amend", self.amend]
+        # tb_prefix is plumbed from tests.yaml: each test's testbench
+        # name becomes the tb prefix the ingest stage prepends when
+        # manifest signal paths don't resolve under the wrapped trace.
+        # Forwarded to axi-profiler verbatim; the standalone CLI
+        # accepts --tb-prefix on `run` (and ignores it on `discover`
+        # which doesn't need it).
+        if self.tb_prefix:
+            cmd += ["--tb-prefix", self.tb_prefix]
         return cmd
 
     def run(self) -> int:

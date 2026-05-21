@@ -168,6 +168,42 @@ def test_wrapper_errors_when_explicit_path_not_executable(tmp_path: Path) -> Non
         profiler.run()
 
 
+def test_wrapper_forwards_tb_prefix_flag(tmp_path: Path) -> None:
+    """When tb_prefix is set, it should be forwarded to axi-profiler
+    as --tb-prefix <value>."""
+    model = _make_model(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfile(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        tb_prefix="tb_soc.dut",
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+
+    argv = json.loads(record.read_text())
+    assert "--tb-prefix" in argv
+    assert argv[argv.index("--tb-prefix") + 1] == "tb_soc.dut"
+
+
+def test_wrapper_omits_tb_prefix_when_unset(tmp_path: Path) -> None:
+    """No tb_prefix → no --tb-prefix flag emitted."""
+    model = _make_model(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfile(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert "--tb-prefix" not in argv
+
+
 def test_wrapper_writes_log_with_command_line(tmp_path: Path) -> None:
     model = _make_model(tmp_path)
     script, _record = _make_fake_profiler(tmp_path)
