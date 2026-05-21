@@ -124,6 +124,8 @@ async def _run(
     serve_viewer: bool = False,
     viewer_bundle: Path | None = None,
     view_json_override: Path | None = None,
+    initial_model: str | None = None,
+    models_file_pin: Path | None = None,
 ) -> int:
     if view_json_override is not None:
         # ``rb hub start --model`` already resolved + generated the
@@ -165,6 +167,10 @@ async def _run(
             http_port=config.hub.http_port,
             viewer_bundle=resolved_bundle,
             view_json_path=view_json_path,
+            project_root=project_root,
+            initial_model=initial_model,
+            models_file_pin=models_file_pin,
+            hub_server=server,
         )
         _vhost, vport = await _start_listener(
             viewer.start(), role="HTTP", port=config.hub.http_port
@@ -183,6 +189,7 @@ async def _run(
         tcp=f"{host}:{port}",
         server_version=server.server_version,
         http_port=http_port,
+        active_model=initial_model,
     )
 
     _print_startup_banner(
@@ -254,6 +261,8 @@ def serve(
     serve_viewer: bool = False,
     viewer_bundle: Path | None = None,
     view_json_override: Path | None = None,
+    initial_model: str | None = None,
+    models_file_pin: Path | None = None,
 ) -> int:
     """Run the hub event loop until exit. Returns the process exit code.
 
@@ -261,6 +270,14 @@ def serve(
     from hub.toml — used by ``rb hub start --model NAME`` to feed in
     the freshly-generated cache path without touching the user's
     hub.toml.
+
+    ``initial_model`` records the start-time ``--model NAME`` selection
+    so ``GET /models`` and ``.rtl-buddy/hub.json`` know which model is
+    active before any SPA ``?model=`` switch.
+
+    ``models_file_pin`` records ``--models-file PATH``: when set, both
+    ``GET /models`` and ``GET /view.json?model=`` honour the pin and
+    refuse model names that aren't in that file.
     """
 
     try:
@@ -271,6 +288,8 @@ def serve(
                 serve_viewer=serve_viewer,
                 viewer_bundle=viewer_bundle,
                 view_json_override=view_json_override,
+                initial_model=initial_model,
+                models_file_pin=models_file_pin,
             )
         )
     except _PortInUseError as exc:

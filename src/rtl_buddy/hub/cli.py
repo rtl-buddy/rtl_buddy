@@ -250,6 +250,8 @@ def cmd_start(
             serve_viewer=serve_viewer,
             viewer_bundle=viewer_bundle,
             view_json_override=view_json_override,
+            initial_model=model,
+            models_file_pin=models_file,
         )
     )
 
@@ -302,6 +304,8 @@ def cmd_status() -> None:
     emit_console_text(f"  tcp            : {record.tcp}")
     if record.http_port is not None:
         emit_console_text(f"  viewer_url     : http://127.0.0.1:{record.http_port}/")
+    if record.active_model is not None:
+        emit_console_text(f"  active_model   : {record.active_model}")
     emit_console_text(f"  server_version : {record.server_version}")
     emit_console_text(f"  started_at     : {record.started_at}")
 

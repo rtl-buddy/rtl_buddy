@@ -24,9 +24,11 @@ end-to-end so client code can be wired against it today.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 import websockets
 from websockets.asyncio.server import ServerConnection
@@ -169,6 +171,10 @@ class ViewerServer:
         http_port: int = 0,
         viewer_bundle: Path | None = None,
         view_json_path: Path | None = None,
+        project_root: Path | None = None,
+        initial_model: str | None = None,
+        models_file_pin: Path | None = None,
+        hub_server: Any | None = None,
     ) -> None:
         self.hub_host = hub_host
         self.hub_port = hub_port
@@ -176,6 +182,18 @@ class ViewerServer:
         self.http_port = http_port
         self.viewer_bundle = viewer_bundle
         self.view_json_path = view_json_path
+        # Runtime-switchable model state. ``active_model`` is the model
+        # currently served by ``GET /view.json`` with no query; flipped
+        # by SPA ``?model=`` requests via ``_set_active_model``.
+        self.project_root = project_root
+        self.active_model = initial_model
+        self.models_file_pin = models_file_pin
+        self.hub_server = hub_server
+        # Per-model lock map. Two ``?model=X`` requests racing on a
+        # cold cache funnel through one ``build_view_json`` call; two
+        # ``?model=X`` / ``?model=Y`` requests run in parallel. Locks
+        # are allocated lazily and never garbage-collected per session.
+        self._model_locks: dict[str, asyncio.Lock] = {}
         self._server: Any | None = None
         self._bundle_index = self._resolve_bundle_index(viewer_bundle)
 
@@ -243,10 +261,16 @@ class ViewerServer:
     # HTTP
     # ------------------------------------------------------------------
 
-    def _process_request(
+    async def _process_request(
         self, connection: ServerConnection, request: Request
     ) -> Response | None:
-        path = request.path.split("?", 1)[0]
+        # Async because ``/view.json?model=`` runs ``build_view_json``
+        # in a thread (rtl-buddy-view is a blocking subprocess) under
+        # a per-model ``asyncio.Lock``. ``websockets.serve`` accepts
+        # both sync and async ``process_request`` callbacks.
+        raw_path, _, query_string = request.path.partition("?")
+        path = raw_path
+        query = parse_qs(query_string)
 
         # WS upgrade?  Let websockets handle it.
         if request.headers.get("Upgrade", "").lower() == "websocket":
@@ -268,10 +292,16 @@ class ViewerServer:
         if path == "/healthz":
             return _http_response(connection, 200, b"ok\n", content_type="text/plain")
 
+        if path == "/models":
+            return await self._handle_models(connection)
+
         if path == "/view.json":
-            # The resolver already reads this file from disk on every hub
-            # restart and on mtime change; serving it here lets the SPA
-            # auto-load without standing up a CORS side-server.
+            requested = query.get("model", [None])[0]
+            if requested is not None:
+                return await self._handle_view_json_for_model(connection, requested)
+            # No ``?model=`` query → serve the active model. Falls back
+            # to the start-time view.json (legacy path for pre-feature
+            # SPAs / embed.py users) when no model is active yet.
             if not self._has_view_json():
                 return _http_response(
                     connection, 404, b"no view.json configured for this hub"
@@ -291,6 +321,205 @@ class ViewerServer:
                 return static
 
         return _http_response(connection, 404, b"not found")
+
+    # ------------------------------------------------------------------
+    # /models + /view.json?model= (issue #174)
+    # ------------------------------------------------------------------
+
+    async def _handle_models(self, connection: ServerConnection) -> Response:
+        """``GET /models`` — list every model the hub can serve.
+
+        Walks per-request so a freshly-edited ``models.yaml`` shows
+        up without restarting the hub. When ``--models-file`` was
+        pinned at start time, enumerates only that file.
+        """
+
+        from . import model_discovery
+        from ..config.model import ModelConfigLoader
+
+        if self.project_root is None:
+            # ViewerServer started without project_root (e.g.
+            # standalone test) → only have the legacy single
+            # active model to report on.
+            payload: dict[str, Any] = {"models": [], "active": self.active_model}
+            return _http_response(
+                connection,
+                200,
+                json.dumps(payload).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        try:
+            if self.models_file_pin is not None:
+                files = [self.models_file_pin]
+            else:
+                files = model_discovery.discover_models_files(self.project_root)
+
+            entries: list[dict[str, Any]] = []
+            for mf in files:
+                # Robust against malformed files: skip silently here
+                # (the user's primary models.yaml is presumably valid,
+                # discovery shouldn't 500 on a sibling project).
+                try:
+                    loader = ModelConfigLoader(str(mf))
+                except Exception:
+                    continue
+                for m in loader.models:
+                    m.path = str(mf)
+                    entries.append(
+                        {
+                            "name": m.name,
+                            "models_file": str(mf),
+                            "has_cdc": self._model_has_resolvable_cdc(m),
+                        }
+                    )
+
+            payload = {"models": entries, "active": self.active_model}
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(
+                logger,
+                logging.ERROR,
+                "hub.viewer_http.models_failed",
+                error=str(exc),
+            )
+            return _http_response(
+                connection,
+                500,
+                f"failed to enumerate models: {exc}".encode("utf-8"),
+            )
+
+        return _http_response(
+            connection,
+            200,
+            json.dumps(payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+    @staticmethod
+    def _model_has_resolvable_cdc(model_cfg: Any) -> bool:
+        """``has_cdc`` reflects end-to-end resolvability: the model
+        has a ``cdc:`` field AND the referenced file exists AND at
+        least one analysis resolves cleanly. Errors get swallowed so
+        the listing endpoint doesn't 500 on one broken pointer."""
+        if not getattr(model_cfg, "cdc", None):
+            return False
+        from .cdc_builder import _resolve_cdc_analysis
+
+        try:
+            return _resolve_cdc_analysis(model_cfg) is not None
+        except Exception:
+            return False
+
+    async def _handle_view_json_for_model(
+        self, connection: ServerConnection, requested: str
+    ) -> Response:
+        """``GET /view.json?model=NAME`` — build (or reuse) the per-
+        model view.json and serve it. Updates ``active_model`` on
+        success and broadcasts ``view_changed``.
+        """
+
+        from . import model_discovery, view_builder
+        from ..errors import FatalRtlBuddyError
+
+        if self.project_root is None:
+            return _http_response(
+                connection,
+                400,
+                b"hub started without project_root; ?model= requires it",
+            )
+
+        # Resolve to ModelConfig — honours ``--models-file`` pin if
+        # present so the start-time guard remains meaningful.
+        try:
+            models_yaml, loader = model_discovery.resolve_model(
+                self.project_root,
+                requested,
+                models_file=self.models_file_pin,
+            )
+        except FatalRtlBuddyError as exc:
+            return _http_response(connection, 400, str(exc).encode("utf-8"))
+        model_cfg = loader.get_model(requested)
+
+        # Per-model lock. Two concurrent ?model=requested requests
+        # serialise; one runs build_view_json, the other waits.
+        lock = self._model_locks.setdefault(requested, asyncio.Lock())
+        async with lock:
+            try:
+                cache_path = await asyncio.to_thread(
+                    view_builder.build_view_json,
+                    project_root=self.project_root,
+                    model_cfg=model_cfg,
+                )
+            except FatalRtlBuddyError as exc:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "hub.viewer_http.view_json_build_failed",
+                    model=requested,
+                    error=str(exc),
+                )
+                return _http_response(connection, 500, str(exc).encode("utf-8"))
+
+        await self._set_active_model(
+            model_name=requested, models_file=models_yaml, view_path=cache_path
+        )
+
+        return _http_response(
+            connection,
+            200,
+            cache_path.read_bytes(),
+            content_type="application/json",
+        )
+
+    async def _set_active_model(
+        self, *, model_name: str, models_file: Path, view_path: Path
+    ) -> None:
+        """Promote ``model_name`` to the active model: flip in-memory
+        state, update the discovery record, broadcast ``view_changed``.
+        Idempotent — calling with the already-active model is a no-op
+        beyond a redundant disk write.
+        """
+        from . import discovery
+        from .protocol import Envelope, Kind, Origin, new_id
+
+        self.active_model = model_name
+        # ``view_json_path`` now points at the per-model cache so
+        # ``GET /view.json`` (no query) returns the same bytes a
+        # ``?model=NAME`` request just received.
+        self.view_json_path = view_path
+
+        if self.project_root is not None:
+            try:
+                discovery.update_active_model(self.project_root, model_name)
+            except Exception as exc:  # pragma: no cover - defensive
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "hub.viewer_http.discovery_update_failed",
+                    error=str(exc),
+                )
+
+        if self.hub_server is not None:
+            env = Envelope(
+                origin=Origin.CLI,
+                kind=Kind.EVENT,
+                type="view_changed",
+                id=new_id(),
+                payload={
+                    "model": model_name,
+                    "models_file": str(models_file),
+                    "view_url": f"/view.json?model={model_name}",
+                },
+            )
+            try:
+                await self.hub_server.broadcast_event(env, suppress_origin=None)
+            except Exception as exc:  # pragma: no cover - defensive
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "hub.viewer_http.broadcast_failed",
+                    error=str(exc),
+                )
 
     def _serve_static(self, connection: ServerConnection, path: str) -> Response | None:
         assert self.viewer_bundle is not None

@@ -64,6 +64,11 @@ class HubRecord:
     ``http_port`` is present only when the hub was started with
     ``--serve-viewer``; it carries the bound port of the viewer HTTP+WS
     layer so users can ``open http://localhost:<http_port>/``.
+
+    ``active_model`` mirrors the in-process active model on the hub —
+    the one serving ``GET /view.json`` with no query. Set at start time
+    by ``rb hub start --model``, updated when the SPA flips via
+    ``?model=NAME``. ``None`` until the first model loads.
     """
 
     v: int
@@ -73,6 +78,7 @@ class HubRecord:
     project_root: str
     started_at: str
     http_port: int | None = None
+    active_model: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         out = asdict(self)
@@ -80,6 +86,8 @@ class HubRecord:
         # don't trip on unexpected keys.
         if self.http_port is None:
             out.pop("http_port", None)
+        if self.active_model is None:
+            out.pop("active_model", None)
         return out
 
 
@@ -110,6 +118,7 @@ def write_record(
     tcp: str,
     server_version: str,
     http_port: int | None = None,
+    active_model: str | None = None,
 ) -> HubRecord:
     """Write ``hub.json`` after enforcing the one-hub-per-project rule.
 
@@ -133,12 +142,45 @@ def write_record(
         project_root=str(project_root.resolve()),
         started_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         http_port=http_port,
+        active_model=active_model,
     )
 
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(record.to_dict(), indent=2) + "\n", encoding="utf-8")
     tmp.replace(target)
     return record
+
+
+def update_active_model(project_root: Path, active_model: str | None) -> bool:
+    """Rewrite ``hub.json`` in place with a new ``active_model`` value.
+
+    Used by the viewer HTTP layer on ``?model=`` switch. Reads the
+    existing record (keeping every other field intact), atomic-replaces
+    the file, returns ``True`` on success / ``False`` when there's no
+    discovery file to update (e.g. hub started without writing one).
+
+    Does not validate liveness — the caller is the live hub process by
+    definition.
+    """
+
+    target = discovery_path(project_root)
+    current = _read_record_if_present(target)
+    if current is None:
+        return False
+    updated = HubRecord(
+        v=current.v,
+        pid=current.pid,
+        tcp=current.tcp,
+        server_version=current.server_version,
+        project_root=current.project_root,
+        started_at=current.started_at,
+        http_port=current.http_port,
+        active_model=active_model,
+    )
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(updated.to_dict(), indent=2) + "\n", encoding="utf-8")
+    tmp.replace(target)
+    return True
 
 
 def read_record(project_root: Path) -> HubRecord | None:
@@ -209,6 +251,10 @@ def _read_record_if_present(path: Path) -> HubRecord | None:
         http_port: int | None = None
         if http_port_raw is not None:
             http_port = int(http_port_raw)
+        active_model_raw = raw.get("active_model")
+        active_model: str | None = (
+            str(active_model_raw) if active_model_raw is not None else None
+        )
         return HubRecord(
             v=int(raw["v"]),
             pid=int(raw["pid"]),
@@ -217,6 +263,7 @@ def _read_record_if_present(path: Path) -> HubRecord | None:
             project_root=str(raw["project_root"]),
             started_at=str(raw["started_at"]),
             http_port=http_port,
+            active_model=active_model,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise HubDiscoveryError(
@@ -268,6 +315,7 @@ __all__ = [
     "discovery_path",
     "ensure_hub_dir",
     "write_record",
+    "update_active_model",
     "read_record",
     "delete_record_if_owner",
     "env_override",

@@ -415,6 +415,37 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "view_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["model", "models_file", "view_url"],
+            "additionalProperties": false,
+            "description": "Broadcast by the hub (origin=cli) whenever the active view.json model changes — driven by a SPA `?model=` switch today, by file-watch refresh later. Consumers should refetch model-scoped state.",
+            "properties": {
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The model name now serving on `GET /view.json` with no query."
+              },
+              "models_file": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Absolute path to the models.yaml that owns the entry."
+              },
+              "view_url": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Convenience URL the SPA can load directly to display this model — e.g. `/view.json?model=ip_dtnpu_dma`."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "diagnostics_set" } }, "required": ["type"] },
       "then": {
         "properties": {

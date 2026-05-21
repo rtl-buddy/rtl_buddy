@@ -101,6 +101,32 @@ The hub:
 
 Models without a `cdc:` field skip this step entirely — view.json is generated without overlays and the toggle stays dark. `rtl-buddy-cdc` must be on `PATH` when the `cdc:` field is present; absence is a hub-start error (no silent dark toggle).
 
+### Switching models at runtime
+
+Once the hub is up, the SPA can change models without restarting:
+
+- `GET /models` — list every model the hub can serve. JSON shape:
+  ```json
+  {
+    "models": [
+      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml", "has_cdc": true},
+      {"name": "ip_dtnpu_dma",     "models_file": "/abs/path/to/models.yaml", "has_cdc": true}
+    ],
+    "active": "ip_demo_tiny_npu"
+  }
+  ```
+  `has_cdc` is end-to-end: `true` only when the model has a `cdc:` field AND the referenced cdc.yaml exists AND at least one analysis resolves cleanly for the model. The endpoint walks for `models.yaml` per request, so newly-edited files appear without a restart. When `--models-file PATH` was passed at start time, only that file is enumerated.
+- `GET /view.json?model=NAME` — build (or reuse) the per-model view.json at `.rtl-buddy/cache/view-<NAME>.json`, serve it, and promote `NAME` to the active model. `--models-file` constraints apply: `?model=` only honours entries in the pinned file. Per-model `asyncio.Lock` serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.
+- `view_changed` event — broadcast on every active-model change. Envelope:
+  ```json
+  {"v":1, "id":"…", "origin":"cli", "kind":"event", "type":"view_changed",
+   "payload":{"model":"ip_dtnpu_dma", "models_file":"/abs/path/to/models.yaml",
+              "view_url":"/view.json?model=ip_dtnpu_dma"}}
+  ```
+  Sent to every connected client (SPA tabs, nvim, `rb wave` bridge) so they can refresh model-scoped state.
+
+The active model is also recorded in `.rtl-buddy/hub.json` under `active_model` (optional field) and surfaced in `rb hub status` output.
+
 ## Discovery (`.rtl-buddy/hub.json`)
 
 When the hub binds, it writes a small JSON record under the project root's `.rtl-buddy/` directory:
@@ -111,9 +137,12 @@ When the hub binds, it writes a small JSON record under the project root's `.rtl
   "listen_port": 53201,
   "http_port": 53202,
   "started_at": "2026-05-19T12:34:56Z",
-  "project_root": "/path/to/project"
+  "project_root": "/path/to/project",
+  "active_model": "ip_demo_tiny_npu"
 }
 ```
+
+`active_model` is optional — present when the hub started with `--model NAME` or after a `GET /view.json?model=` switch.
 
 Peers (the viewer SPA, the `rb wave` bridge, the nvim plugin) read this file to find the hub. The hub deletes the record on clean shutdown; a stale record after a crash is detected by `rb hub status` (PID not live) and the next `rb hub start` overwrites it.
 

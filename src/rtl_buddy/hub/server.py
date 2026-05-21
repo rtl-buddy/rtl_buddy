@@ -602,6 +602,20 @@ class HubServer:
                 continue
             await self._safe_send(conn, env)
 
+    async def broadcast_event(
+        self, env: Envelope, *, suppress_origin: Origin | None = None
+    ) -> None:
+        """Public broadcast hook for hub-internal events.
+
+        Used by the viewer HTTP layer to push ``view_changed`` events
+        to connected WS peers (and any TCP adapters) without having to
+        reach into ``_broadcast``. ``suppress_origin=None`` means every
+        connected client receives the envelope — the appropriate
+        default for hub-originated events.
+        """
+
+        await self._broadcast(env, suppress_origin=suppress_origin)
+
     # ------------------------------------------------------------------
     # requests
     # ------------------------------------------------------------------
