@@ -1,0 +1,319 @@
+"""rtl-buddy-axi-profiler tool wrappers.
+
+Drives the standalone ``axi-profiler`` CLI in subprocess-granularity
+mode: rtl_buddy is not coupled to the profiler's Python API, and a
+profiler release can be picked up via ``uv sync`` (or by re-installing
+the standalone binary) without code changes here.
+
+Two wrappers, one per ``rb axi-profile`` subcommand:
+
+* :class:`RtlBuddyAxiProfileDiscover` — ``rb axi-profile discover <model>``:
+  parses RTL via ``axi-profiler discover`` and writes
+  ``axi-bundles.yaml``. Output defaults to ``model.axi_bundles`` (the
+  checked-in manifest path) when set, falling back to
+  ``artefacts/axi/<model>/axi-bundles.yaml``.
+
+* :class:`RtlBuddyAxiProfileRun` — ``rb axi-profile run <test>``: ingests
+  a per-test FST and writes ``axi-perf.json``. Resolves the model
+  (from ``tests.yaml``), the checked-in manifest (from
+  ``models.yaml``'s ``axi_bundles``), the FST path
+  (``<suite_dir>/artefacts/<test>/dump.fst`` — same convention as
+  ``rb wave``), and the testbench top scope (from the test's
+  ``tb.name`` in ``tests.yaml``) without further user input. The
+  ``tb_prefix`` override lets the user replace the auto-extracted
+  value when the wrapping scope name diverges from the testbench
+  name (e.g. a custom Verilator wrapper).
+
+The ``gen-monitor`` subcommand wrapper lands separately (#163).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+from pathlib import Path
+
+from .vlog_filelist import VlogFilelist
+from ..config.model import ModelConfig
+from ..config.test import TestConfig
+from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event, task_status
+from ..process_utils import run_managed_process
+
+logger = logging.getLogger(__name__)
+
+
+def _require_axi_profiler(executable: str) -> None:
+    """Resolve ``executable`` to a runnable axi-profiler or raise."""
+    if os.sep in executable or (os.altsep and os.altsep in executable):
+        if not (os.path.isfile(executable) and os.access(executable, os.X_OK)):
+            raise FatalRtlBuddyError(
+                f"axi-profile: axi-profiler not found or not executable: {executable}"
+            )
+        return
+    if shutil.which(executable) is None:
+        raise FatalRtlBuddyError(
+            f"axi-profile: '{executable}' not found on PATH; "
+            f"install rtl-buddy-axi-profiler "
+            f"(e.g. `uv tool install rtl-buddy-axi-profiler`)."
+        )
+
+
+class RtlBuddyAxiProfileDiscover:
+    """Generates a filelist + invokes ``axi-profiler discover``.
+
+    Single-shot. Constructed per ``rb axi-profile discover`` invocation.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        model_cfg: ModelConfig,
+        *,
+        suite_dir: str,
+        output: str | None = None,
+        amend: str | None = None,
+        executable: str = "axi-profiler",
+    ):
+        self.name = name
+        self.model_cfg = model_cfg
+        self.output_override = output
+        self.amend = amend
+        self.executable = executable
+
+        artefact_root = Path(suite_dir) / "artefacts" / "axi" / model_cfg.name
+        artefact_root.mkdir(parents=True, exist_ok=True)
+        self.artefact_dir = str(artefact_root)
+
+    def _filelist_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi.f")
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi-profile-discover.log")
+
+    def _resolve_output_path(self) -> str:
+        if self.output_override:
+            return self.output_override
+        # Prefer the checked-in manifest path from models.yaml when set;
+        # otherwise drop the output under artefacts/ so discover stays
+        # usable for models that don't yet have the field configured.
+        configured = self.model_cfg.get_axi_bundles_path()
+        if configured:
+            os.makedirs(os.path.dirname(configured), exist_ok=True)
+            return configured
+        return os.path.join(self.artefact_dir, "axi-bundles.yaml")
+
+    def _write_filelist(self) -> str:
+        fl_path = self._filelist_path()
+        vlog_fl = VlogFilelist(
+            name=self.name + "/filelist",
+            model_cfg=self.model_cfg,
+            output_path=fl_path,
+        )
+        vlog_fl.write_output(
+            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+        )
+        return fl_path
+
+    def _build_cmd(self, fl_path: str, out_path: str) -> list[str]:
+        cmd = [
+            self.executable,
+            "discover",
+            "--filelist",
+            fl_path,
+            "--top",
+            self.model_cfg.name,
+            "--output",
+            out_path,
+        ]
+        if self.amend:
+            cmd += ["--amend", self.amend]
+        return cmd
+
+    def run(self) -> int:
+        _require_axi_profiler(self.executable)
+
+        fl_path = self._write_filelist()
+        out_path = self._resolve_output_path()
+        cmd = self._build_cmd(fl_path, out_path)
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_discover.run",
+            model=self.model_cfg.name,
+            cmd=" ".join(cmd),
+            output=out_path,
+        )
+
+        log_path = self._log_path()
+        with task_status(f"axi-profile discover {self.model_cfg.name}"):
+            with open(log_path, "w") as log_f:
+                log_f.write("$ " + " ".join(cmd) + "\n")
+                log_f.flush()
+                proc = run_managed_process(cmd, stdout=None, stderr=log_f)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_discover.done",
+            model=self.model_cfg.name,
+            output=out_path,
+            returncode=proc.returncode,
+        )
+        return proc.returncode
+
+
+class RtlBuddyAxiProfileRun:
+    """Per-test ingest + aggregate via ``axi-profiler run``.
+
+    Resolves model + manifest + FST + tb_prefix automatically from
+    ``tests.yaml`` / ``models.yaml`` / the standard artefact layout —
+    the user only types ``rb axi-profile run <test>``. Override hooks
+    exist for ``--output`` and ``--tb-prefix`` so unusual setups can
+    redirect without editing config files.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        test_cfg: TestConfig,
+        *,
+        suite_dir: str,
+        output: str | None = None,
+        tb_prefix_override: str | None = None,
+        executable: str = "axi-profiler",
+    ):
+        self.name = name
+        self.test_cfg = test_cfg
+        self.test_name = test_cfg.get_name()
+        self.model_cfg = test_cfg.get_model()
+        self.suite_dir = os.path.abspath(suite_dir)
+        self.output_override = output
+        self.tb_prefix_override = tb_prefix_override
+        self.executable = executable
+
+        artefact_root = Path(self.suite_dir) / "artefacts" / "axi" / self.test_name
+        artefact_root.mkdir(parents=True, exist_ok=True)
+        self.artefact_dir = str(artefact_root)
+
+    def _filelist_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi.f")
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi-profile-run.log")
+
+    def _default_output_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi-perf.json")
+
+    def _fst_path(self) -> str:
+        # Same convention as `rb wave`: artefacts/<test>/dump.fst.
+        return os.path.join(self.suite_dir, "artefacts", self.test_name, "dump.fst")
+
+    def _resolve_manifest_path(self) -> str:
+        manifest = self.model_cfg.get_axi_bundles_path()
+        if manifest is None:
+            raise FatalRtlBuddyError(
+                f"axi-profile run: model '{self.model_cfg.name}' has no "
+                "`axi_bundles:` in models.yaml. Add the field pointing at "
+                "the checked-in axi-bundles.yaml manifest, then run "
+                f"`rb axi-profile discover {self.model_cfg.name}` to "
+                "generate one if it doesn't exist."
+            )
+        if not os.path.isfile(manifest):
+            raise FatalRtlBuddyError(
+                f"axi-profile run: manifest not found at {manifest}. "
+                f"Run `rb axi-profile discover {self.model_cfg.name}` first."
+            )
+        return manifest
+
+    def _resolve_fst_path(self) -> str:
+        fst = self._fst_path()
+        if not os.path.isfile(fst):
+            raise FatalRtlBuddyError(
+                f"axi-profile run: FST not found at {fst}. "
+                f"Run `rb test {self.test_name}` first to produce it."
+            )
+        return fst
+
+    def _resolve_tb_prefix(self) -> str:
+        if self.tb_prefix_override is not None:
+            return self.tb_prefix_override
+        # Auto-extract: the testbench wraps the DUT, and Verilator names
+        # the top scope after the testbench module — which is what
+        # tests.yaml's `testbenches:` section names. Empty if the user
+        # explicitly opts out via --tb-prefix=''.
+        tb = self.test_cfg.get_testbench()
+        return tb.get_name() if tb is not None else ""
+
+    def _write_filelist(self) -> str:
+        fl_path = self._filelist_path()
+        vlog_fl = VlogFilelist(
+            name=self.name + "/filelist",
+            model_cfg=self.model_cfg,
+            output_path=fl_path,
+        )
+        vlog_fl.write_output(
+            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+        )
+        return fl_path
+
+    def _build_cmd(
+        self, fl_path: str, manifest: str, fst: str, out_path: str, tb_prefix: str
+    ) -> list[str]:
+        cmd = [
+            self.executable,
+            "run",
+            "--filelist",
+            fl_path,
+            "--top",
+            self.model_cfg.name,
+            "--input",
+            fst,
+            "--manifest",
+            manifest,
+            "--output",
+            out_path,
+        ]
+        if tb_prefix:
+            cmd += ["--tb-prefix", tb_prefix]
+        return cmd
+
+    def run(self) -> int:
+        _require_axi_profiler(self.executable)
+
+        manifest = self._resolve_manifest_path()
+        fst = self._resolve_fst_path()
+        tb_prefix = self._resolve_tb_prefix()
+        out_path = self.output_override or self._default_output_path()
+
+        fl_path = self._write_filelist()
+        cmd = self._build_cmd(fl_path, manifest, fst, out_path, tb_prefix)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_run.start",
+            test=self.test_name,
+            model=self.model_cfg.name,
+            cmd=" ".join(cmd),
+            output=out_path,
+            tb_prefix=tb_prefix,
+        )
+
+        log_path = self._log_path()
+        with task_status(f"axi-profile run {self.test_name}"):
+            with open(log_path, "w") as log_f:
+                log_f.write("$ " + " ".join(cmd) + "\n")
+                log_f.flush()
+                proc = run_managed_process(cmd, stdout=None, stderr=log_f)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_run.done",
+            test=self.test_name,
+            output=out_path,
+            returncode=proc.returncode,
+        )
+        return proc.returncode

@@ -17,6 +17,7 @@ SUBCOMMANDS = [
     "regression",
     "filelist",
     "hier",
+    "axi-profile",
     "verible",
     "wave",
     "wave-install-nvim",

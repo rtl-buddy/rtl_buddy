@@ -1,0 +1,490 @@
+"""Tests for the ``rb axi-profile`` subcommand group + wrappers.
+
+Same fake-binary pattern as ``tests/test_hier.py``: the real
+``axi-profiler`` isn't on PATH in CI, so we stub it with a tiny
+shell script that records its argv. This pins the CLI shapes we
+promise the downstream:
+
+* ``axi-profiler discover --filelist ... --top ... --output ...``
+* ``axi-profiler run --filelist ... --top ... --input ... --manifest ... --output ... [--tb-prefix ...]``
+"""
+
+from __future__ import annotations
+
+import json
+import stat
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from rtl_buddy.config.model import ModelConfig
+from rtl_buddy.config.suite import SuiteConfig
+from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.rtl_buddy import RtlBuddy
+from rtl_buddy.tools.axi_profile_rtl_buddy import (
+    RtlBuddyAxiProfileDiscover,
+    RtlBuddyAxiProfileRun,
+)
+
+
+def _make_fake_profiler(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Path]:
+    """Drop a fake ``axi-profiler`` that records argv to a JSON sidecar."""
+    record = tmp_path / "axi-profiler-argv.json"
+    script = tmp_path / "axi-profiler"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        f'python - "$@" <<PY\n'
+        "import json, sys\n"
+        f'open({json.dumps(str(record))}, "w").write(json.dumps(sys.argv[1:]))\n'
+        "PY\n"
+        f"exit {exit_code}\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script, record
+
+
+def _make_model(
+    tmp_path: Path,
+    *,
+    axi_bundles: str | None = None,
+    axi_monitor_out: str | None = None,
+) -> ModelConfig:
+    src = tmp_path / "src" / "soc.sv"
+    src.parent.mkdir(exist_ok=True)
+    src.write_text("module soc; endmodule\n")
+    return ModelConfig(
+        name="soc",
+        filelist=[str(src)],
+        axi_bundles=axi_bundles,
+        axi_monitor_out=axi_monitor_out,
+        path=str(tmp_path / "models.yaml"),
+    )
+
+
+def _runner() -> tuple[CliRunner, RtlBuddy]:
+    return CliRunner(), RtlBuddy(name="test_axi_profile")
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyAxiProfileDiscover (unit)
+# ---------------------------------------------------------------------------
+
+
+def test_discover_wrapper_builds_expected_argv(tmp_path: Path) -> None:
+    model = _make_model(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileDiscover(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+
+    argv = json.loads(record.read_text())
+    assert argv[0] == "discover"
+    fl_idx = argv.index("--filelist") + 1
+    assert argv[fl_idx].endswith("axi.f")
+    assert Path(argv[fl_idx]).is_file()
+    assert argv[argv.index("--top") + 1] == "soc"
+    assert argv[argv.index("--output") + 1].endswith("axi-bundles.yaml")
+
+
+def test_discover_default_output_falls_back_to_artefacts(tmp_path: Path) -> None:
+    """Without `axi_bundles:` set the default output lands under artefacts/."""
+    model = _make_model(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileDiscover(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    out = argv[argv.index("--output") + 1]
+    assert "artefacts/axi/soc/axi-bundles.yaml" in out
+
+
+def test_discover_default_output_uses_model_axi_bundles_when_set(
+    tmp_path: Path,
+) -> None:
+    """With `axi_bundles:` set, discover writes there by default."""
+    model = _make_model(tmp_path, axi_bundles="src/axi-bundles.yaml")
+    script, record = _make_fake_profiler(tmp_path)
+
+    profiler = RtlBuddyAxiProfileDiscover(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    expected = str(tmp_path / "src" / "axi-bundles.yaml")
+    assert argv[argv.index("--output") + 1] == expected
+
+
+def test_discover_explicit_output_overrides_default(tmp_path: Path) -> None:
+    model = _make_model(tmp_path, axi_bundles="src/axi-bundles.yaml")
+    script, record = _make_fake_profiler(tmp_path)
+    custom_out = tmp_path / "elsewhere" / "my-axi.yaml"
+    custom_out.parent.mkdir()
+
+    profiler = RtlBuddyAxiProfileDiscover(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        output=str(custom_out),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--output") + 1] == str(custom_out)
+
+
+def test_discover_forwards_amend_flag(tmp_path: Path) -> None:
+    model = _make_model(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    amend_path = tmp_path / "existing.yaml"
+    amend_path.write_text("schema_version: '1.0'\nbundles: []\n")
+
+    profiler = RtlBuddyAxiProfileDiscover(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        amend=str(amend_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--amend") + 1] == str(amend_path)
+
+
+def test_discover_propagates_nonzero_exit(tmp_path: Path) -> None:
+    model = _make_model(tmp_path)
+    script, _ = _make_fake_profiler(tmp_path, exit_code=3)
+
+    profiler = RtlBuddyAxiProfileDiscover(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert profiler.run() == 3
+
+
+def test_discover_errors_when_executable_missing(tmp_path: Path) -> None:
+    model = _make_model(tmp_path)
+    profiler = RtlBuddyAxiProfileDiscover(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable="this-binary-definitely-does-not-exist",
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    assert "axi-profiler" in str(info.value)
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyAxiProfileRun (unit)
+# ---------------------------------------------------------------------------
+
+
+def _write_run_fixture(
+    tmp_path: Path, *, axi_bundles_present: bool = True, fst_present: bool = True
+) -> tuple[Path, Path]:
+    """Build a self-contained suite_dir with tests.yaml + models.yaml.
+
+    Returns ``(suite_dir, tests_yaml_path)``. The fixture has one test
+    ``basic`` over a testbench ``tb_basic`` over a model ``soc``. Toggles
+    let individual tests exercise the missing-manifest / missing-FST
+    branches.
+    """
+    suite_dir = tmp_path / "verif" / "soc_top"
+    suite_dir.mkdir(parents=True)
+    src = suite_dir / "src" / "soc.sv"
+    src.parent.mkdir()
+    src.write_text("module soc; endmodule\n")
+
+    models_yaml = suite_dir / "models.yaml"
+    bundles_field = ""
+    if axi_bundles_present:
+        bundles_field = "    axi_bundles: src/axi-bundles.yaml\n"
+        (suite_dir / "src" / "axi-bundles.yaml").write_text(
+            "schema_version: '1.0'\nbundles: []\n"
+        )
+    models_yaml.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        "  - name: soc\n"
+        "    filelist:\n"
+        "      - src/soc.sv\n" + bundles_field
+    )
+
+    tests_yaml = suite_dir / "tests.yaml"
+    tests_yaml.write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        "  - name: tb_basic\n"
+        "    filelist:\n"
+        "      - src/soc.sv\n"
+        "tests:\n"
+        "  - name: basic\n"
+        "    desc: smoke\n"
+        "    model: soc\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    testbench: tb_basic\n"
+        "    plusargs:\n"
+        "    plusdefines:\n"
+        "    uvm:\n"
+        "    preproc:\n"
+        "    postproc:\n"
+        "    sweep:\n"
+        "    sim_timeout:\n"
+    )
+
+    if fst_present:
+        fst_dir = suite_dir / "artefacts" / "basic"
+        fst_dir.mkdir(parents=True)
+        (fst_dir / "dump.fst").write_text("not a real FST, but a real file\n")
+
+    return suite_dir, tests_yaml
+
+
+def test_run_wrapper_builds_expected_argv(tmp_path: Path) -> None:
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+
+    suite_cfg = SuiteConfig(str(tests_yaml))
+    test_cfg = suite_cfg.get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+
+    argv = json.loads(record.read_text())
+    assert argv[0] == "run"
+    assert argv[argv.index("--top") + 1] == "soc"
+    assert argv[argv.index("--input") + 1].endswith("artefacts/basic/dump.fst")
+    assert argv[argv.index("--manifest") + 1].endswith("src/axi-bundles.yaml")
+    assert argv[argv.index("--output") + 1].endswith(
+        "artefacts/axi/basic/axi-perf.json"
+    )
+    # tb_prefix defaults to the testbench name from tests.yaml.
+    assert argv[argv.index("--tb-prefix") + 1] == "tb_basic"
+
+
+def test_run_wrapper_tb_prefix_override_wins(tmp_path: Path) -> None:
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        tb_prefix_override="tb_soc.dut",
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--tb-prefix") + 1] == "tb_soc.dut"
+
+
+def test_run_wrapper_tb_prefix_empty_override_disables_flag(tmp_path: Path) -> None:
+    """Explicit empty string opts out of the --tb-prefix flag."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        tb_prefix_override="",
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert "--tb-prefix" not in argv
+
+
+def test_run_wrapper_output_override(tmp_path: Path) -> None:
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+    custom_out = suite_dir / "out" / "perf.json"
+    custom_out.parent.mkdir()
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        output=str(custom_out),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--output") + 1] == str(custom_out)
+
+
+def test_run_wrapper_errors_when_axi_bundles_unset(tmp_path: Path) -> None:
+    """Model without `axi_bundles:` field → hint to set it + run discover."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path, axi_bundles_present=False)
+    script, _ = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    msg = str(info.value)
+    assert "axi_bundles" in msg
+    assert "rb axi-profile discover soc" in msg
+
+
+def test_run_wrapper_errors_when_manifest_file_missing(tmp_path: Path) -> None:
+    """`axi_bundles:` set but the file doesn't exist → hint to run discover."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    # Delete the manifest file but leave the field pointing at it.
+    (suite_dir / "src" / "axi-bundles.yaml").unlink()
+    script, _ = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    msg = str(info.value)
+    assert "manifest not found" in msg
+    assert "rb axi-profile discover soc" in msg
+
+
+def test_run_wrapper_errors_when_fst_missing(tmp_path: Path) -> None:
+    """No FST under artefacts/<test>/ → hint to run `rb test <test>` first."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
+    script, _ = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    msg = str(info.value)
+    assert "FST not found" in msg
+    assert "rb test basic" in msg
+
+
+def test_run_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, _ = _make_fake_profiler(tmp_path, exit_code=4)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    assert profiler.run() == 4
+
+
+# ---------------------------------------------------------------------------
+# rb axi-profile (integration through Typer)
+# ---------------------------------------------------------------------------
+
+
+def test_rb_axi_profile_discover_invokes_stubbed_profiler(
+    minimal_project: Path,
+) -> None:
+    script, record = _make_fake_profiler(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "axi-profile",
+            "discover",
+            "example",
+            "-c",
+            "models.yaml",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[0] == "discover"
+    assert argv[argv.index("--top") + 1] == "example"
+
+
+def test_rb_axi_profile_run_invokes_stubbed_profiler(minimal_project: Path) -> None:
+    """End-to-end: rb axi-profile run <test> through the Typer app.
+
+    The minimal_project fixture's models.yaml lacks `axi_bundles:`, so
+    extend it in-place for this test and pre-create both the manifest
+    and the FST.
+    """
+    models_yaml = minimal_project / "models.yaml"
+    models_yaml.write_text(
+        models_yaml.read_text() + "    axi_bundles: src/axi-bundles.yaml\n"
+    )
+    (minimal_project / "src" / "axi-bundles.yaml").write_text(
+        "schema_version: '1.0'\nbundles: []\n"
+    )
+    fst_dir = minimal_project / "artefacts" / "basic"
+    fst_dir.mkdir(parents=True)
+    (fst_dir / "dump.fst").write_text("fake fst\n")
+
+    script, record = _make_fake_profiler(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "axi-profile",
+            "run",
+            "basic",
+            "-c",
+            "tests.yaml",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[0] == "run"
+    assert argv[argv.index("--input") + 1].endswith("artefacts/basic/dump.fst")
+    assert argv[argv.index("--manifest") + 1].endswith("src/axi-bundles.yaml")
+    # tb_basic is the testbench name in the fixture's tests.yaml.
+    assert argv[argv.index("--tb-prefix") + 1] == "tb_basic"
+
+
+def test_rb_axi_profile_no_subcommand_shows_help(minimal_project: Path) -> None:
+    """`rb axi-profile` with no subcommand must not run anything."""
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["axi-profile"])
+    # Typer's no_args_is_help convention exits non-zero and emits help text.
+    assert result.exit_code != 0
+    assert "discover" in result.output
+    assert "run" in result.output

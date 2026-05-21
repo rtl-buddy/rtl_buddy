@@ -61,6 +61,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ cdc-regression     run CDC lint regression                                           │
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
+│ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ hub                manage the rtl-buddy-hub daemon                                   │
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
@@ -208,6 +209,22 @@ Usage: rtl-buddy hier [OPTIONS] MODEL_NAME
 │ --tool                     TEXT  path to the rtl-buddy-view binary                   │
 │                                  [default: rtl-buddy-view]                           │
 │ --help                           Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## axi-profile
+
+```text
+Usage: rtl-buddy axi-profile [OPTIONS] COMMAND [ARGS]...                               
+                                                                                        
+ profile AXI interconnect performance via rtl-buddy-axi-profiler                        
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ run       ingest a test's FST and emit per-test axi-perf.json                        │
+│ discover  parse RTL to (re)generate the model's axi-bundles.yaml manifest            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

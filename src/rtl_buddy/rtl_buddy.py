@@ -45,6 +45,10 @@ from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
 from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
+from .tools.axi_profile_rtl_buddy import (
+    RtlBuddyAxiProfileDiscover,
+    RtlBuddyAxiProfileRun,
+)
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
 from .tools.hier_rtl_buddy_view import RtlBuddyView
@@ -115,6 +119,10 @@ class RtlBuddy:
         self.spec_app = typer.Typer(
             help="spec traceability commands", no_args_is_help=True
         )
+        self.axi_profile_app = typer.Typer(
+            help=("profile AXI interconnect performance via rtl-buddy-axi-profiler"),
+            no_args_is_help=True,
+        )
         self.app.callback()(self.root_options)
         self.app.command("test", help="run a simple test")(self.do_cmd_test)
         self.app.command("randtest", help="repeat a test with multiple random seeds")(
@@ -128,6 +136,19 @@ class RtlBuddy:
         )
         self.app.command("hier", help="render module hierarchy via rtl-buddy-view")(
             self.do_cmd_hier
+        )
+        self.axi_profile_app.command(
+            "run",
+            help="ingest a test's FST and emit per-test axi-perf.json",
+        )(self.do_cmd_axi_profile_run)
+        self.axi_profile_app.command(
+            "discover",
+            help="parse RTL to (re)generate the model's axi-bundles.yaml manifest",
+        )(self.do_cmd_axi_profile_discover)
+        self.app.add_typer(
+            self.axi_profile_app,
+            name="axi-profile",
+            help=("profile AXI interconnect performance via rtl-buddy-axi-profiler"),
         )
         self.app.command("verible", help="run verible cmd")(self.do_verible)
         self.app.command("wave", help="open waveform viewer for a test")(
@@ -1179,6 +1200,126 @@ class RtlBuddy:
             executable=tool,
         )
         raise typer.Exit(view.run())
+
+    def do_cmd_axi_profile_discover(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "output path for axi-bundles.yaml (default: the model's "
+                    "`axi_bundles:` from models.yaml when set, else "
+                    "artefacts/axi/<model>/axi-bundles.yaml)"
+                ),
+            ),
+        ] = None,
+        amend: Annotated[
+            str | None,
+            typer.Option(
+                "--amend",
+                help=(
+                    "existing axi-bundles.yaml to merge user edits from "
+                    "(deferred to a follow-up; warns if passed)"
+                ),
+            ),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the axi-profiler binary"),
+        ] = "axi-profiler",
+    ):
+        """
+        parse RTL to (re)generate the model's axi-bundles.yaml manifest
+        """
+        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_discover",
+            command="axi-profile",
+            subcommand="discover",
+            model=model_name,
+            output=output,
+        )
+        profiler = RtlBuddyAxiProfileDiscover(
+            name=self.name + "/axi-profile/discover",
+            model_cfg=model_cfg,
+            suite_dir=os.getcwd(),
+            output=output,
+            amend=amend,
+            executable=tool,
+        )
+        raise typer.Exit(profiler.run())
+
+    def do_cmd_axi_profile_run(
+        self,
+        test_name: Annotated[str, typer.Argument(help="test from tests.yaml")],
+        test_config: Annotated[
+            str, typer.Option("-c", "--test-config", help="tests.yaml to use")
+        ] = "tests.yaml",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "output path for axi-perf.json "
+                    "(default: artefacts/axi/<test>/axi-perf.json)"
+                ),
+            ),
+        ] = None,
+        tb_prefix: Annotated[
+            str | None,
+            typer.Option(
+                "--tb-prefix",
+                help=(
+                    "Override the testbench top scope name used as the "
+                    "hierarchical prefix in the FST. Default is the test's "
+                    "tb name from tests.yaml. Pass empty string to disable."
+                ),
+            ),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the axi-profiler binary"),
+        ] = "axi-profiler",
+    ):
+        """
+        ingest a test's FST and emit per-test axi-perf.json
+
+        Looks up `<test>` in tests.yaml, resolves the model, the
+        checked-in axi-bundles.yaml manifest (model.axi_bundles in
+        models.yaml), and the FST at artefacts/<test>/dump.fst, then
+        invokes axi-profiler run.
+        """
+        suite_cfg = SuiteConfig(test_config)
+        test_cfg = suite_cfg.get_tests(test_name)[0]
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_run",
+            command="axi-profile",
+            subcommand="run",
+            test=test_name,
+            model=test_cfg.get_model().name,
+            output=output,
+            tb_prefix=tb_prefix,
+        )
+        profiler = RtlBuddyAxiProfileRun(
+            name=self.name + "/axi-profile/run",
+            test_cfg=test_cfg,
+            suite_dir=os.path.dirname(os.path.abspath(test_config)),
+            output=output,
+            tb_prefix_override=tb_prefix,
+            executable=tool,
+        )
+        raise typer.Exit(profiler.run())
 
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]
