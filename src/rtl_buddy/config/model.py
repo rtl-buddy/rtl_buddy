@@ -1,6 +1,7 @@
 import logging
 
 logger = logging.getLogger(__name__)
+import os
 import pprint
 
 from serde import serde, field
@@ -21,6 +22,14 @@ class ModelConfig:
       desc (str|None): Human-readable model description.
       filelist (list[str]): List of paths to files associated with the model.
       spec (str|None): Relative path from models.yaml to the block's specs.yaml.
+      axi_bundles (str|None): Relative path from models.yaml to the
+        block's ``axi-bundles.yaml`` manifest, when AXI profiling is
+        configured for this model. Consumed by ``rb axi-profile``.
+      axi_monitor_out (str|None): Relative path from models.yaml to
+        where ``rb axi-profile gen-monitor`` should write the generated
+        SystemVerilog monitor file. Typically points into the verif
+        testbench source tree so the file is picked up by the tb's
+        filelist (e.g. ``../verif/soc_top/gen/axi_perf_mon.sv``).
       path (str|None): Path to the model config file. Will usually be set by the loader.
     """
 
@@ -28,7 +37,40 @@ class ModelConfig:
     filelist: list[str]
     desc: str | None = None
     spec: str | None = None
+    axi_bundles: str | None = None
+    axi_monitor_out: str | None = None
     path: str | None = None
+
+    def _resolve_relative(self, rel: str) -> str:
+        """Resolve ``rel`` against the directory containing models.yaml.
+
+        Absolute paths pass through unchanged. Relative paths are
+        anchored at ``dirname(self.path)`` when ``self.path`` is set
+        (the loader normally sets it); otherwise the cwd is used.
+        """
+        if os.path.isabs(rel):
+            return rel
+        base = os.path.dirname(os.path.abspath(self.path)) if self.path else os.getcwd()
+        return os.path.normpath(os.path.join(base, rel))
+
+    def get_axi_bundles_path(self) -> str | None:
+        """Absolute path to the model's ``axi-bundles.yaml`` (or None).
+
+        Does not check that the file exists — callers should error
+        with a hint to run ``rb axi-profile discover`` when missing.
+        """
+        if self.axi_bundles is None:
+            return None
+        return self._resolve_relative(self.axi_bundles)
+
+    def get_axi_monitor_out_path(self) -> str | None:
+        """Absolute path where ``gen-monitor`` should write the SV file (or None).
+
+        Parent directory may not exist yet at load time.
+        """
+        if self.axi_monitor_out is None:
+            return None
+        return self._resolve_relative(self.axi_monitor_out)
 
     def get_model_name(self):
         """

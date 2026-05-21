@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from serde.yaml import from_yaml
 
+from rtl_buddy.config.model import ModelConfig, ModelConfigLoader
 from rtl_buddy.config.reg import RegConfig
 from rtl_buddy.config.rtl import RtlBuilderConfig
 from rtl_buddy.config.root import (
@@ -380,3 +381,122 @@ def test_discover_rtl_builder_names_raises_without_root_config(tmp_path, monkeyp
     # If we picked up a real root_config.yaml from above tmp_path, accept that
     # too — just confirm the contract holds.
     assert isinstance(names, list)
+
+
+# ---------------------------------------------------------------------------
+# ModelConfig — axi_bundles + axi_monitor_out
+# ---------------------------------------------------------------------------
+
+
+def test_model_config_axi_fields_default_none():
+    """Bare ModelConfig has no AXI fields set (back-compat)."""
+    model = ModelConfig(name="soc", filelist=["src/soc.sv"])
+    assert model.axi_bundles is None
+    assert model.axi_monitor_out is None
+    assert model.get_axi_bundles_path() is None
+    assert model.get_axi_monitor_out_path() is None
+
+
+def test_model_config_axi_bundles_resolves_relative_to_models_yaml(tmp_path):
+    """axi_bundles relative path resolves against the models.yaml directory."""
+    models_yaml = tmp_path / "design" / "soc" / "models.yaml"
+    models_yaml.parent.mkdir(parents=True)
+
+    model = ModelConfig(
+        name="soc",
+        filelist=["src/soc.sv"],
+        axi_bundles="src/axi-bundles.yaml",
+        path=str(models_yaml),
+    )
+    resolved = model.get_axi_bundles_path()
+    assert resolved == str(tmp_path / "design" / "soc" / "src" / "axi-bundles.yaml")
+
+
+def test_model_config_axi_monitor_out_resolves_relative(tmp_path):
+    """axi_monitor_out relative path resolves against the models.yaml directory.
+
+    Typical usage: monitor SV lives in the verif testbench tree, sibling
+    to the design tree.
+    """
+    models_yaml = tmp_path / "design" / "soc" / "models.yaml"
+    models_yaml.parent.mkdir(parents=True)
+
+    model = ModelConfig(
+        name="soc",
+        filelist=["src/soc.sv"],
+        axi_monitor_out="../../verif/soc_top/gen/axi_perf_mon.sv",
+        path=str(models_yaml),
+    )
+    resolved = model.get_axi_monitor_out_path()
+    assert resolved == str(tmp_path / "verif" / "soc_top" / "gen" / "axi_perf_mon.sv")
+
+
+def test_model_config_axi_paths_pass_absolute_through(tmp_path):
+    abs_bundles = tmp_path / "elsewhere" / "axi-bundles.yaml"
+    abs_monitor = tmp_path / "verif" / "axi_perf_mon.sv"
+    model = ModelConfig(
+        name="soc",
+        filelist=["src/soc.sv"],
+        axi_bundles=str(abs_bundles),
+        axi_monitor_out=str(abs_monitor),
+        path=str(tmp_path / "design" / "models.yaml"),
+    )
+    assert model.get_axi_bundles_path() == str(abs_bundles)
+    assert model.get_axi_monitor_out_path() == str(abs_monitor)
+
+
+def test_model_config_axi_paths_resolved_against_cwd_when_path_unset(
+    tmp_path, monkeypatch
+):
+    """When the loader hasn't set path yet, fall back to cwd.
+
+    In normal use the loader sets path; this just locks the fallback
+    so a bare ModelConfig in tests doesn't blow up on relative paths.
+    """
+    monkeypatch.chdir(tmp_path)
+    model = ModelConfig(
+        name="soc",
+        filelist=["src/soc.sv"],
+        axi_bundles="axi-bundles.yaml",
+    )
+    assert model.get_axi_bundles_path() == str(tmp_path / "axi-bundles.yaml")
+
+
+def test_model_config_loader_round_trips_axi_fields(tmp_path):
+    """models.yaml with the new fields round-trips through the loader.
+
+    The loader sets ``path`` so the helpers resolve relative paths
+    correctly without further wiring.
+    """
+    models_yaml = tmp_path / "design" / "models.yaml"
+    models_yaml.parent.mkdir()
+    models_yaml.write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        "  - name: soc\n"
+        "    filelist:\n"
+        "      - src/soc.sv\n"
+        "    axi_bundles: src/soc/axi-bundles.yaml\n"
+        "    axi_monitor_out: ../verif/soc_top/gen/axi_perf_mon.sv\n"
+        "  - name: cpu\n"
+        "    filelist:\n"
+        "      - src/cpu.sv\n"
+    )
+
+    loader = ModelConfigLoader(str(models_yaml))
+
+    soc = loader.get_model("soc")
+    assert soc.axi_bundles == "src/soc/axi-bundles.yaml"
+    assert soc.axi_monitor_out == "../verif/soc_top/gen/axi_perf_mon.sv"
+    assert soc.get_axi_bundles_path() == str(
+        tmp_path / "design" / "src" / "soc" / "axi-bundles.yaml"
+    )
+    assert soc.get_axi_monitor_out_path() == str(
+        tmp_path / "verif" / "soc_top" / "gen" / "axi_perf_mon.sv"
+    )
+
+    cpu = loader.get_model("cpu")
+    assert cpu.axi_bundles is None
+    assert cpu.axi_monitor_out is None
+    assert cpu.get_axi_bundles_path() is None
+    assert cpu.get_axi_monitor_out_path() is None
