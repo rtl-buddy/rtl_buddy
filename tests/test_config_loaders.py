@@ -316,6 +316,82 @@ def test_suite_config_missing_testbench_raises(tmp_path):
         SuiteConfig(str(suite))
 
 
+def test_suite_config_duplicate_testbench_raises(tmp_path):
+    """Two testbenches with the same name in one tests.yaml is a hard
+    error — letting the dict-comprehension silently overwrite the
+    first one hides typos until later 'X not found' errors fire."""
+    body = """\
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb1
+    filelist: [src/a.sv]
+  - name: tb1
+    filelist: [src/b.sv]
+tests: []
+"""
+    path = tmp_path / "tests.yaml"
+    path.write_text(body)
+    with pytest.raises(FatalRtlBuddyError, match="duplicate testbench name 'tb1'"):
+        SuiteConfig(str(path))
+
+
+def test_suite_config_duplicate_test_raises(tmp_path):
+    body = """\
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb1
+    filelist: [src/a.sv]
+tests:
+  - name: basic
+    desc: example
+    model: m
+    model_path: models.yaml
+    reglvl:
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb1
+    sim_timeout:
+  - name: basic
+    desc: collision
+    model: m
+    model_path: models.yaml
+    reglvl:
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb1
+    sim_timeout:
+"""
+    path = tmp_path / "tests.yaml"
+    path.write_text(body)
+    with pytest.raises(FatalRtlBuddyError, match="duplicate test name 'basic'"):
+        SuiteConfig(str(path))
+
+
+def test_model_config_loader_duplicate_model_raises(tmp_path):
+    from rtl_buddy.config.model import ModelConfigLoader
+
+    body = """\
+rtl-buddy-filetype: model_config
+models:
+  - name: mod_a
+    filelist: [a.sv]
+  - name: mod_a
+    filelist: [b.sv]
+"""
+    path = tmp_path / "models.yaml"
+    path.write_text(body)
+    with pytest.raises(FatalRtlBuddyError, match="duplicate model name 'mod_a'"):
+        ModelConfigLoader(str(path))
+
+
 # ---------------------------------------------------------------------------
 # Project-root discovery
 # ---------------------------------------------------------------------------

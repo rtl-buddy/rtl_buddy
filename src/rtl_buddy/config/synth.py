@@ -309,6 +309,26 @@ class SynthSuiteConfig:
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
+        # Fail loud on duplicate ``name:`` — same rationale as the
+        # cdc.yaml side: the dict-comprehension below would silently
+        # overwrite the first synthesis with the second.
+        seen: dict[str, int] = {}
+        for idx, synthesis in enumerate(data.syntheses):
+            if synthesis.name in seen:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "synth_suite_config.duplicate_synthesis",
+                    path=path,
+                    name=synthesis.name,
+                    first_index=seen[synthesis.name],
+                    second_index=idx,
+                )
+                raise FatalRtlBuddyError(
+                    f"{path}: duplicate synthesis name {synthesis.name!r}"
+                )
+            seen[synthesis.name] = idx
+
         config_dir = os.path.dirname(os.path.abspath(path))
         try:
             self.syntheses = {s.name: s.initialise(config_dir) for s in data.syntheses}

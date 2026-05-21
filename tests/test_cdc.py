@@ -267,6 +267,38 @@ def test_cdc_suite_config_missing_name_raises(tmp_path):
         cfg.get_analyses("nonexistent")
 
 
+def test_cdc_suite_config_duplicate_analysis_raises(tmp_path):
+    """Two analyses with the same name in one cdc.yaml is a hard
+    error — the dict-comprehension in CdcSuiteConfig.__init__
+    would silently overwrite the first with the second otherwise."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    body = dedent("""\
+        rtl-buddy-filetype: cdc_config
+
+        analyses:
+          - name: "dup"
+            desc: "first"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+            reglvl: 0
+          - name: "dup"
+            desc: "second"
+            model: "mod_b"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_b.sdc"
+            reglvl: 0
+    """)
+    path = tmp_path / "cdc.yaml"
+    path.write_text(body)
+    with pytest.raises(FatalRtlBuddyError, match="duplicate analysis name 'dup'"):
+        CdcSuiteConfig(str(path))
+
+
 def test_cdc_suite_config_picks_up_frontend_field(tmp_path):
     """Per-analysis `frontend:` round-trips through CdcConfigFile -> CdcConfig."""
     suite_yaml = _write_suite(tmp_path)

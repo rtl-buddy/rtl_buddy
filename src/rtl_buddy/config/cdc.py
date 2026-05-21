@@ -198,6 +198,27 @@ class CdcSuiteConfig:
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
+        # Fail loud on duplicate ``name:`` — the dict-comprehension
+        # below would silently overwrite the first analysis with the
+        # second, hiding the user's typo until they hit "analysis X
+        # not found" at lookup time.
+        seen: dict[str, int] = {}
+        for idx, analysis in enumerate(data.analyses):
+            if analysis.name in seen:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "cdc_suite_config.duplicate_analysis",
+                    path=path,
+                    name=analysis.name,
+                    first_index=seen[analysis.name],
+                    second_index=idx,
+                )
+                raise FatalRtlBuddyError(
+                    f"{path}: duplicate analysis name {analysis.name!r}"
+                )
+            seen[analysis.name] = idx
+
         config_dir = os.path.dirname(os.path.abspath(path))
         try:
             self.analyses = {a.name: a.initialise(config_dir) for a in data.analyses}

@@ -228,6 +228,37 @@ def test_synth_suite_config_params_and_defines_loaded(tmp_path):
     assert synth_b.get_defines() == {"TARGET_SYNTH": 1}
 
 
+def test_synth_suite_config_duplicate_synthesis_raises(tmp_path):
+    """Two syntheses with the same name in one synth.yaml is a hard
+    error — the dict-comprehension in SynthSuiteConfig.__init__
+    would silently overwrite the first one otherwise."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(_MODELS_YAML)
+    body = dedent("""\
+        rtl-buddy-filetype: synth_config
+
+        syntheses:
+          - name: "dup"
+            desc: "first"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+            reglvl: 0
+          - name: "dup"
+            desc: "second"
+            model: "mod_b"
+            model_path: "models.yaml"
+            tool: "yosys"
+            reglvl: 0
+    """)
+    path = tmp_path / "synth.yaml"
+    path.write_text(body)
+    with pytest.raises(FatalRtlBuddyError, match="duplicate synthesis name 'dup'"):
+        SynthSuiteConfig(str(path))
+
+
 def test_synth_suite_config_missing_name_raises(tmp_path):
     from rtl_buddy.errors import FatalRtlBuddyError
 

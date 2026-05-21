@@ -98,6 +98,26 @@ class ModelConfigLoader:
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
 
+        # Fail loud on duplicate ``name:`` — silently letting the
+        # first or last win makes "model X not found" errors at
+        # lookup time and hides the user's typo. Caught here so
+        # every downstream consumer (rb cdc, rb synth, rb hier,
+        # rb hub) sees a single source of truth.
+        seen: dict[str, int] = {}
+        for idx, model in enumerate(self.models):
+            if model.name in seen:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "model_config.duplicate_model",
+                    path=path,
+                    name=model.name,
+                    first_index=seen[model.name],
+                    second_index=idx,
+                )
+                raise FatalRtlBuddyError(f"{path}: duplicate model name {model.name!r}")
+            seen[model.name] = idx
+
     def get_model(self, model_name: str) -> ModelConfig:
         """
         Get a ModelConfig according to model_name.

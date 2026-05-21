@@ -44,6 +44,41 @@ class SuiteConfig:
         self.path = path
 
         if data is not None:
+            # Fail loud on duplicate testbench / test names — the
+            # dict-comprehensions below would silently overwrite the
+            # first entry with the last, hiding the user's typo.
+            seen_tbs: dict[str, int] = {}
+            for idx, tb in enumerate(data.testbenches):
+                tb_name = tb.get_name()
+                if tb_name in seen_tbs:
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "suite_config.duplicate_testbench",
+                        path=path,
+                        name=tb_name,
+                        first_index=seen_tbs[tb_name],
+                        second_index=idx,
+                    )
+                    raise FatalRtlBuddyError(
+                        f"{path}: duplicate testbench name {tb_name!r}"
+                    )
+                seen_tbs[tb_name] = idx
+            seen_tests: dict[str, int] = {}
+            for idx, t in enumerate(data.tests):
+                if t.name in seen_tests:
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "suite_config.duplicate_test",
+                        path=path,
+                        name=t.name,
+                        first_index=seen_tests[t.name],
+                        second_index=idx,
+                    )
+                    raise FatalRtlBuddyError(f"{path}: duplicate test name {t.name!r}")
+                seen_tests[t.name] = idx
+
             try:
                 tbs = {tb.get_name(): tb for tb in data.testbenches}
             except Exception as e:
