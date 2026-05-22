@@ -27,6 +27,25 @@ from rtl_buddy.tools.wave_hub_bridge import (
 )
 
 
+def _drain_and_close(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel and drain pending tasks before closing the loop.
+
+    Without this, transport-close callbacks scheduled during
+    ``HubServer.shutdown`` outlive the loop and surface as
+    ``RuntimeError: Event loop is closed`` at some later test's
+    teardown when GC dispatches them.
+    """
+    try:
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    finally:
+        loop.close()
+
+
 class _FakeListener:
     """Captures `send_to_surfer` calls; mirrors the listener observer hook."""
 
@@ -80,7 +99,7 @@ class _HubInThread:
                 self.started.set()
                 raise
             finally:
-                loop.close()
+                _drain_and_close(loop)
 
         self.thread = threading.Thread(target=_runner, daemon=True, name="hub-thread")
         self.thread.start()

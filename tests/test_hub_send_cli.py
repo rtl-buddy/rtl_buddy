@@ -26,6 +26,25 @@ from rtl_buddy.hub.send import send_app
 from rtl_buddy.hub.server import HubServer
 
 
+def _drain_and_close(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel and drain pending tasks before closing the loop.
+
+    Without this, transport-close callbacks scheduled during
+    ``HubServer.shutdown`` outlive the loop and surface as
+    ``RuntimeError: Event loop is closed`` at some later test's
+    teardown when GC dispatches them.
+    """
+    try:
+        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    finally:
+        loop.close()
+
+
 _VIEW_JSON = {
     "schema_version": "1.0",
     "tool": {"name": "rtl-buddy-view", "version": "0.1.0"},
@@ -101,7 +120,7 @@ class _ThreadedHub:
                 self._started.set()
                 raise
             finally:
-                loop.close()
+                _drain_and_close(loop)
 
         self._thread = threading.Thread(target=_runner, daemon=True, name="hub-thread")
         self._thread.start()
