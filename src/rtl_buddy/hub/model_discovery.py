@@ -61,13 +61,28 @@ def discover_models_files(root: Path) -> list[Path]:
     """Return every ``models.yaml`` reachable under ``root``.
 
     Skips conventional build/VCS directories so vendored fixtures
-    don't pollute the candidate set. Order is deterministic
-    (alphabetical) so collision-error messages don't churn between
-    invocations.
+    don't pollute the candidate set, and skips nested git worktrees
+    (each one is a parallel checkout of the same project, so its
+    ``models.yaml`` files duplicate the parent's and would otherwise
+    fail discovery as cross-file name collisions). Order is
+    deterministic (alphabetical) so collision-error messages don't
+    churn between invocations.
     """
 
+    root_resolved = Path(root).resolve()
     results: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
+        # Skip git worktree subdirectories. Each worktree root has
+        # ``.git`` as a *file* (containing ``gitdir: <path>``) pointing
+        # back at the main repo's ``.git/worktrees/<name>`` metadata.
+        # The main checkout has ``.git`` as a directory and is already
+        # walked into normally — we only want to prune nested worktrees,
+        # not the starting root itself.
+        if Path(dirpath).resolve() != root_resolved and ".git" in filenames:
+            git_entry = Path(dirpath) / ".git"
+            if git_entry.is_file():
+                dirnames.clear()
+                continue
         # Mutate dirnames in place so os.walk skips our excludes.
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
         if "models.yaml" in filenames:

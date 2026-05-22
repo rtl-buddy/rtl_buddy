@@ -63,6 +63,30 @@ def test_discover_models_files_skips_excluded_dirs(tmp_path):
     assert [p.relative_to(tmp_path) for p in found] == [Path("block_a/models.yaml")]
 
 
+def test_discover_models_files_skips_nested_git_worktrees(tmp_path):
+    """A subdirectory whose ``.git`` is a file (the canonical worktree
+    marker) is a parallel checkout — its ``models.yaml`` files duplicate
+    the parent's and must not enter the candidate set."""
+    _write_models(tmp_path / "block_a" / "models.yaml", _MODELS_YAML_A)
+    # Simulate a worktree at .worktrees/feature-x/ with the project tree copied in.
+    wt = tmp_path / ".worktrees" / "feature-x"
+    (wt / ".git").parent.mkdir(parents=True, exist_ok=True)
+    (wt / ".git").write_text("gitdir: /elsewhere/.git/worktrees/feature-x\n")
+    _write_models(wt / "block_a" / "models.yaml", _MODELS_YAML_A)
+    _write_models(wt / "block_b" / "models.yaml", _MODELS_YAML_B)
+    found = model_discovery.discover_models_files(tmp_path)
+    assert [p.relative_to(tmp_path) for p in found] == [Path("block_a/models.yaml")]
+
+
+def test_discover_models_files_keeps_root_git_dir(tmp_path):
+    """The starting root's own .git/ (a *directory*, not a file) must not
+    trigger the worktree-skip path."""
+    (tmp_path / ".git").mkdir()
+    _write_models(tmp_path / "block_a" / "models.yaml", _MODELS_YAML_A)
+    found = model_discovery.discover_models_files(tmp_path)
+    assert [p.relative_to(tmp_path) for p in found] == [Path("block_a/models.yaml")]
+
+
 def test_discover_models_files_returns_alphabetical_order(tmp_path):
     """Order matters for collision-error messages — must be stable."""
     _write_models(tmp_path / "z_block" / "models.yaml", _MODELS_YAML_A)
