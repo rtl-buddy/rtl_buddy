@@ -134,7 +134,17 @@ class _ThreadedHub:
             fut.result(timeout=5.0)
         except Exception:
             pass
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        # Race: when shutdown() completes, ``_async_start`` returns and the
+        # runner thread's ``finally`` may run loop.close() before we get
+        # here — most reliably for tests that exit via typer.BadParameter
+        # without ever connecting, so the loop has nothing to keep it
+        # busy. ``call_soon_threadsafe`` on a closed loop raises
+        # RuntimeError; treat that as "already stopped" since that is
+        # exactly what we wanted.
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except RuntimeError:
+            pass
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
