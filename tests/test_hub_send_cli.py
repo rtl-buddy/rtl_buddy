@@ -231,6 +231,10 @@ def test_send_open_parses_file_line_col(
     assert result.exit_code == 0, result.output
     # source_focused isn't a snapshot field, but it must broadcast cleanly —
     # if the parse failed CLI would have exited nonzero.
+    # Drain so the hub-loop transport-close callback fires before the next
+    # test invokes the CLI; without it, CI on Python 3.12 occasionally
+    # surfaces a "RuntimeError: Event loop is closed" teardown error.
+    _drain_briefly()
 
 
 def test_send_open_rejects_bad_spec(threaded_hub: _ThreadedHub, discovery_root: Path):
