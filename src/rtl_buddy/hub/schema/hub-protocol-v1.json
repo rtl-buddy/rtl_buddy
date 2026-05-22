@@ -547,7 +547,12 @@
                     "end_col":  { "type": "integer", "minimum": 1 },
                     "severity": { "enum": ["error", "warning", "info", "hint"] },
                     "code":     { "type": "string", "minLength": 1, "description": "Producer-defined rule code, e.g. `CDC-001`." },
-                    "message":  { "type": "string", "minLength": 1 }
+                    "message":  { "type": "string", "minLength": 1 },
+                    "instance_path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Optional producer-side hint: the `view.json` instance path this finding pertains to. When present, consumers (e.g. the rtl-buddy-view SPA's on-canvas badge layer) use it as a fast-path instead of the file+line range resolver — which is required for diagnostics reported against an instantiated module's own body, since `node.source` only describes the instantiation site in the parent."
+                    }
                   }
                 }
               }

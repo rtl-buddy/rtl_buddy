@@ -199,7 +199,10 @@ def cmd_open(
     help=(
         "Push a diagnostics_set bundle for SOURCE. Each ITEM is "
         "<file>:<line>:<severity>:<code>:<message>. --clear sends an empty "
-        "set (clears any cached diagnostics from SOURCE)."
+        "set (clears any cached diagnostics from SOURCE). Use "
+        "--instance to attach a view.json instance_path hint that consumers "
+        "(the SPA's on-canvas badge layer in particular) use as a fast path "
+        "instead of the file+line resolver."
     ),
 )
 def cmd_diagnose(
@@ -218,14 +221,31 @@ def cmd_diagnose(
         bool,
         typer.Option("--clear", help="Send an empty items list (clears SOURCE)."),
     ] = False,
+    instance_path: Annotated[
+        Optional[str],
+        typer.Option(
+            "--instance",
+            help=(
+                "Optional view.json instance_path to attach to every ITEM in "
+                "this push. Use when the producer knows which instance a finding "
+                "pertains to (most one-shot agent calls do); skip for batch "
+                "lint output where each item lives at a different file:line."
+            ),
+        ),
+    ] = None,
 ) -> None:
     if clear and items:
         raise typer.BadParameter("--clear is incompatible with item arguments")
     if not clear and not items:
         raise typer.BadParameter("provide at least one ITEM, or pass --clear")
+    if clear and instance_path:
+        raise typer.BadParameter("--instance has no effect with --clear")
     parsed_items: list[dict[str, object]] = (
         [] if clear else [_parse_diag(s) for s in (items or [])]
     )
+    if instance_path:
+        for it in parsed_items:
+            it["instance_path"] = instance_path
     with _open_or_exit() as h:
         h.emit("diagnostics_set", {"source": source, "items": parsed_items})
 

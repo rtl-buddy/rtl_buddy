@@ -357,6 +357,60 @@ def test_diagnostics_set_empty_items_is_legal_clear():
     assert back.payload == {"source": "rtl-buddy-cdc", "items": []}
 
 
+def test_diagnostics_set_carries_optional_instance_path():
+    """The view-side resolver (rtl-buddy-view#82) prefers
+    ``item.instance_path`` over file+line range matching. Make sure
+    the dataclass + ``make_diagnostics_set`` + schema round-trip
+    preserve the hint when set, and omit it cleanly when None."""
+
+    env = make_diagnostics_set(
+        origin=Origin.CLI,
+        source="claude-analysis",
+        items=[
+            Diagnostic(
+                file="/abs/a.sv",
+                line=42,
+                severity="warning",
+                code="WAVE-1",
+                message="wr_ptr_q sampled while ce==0",
+                instance_path="top.u_dma",
+            ),
+            Diagnostic(file="/abs/b.sv", line=1, severity="info", message="ok"),
+        ],
+    )
+    back = decode(encode(env))
+    pinned, unpinned = back.payload["items"]
+    assert pinned["instance_path"] == "top.u_dma"
+    assert "instance_path" not in unpinned
+
+
+def test_diagnostics_set_rejects_empty_instance_path():
+    """Schema clamps to minLength: 1 so a producer can't send an
+    empty string and trip the consumer's fast path on garbage."""
+
+    with pytest.raises(HubProtocolError):
+        encode(
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.EVENT,
+                type="diagnostics_set",
+                id=new_id(),
+                payload={
+                    "source": "x",
+                    "items": [
+                        {
+                            "file": "/a.sv",
+                            "line": 1,
+                            "severity": "info",
+                            "message": "m",
+                            "instance_path": "",
+                        }
+                    ],
+                },
+            )
+        )
+
+
 def test_diagnostics_set_rejects_bad_severity():
     with pytest.raises(HubProtocolError):
         encode(

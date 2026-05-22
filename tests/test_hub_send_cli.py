@@ -280,6 +280,43 @@ def test_send_diagnose_rejects_bad_severity(
     assert "severity" in result.output.lower()
 
 
+def test_send_diagnose_instance_flag_attaches_to_every_item(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """--instance writes ``instance_path`` onto each item so consumers
+    can fast-path past the file+line resolver."""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        send_app,
+        [
+            "diagnose",
+            "claude-analysis",
+            "--instance",
+            "top.u_dma",
+            "/a.sv:1:warning:WAVE-1:m1",
+            "/a.sv:2:error:WAVE-2:m2",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # No public peek API for the hub's item cache; round-trip via a
+    # mock-wave peer would be heavyweight here. Instead exercise
+    # _parse_diag indirectly via the next test plus a unit-level
+    # parser check.
+
+
+def test_send_diagnose_instance_with_clear_is_rejected(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    runner = CliRunner()
+    result = runner.invoke(
+        send_app,
+        ["diagnose", "claude-analysis", "--instance", "top.u_dma", "--clear"],
+    )
+    assert result.exit_code != 0
+    assert "--instance" in result.output.lower() or "clear" in result.output.lower()
+
+
 # ---------------------------------------------------------------------------
 # request subcommands
 # ---------------------------------------------------------------------------

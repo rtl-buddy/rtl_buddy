@@ -291,6 +291,12 @@ class Diagnostic:
     end_line: int | None = None
     end_col: int | None = None
     code: str | None = None
+    instance_path: str | None = None
+    """Optional producer-side hint: the ``view.json`` instance path
+    this finding pertains to. When present, consumers can skip the
+    file+line range resolver — required for diagnostics reported
+    against an instantiated module's own body, since ``node.source``
+    only describes the instantiation site in the parent."""
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -307,6 +313,8 @@ class Diagnostic:
             out["end_col"] = self.end_col
         if self.code is not None:
             out["code"] = self.code
+        if self.instance_path is not None:
+            out["instance_path"] = self.instance_path
         return out
 
 
