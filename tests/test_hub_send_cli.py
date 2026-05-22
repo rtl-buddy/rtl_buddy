@@ -391,6 +391,34 @@ def test_send_wave_add_reports_no_wave_peer(
     assert "not_connected" in result.output.lower()
 
 
+def test_send_capture_reports_no_view_peer(
+    threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
+):
+    """No view peer is registered → request is ``not_connected``. The
+    CLI exits nonzero and does not write the output file."""
+
+    runner = CliRunner()
+    out_path = tmp_path / "snap.png"
+    result = runner.invoke(send_app, ["capture", "--out", str(out_path)])
+    assert result.exit_code != 0
+    assert "not_connected" in result.output.lower()
+    assert not out_path.exists()
+
+
+def test_send_capture_rejects_bad_format(
+    threaded_hub: _ThreadedHub, discovery_root: Path, tmp_path: Path
+):
+    """``--format`` only accepts png or svg; suffix-inferred is the
+    same check. Bad format fails before the hub round-trip."""
+
+    runner = CliRunner()
+    out_path = tmp_path / "snap.gif"
+    result = runner.invoke(send_app, ["capture", "--out", str(out_path)])
+    assert result.exit_code != 0
+    assert "must be png or svg" in result.output.lower()
+    assert not out_path.exists()
+
+
 def test_send_no_hub_exits_two(monkeypatch, tmp_path):
     """When no hub is reachable, exit code is 2 (distinguishable from
     a hub-returned error which exits 1)."""

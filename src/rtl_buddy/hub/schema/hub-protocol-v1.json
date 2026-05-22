@@ -257,6 +257,97 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "wave_set_viewport" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["t_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "t_fs": { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_zoom_to_range" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["start_fs", "end_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "start_fs": { "type": "string", "pattern": "^-?[0-9]+$" },
+                  "end_fs":   { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_zoom_to_fit" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "view_pan_to" } }, "required": ["type"] },
       "then": {
         "oneOf": [
@@ -564,6 +655,50 @@
             }
           }
         }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "view_capture" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format": {
+                    "enum": ["png", "svg"],
+                    "description": "Output format. PNG goes through an offscreen canvas; SVG is the serialised live SVG (vector)."
+                  },
+                  "scale": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 8,
+                    "description": "PNG raster upscale factor (1.0 = native). Ignored for SVG."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["format", "bytes_b64", "width", "height"],
+                "additionalProperties": false,
+                "properties": {
+                  "format":    { "enum": ["png", "svg"] },
+                  "bytes_b64": { "type": "string", "minLength": 1, "description": "Base64-encoded image bytes (PNG) or UTF-8 SVG XML." },
+                  "width":     { "type": "number", "exclusiveMinimum": 0 },
+                  "height":    { "type": "number", "exclusiveMinimum": 0 }
+                }
+              }
+            }
+          }
+        ]
       }
     },
     {

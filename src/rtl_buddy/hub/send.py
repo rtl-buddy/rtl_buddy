@@ -17,10 +17,12 @@ keeps the protocol testable from a shell prompt.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
 import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -364,6 +366,99 @@ def cmd_view_pan(
 ) -> None:
     with _open_or_exit() as h:
         _print_response(h.request("view_pan_to", {"instance_path": instance_path}))
+
+
+@send_app.command(
+    "capture",
+    help=(
+        "Ask the view peer (SPA) to snapshot the current graph and "
+        "write it to --out. Graph-only — surrounding panels are not "
+        "captured. Useful for agents that want to look at what the "
+        "user is seeing without a browser screenshot tool."
+    ),
+)
+def cmd_capture(
+    out: Annotated[
+        Path,
+        typer.Option(
+            "--out",
+            "-o",
+            help="Destination file. Extension determines format if --format omitted.",
+            resolve_path=True,
+        ),
+    ],
+    format: Annotated[
+        Optional[str],
+        typer.Option(
+            "--format",
+            "-f",
+            help="png (default) or svg. Inferred from --out suffix if not given.",
+            case_sensitive=False,
+        ),
+    ] = None,
+    scale: Annotated[
+        float,
+        typer.Option(
+            "--scale",
+            help="PNG upscale factor (1.0 = native). Ignored for SVG.",
+            min=0.1,
+            max=8.0,
+        ),
+    ] = 1.0,
+    timeout: Annotated[
+        float,
+        typer.Option(
+            "--timeout",
+            help="Seconds to wait for the SPA to reply. Large designs may need longer.",
+            min=1.0,
+            max=120.0,
+        ),
+    ] = 15.0,
+) -> None:
+    fmt = (format or out.suffix.lstrip(".")).lower()
+    if fmt not in {"png", "svg"}:
+        raise typer.BadParameter(
+            f"format must be png or svg, got {fmt!r} (from {'--format' if format else '--out suffix'})"
+        )
+    payload: dict[str, object] = {"format": fmt}
+    if fmt == "png" and scale != 1.0:
+        payload["scale"] = scale
+    with _open_or_exit() as h:
+        try:
+            env = h.request("view_capture", payload, timeout=timeout)
+        except TimeoutError as exc:
+            emit_console_text(str(exc), style="red")
+            raise typer.Exit(code=1)
+    if env.kind is Kind.ERROR:
+        p = env.payload if isinstance(env.payload, dict) else {}
+        emit_console_text(
+            f"hub error: {p.get('code')}: {p.get('message')}",
+            style="red",
+        )
+        raise typer.Exit(code=1)
+    body = env.payload if isinstance(env.payload, dict) else {}
+    b64 = body.get("bytes_b64")
+    if not isinstance(b64, str) or not b64:
+        emit_console_text("view returned no image bytes", style="red")
+        raise typer.Exit(code=1)
+    try:
+        data = base64.b64decode(b64, validate=True)
+    except (ValueError, TypeError) as exc:
+        emit_console_text(f"invalid base64 from view: {exc}", style="red")
+        raise typer.Exit(code=1)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    width = body.get("width")
+    height = body.get("height")
+    dims = (
+        f" {int(width)}x{int(height)}"
+        if isinstance(width, (int, float)) and isinstance(height, (int, float))
+        else ""
+    )
+    emit_console_text(
+        f"wrote {fmt}{dims} → {out} ({len(data):,} bytes)",
+        style="green",
+    )
 
 
 @send_app.command(
