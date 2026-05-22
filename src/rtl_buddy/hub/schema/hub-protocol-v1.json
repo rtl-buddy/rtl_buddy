@@ -345,6 +345,78 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "resolve_wave_to_view" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["wave_scope"],
+                "additionalProperties": false,
+                "properties": { "wave_scope": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path"],
+                "additionalProperties": false,
+                "properties": { "instance_path": { "type": "string", "minLength": 1 } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "state_snapshot" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "active_model":  { "type": ["string", "null"], "description": "Currently-active model name when the hub was started with --model NAME, else null." },
+                  "selection":     { "type": ["object", "null"], "description": "Last selection_changed payload broadcast through the hub, plus the origin that produced it. Null when the hub has seen no selection yet.",
+                                     "required": ["instance_path", "origin"], "additionalProperties": false,
+                                     "properties": { "instance_path": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli"] } } },
+                  "cursor_time":   { "type": ["object", "null"], "description": "Last cursor_time_changed payload + origin. Null when no cursor event has fired.",
+                                     "required": ["t_fs", "origin"], "additionalProperties": false,
+                                     "properties": { "t_fs": { "type": "string", "pattern": "^[0-9]+$" }, "origin": { "enum": ["view", "wave", "src", "cli"] } } },
+                  "wave_scope":    { "type": ["object", "null"], "description": "Last scope_changed payload + origin. Null when no scope event has fired.",
+                                     "required": ["wave_scope", "origin"], "additionalProperties": false,
+                                     "properties": { "wave_scope": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli"] } } },
+                  "peers":         { "type": "array", "items": { "enum": ["view", "wave", "src", "cli"] }, "uniqueItems": true,
+                                     "description": "Origins currently registered against the hub." },
+                  "diagnostics_sources": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true,
+                                           "description": "Names of producers with cached diagnostics_set bundles." }
+                },
+                "required": ["active_model", "selection", "cursor_time", "wave_scope", "peers", "diagnostics_sources"]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "hello" } }, "required": ["type"] },
       "then": {
         "properties": {

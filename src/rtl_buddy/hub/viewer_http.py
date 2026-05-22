@@ -189,6 +189,11 @@ class ViewerServer:
         self.active_model = initial_model
         self.models_file_pin = models_file_pin
         self.hub_server = hub_server
+        # Mirror the active model onto HubState so the ``state_snapshot``
+        # request type can return it without reaching back into the HTTP
+        # layer. Safe when hub_server is None (tests).
+        if hub_server is not None:
+            hub_server.state.active_model = initial_model
         # Per-model lock map. Two ``?model=X`` requests racing on a
         # cold cache funnel through one ``build_view_json`` call; two
         # ``?model=X`` / ``?model=Y`` requests run in parallel. Locks
@@ -483,6 +488,8 @@ class ViewerServer:
         from .protocol import Envelope, Kind, Origin, new_id
 
         self.active_model = model_name
+        if self.hub_server is not None:
+            self.hub_server.state.active_model = model_name
         # ``view_json_path`` now points at the per-model cache so
         # ``GET /view.json`` (no query) returns the same bytes a
         # ``?model=NAME`` request just received.

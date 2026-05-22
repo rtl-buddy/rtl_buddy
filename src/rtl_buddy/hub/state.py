@@ -95,6 +95,17 @@ class HubState:
 
     registered_clients: set[Origin] = field(default_factory=set)
 
+    active_model: Optional[str] = None
+    """Currently-active model name when the hub is serving the viewer
+    HTTP layer and has been pointed at a model (via ``rb hub start
+    --model NAME`` or a SPA ``?model=`` switch). ``None`` when no
+    model is in play yet (e.g. the hub was started without
+    ``--serve-viewer`` or before any model has been selected).
+
+    Owned by :class:`ViewerHTTP`; mirrored here so the ``state_snapshot``
+    request type and any other server-side consumer can read the
+    current model without reaching into the HTTP layer."""
+
     def reset(self) -> None:
         """Clear all cached slots (used on ``waveforms_loaded`` and tests)."""
 

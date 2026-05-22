@@ -44,6 +44,10 @@ app = typer.Typer(help="manage the rtl-buddy-hub daemon", no_args_is_help=True)
 config_app = typer.Typer(help="hub.toml utilities", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 
+from . import send as _send  # noqa: E402 — keep imports clustered after `app`
+
+app.add_typer(_send.send_app, name="send")
+
 
 def _resolve_project_root() -> Path:
     """Find the rtl-buddy project root for the current invocation.

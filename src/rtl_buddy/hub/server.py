@@ -94,7 +94,12 @@ is intercepted upfront by the handshake stage."""
 
 
 HUB_HANDLED_REQUESTS: frozenset[str] = frozenset(
-    {"resolve_view_to_wave", "resolve_signal_to_view"}
+    {
+        "resolve_view_to_wave",
+        "resolve_wave_to_view",
+        "resolve_signal_to_view",
+        "state_snapshot",
+    }
 )
 
 
@@ -405,20 +410,15 @@ class HubServer:
             )
         )
 
-        # Replay cached diagnostics so this client sees the same set
-        # everyone else does. Empty-items bundles are replayed too so
-        # a "cleared" source remains visible as "cleared" to late
-        # joiners. We replay using each bundle's original origin so
-        # the loop-prevention origin tag is preserved.
-        for source, bundle in self.state.diagnostics.items():
-            await self._safe_send(
-                conn,
-                make_diagnostics_set(
-                    origin=bundle.origin,
-                    source=source,
-                    items=list(bundle.items),
-                ),
-            )
+        # Replay cached state to the just-welcomed peer so a fresh
+        # client (new browser tab, restarted nvim, rb hub send drop-in)
+        # immediately knows what the user is looking at, without having
+        # to wait for the next user action. Each event is unicast to
+        # this peer only — existing peers don't see duplicated state.
+        # Each replayed envelope carries the original `origin` that
+        # produced the cached event so loop-prevention semantics match
+        # the live broadcast.
+        await self._replay_cached_state(conn)
 
         log_event(
             logger,
@@ -679,7 +679,12 @@ class HubServer:
         await self._safe_send(target_conn, env)
 
     async def _handle_hub_request(self, env: Envelope, conn: ClientConnection) -> None:
-        """Run a hub-side ``resolve_*`` request and reply on the same socket."""
+        """Run a hub-side request and reply on the same socket."""
+
+        # state_snapshot is pure HubState read; no resolver needed.
+        if env.type == "state_snapshot":
+            await self._handle_state_snapshot(env, conn)
+            return
 
         if self.resolver is None:
             await self._reply_unresolvable(
@@ -689,6 +694,8 @@ class HubServer:
 
         if env.type == "resolve_view_to_wave":
             await self._handle_resolve_view_to_wave(env, conn)
+        elif env.type == "resolve_wave_to_view":
+            await self._handle_resolve_wave_to_view(env, conn)
         elif env.type == "resolve_signal_to_view":
             await self._handle_resolve_signal_to_view(env, conn)
         else:
@@ -803,6 +810,192 @@ class HubServer:
                 },
             ),
         )
+
+    async def _handle_resolve_wave_to_view(
+        self, env: Envelope, conn: ClientConnection
+    ) -> None:
+        """Reverse of ``resolve_view_to_wave`` — wave_scope → instance_path."""
+
+        assert self.resolver is not None
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        wave_scope = payload.get("wave_scope")
+        if not isinstance(wave_scope, str) or not wave_scope:
+            await self._safe_send(
+                conn,
+                make_error(
+                    origin=Origin.CLI,
+                    code="bad_request",
+                    message="resolve_wave_to_view payload missing wave_scope",
+                    context={"received": payload},
+                    in_reply_to=env.id,
+                ),
+            )
+            return
+
+        instance_path = self.resolver.wave_to_view(wave_scope)
+        if instance_path is None:
+            await self._reply_unresolvable(
+                env,
+                conn,
+                f"no instance matches wave scope {wave_scope!r}",
+                context={
+                    "wave_scope": wave_scope,
+                    "tb_prefix": self.resolver.mapping.tb_prefix,
+                },
+            )
+            return
+
+        await self._safe_send(
+            conn,
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.RESPONSE,
+                type="resolve_wave_to_view",
+                id=env.id,
+                payload={"instance_path": instance_path},
+            ),
+        )
+
+    async def _handle_state_snapshot(
+        self, env: Envelope, conn: ClientConnection
+    ) -> None:
+        """Return a snapshot of every coordinate cached on ``HubState``.
+
+        Pure HubState read — no resolver required, no events emitted.
+        Lets a fresh client (a sidebar SPA, an agent dropping in
+        mid-session, a CI guardrail) know "where is the user looking
+        right now" without scraping the event stream.
+        """
+
+        s = self.state
+        selection_payload: dict[str, Any] | None = None
+        if s.selection is not None:
+            # On-wire selection_changed payload uses a string for the
+            # single-driver case and a list for the multi-driver collapse
+            # (§7). state_snapshot always emits a string and picks the
+            # first path when collapsed — multi-driver collapse is a
+            # semantic the snapshot doesn't model.
+            paths = s.selection.instance_path
+            selection_payload = {
+                "instance_path": paths[0] if paths else "",
+                "origin": s.selection.origin.value,
+            }
+
+        cursor_payload: dict[str, Any] | None = None
+        if s.cursor_time is not None:
+            cursor_payload = {
+                "t_fs": s.cursor_time.t_fs,
+                "origin": s.cursor_time.origin.value,
+            }
+
+        scope_payload: dict[str, Any] | None = None
+        if s.wave_scope is not None:
+            scope_payload = {
+                "wave_scope": s.wave_scope.wave_scope,
+                "origin": s.wave_scope.origin.value,
+            }
+
+        await self._safe_send(
+            conn,
+            Envelope(
+                origin=Origin.CLI,
+                kind=Kind.RESPONSE,
+                type="state_snapshot",
+                id=env.id,
+                payload={
+                    "active_model": s.active_model,
+                    "selection": selection_payload,
+                    "cursor_time": cursor_payload,
+                    "wave_scope": scope_payload,
+                    "peers": sorted(o.value for o in s.registered_clients),
+                    "diagnostics_sources": sorted(s.diagnostics.keys()),
+                },
+            ),
+        )
+
+    async def _replay_cached_state(self, conn: ClientConnection) -> None:
+        """Unicast the hub's cached state events to one client.
+
+        Called from :meth:`_register` after ``welcome`` has been sent.
+        Skips any cache slot that's still empty (e.g. a freshly-started
+        hub). The cached ``origin`` is preserved on each replayed
+        envelope so the receiving client can apply the same
+        loop-prevention rules it would for a live broadcast.
+
+        diagnostics_set bundles ship even when ``items`` is empty so a
+        producer that cleared its findings before this peer connected
+        still reaches the peer as a "cleared" record (matches the
+        behaviour added in #128).
+        """
+        s = self.state
+
+        if s.selection is not None:
+            paths = s.selection.instance_path
+            payload: dict[str, Any] = {
+                # On-wire selection_changed accepts string or list (§7
+                # collapse case is list-valued). Replay matches whatever
+                # we cached: tuple of length 1 → string, longer → list.
+                "instance_path": paths[0] if len(paths) == 1 else list(paths),
+            }
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.selection.origin,
+                    kind=Kind.EVENT,
+                    type="selection_changed",
+                    id=new_id(),
+                    payload=payload,
+                ),
+            )
+
+        if s.signal_selection is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.signal_selection.origin,
+                    kind=Kind.EVENT,
+                    type="signal_selected",
+                    id=new_id(),
+                    payload={
+                        "signal": s.signal_selection.signal,
+                        "wave_scope": s.signal_selection.wave_scope,
+                    },
+                ),
+            )
+
+        if s.cursor_time is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.cursor_time.origin,
+                    kind=Kind.EVENT,
+                    type="cursor_time_changed",
+                    id=new_id(),
+                    payload={"t_fs": s.cursor_time.t_fs},
+                ),
+            )
+
+        if s.wave_scope is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.wave_scope.origin,
+                    kind=Kind.EVENT,
+                    type="scope_changed",
+                    id=new_id(),
+                    payload={"wave_scope": s.wave_scope.wave_scope},
+                ),
+            )
+
+        for source, bundle in self.state.diagnostics.items():
+            await self._safe_send(
+                conn,
+                make_diagnostics_set(
+                    origin=bundle.origin,
+                    source=source,
+                    items=list(bundle.items),
+                ),
+            )
 
     async def _reply_unresolvable(
         self,
