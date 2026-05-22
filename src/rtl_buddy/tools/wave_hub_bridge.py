@@ -415,10 +415,15 @@ class WaveHubBridge:
                 "variables": variables,
             }
         )
-        # WCP response correlation isn't tracked in v1; respond optimistically
-        # with empty ids list. Clients that need the surfer-assigned ids back
-        # can issue a fresh query path once that's wired (post-v1).
-        self._reply_response(env, type_=env.type, payload={"ids": []})
+        # Wait for surfer's WCP response so we can pass ids + not_found back
+        # to the hub caller (typically `rb hub send wave-add`). Surfer's WCP
+        # has no request IDs but responses arrive in send order per-command,
+        # so the listener uses a per-command FIFO of waiters. On timeout we
+        # fall back to an optimistic empty reply rather than fail the call —
+        # the bridge has run for years without this round-trip.
+        resp = self._listener.await_response("add_variables", timeout=2.0)
+        reply_payload = self._build_add_reply(resp)
+        self._reply_response(env, type_=env.type, payload=reply_payload)
 
     def _handle_set_cursor(self, env: Envelope) -> None:
         payload = env.payload if isinstance(env.payload, dict) else {}
@@ -445,7 +450,29 @@ class WaveHubBridge:
         self._send_to_surfer(
             {"type": "command", "command": "add_scope", "scope": scope}
         )
-        self._reply_response(env, type_=env.type, payload={"ok": True})
+        resp = self._listener.await_response("add_scope", timeout=2.0)
+        reply_payload = self._build_add_reply(resp, ok_fallback=True)
+        self._reply_response(env, type_=env.type, payload=reply_payload)
+
+    @staticmethod
+    def _build_add_reply(resp: dict | None, *, ok_fallback: bool = False) -> dict:
+        """Translate surfer's WCP add_* response into the hub reply payload.
+
+        ``not_found`` is surfaced only when present and non-empty so older
+        surfer binaries (no not_found field) keep the legacy shape. The
+        ``ok`` field is set when ``ok_fallback`` is True, matching the
+        previous wave_set_scope reply contract for clients that ignore ids.
+        """
+        if resp is None:
+            return {"ok": True, "ids": []} if ok_fallback else {"ids": []}
+        ids = resp.get("ids") if isinstance(resp.get("ids"), list) else []
+        out: dict[str, Any] = {"ids": ids}
+        if ok_fallback:
+            out["ok"] = True
+        not_found = resp.get("not_found")
+        if isinstance(not_found, list) and not_found:
+            out["not_found"] = [s for s in not_found if isinstance(s, str)]
+        return out
 
     # ------------------------------------------------------------------
     # internals

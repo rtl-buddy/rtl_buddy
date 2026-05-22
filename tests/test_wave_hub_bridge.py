@@ -33,9 +33,21 @@ class _FakeListener:
     def __init__(self) -> None:
         self.sent: list[dict] = []
         self.event_observer = None
+        # Pre-stage WCP responses by command name. Tests can push expected
+        # response dicts onto these queues to drive the bridge through
+        # the new await_response correlation path. Default behaviour
+        # (empty queue) returns None — the bridge then falls back to
+        # the optimistic empty reply as if surfer never answered.
+        self.next_responses: dict[str, list[dict | None]] = {}
 
     def send_to_surfer(self, frame: dict) -> None:
         self.sent.append(frame)
+
+    def await_response(self, command: str, timeout: float = 2.0) -> dict | None:
+        queue = self.next_responses.get(command, [])
+        if not queue:
+            return None
+        return queue.pop(0)
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +368,7 @@ def test_wave_add_variables_translates_to_wcp_command(hub_in_thread: _HubInThrea
         resp = _recv_line(view_sock)
         assert resp.kind is Kind.RESPONSE
         assert resp.id == req.id
+        # No surfer response staged → bridge falls back to optimistic empty reply.
         assert resp.payload == {"ids": []}
         # And the bridge translated the request into a WCP command.
         deadline = time.monotonic() + 1.0
@@ -368,6 +381,78 @@ def test_wave_add_variables_translates_to_wcp_command(hub_in_thread: _HubInThrea
                 "variables": ["tb.dut.x", "tb.dut.y"],
             }
         ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_add_variables_forwards_ids_and_not_found(hub_in_thread: _HubInThread):
+    """When surfer answers add_variables with ids + not_found, the bridge
+    surfaces both back to the hub caller. This is what makes `rb hub send
+    wave-add path1 path2` actually useful — without it, the cli can't tell
+    a typo from a valid-but-resolved path."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_responses["add_variables"] = [
+        {
+            "type": "response",
+            "command": "add_variables",
+            "ids": [4, 5],
+            "not_found": ["tb.dut.bogus"],
+        }
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        req = Envelope(
+            origin=Origin.VIEW,
+            kind=Kind.REQUEST,
+            type="wave_add_variables",
+            id=new_id(),
+            payload={"variables": ["tb.dut.x", "tb.dut.bogus"]},
+        )
+        view_sock.sendall(encode(req).encode("utf-8") + b"\n")
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {"ids": [4, 5], "not_found": ["tb.dut.bogus"]}
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_set_scope_forwards_not_found(hub_in_thread: _HubInThread):
+    """add_scope with an unknown scope: surfer returns ids=[] +
+    not_found=[scope]; the bridge forwards both alongside the ok flag."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_responses["add_scope"] = [
+        {
+            "type": "response",
+            "command": "add_scope",
+            "ids": [],
+            "not_found": ["tb.dut.does_not_exist"],
+        }
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        req = Envelope(
+            origin=Origin.VIEW,
+            kind=Kind.REQUEST,
+            type="wave_set_scope",
+            id=new_id(),
+            payload={"wave_scope": "tb.dut.does_not_exist"},
+        )
+        view_sock.sendall(encode(req).encode("utf-8") + b"\n")
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {
+            "ok": True,
+            "ids": [],
+            "not_found": ["tb.dut.does_not_exist"],
+        }
     finally:
         view_sock.close()
         bridge.stop()
@@ -428,7 +513,10 @@ def test_wave_set_scope_translates_to_add_scope_until_fork(
         view_sock.sendall(encode(req).encode("utf-8") + b"\n")
         resp = _recv_line(view_sock)
         assert resp.kind is Kind.RESPONSE
-        assert resp.payload == {"ok": True}
+        # Reply also carries the (here-empty) ids list from surfer's add_scope
+        # response so callers can distinguish "no response" from "scope had
+        # nothing to add". not_found is omitted when empty.
+        assert resp.payload == {"ok": True, "ids": []}
 
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline and not listener.sent:

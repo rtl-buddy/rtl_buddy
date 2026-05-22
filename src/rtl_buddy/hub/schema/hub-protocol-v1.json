@@ -183,7 +183,8 @@
                 "required": ["ids"],
                 "additionalProperties": false,
                 "properties": {
-                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+                  "not_found": { "type": "array", "items": { "type": "string", "minLength": 1 } }
                 }
               }
             }
@@ -213,7 +214,11 @@
                 "type": "object",
                 "required": ["ok"],
                 "additionalProperties": false,
-                "properties": { "ok": { "type": "boolean" } }
+                "properties": {
+                  "ok": { "type": "boolean" },
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+                  "not_found": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                }
               }
             }
           }
