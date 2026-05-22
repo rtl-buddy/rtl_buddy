@@ -48,6 +48,7 @@ from .skill_install import app as skill_app
 from .tools.axi_profile_rtl_buddy import (
     RtlBuddyAxiProfileDiscover,
     RtlBuddyAxiProfileGenMonitor,
+    RtlBuddyAxiProfileNotebook,
     RtlBuddyAxiProfileRun,
 )
 from .tools.coverage import CoverageReporter
@@ -150,6 +151,10 @@ class RtlBuddy:
             "gen-monitor",
             help="emit the SV bind-style AXI monitor for the model's testbench",
         )(self.do_cmd_axi_profile_gen_monitor)
+        self.axi_profile_app.command(
+            "notebook",
+            help="launch the packaged marimo notebook against a test's per-txn parquet",
+        )(self.do_cmd_axi_profile_notebook)
         self.app.add_typer(
             self.axi_profile_app,
             name="axi-profile",
@@ -1396,6 +1401,70 @@ class RtlBuddy:
             executable=tool,
         )
         raise typer.Exit(profiler.run())
+
+    def do_cmd_axi_profile_notebook(
+        self,
+        test_name: Annotated[str, typer.Argument(help="test from tests.yaml")],
+        test_config: Annotated[
+            str, typer.Option("-c", "--test-config", help="tests.yaml to use")
+        ] = "tests.yaml",
+        port: Annotated[
+            int | None,
+            typer.Option(
+                "--port",
+                help="TCP port for marimo's edit server (default: OS-assigned)",
+            ),
+        ] = None,
+        foreground: Annotated[
+            bool,
+            typer.Option(
+                "--foreground/--daemon",
+                help=(
+                    "Run marimo in the foreground (default). --daemon is "
+                    "accepted but currently falls back to foreground; "
+                    "background detach is a follow-up."
+                ),
+            ),
+        ] = True,
+        marimo: Annotated[
+            str,
+            typer.Option(
+                "--marimo",
+                help="path to the marimo binary (default: 'marimo' on PATH)",
+            ),
+        ] = "marimo",
+    ):
+        """
+        launch the packaged marimo notebook against a test's per-txn parquet
+
+        Resolves the per-test parquet at
+        artefacts/axi/<test>/axi-txns.parquet (produced by
+        `rb axi-profile run <test> --emit-txns-parquet`), locates the
+        notebook template shipped with the axi-profiler wheel, and
+        spawns `marimo edit <template>` with $AXI_TXNS_PARQUET set so
+        the template's first cell loads the parquet automatically.
+        """
+        suite_cfg = SuiteConfig(test_config)
+        test_cfg = suite_cfg.get_tests(test_name)[0]
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_notebook",
+            command="axi-profile",
+            subcommand="notebook",
+            test=test_name,
+            port=port,
+            foreground=foreground,
+        )
+        notebook = RtlBuddyAxiProfileNotebook(
+            name=self.name + "/axi-profile/notebook",
+            test_cfg=test_cfg,
+            suite_dir=os.path.dirname(os.path.abspath(test_config)),
+            port=port,
+            foreground=foreground,
+            marimo_executable=marimo,
+        )
+        raise typer.Exit(notebook.run())
 
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]

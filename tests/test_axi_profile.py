@@ -701,3 +701,242 @@ def test_rb_axi_profile_gen_monitor_invokes_stubbed_profiler(
     assert argv[0] == "gen-monitor"
     assert argv[1].endswith("src/axi-bundles.yaml")
     assert argv[argv.index("--output") + 1].endswith("gen/axi_perf_mon.sv")
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyAxiProfileNotebook (unit)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_marimo(tmp_path: Path, *, exit_code: int = 0) -> tuple[Path, Path]:
+    """Drop a fake ``marimo`` that records argv + AXI_TXNS_PARQUET env."""
+    record = tmp_path / "marimo-invocation.json"
+    script = tmp_path / "marimo"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        f'python - "$@" <<PY\n'
+        "import json, os, sys\n"
+        f"open({json.dumps(str(record))}, 'w').write(\n"
+        "    json.dumps({\n"
+        "        'argv': sys.argv[1:],\n"
+        "        'env_axi_txns_parquet': os.environ.get('AXI_TXNS_PARQUET'),\n"
+        "    })\n"
+        ")\n"
+        "PY\n"
+        f"exit {exit_code}\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script, record
+
+
+def _write_notebook_fixture(
+    tmp_path: Path, *, parquet_present: bool = True
+) -> tuple[Path, Path]:
+    """Build a suite_dir with tests.yaml + optional parquet artefact."""
+    suite_dir = tmp_path / "verif" / "soc_top"
+    suite_dir.mkdir(parents=True)
+    src = suite_dir / "src" / "soc.sv"
+    src.parent.mkdir()
+    src.write_text("module soc; endmodule\n")
+    (suite_dir / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        "  - name: soc\n"
+        "    filelist:\n"
+        "      - src/soc.sv\n"
+    )
+    tests_yaml = suite_dir / "tests.yaml"
+    tests_yaml.write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        "  - name: tb_basic\n"
+        "    filelist:\n"
+        "      - src/soc.sv\n"
+        "tests:\n"
+        "  - name: basic\n"
+        "    desc: smoke\n"
+        "    model: soc\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    testbench: tb_basic\n"
+    )
+    if parquet_present:
+        parquet_dir = suite_dir / "artefacts" / "axi" / "basic"
+        parquet_dir.mkdir(parents=True)
+        (parquet_dir / "axi-txns.parquet").write_bytes(b"PAR1\x00\x00stub\x00")
+    return suite_dir, tests_yaml
+
+
+def _notebook_template_or_skip():
+    """Skip the happy-path notebook tests when ``rtl_buddy_axi_profiler``
+    isn't installed in the test env.
+
+    rtl_buddy uses subprocess-granularity coupling for axi-profiler
+    (we shell out to the binary, not import its Python API), so the
+    package is intentionally absent in CI. Local dev installs with
+    the sibling clone editable-installed exercise these tests.
+    """
+    return pytest.importorskip("rtl_buddy_axi_profiler.notebook")
+
+
+def test_notebook_wrapper_builds_expected_argv_and_env(tmp_path: Path) -> None:
+    """Lock the marimo argv shape + AXI_TXNS_PARQUET export.
+
+    Downstream (the marimo template) reads the parquet path from
+    ``$AXI_TXNS_PARQUET``; if either the env var name or the argv
+    shape drifts the user's notebook gets an empty cell and a
+    confusing error. Pin both here.
+    """
+    _notebook_template_or_skip()
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
+    script, record = _make_fake_marimo(tmp_path)
+
+    suite_cfg = SuiteConfig(str(tests_yaml))
+    test_cfg = suite_cfg.get_tests("basic")[0]
+
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        marimo_executable=str(script),
+    )
+    assert notebook.run() == 0
+
+    payload = json.loads(record.read_text())
+    argv = payload["argv"]
+    assert argv[0] == "edit"
+    template_path = argv[1]
+    assert template_path.endswith("rtl_buddy_axi_profiler/notebook/template.py")
+    assert Path(template_path).is_file()
+    # AXI_TXNS_PARQUET points at the per-test parquet, not a default.
+    parquet_env = payload["env_axi_txns_parquet"]
+    assert parquet_env is not None
+    assert parquet_env.endswith("artefacts/axi/basic/axi-txns.parquet")
+    assert Path(parquet_env).is_file()
+
+
+def test_notebook_wrapper_forwards_port_flag(tmp_path: Path) -> None:
+    _notebook_template_or_skip()
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
+    script, record = _make_fake_marimo(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        port=2718,
+        marimo_executable=str(script),
+    )
+    assert notebook.run() == 0
+    argv = json.loads(record.read_text())["argv"]
+    assert argv[argv.index("--port") + 1] == "2718"
+
+
+def test_notebook_wrapper_errors_when_parquet_missing(tmp_path: Path) -> None:
+    """The user has to run `rb axi-profile run` first — give them
+    that exact command in the error so they don't go hunting."""
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path, parquet_present=False)
+    script, _ = _make_fake_marimo(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        marimo_executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        notebook.run()
+    msg = str(exc.value)
+    assert "axi-txns.parquet" in msg
+    assert "rb axi-profile run basic --emit-txns-parquet" in msg
+
+
+def test_notebook_wrapper_errors_when_marimo_missing(tmp_path: Path) -> None:
+    """When the user hasn't installed the [notebook] extra, the
+    marimo binary won't be on PATH. Hint at the install command."""
+    _notebook_template_or_skip()
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    # Point at a path that doesn't exist so the path-form branch fires.
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        marimo_executable=str(tmp_path / "not-marimo"),
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        notebook.run()
+    assert "marimo" in str(exc.value).lower()
+
+
+def test_notebook_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
+    _notebook_template_or_skip()
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
+    script, _ = _make_fake_marimo(tmp_path, exit_code=7)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        marimo_executable=str(script),
+    )
+    assert notebook.run() == 7
+
+
+def test_rb_axi_profile_notebook_invokes_stubbed_marimo(
+    minimal_project: Path,
+) -> None:
+    """End-to-end: ``rb axi-profile notebook <test>`` through the
+    Typer app, with the parquet pre-staged at the canonical location."""
+    _notebook_template_or_skip()
+    parquet_dir = minimal_project / "artefacts" / "axi" / "basic"
+    parquet_dir.mkdir(parents=True)
+    (parquet_dir / "axi-txns.parquet").write_bytes(b"PAR1\x00\x00stub\x00")
+
+    script, record = _make_fake_marimo(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "axi-profile",
+            "notebook",
+            "basic",
+            "-c",
+            "tests.yaml",
+            "--marimo",
+            str(script),
+            "--port",
+            "2718",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(record.read_text())
+    argv = payload["argv"]
+    assert argv[0] == "edit"
+    assert argv[1].endswith("rtl_buddy_axi_profiler/notebook/template.py")
+    assert argv[argv.index("--port") + 1] == "2718"
+    assert payload["env_axi_txns_parquet"].endswith(
+        "artefacts/axi/basic/axi-txns.parquet"
+    )
+
+
+def test_rb_axi_profile_notebook_in_subcommand_help(minimal_project: Path) -> None:
+    """notebook must appear in `rb axi-profile` --help so users
+    discover it without reading the docs."""
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["axi-profile"])
+    assert "notebook" in result.output

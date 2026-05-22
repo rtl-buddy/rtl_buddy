@@ -5,7 +5,7 @@ mode: rtl_buddy is not coupled to the profiler's Python API, and a
 profiler release can be picked up via ``uv sync`` (or by re-installing
 the standalone binary) without code changes here.
 
-Two wrappers, one per ``rb axi-profile`` subcommand:
+Four wrappers, one per ``rb axi-profile`` subcommand:
 
 * :class:`RtlBuddyAxiProfileDiscover` — ``rb axi-profile discover <model>``:
   parses RTL via ``axi-profiler discover`` and writes
@@ -30,6 +30,15 @@ Two wrappers, one per ``rb axi-profile`` subcommand:
   writes to ``model.axi_monitor_out`` — both come from the
   ``models.yaml`` entry so the testbench's filelist can pick up the
   generated file without per-test config.
+
+* :class:`RtlBuddyAxiProfileNotebook` — ``rb axi-profile notebook
+  <test>``: resolves the per-test ``axi-txns.parquet`` (from the
+  ``--emit-txns-parquet`` flag on ``axi-profiler run``) and spawns
+  ``marimo edit`` against the packaged notebook template shipped
+  inside the ``rtl_buddy_axi_profiler.notebook`` subpackage. The
+  parquet path is exported as ``$AXI_TXNS_PARQUET`` so the template
+  picks it up; the user gets an interactive deep-dive UI without
+  hand-writing pyarrow scripts.
 """
 
 from __future__ import annotations
@@ -440,6 +449,170 @@ class RtlBuddyAxiProfileGenMonitor:
             "axi_profile_gen_monitor.done",
             model=self.model_cfg.name,
             output=out_path,
+            returncode=proc.returncode,
+        )
+        return proc.returncode
+
+
+class RtlBuddyAxiProfileNotebook:
+    """Launch the packaged marimo notebook against a test's parquet.
+
+    Resolves three things up front:
+
+    1. The per-test parquet at
+       ``<suite_dir>/artefacts/axi/<test>/axi-txns.parquet`` — produced
+       by ``rb axi-profile run <test>`` when ``axi-profiler`` is
+       installed with the ``[parquet]`` extra. Missing → clear
+       ``FatalRtlBuddyError`` pointing at the prerequisite command.
+    2. The notebook template via
+       ``importlib.resources.files('rtl_buddy_axi_profiler.notebook')
+       / 'template.py'`` — always present once axi-profiler is
+       installed, regardless of the ``[notebook]`` extra (the extra
+       only adds marimo + altair + polars to the dep closure).
+    3. The marimo binary on ``$PATH`` — gated by the ``[notebook]``
+       extra. Missing → install hint pointing at
+       ``rtl-buddy-axi-profiler[notebook]``.
+
+    Spawns ``marimo edit <template>`` with ``$AXI_TXNS_PARQUET``
+    exported so the template's first cell reads it. Foreground by
+    default (matches ``rb hub start``); ``--daemon`` is accepted but
+    falls back to foreground for v1 (background detach is a
+    follow-up — same pattern as hub).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        test_cfg: TestConfig,
+        *,
+        suite_dir: str,
+        port: int | None = None,
+        foreground: bool = True,
+        marimo_executable: str = "marimo",
+    ):
+        self.name = name
+        self.test_cfg = test_cfg
+        self.test_name = test_cfg.get_name()
+        self.suite_dir = os.path.abspath(suite_dir)
+        self.port = port
+        self.foreground = foreground
+        self.marimo_executable = marimo_executable
+
+        self.artefact_dir = os.path.join(
+            self.suite_dir, "artefacts", "axi", self.test_name
+        )
+
+    def _parquet_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi-txns.parquet")
+
+    def _resolve_parquet_path(self) -> str:
+        p = self._parquet_path()
+        if not os.path.isfile(p):
+            raise FatalRtlBuddyError(
+                f"axi-profile notebook: parquet not found at {p}. "
+                f"Run `rb axi-profile run {self.test_name} --emit-txns-parquet` "
+                "first to produce it (requires the axi-profiler "
+                "[parquet] extra)."
+            )
+        return p
+
+    def _resolve_template_path(self) -> str:
+        # The notebook subpackage ships inside the axi-profiler wheel,
+        # so resources.files() returns a real filesystem path when the
+        # wheel is unpacked. We don't need a CM here — marimo just
+        # opens the file directly.
+        try:
+            from importlib import resources
+
+            ref = resources.files("rtl_buddy_axi_profiler.notebook") / "template.py"
+            path = str(ref)
+            if not os.path.isfile(path):
+                raise FileNotFoundError(path)
+            return path
+        except (ModuleNotFoundError, FileNotFoundError) as e:
+            raise FatalRtlBuddyError(
+                "axi-profile notebook: notebook template not found in the "
+                "installed rtl-buddy-axi-profiler wheel "
+                f"({type(e).__name__}: {e}). Reinstall with the "
+                "[notebook] extra: "
+                "`uv pip install 'rtl-buddy-axi-profiler[notebook]'`."
+            ) from None
+
+    def _require_marimo(self) -> None:
+        if os.sep in self.marimo_executable or (
+            os.altsep and os.altsep in self.marimo_executable
+        ):
+            if not (
+                os.path.isfile(self.marimo_executable)
+                and os.access(self.marimo_executable, os.X_OK)
+            ):
+                raise FatalRtlBuddyError(
+                    "axi-profile notebook: marimo not found or not "
+                    f"executable: {self.marimo_executable}"
+                )
+            return
+        if shutil.which(self.marimo_executable) is None:
+            raise FatalRtlBuddyError(
+                f"axi-profile notebook: '{self.marimo_executable}' not on "
+                "PATH. Install the notebook extra: "
+                "`uv pip install 'rtl-buddy-axi-profiler[notebook]'` "
+                "(pulls marimo + altair + polars)."
+            )
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi-profile-notebook.log")
+
+    def _build_cmd(self, template: str) -> list[str]:
+        cmd = [self.marimo_executable, "edit", template]
+        if self.port is not None:
+            cmd += ["--port", str(self.port)]
+        return cmd
+
+    def run(self) -> int:
+        # Resolve the parquet + template + binary up front so failures
+        # surface before marimo spins up its tornado server.
+        parquet = self._resolve_parquet_path()
+        template = self._resolve_template_path()
+        self._require_marimo()
+
+        if not self.foreground:
+            log_event(
+                logger,
+                logging.WARNING,
+                "axi_profile_notebook.daemon_fallback",
+                test=self.test_name,
+                reason=(
+                    "background detach not implemented yet; running in foreground."
+                ),
+            )
+
+        os.makedirs(self.artefact_dir, exist_ok=True)
+        cmd = self._build_cmd(template)
+        env = {**os.environ, "AXI_TXNS_PARQUET": parquet}
+
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_notebook.start",
+            test=self.test_name,
+            cmd=" ".join(cmd),
+            parquet=parquet,
+            template=template,
+            port=self.port,
+        )
+
+        log_path = self._log_path()
+        with task_status(f"axi-profile notebook {self.test_name}"):
+            with open(log_path, "w") as log_f:
+                log_f.write(f"$ AXI_TXNS_PARQUET={parquet} " + " ".join(cmd) + "\n")
+                log_f.flush()
+                proc = run_managed_process(cmd, stdout=None, stderr=log_f, env=env)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_notebook.done",
+            test=self.test_name,
             returncode=proc.returncode,
         )
         return proc.returncode
