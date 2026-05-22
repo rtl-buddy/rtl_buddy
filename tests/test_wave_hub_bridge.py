@@ -124,7 +124,14 @@ class _HubInThread:
             future.result(timeout=5.0)
         except Exception:
             pass
-        self.loop.call_soon_threadsafe(self.loop.stop)
+        # Same race as in test_hub_send_cli.py: the runner thread can
+        # close the loop in its finally block before we manage to
+        # schedule loop.stop here. Treat the closed-loop RuntimeError
+        # as "already stopped" — which is exactly what we wanted.
+        try:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        except RuntimeError:
+            pass
         if self.thread is not None:
             self.thread.join(timeout=5.0)
 
