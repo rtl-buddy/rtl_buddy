@@ -132,3 +132,35 @@ def test_run_managed_process_restores_signal_handlers(monkeypatch):
 
     assert signal.getsignal(signal.SIGINT) == original_int
     assert signal.getsignal(signal.SIGTERM) == original_term
+
+
+def test_run_managed_process_works_from_worker_thread(monkeypatch):
+    """``signal.signal()`` only works in the main thread, so callers
+    invoking ``run_managed_process`` from a worker thread (e.g. the
+    hub's ``asyncio.to_thread`` per-model lock in
+    ``rb hub start --model``) MUST NOT crash. The helper has to
+    detect non-main-thread context and skip the signal-handler
+    install/restore entirely.
+    """
+    import threading
+
+    proc = FakeProcess()
+    monkeypatch.setattr(
+        process_utils.subprocess,
+        "Popen",
+        lambda *args, **kwargs: proc,
+    )
+
+    result: dict = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = process_utils.run_managed_process(["tool"])
+        except Exception as exc:  # pragma: no cover - failure path
+            result["error"] = exc
+
+    t = threading.Thread(target=runner)
+    t.start()
+    t.join(timeout=5.0)
+    assert "error" not in result, result.get("error")
+    assert result["value"].returncode == 0

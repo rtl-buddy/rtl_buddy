@@ -1,6 +1,7 @@
 import os
 import signal
 import subprocess
+import threading
 from dataclasses import dataclass
 from typing import IO
 
@@ -91,9 +92,20 @@ def run_managed_process(
             raise KeyboardInterrupt
         raise SystemExit(128 + signum)
 
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        previous_handlers[signum] = signal.getsignal(signum)
-        signal.signal(signum, _signal_handler)
+    # ``signal.signal`` only works in the main thread. When this
+    # helper is called from a worker thread (e.g. ``asyncio.to_thread``
+    # from the hub's HTTP handler in ``rb hub --model`` switching),
+    # we skip the signal-handler install. The main thread's existing
+    # SIGINT/SIGTERM handler still fires and the ``finally`` block
+    # below still terminates the process group on its way out, so the
+    # only thing lost is the in-worker re-raise of KeyboardInterrupt /
+    # SystemExit — which the worker thread can't propagate to the
+    # main thread anyway.
+    in_main_thread = threading.current_thread() is threading.main_thread()
+    if in_main_thread:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _signal_handler)
 
     try:
         try:
@@ -120,5 +132,6 @@ def run_managed_process(
         _terminate_process_group(
             proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
         )
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
+        if in_main_thread:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
