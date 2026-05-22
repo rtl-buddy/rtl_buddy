@@ -492,6 +492,113 @@ def test_wave_set_cursor_translates_to_wcp_command(hub_in_thread: _HubInThread):
         bridge.stop()
 
 
+def test_wave_set_viewport_translates_to_wcp_command(hub_in_thread: _HubInThread):
+    """`wave_set_viewport { t_fs }` → WCP `set_viewport_to { timestamp }`."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        req = Envelope(
+            origin=Origin.VIEW,
+            kind=Kind.REQUEST,
+            type="wave_set_viewport",
+            id=new_id(),
+            payload={"t_fs": "200000"},
+        )
+        view_sock.sendall(encode(req).encode("utf-8") + b"\n")
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {"ok": True}
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not listener.sent:
+            time.sleep(0.02)
+        assert listener.sent == [
+            {
+                "type": "command",
+                "command": "set_viewport_to",
+                "timestamp": 200000,
+            }
+        ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_zoom_to_range_translates_to_wcp_command(hub_in_thread: _HubInThread):
+    """`wave_zoom_to_range { start_fs, end_fs }` → WCP
+    `set_viewport_range { start, end }`."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        req = Envelope(
+            origin=Origin.VIEW,
+            kind=Kind.REQUEST,
+            type="wave_zoom_to_range",
+            id=new_id(),
+            payload={"start_fs": "50000", "end_fs": "100000"},
+        )
+        view_sock.sendall(encode(req).encode("utf-8") + b"\n")
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {"ok": True}
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not listener.sent:
+            time.sleep(0.02)
+        assert listener.sent == [
+            {
+                "type": "command",
+                "command": "set_viewport_range",
+                "start": 50000,
+                "end": 100000,
+            }
+        ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_zoom_to_fit_translates_to_wcp_command(hub_in_thread: _HubInThread):
+    """`wave_zoom_to_fit {}` → WCP `zoom_to_fit { viewport_idx: 0 }`."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        req = Envelope(
+            origin=Origin.VIEW,
+            kind=Kind.REQUEST,
+            type="wave_zoom_to_fit",
+            id=new_id(),
+            payload={},
+        )
+        view_sock.sendall(encode(req).encode("utf-8") + b"\n")
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {"ok": True}
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not listener.sent:
+            time.sleep(0.02)
+        assert listener.sent == [
+            {
+                "type": "command",
+                "command": "zoom_to_fit",
+                "viewport_idx": 0,
+            }
+        ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
 def test_wave_set_scope_translates_to_add_scope_until_fork(
     hub_in_thread: _HubInThread,
 ):

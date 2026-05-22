@@ -257,6 +257,97 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "wave_set_viewport" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["t_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "t_fs": { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_zoom_to_range" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["start_fs", "end_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "start_fs": { "type": "string", "pattern": "^-?[0-9]+$" },
+                  "end_fs":   { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_zoom_to_fit" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "view_pan_to" } }, "required": ["type"] },
       "then": {
         "oneOf": [

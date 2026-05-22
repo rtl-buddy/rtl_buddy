@@ -356,6 +356,52 @@ def cmd_wave_scope(
 
 
 @send_app.command(
+    "wave-pan",
+    help="Pan surfer's viewport to center on T_FS (zoom unchanged). Maps to WCP set_viewport_to.",
+)
+def cmd_wave_pan(
+    t_fs: Annotated[
+        int,
+        typer.Argument(help="center time in femtoseconds"),
+    ],
+) -> None:
+    if t_fs < 0:
+        raise typer.BadParameter(f"t_fs must be non-negative, got {t_fs}")
+    with _open_or_exit() as h:
+        _print_response(h.request("wave_set_viewport", {"t_fs": str(t_fs)}))
+
+
+@send_app.command(
+    "wave-zoom",
+    help="Zoom + pan surfer to fit [START_FS, END_FS]. Maps to WCP set_viewport_range.",
+)
+def cmd_wave_zoom(
+    start_fs: Annotated[int, typer.Argument(help="range start in femtoseconds")],
+    end_fs: Annotated[int, typer.Argument(help="range end in femtoseconds")],
+) -> None:
+    if start_fs < 0 or end_fs < 0:
+        raise typer.BadParameter("start_fs/end_fs must be non-negative")
+    if end_fs <= start_fs:
+        raise typer.BadParameter(f"end_fs ({end_fs}) must be > start_fs ({start_fs})")
+    with _open_or_exit() as h:
+        _print_response(
+            h.request(
+                "wave_zoom_to_range",
+                {"start_fs": str(start_fs), "end_fs": str(end_fs)},
+            )
+        )
+
+
+@send_app.command(
+    "wave-zoom-fit",
+    help="Zoom surfer out to fit the whole waveform. Maps to WCP zoom_to_fit.",
+)
+def cmd_wave_zoom_fit() -> None:
+    with _open_or_exit() as h:
+        _print_response(h.request("wave_zoom_to_fit", {}))
+
+
+@send_app.command(
     "view-pan",
     help="Ask the view peer (SPA) to pan/center on INSTANCE_PATH.",
 )
