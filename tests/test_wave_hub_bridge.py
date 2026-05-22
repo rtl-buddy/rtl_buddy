@@ -80,6 +80,22 @@ class _HubInThread:
                 self.started.set()
                 raise
             finally:
+                # Drain pending tasks before close. Python 3.12's
+                # asyncio surfaces "RuntimeError: Event loop is closed"
+                # from transport finalisers that fire against a closed
+                # loop; without this, neighbouring fixtures' teardowns
+                # in the same pytest session can fail flakily.
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception:
+                    pass
                 loop.close()
 
         self.thread = threading.Thread(target=_runner, daemon=True, name="hub-thread")

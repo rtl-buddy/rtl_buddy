@@ -101,6 +101,23 @@ class _ThreadedHub:
                 self._started.set()
                 raise
             finally:
+                # Drain pending tasks + run pending callbacks before
+                # closing. Python 3.12's asyncio raises "Event loop
+                # is closed" from transport finalizers that fire
+                # against an already-closed loop; without this drain,
+                # the runner's loop.close() can leave the next test
+                # file's fixture setup tripping over those callbacks.
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception:
+                    pass
                 loop.close()
 
         self._thread = threading.Thread(target=_runner, daemon=True, name="hub-thread")

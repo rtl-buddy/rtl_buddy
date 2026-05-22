@@ -228,6 +228,21 @@ class _ThreadedHub:
                 self._started.set()
                 raise
             finally:
+                # Same Python 3.12 drain pattern as test_hub_send_cli's
+                # fixture — pending transport callbacks would otherwise
+                # fire against a closed loop and surface as "Event loop
+                # is closed" in sibling files' teardowns.
+                try:
+                    pending = asyncio.all_tasks(loop)
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception:
+                    pass
                 loop.close()
 
         self._thread = threading.Thread(target=_runner, daemon=True, name="hub")
