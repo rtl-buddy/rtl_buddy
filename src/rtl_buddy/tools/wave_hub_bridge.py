@@ -62,6 +62,9 @@ WAVE_CAPABILITIES: tuple[str, ...] = (
     "wave_add_variables",
     "wave_set_cursor",
     "wave_set_scope",
+    "wave_set_viewport",
+    "wave_zoom_to_range",
+    "wave_zoom_to_fit",
     "signal_selected",
     "cursor_time_changed",
     "scope_changed",
@@ -398,6 +401,12 @@ class WaveHubBridge:
             self._handle_set_cursor(env)
         elif env.type == "wave_set_scope":
             self._handle_set_scope(env)
+        elif env.type == "wave_set_viewport":
+            self._handle_set_viewport(env)
+        elif env.type == "wave_zoom_to_range":
+            self._handle_zoom_to_range(env)
+        elif env.type == "wave_zoom_to_fit":
+            self._handle_zoom_to_fit(env)
         else:
             self._reply_bad_request(env, f"unhandled wave request {env.type}")
 
@@ -436,6 +445,55 @@ class WaveHubBridge:
             return self._reply_bad_request(env, f"non-numeric t_fs: {t_fs!r}")
         self._send_to_surfer(
             {"type": "command", "command": "set_cursor", "timestamp": ts}
+        )
+        self._reply_response(env, type_=env.type, payload={"ok": True})
+
+    def _handle_set_viewport(self, env: Envelope) -> None:
+        """Pan the surfer viewport to center on a timestamp (zoom unchanged)."""
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        t_fs = payload.get("t_fs")
+        if not isinstance(t_fs, str) or not t_fs:
+            return self._reply_bad_request(env, "missing t_fs")
+        try:
+            ts = int(t_fs)
+        except ValueError:
+            return self._reply_bad_request(env, f"non-numeric t_fs: {t_fs!r}")
+        self._send_to_surfer(
+            {"type": "command", "command": "set_viewport_to", "timestamp": ts}
+        )
+        self._reply_response(env, type_=env.type, payload={"ok": True})
+
+    def _handle_zoom_to_range(self, env: Envelope) -> None:
+        """Zoom + pan to fit ``[start_fs, end_fs]`` in surfer's viewport."""
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        start_fs = payload.get("start_fs")
+        end_fs = payload.get("end_fs")
+        if not isinstance(start_fs, str) or not start_fs:
+            return self._reply_bad_request(env, "missing start_fs")
+        if not isinstance(end_fs, str) or not end_fs:
+            return self._reply_bad_request(env, "missing end_fs")
+        try:
+            start_ts = int(start_fs)
+            end_ts = int(end_fs)
+        except ValueError:
+            return self._reply_bad_request(env, "non-numeric start_fs/end_fs")
+        self._send_to_surfer(
+            {
+                "type": "command",
+                "command": "set_viewport_range",
+                "start": start_ts,
+                "end": end_ts,
+            }
+        )
+        self._reply_response(env, type_=env.type, payload={"ok": True})
+
+    def _handle_zoom_to_fit(self, env: Envelope) -> None:
+        """Zoom out surfer's viewport to fit the entire waveform."""
+        # WCP's zoom_to_fit takes a viewport_idx; surfer only opens viewport 0
+        # in the wcp-initiate flow, so hard-code that until we expose a second
+        # viewport from the hub.
+        self._send_to_surfer(
+            {"type": "command", "command": "zoom_to_fit", "viewport_idx": 0}
         )
         self._reply_response(env, type_=env.type, payload={"ok": True})
 

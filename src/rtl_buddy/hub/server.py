@@ -84,6 +84,9 @@ REQUEST_ROUTING: dict[str, Origin] = {
     "wave_add_variables": Origin.WAVE,
     "wave_set_scope": Origin.WAVE,
     "wave_set_cursor": Origin.WAVE,
+    "wave_set_viewport": Origin.WAVE,
+    "wave_zoom_to_range": Origin.WAVE,
+    "wave_zoom_to_fit": Origin.WAVE,
     "open_source": Origin.SRC,
     "view_pan_to": Origin.VIEW,
 }
