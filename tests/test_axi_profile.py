@@ -398,6 +398,98 @@ def test_run_wrapper_errors_when_fst_missing(tmp_path: Path) -> None:
     assert "rb test basic" in msg
 
 
+def test_run_wrapper_emits_parquet_at_artefact_default(tmp_path: Path) -> None:
+    """Empty-string `emit_txns_parquet` → wrapper picks the artefact-dir
+    default that `rb axi-profile notebook` reads (axi-txns.parquet
+    next to axi-perf.json)."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        emit_txns_parquet="",
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    parquet_arg = argv[argv.index("--emit-txns-parquet") + 1]
+    assert parquet_arg.endswith("artefacts/axi/basic/axi-txns.parquet")
+
+
+def test_run_wrapper_emits_parquet_at_explicit_path(tmp_path: Path) -> None:
+    """Explicit path wins over the default."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+    custom = tmp_path / "elsewhere" / "my-txns.parquet"
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        emit_txns_parquet=str(custom),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--emit-txns-parquet") + 1] == str(custom)
+
+
+def test_run_wrapper_omits_parquet_flag_by_default(tmp_path: Path) -> None:
+    """Legacy behaviour: no --emit-txns-parquet flag unless asked."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert "--emit-txns-parquet" not in argv
+
+
+def test_rb_axi_profile_run_emit_parquet_via_cli(minimal_project: Path) -> None:
+    """End-to-end: `rb axi-profile run --emit-txns-parquet` plumbs the
+    flag through to axi-profiler with the artefact-dir default path."""
+    models_yaml = minimal_project / "models.yaml"
+    models_yaml.write_text(
+        models_yaml.read_text() + "    axi_bundles: src/axi-bundles.yaml\n"
+    )
+    (minimal_project / "src" / "axi-bundles.yaml").write_text(
+        "schema_version: '1.0'\nbundles: []\n"
+    )
+    fst_dir = minimal_project / "artefacts" / "basic"
+    fst_dir.mkdir(parents=True)
+    (fst_dir / "dump.fst").write_text("fake fst\n")
+
+    script, record = _make_fake_profiler(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "axi-profile",
+            "run",
+            "basic",
+            "-c",
+            "tests.yaml",
+            "--emit-txns-parquet",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    parquet_arg = argv[argv.index("--emit-txns-parquet") + 1]
+    assert parquet_arg.endswith("artefacts/axi/basic/axi-txns.parquet")
+
+
 def test_run_wrapper_propagates_nonzero_exit(tmp_path: Path) -> None:
     suite_dir, tests_yaml = _write_run_fixture(tmp_path)
     script, _ = _make_fake_profiler(tmp_path, exit_code=4)

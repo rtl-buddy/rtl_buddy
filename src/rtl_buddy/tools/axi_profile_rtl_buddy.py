@@ -196,6 +196,7 @@ class RtlBuddyAxiProfileRun:
         suite_dir: str,
         output: str | None = None,
         tb_prefix_override: str | None = None,
+        emit_txns_parquet: str | None = None,
         executable: str = "axi-profiler",
     ):
         self.name = name
@@ -205,6 +206,12 @@ class RtlBuddyAxiProfileRun:
         self.suite_dir = os.path.abspath(suite_dir)
         self.output_override = output
         self.tb_prefix_override = tb_prefix_override
+        # None  → don't emit a parquet (axi-perf.json only, legacy default).
+        # str "" → emit at the artefact-dir default (axi-txns.parquet next
+        #          to axi-perf.json — convention `rb axi-profile notebook`
+        #          looks for).
+        # str path → emit at that explicit path.
+        self.emit_txns_parquet = emit_txns_parquet
         self.executable = executable
 
         artefact_root = Path(self.suite_dir) / "artefacts" / "axi" / self.test_name
@@ -219,6 +226,9 @@ class RtlBuddyAxiProfileRun:
 
     def _default_output_path(self) -> str:
         return os.path.join(self.artefact_dir, "axi-perf.json")
+
+    def _default_parquet_path(self) -> str:
+        return os.path.join(self.artefact_dir, "axi-txns.parquet")
 
     def _fst_path(self) -> str:
         # Same convention as `rb wave`: artefacts/<test>/dump.fst.
@@ -273,7 +283,13 @@ class RtlBuddyAxiProfileRun:
         return fl_path
 
     def _build_cmd(
-        self, fl_path: str, manifest: str, fst: str, out_path: str, tb_prefix: str
+        self,
+        fl_path: str,
+        manifest: str,
+        fst: str,
+        out_path: str,
+        tb_prefix: str,
+        parquet_path: str | None,
     ) -> list[str]:
         cmd = [
             self.executable,
@@ -291,6 +307,8 @@ class RtlBuddyAxiProfileRun:
         ]
         if tb_prefix:
             cmd += ["--tb-prefix", tb_prefix]
+        if parquet_path is not None:
+            cmd += ["--emit-txns-parquet", parquet_path]
         return cmd
 
     def run(self) -> int:
@@ -300,9 +318,18 @@ class RtlBuddyAxiProfileRun:
         fst = self._resolve_fst_path()
         tb_prefix = self._resolve_tb_prefix()
         out_path = self.output_override or self._default_output_path()
+        # Resolve the parquet destination: empty-string → artefact-dir
+        # default (canonical location for `rb axi-profile notebook`).
+        parquet_path: str | None
+        if self.emit_txns_parquet is None:
+            parquet_path = None
+        elif self.emit_txns_parquet == "":
+            parquet_path = self._default_parquet_path()
+        else:
+            parquet_path = self.emit_txns_parquet
 
         fl_path = self._write_filelist()
-        cmd = self._build_cmd(fl_path, manifest, fst, out_path, tb_prefix)
+        cmd = self._build_cmd(fl_path, manifest, fst, out_path, tb_prefix, parquet_path)
 
         log_event(
             logger,

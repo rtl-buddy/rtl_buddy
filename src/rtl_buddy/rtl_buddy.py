@@ -1295,6 +1295,28 @@ class RtlBuddy:
                 ),
             ),
         ] = None,
+        emit_txns_parquet: Annotated[
+            bool,
+            typer.Option(
+                "--emit-txns-parquet",
+                help=(
+                    "Also emit a per-transaction parquet artifact at "
+                    "artefacts/axi/<test>/axi-txns.parquet — the canonical "
+                    "location `rb axi-profile notebook` reads. Requires "
+                    "the axi-profiler [parquet] extra (pyarrow)."
+                ),
+            ),
+        ] = False,
+        emit_txns_parquet_path: Annotated[
+            str | None,
+            typer.Option(
+                "--emit-txns-parquet-path",
+                help=(
+                    "Explicit path for the per-transaction parquet "
+                    "artefact. Implies --emit-txns-parquet."
+                ),
+            ),
+        ] = None,
         tool: Annotated[
             str,
             typer.Option("--tool", help="path to the axi-profiler binary"),
@@ -1306,10 +1328,23 @@ class RtlBuddy:
         Looks up `<test>` in tests.yaml, resolves the model, the
         checked-in axi-bundles.yaml manifest (model.axi_bundles in
         models.yaml), and the FST at artefacts/<test>/dump.fst, then
-        invokes axi-profiler run.
+        invokes axi-profiler run. Pass --emit-txns-parquet to also
+        produce the per-transaction parquet artefact that
+        `rb axi-profile notebook` consumes.
         """
         suite_cfg = SuiteConfig(test_config)
         test_cfg = suite_cfg.get_tests(test_name)[0]
+        # Resolve parquet emit:
+        #   explicit path → use it
+        #   bare --emit-txns-parquet → empty-string sentinel → wrapper picks default
+        #   neither → None → no emit (legacy behaviour)
+        parquet_arg: str | None
+        if emit_txns_parquet_path is not None:
+            parquet_arg = emit_txns_parquet_path
+        elif emit_txns_parquet:
+            parquet_arg = ""
+        else:
+            parquet_arg = None
         log_event(
             logger,
             logging.INFO,
@@ -1320,6 +1355,7 @@ class RtlBuddy:
             model=test_cfg.get_model().name,
             output=output,
             tb_prefix=tb_prefix,
+            emit_txns_parquet=parquet_arg,
         )
         profiler = RtlBuddyAxiProfileRun(
             name=self.name + "/axi-profile/run",
@@ -1327,6 +1363,7 @@ class RtlBuddy:
             suite_dir=os.path.dirname(os.path.abspath(test_config)),
             output=output,
             tb_prefix_override=tb_prefix,
+            emit_txns_parquet=parquet_arg,
             executable=tool,
         )
         raise typer.Exit(profiler.run())
