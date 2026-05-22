@@ -249,8 +249,16 @@ class _ThreadedHub:
             self._thread.join(timeout=2.0)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def threaded_hub() -> Iterator[_ThreadedHub]:
+    """Module-scoped so the asyncio loop + reader thread spin up
+    once per test file instead of per test. Python 3.12's asyncio
+    is strict about pending transport callbacks running on a closed
+    loop; repeatedly creating + tearing down loops in quick
+    succession on CI surfaces that strictness as "Event loop is
+    closed" teardown errors in sibling test files. One hub for the
+    whole file keeps the failure surface contained."""
+
     h = _ThreadedHub()
     h.start()
     yield h
