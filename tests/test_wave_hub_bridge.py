@@ -428,19 +428,17 @@ def test_wave_add_variables_forwards_ids_and_not_found(hub_in_thread: _HubInThre
         bridge.stop()
 
 
-def test_wave_set_scope_forwards_not_found(hub_in_thread: _HubInThread):
-    """add_scope with an unknown scope: surfer returns ids=[] +
-    not_found=[scope]; the bridge forwards both alongside the ok flag."""
+def test_wave_set_scope_unknown_scope_still_acks_optimistically(
+    hub_in_thread: _HubInThread,
+):
+    """surfer's `set_scope` (rtl-buddy fork) acks on success and emits a
+    structured error on unknown-scope, but the bridge replies
+    optimistically with {"ok": True} regardless and does not wait for the
+    surfer-side error. Trade-off: typo detection is lost on the peer
+    side, matching the precedent for set_cursor / set_viewport_to which
+    also reply optimistically with no error propagation."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
-    listener.next_responses["add_scope"] = [
-        {
-            "type": "response",
-            "command": "add_scope",
-            "ids": [],
-            "not_found": ["tb.dut.does_not_exist"],
-        }
-    ]
     bridge = WaveHubBridge.connect((host, port), listener=listener)
     bridge.start()
     view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
@@ -455,11 +453,7 @@ def test_wave_set_scope_forwards_not_found(hub_in_thread: _HubInThread):
         view_sock.sendall(encode(req).encode("utf-8") + b"\n")
         resp = _recv_line(view_sock)
         assert resp.kind is Kind.RESPONSE
-        assert resp.payload == {
-            "ok": True,
-            "ids": [],
-            "not_found": ["tb.dut.does_not_exist"],
-        }
+        assert resp.payload == {"ok": True}
     finally:
         view_sock.close()
         bridge.stop()
@@ -609,10 +603,13 @@ def test_wave_zoom_to_fit_translates_to_wcp_command(hub_in_thread: _HubInThread)
         bridge.stop()
 
 
-def test_wave_set_scope_translates_to_add_scope_until_fork(
+def test_wave_set_scope_translates_to_wcp_set_scope(
     hub_in_thread: _HubInThread,
 ):
-    """Per §9.3, surfer's fork will add `set_scope`; until then, `add_scope`."""
+    """`wave_set_scope { wave_scope }` → WCP `set_scope { scope }` (surfer
+    rtl-buddy fork PR #6). The bridge no longer falls back to add_scope,
+    so the surfer variable panel is left alone on cross-view scope
+    navigation."""
 
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
@@ -630,10 +627,10 @@ def test_wave_set_scope_translates_to_add_scope_until_fork(
         view_sock.sendall(encode(req).encode("utf-8") + b"\n")
         resp = _recv_line(view_sock)
         assert resp.kind is Kind.RESPONSE
-        # Reply also carries the (here-empty) ids list from surfer's add_scope
-        # response so callers can distinguish "no response" from "scope had
-        # nothing to add". not_found is omitted when empty.
-        assert resp.payload == {"ok": True, "ids": []}
+        # Optimistic reply: just {"ok": True}. set_scope doesn't return
+        # ids (no items added) and the bridge doesn't await surfer's ack
+        # to keep the reply path symmetrical with set_cursor / set_viewport.
+        assert resp.payload == {"ok": True}
 
         deadline = time.monotonic() + 1.0
         while time.monotonic() < deadline and not listener.sent:
@@ -641,7 +638,7 @@ def test_wave_set_scope_translates_to_add_scope_until_fork(
         assert listener.sent == [
             {
                 "type": "command",
-                "command": "add_scope",
+                "command": "set_scope",
                 "scope": "tb.dut.u_fifo",
             }
         ]

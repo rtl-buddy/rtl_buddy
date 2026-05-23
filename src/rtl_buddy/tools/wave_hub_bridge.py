@@ -513,31 +513,28 @@ class WaveHubBridge:
         scope = payload.get("wave_scope")
         if not isinstance(scope, str) or not scope:
             return self._reply_bad_request(env, "missing wave_scope")
-        # §9.3 documents `set_scope` as a fork addition; surfer's current
-        # close match is `add_scope` (which also adds variables). Until the
-        # fork ships `set_scope`, use `add_scope` and document the gap.
+        # surfer's `set_scope` (rtl-buddy fork PR #6) navigates the active
+        # scope without mutating the displayed item list — the right
+        # semantics for "follow source-focus" tinting. We reply
+        # optimistically here matching the set_cursor / set_viewport_to
+        # pattern (no add_* ids to surface); unknown-scope errors are
+        # logged on surfer but not propagated back to the requesting peer.
         self._send_to_surfer(
-            {"type": "command", "command": "add_scope", "scope": scope}
+            {"type": "command", "command": "set_scope", "scope": scope}
         )
-        resp = self._listener.await_response("add_scope", timeout=2.0)
-        reply_payload = self._build_add_reply(resp, ok_fallback=True)
-        self._reply_response(env, type_=env.type, payload=reply_payload)
+        self._reply_response(env, type_=env.type, payload={"ok": True})
 
     @staticmethod
-    def _build_add_reply(resp: dict | None, *, ok_fallback: bool = False) -> dict:
+    def _build_add_reply(resp: dict | None) -> dict:
         """Translate surfer's WCP add_* response into the hub reply payload.
 
         ``not_found`` is surfaced only when present and non-empty so older
-        surfer binaries (no not_found field) keep the legacy shape. The
-        ``ok`` field is set when ``ok_fallback`` is True, matching the
-        previous wave_set_scope reply contract for clients that ignore ids.
+        surfer binaries (no not_found field) keep the legacy shape.
         """
         if resp is None:
-            return {"ok": True, "ids": []} if ok_fallback else {"ids": []}
+            return {"ids": []}
         ids = resp.get("ids") if isinstance(resp.get("ids"), list) else []
         out: dict[str, Any] = {"ids": ids}
-        if ok_fallback:
-            out["ok"] = True
         not_found = resp.get("not_found")
         if isinstance(not_found, list) and not_found:
             out["not_found"] = [s for s in not_found if isinstance(s, str)]
