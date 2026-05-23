@@ -348,7 +348,7 @@ def cmd_wave_cursor(
 
 @send_app.command(
     "wave-scope",
-    help="Ask the wave peer (surfer) to switch its scope (maps to WCP add_scope in v1).",
+    help="Ask the wave peer (surfer) to switch its active scope without populating the variable panel (maps to WCP set_scope).",
 )
 def cmd_wave_scope(
     wave_scope: Annotated[str, typer.Argument(help="surfer/VCD scope")],
