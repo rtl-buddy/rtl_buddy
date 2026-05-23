@@ -46,6 +46,7 @@ class RtlBuddyView:
         output: str | None = None,
         frontend: str | None = None,
         cdc_annotations: str | None = None,
+        rdc_annotations: str | None = None,
         clock_legend: bool = False,
         executable: str = "rtl-buddy-view",
     ):
@@ -55,6 +56,7 @@ class RtlBuddyView:
         self.output = output
         self.frontend = frontend
         self.cdc_annotations = cdc_annotations
+        self.rdc_annotations = rdc_annotations
         self.clock_legend = clock_legend
         self.executable = executable
 
@@ -98,6 +100,8 @@ class RtlBuddyView:
             cmd += ["--frontend", self.frontend]
         if self.cdc_annotations is not None:
             cmd += ["--cdc-annotations", self.cdc_annotations]
+        if self.rdc_annotations is not None:
+            cmd += ["--rdc-annotations", self.rdc_annotations]
         if self.clock_legend:
             cmd += ["--clock-legend"]
         return cmd
@@ -126,6 +130,13 @@ class RtlBuddyView:
         ):
             raise FatalRtlBuddyError(
                 f"hier: cdc-annotations file not found: {self.cdc_annotations}"
+            )
+
+        if self.rdc_annotations is not None and not os.path.isfile(
+            self.rdc_annotations
+        ):
+            raise FatalRtlBuddyError(
+                f"hier: rdc-annotations file not found: {self.rdc_annotations}"
             )
 
         fl_path = self._write_filelist()

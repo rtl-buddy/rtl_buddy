@@ -1173,6 +1173,13 @@ class RtlBuddy:
                 help="clock-domain map JSON from `rtl-buddy-cdc --emit-domain-map`",
             ),
         ] = None,
+        rdc_annotations: Annotated[
+            str | None,
+            typer.Option(
+                "--rdc-annotations",
+                help="reset-domain map JSON from `rtl-buddy-cdc --emit-reset-domain-map`",
+            ),
+        ] = None,
         clock_legend: Annotated[
             bool,
             typer.Option(
@@ -1206,6 +1213,7 @@ class RtlBuddy:
             output=output,
             frontend=frontend,
             cdc_annotations=cdc_annotations,
+            rdc_annotations=rdc_annotations,
             clock_legend=clock_legend,
             executable=tool,
         )

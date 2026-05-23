@@ -4,7 +4,8 @@ The real ``rtl-buddy-view`` binary is not on PATH in CI, so these
 tests stub it with a tiny shell script that records its argv and
 exits with a controllable status. This pins the CLI shape we promise
 to the downstream viewer (``--top``, ``--filelist``, ``--format``,
-``--output``, ``--frontend``, ``--cdc-annotations``, ``--clock-legend``).
+``--output``, ``--frontend``, ``--cdc-annotations``, ``--rdc-annotations``,
+``--clock-legend``).
 """
 
 from __future__ import annotations
@@ -86,6 +87,8 @@ def test_wrapper_forwards_optional_flags(tmp_path: Path):
     )
     cdc_map = tmp_path / "domain_map.json"
     cdc_map.write_text("{}")
+    rdc_map = tmp_path / "reset_domain_map.json"
+    rdc_map.write_text("{}")
     output_file = tmp_path / "hier.dot"
     script, record = _make_fake_view(tmp_path)
 
@@ -97,6 +100,7 @@ def test_wrapper_forwards_optional_flags(tmp_path: Path):
         output=str(output_file),
         frontend="slang",
         cdc_annotations=str(cdc_map),
+        rdc_annotations=str(rdc_map),
         clock_legend=True,
         executable=str(script),
     )
@@ -107,6 +111,7 @@ def test_wrapper_forwards_optional_flags(tmp_path: Path):
     assert argv[argv.index("--output") + 1] == str(output_file)
     assert argv[argv.index("--frontend") + 1] == "slang"
     assert argv[argv.index("--cdc-annotations") + 1] == str(cdc_map)
+    assert argv[argv.index("--rdc-annotations") + 1] == str(rdc_map)
     assert "--clock-legend" in argv
 
 
@@ -150,6 +155,30 @@ def test_wrapper_rejects_missing_cdc_annotations(tmp_path: Path):
         executable=str(script),
     )
     with pytest.raises(FatalRtlBuddyError):
+        view.run()
+
+
+def test_wrapper_rejects_missing_rdc_annotations(tmp_path: Path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    script, _ = _make_fake_view(tmp_path)
+
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        rdc_annotations=str(tmp_path / "missing.json"),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError, match="rdc-annotations file not found"):
         view.run()
 
 

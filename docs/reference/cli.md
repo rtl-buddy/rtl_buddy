@@ -205,6 +205,8 @@ Usage: rtl-buddy hier [OPTIONS] MODEL_NAME
 │ --frontend                 TEXT  parser frontend (verible|slang)                     │
 │ --cdc-annotations          TEXT  clock-domain map JSON from `rtl-buddy-cdc           │
 │                                  --emit-domain-map`                                  │
+│ --rdc-annotations          TEXT  reset-domain map JSON from `rtl-buddy-cdc           │
+│                                  --emit-reset-domain-map`                            │
 │ --clock-legend                   dot format only: emit a side legend of clock colors │
 │ --tool                     TEXT  path to the rtl-buddy-view binary                   │
 │                                  [default: rtl-buddy-view]                           │
