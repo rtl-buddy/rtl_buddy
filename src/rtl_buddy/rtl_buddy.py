@@ -1463,6 +1463,19 @@ class RtlBuddy:
                 ),
             ),
         ] = True,
+        headless: Annotated[
+            bool,
+            typer.Option(
+                "--headless",
+                help=(
+                    "Forward `--headless --no-token` to marimo. Used by the "
+                    "hub-initiated 'Open in marimo' flow (Phase 2 of the "
+                    "marimo umbrella) — the SPA opens the URL itself, so "
+                    "marimo shouldn't auto-pop a browser and the auth "
+                    "token is disabled for the loopback-only handoff."
+                ),
+            ),
+        ] = False,
         marimo: Annotated[
             str,
             typer.Option(
@@ -1492,6 +1505,7 @@ class RtlBuddy:
             test=test_name,
             port=port,
             foreground=foreground,
+            headless=headless,
         )
         notebook = RtlBuddyAxiProfileNotebook(
             name=self.name + "/axi-profile/notebook",
@@ -1499,6 +1513,7 @@ class RtlBuddy:
             suite_dir=os.path.dirname(os.path.abspath(test_config)),
             port=port,
             foreground=foreground,
+            headless=headless,
             marimo_executable=marimo,
         )
         raise typer.Exit(notebook.run())

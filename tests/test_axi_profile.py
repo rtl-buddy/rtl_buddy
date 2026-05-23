@@ -929,6 +929,54 @@ def test_notebook_wrapper_forwards_port_flag(tmp_path: Path) -> None:
     assert argv[argv.index("--port") + 1] == "2718"
 
 
+def test_notebook_wrapper_forwards_headless_and_no_token(tmp_path: Path) -> None:
+    """The hub-initiated flow needs both ``--headless`` (so marimo
+    doesn't auto-pop a browser tab while the SPA also tries to open
+    the URL) and ``--no-token`` (so the SPA can navigate to the
+    printed URL without threading a per-session token through the
+    hub → SPA → browser handoff). Lock both as a pair."""
+    _notebook_template_or_skip()
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
+    script, record = _make_fake_marimo(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        headless=True,
+        marimo_executable=str(script),
+    )
+    assert notebook.run() == 0
+    argv = json.loads(record.read_text())["argv"]
+    assert "--headless" in argv
+    assert "--no-token" in argv
+
+
+def test_notebook_wrapper_omits_headless_by_default(tmp_path: Path) -> None:
+    """Default (CLI invocation) keeps marimo's normal token + auto-
+    open-browser behaviour — only the hub-initiated path opts in."""
+    _notebook_template_or_skip()
+    from rtl_buddy.tools.axi_profile_rtl_buddy import RtlBuddyAxiProfileNotebook
+
+    suite_dir, tests_yaml = _write_notebook_fixture(tmp_path)
+    script, record = _make_fake_marimo(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    notebook = RtlBuddyAxiProfileNotebook(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        marimo_executable=str(script),
+    )
+    assert notebook.run() == 0
+    argv = json.loads(record.read_text())["argv"]
+    assert "--headless" not in argv
+    assert "--no-token" not in argv
+
+
 def test_notebook_wrapper_errors_when_parquet_missing(tmp_path: Path) -> None:
     """The user has to run `rb axi-profile run` first — give them
     that exact command in the error so they don't go hunting."""

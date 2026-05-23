@@ -515,6 +515,7 @@ class RtlBuddyAxiProfileNotebook:
         suite_dir: str,
         port: int | None = None,
         foreground: bool = True,
+        headless: bool = False,
         marimo_executable: str = "marimo",
     ):
         self.name = name
@@ -523,6 +524,12 @@ class RtlBuddyAxiProfileNotebook:
         self.suite_dir = os.path.abspath(suite_dir)
         self.port = port
         self.foreground = foreground
+        # ``headless`` is for the hub-launched flow (Phase 2 of the
+        # marimo umbrella) — the SPA opens the URL itself, so marimo
+        # shouldn't auto-pop a browser, and the auth token is
+        # disabled so the SPA can link directly without juggling
+        # secrets across the IPC boundary.
+        self.headless = headless
         self.marimo_executable = marimo_executable
 
         self.artefact_dir = os.path.join(
@@ -593,6 +600,12 @@ class RtlBuddyAxiProfileNotebook:
         cmd = [self.marimo_executable, "edit", template]
         if self.port is not None:
             cmd += ["--port", str(self.port)]
+        if self.headless:
+            # --headless: no auto-browser-pop; the SPA opens the URL.
+            # --no-token: the SPA can navigate to the URL without
+            # threading a per-session token through the hub → browser
+            # handoff. Loopback-only, so the security trade is fine.
+            cmd += ["--headless", "--no-token"]
         return cmd
 
     def run(self) -> int:
