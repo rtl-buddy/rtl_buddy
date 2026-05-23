@@ -300,6 +300,9 @@ class ViewerServer:
         if path == "/models":
             return await self._handle_models(connection)
 
+        if path == "/api/axi-profile/notebook":
+            return await self._handle_axi_notebook(connection, query)
+
         if path == "/view.json":
             requested = query.get("model", [None])[0]
             if requested is not None:
@@ -330,6 +333,69 @@ class ViewerServer:
     # ------------------------------------------------------------------
     # /models + /view.json?model= (issue #174)
     # ------------------------------------------------------------------
+
+    async def _handle_axi_notebook(
+        self, connection: ServerConnection, query: dict[str, list[str]]
+    ) -> Response:
+        """``GET /api/axi-profile/notebook?test=NAME&suite_dir=PATH``.
+
+        Spawns ``rb axi-profile notebook --headless`` for the given
+        ``test`` (which must exist in ``<suite_dir>/tests.yaml``),
+        waits up to 30 s for marimo to print its URL, returns JSON.
+        The spawned marimo persists after this request completes —
+        it's the user's notebook session, intended to outlive the
+        single HTTP round-trip.
+
+        Response::
+
+          {
+            "url":       "http://localhost:NNNN",
+            "pid":       12345,
+            "port":      NNNN,
+            "test":      "basic_traffic",
+            "suite_dir": "/abs/path/to/verif/demo_axi_2x2"
+          }
+
+        Errors surface as JSON-bodied 4xx/5xx with a single ``error``
+        key. ``project_root`` must be set on the hub (always true when
+        started via ``rb hub start``).
+        """
+        import json as _json
+
+        from . import axi_notebook_launcher
+
+        if self.project_root is None:
+            return _http_response(
+                connection,
+                500,
+                _json.dumps({"error": "hub has no project_root configured"}).encode(),
+                content_type="application/json",
+            )
+        test = (query.get("test") or [""])[0]
+        suite_dir = (query.get("suite_dir") or [""])[0]
+        try:
+            result = await axi_notebook_launcher.launch(
+                test=test,
+                suite_dir=suite_dir,
+                project_root=self.project_root,
+            )
+        except axi_notebook_launcher.AxiNotebookLaunchError as e:
+            return _http_response(
+                connection,
+                e.status,
+                _json.dumps({"error": str(e)}).encode(),
+                content_type="application/json",
+            )
+        body = _json.dumps(
+            {
+                "url": result.url,
+                "pid": result.pid,
+                "port": result.port,
+                "test": result.test,
+                "suite_dir": result.suite_dir,
+            }
+        ).encode()
+        return _http_response(connection, 200, body, content_type="application/json")
 
     async def _handle_models(self, connection: ServerConnection) -> Response:
         """``GET /models`` — list every model the hub can serve.
