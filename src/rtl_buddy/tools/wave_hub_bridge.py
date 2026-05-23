@@ -444,7 +444,12 @@ class WaveHubBridge:
         except ValueError:
             return self._reply_bad_request(env, f"non-numeric t_fs: {t_fs!r}")
         self._send_to_surfer(
-            {"type": "command", "command": "set_cursor", "timestamp": ts}
+            {
+                "type": "command",
+                "command": "set_cursor",
+                "timestamp": ts,
+                "time_unit": "fs",
+            }
         )
         self._reply_response(env, type_=env.type, payload={"ok": True})
 
@@ -459,7 +464,12 @@ class WaveHubBridge:
         except ValueError:
             return self._reply_bad_request(env, f"non-numeric t_fs: {t_fs!r}")
         self._send_to_surfer(
-            {"type": "command", "command": "set_viewport_to", "timestamp": ts}
+            {
+                "type": "command",
+                "command": "set_viewport_to",
+                "timestamp": ts,
+                "time_unit": "fs",
+            }
         )
         self._reply_response(env, type_=env.type, payload={"ok": True})
 
@@ -483,6 +493,7 @@ class WaveHubBridge:
                 "command": "set_viewport_range",
                 "start": start_ts,
                 "end": end_ts,
+                "time_unit": "fs",
             }
         )
         self._reply_response(env, type_=env.type, payload={"ok": True})

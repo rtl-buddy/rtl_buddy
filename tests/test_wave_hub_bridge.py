@@ -492,6 +492,7 @@ def test_wave_set_cursor_translates_to_wcp_command(hub_in_thread: _HubInThread):
                 "type": "command",
                 "command": "set_cursor",
                 "timestamp": 12500000,
+                "time_unit": "fs",
             }
         ]
     finally:
@@ -527,6 +528,7 @@ def test_wave_set_viewport_translates_to_wcp_command(hub_in_thread: _HubInThread
                 "type": "command",
                 "command": "set_viewport_to",
                 "timestamp": 200000,
+                "time_unit": "fs",
             }
         ]
     finally:
@@ -564,6 +566,7 @@ def test_wave_zoom_to_range_translates_to_wcp_command(hub_in_thread: _HubInThrea
                 "command": "set_viewport_range",
                 "start": 50000,
                 "end": 100000,
+                "time_unit": "fs",
             }
         ]
     finally:
