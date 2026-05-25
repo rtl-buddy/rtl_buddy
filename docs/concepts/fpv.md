@@ -162,7 +162,7 @@ After every primary proof, `rb fpv` runs a structural yosys pass that:
 
 1. Reads the same design + constraints + properties sby just used.
 2. Counts total cells per module.
-3. Selects every `$assert` cell and walks its cone of influence backwards (`t:$assert %coi`).
+3. Selects every `$assert` cell and walks its cone of influence backwards (`t:$assert %ci*` — yosys's transitive input-cone operator).
 4. Reports the fraction of design cells reached by at least one assertion.
 
 Logic *outside* every property's COI is provably unverified by the property set — a direct, actionable "what's still uncovered" signal that simulation coverage doesn't give you. When the COI pass produces data, the results table grows a **COI** column:

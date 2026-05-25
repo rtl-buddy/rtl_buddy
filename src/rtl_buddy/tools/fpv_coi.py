@@ -12,9 +12,10 @@ Logic outside any property's COI is provably unverified by the
 property set — this gives users a direct "what's still uncovered"
 signal that simulation coverage doesn't reach.
 
-The pass uses yosys's existing selection language: `t:$assert %coi`
+The pass uses yosys's existing selection language: `t:$assert %ci*`
 selects every cell reachable backward through the design from an
-`$assert` cell.
+`$assert` cell (`%ci*` is the transitive input-cone operator — it
+repeats `%ci` until fixpoint).
 
 Scope today:
 
@@ -47,13 +48,23 @@ from ..process_utils import run_managed_process
 #      Number of cells: 8
 #        $assert  3
 #        ...
+# Module header: `=== <name> ===`. yosys's `stat` decorates the name
+# with `(partially selected)` when a non-full selection is active —
+# so the inner pattern is "anything except newline and `=`" rather
+# than a single non-whitespace token. The captured name is trimmed
+# below.
 _STAT_BLOCK_RE = re.compile(
-    r"===\s*(?P<module>\S+)\s*===\s*\n"
-    r"(?P<body>.*?)(?=(?:===\s*\S+\s*===)|\Z)",
+    r"===\s*(?P<module>[^\n=]+?)\s*===\s*\n"
+    r"(?P<body>.*?)(?====\s*[^\n=]+\s*===|\Z)",
     re.DOTALL,
 )
-_CELLS_RE = re.compile(r"^\s*Number of cells:\s*(?P<n>\d+)", re.MULTILINE)
-_WIRES_RE = re.compile(r"^\s*Number of wires:\s*(?P<n>\d+)", re.MULTILINE)
+# yosys's `stat` prints counts as `<N> cells` / `<N> wires` with leading
+# whitespace and a header line "+----------Local Count, ...". The
+# anchored regex below targets the standalone "<N> cells" line and
+# ignores both the header and the per-cell-type breakdown that
+# follows (`1   $add`, etc.).
+_CELLS_RE = re.compile(r"^\s*(?P<n>\d+)\s+cells\s*$", re.MULTILINE)
+_WIRES_RE = re.compile(r"^\s*(?P<n>\d+)\s+wires\s*$", re.MULTILINE)
 
 
 # Markers we emit in the yosys script so we can locate the two `stat`
@@ -92,33 +103,47 @@ def build_yosys_script(
     constraint_files = [constraints] if constraints else []
     for src in list(sources) + constraint_files + list(properties):
         lines.append(f"read -sv -formal {src}")
-    lines.append(f"hierarchy -top {top}")
-    lines.append("proc")
+    # `prep -flatten -top` mirrors what sby itself runs for proof:
+    # hierarchy + proc + opt while preserving formal cells, then
+    # collapses everything into the top module. Flattening matters
+    # here because `bind`-style property modules elaborate as
+    # submodules — without flatten, `$assert` cells live in those
+    # submodules and yosys's default `stat` (which only counts the
+    # top module) silently reports zero. Flattening trades the
+    # per-submodule rollup for a correct aggregate count.
+    lines.append(f"prep -flatten -top {top}")
 
     lines.append(f"log === {_MARK_TOTAL} ===")
     lines.append("stat")
 
-    # Select every $assert cell and walk back through its cone of
-    # influence. `%coi` is the cone-of-influence operator in yosys's
-    # selection language; it transitively adds drivers of the
-    # currently-selected signals' inputs.
-    lines.append("select -set property_cells t:$assert")
-    lines.append("select -set property_coi @property_cells %coi")
+    # Select every assertion cell and walk back through its cone of
+    # influence. Modern yosys (>= 2024) unifies asserts/assumes/covers
+    # into a single `$check` cell type with a `FLAVOR` parameter
+    # ("assert" / "assume" / "cover" / "live" / "fair"). Older yosys
+    # versions still emit dedicated `$assert` / `$assume` cells. We
+    # union both so the COI walk works on either generation.
+    #
+    # `%ci*` is yosys's transitive input-cone operator: repeats `%ci`
+    # until fixpoint — exactly the cone of influence of the assertion
+    # cells. (Plain `%ci` walks only one step.)
+    lines.append("select -set property_cells t:$assert t:$check r:FLAVOR=assert %i %u")
+    lines.append("select -set property_coi @property_cells %ci*")
     lines.append("select @property_coi")
     lines.append(f"log === {_MARK_SELECTED} ===")
-    lines.append("stat -selection")
+    lines.append("stat")
 
-    # Dead-assume analysis (#135): count $assume cells total, then
+    # Dead-assume analysis (#135): count assume cells total, then
     # count those that intersect with the assertion COI. The delta is
     # the structural lower bound on "assumes constraining signals no
-    # assertion observes" — a flag for environment-spec drift.
-    lines.append("select -set all_assumes t:$assume")
+    # assertion observes" — a flag for environment-spec drift. Same
+    # `$check` / `$assume` dual-selector applies.
+    lines.append("select -set all_assumes t:$assume t:$check r:FLAVOR=assume %i %u")
     lines.append("select @all_assumes")
     lines.append(f"log === {_MARK_ASSUMES_TOTAL} ===")
-    lines.append("stat -selection")
+    lines.append("stat")
     lines.append("select @all_assumes @property_coi %i")
     lines.append(f"log === {_MARK_ASSUMES_IN_COI} ===")
-    lines.append("stat -selection")
+    lines.append("stat")
     return "\n".join(lines) + "\n"
 
 
@@ -149,9 +174,13 @@ def parse_stat_blocks(log_text: str) -> dict[str, dict[str, dict[str, int]]]:
 
     for marker, section in sections.items():
         for match in _STAT_BLOCK_RE.finditer(section):
-            module = match.group("module")
-            if module in _ALL_MARKERS:
+            raw_module = match.group("module").strip()
+            if raw_module in _ALL_MARKERS:
                 continue
+            # Strip yosys's `(partially selected)` decoration so the
+            # selected stat for module `dut` rolls up against the
+            # baseline stat for the same module.
+            module = raw_module.split(" (")[0].strip()
             body = match.group("body")
             cells_m = _CELLS_RE.search(body)
             wires_m = _WIRES_RE.search(body)
@@ -238,7 +267,7 @@ def run_coi_analysis(
         top=top,
     )
     Path(script_path).write_text(script)
-    cmd = [yosys_exe, "-q", "-s", script_path]
+    cmd = [yosys_exe, "-s", script_path]
     try:
         with open(log_path, "w") as logf:
             logf.write("$ " + " ".join(cmd) + "\n")

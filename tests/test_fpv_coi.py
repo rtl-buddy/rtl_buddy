@@ -27,10 +27,13 @@ def test_build_yosys_script_emits_total_and_selected_markers():
     )
     assert "=== RTL_BUDDY_COI_TOTAL ===" in script
     assert "=== RTL_BUDDY_COI_SELECTED ===" in script
-    assert "hierarchy -top dut" in script
+    # `prep -flatten -top` collapses the hierarchy so $assert cells
+    # from bound property submodules show up under the top module's
+    # default stat output.
+    assert "prep -flatten -top dut" in script
     # COI selection lives in the standard yosys selection language.
     assert "select -set property_cells t:$assert" in script
-    assert "@property_cells %coi" in script
+    assert "@property_cells %ci*" in script
 
 
 def test_build_yosys_script_inlines_constraints_between_design_and_props():
@@ -67,50 +70,70 @@ _FAKE_YOSYS_LOG = dedent("""\
 
     === RTL_BUDDY_COI_TOTAL ===
 
+    6. Printing statistics.
+
     === counter ===
 
-       Number of wires:    18
-       Number of cells:    12
-         $add               2
-         $dff               5
-         $eq                3
-         $not               2
+            +----------Local Count, excluding submodules.
+            |
+           18 wires
+           21 wire bits
+           12 cells
+            2   $add
+            5   $dff
+            3   $eq
+            2   $not
 
     === clk_gate ===
 
-       Number of wires:    4
-       Number of cells:    2
-         $dff               1
-         $and               1
-
-    yosys> select property_cells
-    yosys> ...
+            +----------Local Count, excluding submodules.
+            |
+            4 wires
+            5 wire bits
+            2 cells
+            1   $dff
+            1   $and
 
     === RTL_BUDDY_COI_SELECTED ===
 
+    7. Printing statistics.
+
     === counter ===
 
-       Number of wires:    9
-       Number of cells:    6
-         $add               1
-         $dff               3
-         $eq                2
+            +----------Local Count, excluding submodules.
+            |
+            9 wires
+            9 wire bits
+            6 cells
+            1   $add
+            3   $dff
+            2   $eq
 
     === RTL_BUDDY_ASSUMES_TOTAL ===
 
+    8. Printing statistics.
+
     === counter ===
 
-       Number of wires:    0
-       Number of cells:    5
-         $assume            5
+            +----------Local Count, excluding submodules.
+            |
+            0 wires
+            0 wire bits
+            5 cells
+            5   $assume
 
     === RTL_BUDDY_ASSUMES_IN_COI ===
 
+    9. Printing statistics.
+
     === counter ===
 
-       Number of wires:    0
-       Number of cells:    3
-         $assume            3
+            +----------Local Count, excluding submodules.
+            |
+            0 wires
+            0 wire bits
+            3 cells
+            3   $assume
 
 """)
 
