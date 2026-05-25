@@ -412,6 +412,39 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "view_overlay_set" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["name", "enabled"],
+                "additionalProperties": false,
+                "description": "Ask the SPA to toggle an overlay's enabled state. Names follow the same convention as `graph.overlays_present` — built-ins today are `clock`, `reset`, `axi-perf`, `wave`. Enabling an unknown name is a no-op (the SPA silently drops it, matching the existing soft-miss semantics for unrecognised overlay names).",
+                "properties": {
+                  "name":    { "type": "string", "minLength": 1 },
+                  "enabled": { "type": "boolean" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "resolve_view_to_wave" } }, "required": ["type"] },
       "then": {
         "oneOf": [
