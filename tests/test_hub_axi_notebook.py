@@ -41,26 +41,31 @@ def _write_suite(tmp_path: Path) -> Path:
 
 
 def _fake_marimo(tmp_path: Path, *, url: str | None, exit_after: bool = False) -> Path:
-    """Drop a shell script that mimics ``marimo edit``'s startup:
+    """Drop a Python script that mimics ``marimo edit``'s startup:
     optionally print a URL line, optionally exit. Returned path is
     executable so subprocess.Popen can run it.
 
-    The blocking branch uses ``exec sleep 60`` (not bare ``sleep 60``)
-    so that SIGTERM lands directly on the sleep process. With a
-    bare ``sleep`` call, bash holds the signal until its foreground
-    child exits — which won't happen for 60 s — and the shutdown-
-    cleanup test trips its watchdog. Real marimo handles SIGTERM
-    via tornado's signal hooks, so this exec is a test-only trick
-    to mirror that behaviour with shell-only primitives.
+    Python (rather than a bash script + sleep) because the
+    shutdown-cleanup test SIGTERMs the spawned process and expects
+    it to exit promptly. Bash defers signals until its foreground
+    command finishes; even ``exec sleep`` was unreliable on busy
+    Linux CI runners. Python's ``signal.signal(SIGTERM, sys.exit)``
+    gives a deterministic immediate-exit on SIGTERM, mirroring
+    what real marimo does via tornado's signal hooks.
     """
-    sh = tmp_path / "fake_rb"
-    body = ["#!/usr/bin/env bash", "echo 'Update available 0.23.7 -> 0.23.8'"]
+    sh = tmp_path / "fake_marimo.py"
+    body = [
+        "#!/usr/bin/env python3",
+        "import signal, sys, time",
+        "print('Update available 0.23.7 -> 0.23.8', flush=True)",
+    ]
     if url:
-        body.append(f"echo 'URL: {url}'")
+        body.append(f"print('URL: {url}', flush=True)")
     if not exit_after:
-        # Block forever so the URL-reader doesn't hit EOF; ``exec``
-        # so SIGTERM hits sleep directly (see docstring).
-        body.append("exec sleep 60")
+        # Block until SIGTERM (or SIGINT) lands; handler exits 0.
+        body.append("signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))")
+        body.append("signal.signal(signal.SIGINT, lambda *_: sys.exit(0))")
+        body.append("time.sleep(60)")
     sh.write_text("\n".join(body) + "\n")
     sh.chmod(sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return sh
