@@ -279,6 +279,31 @@ def _recv_line(sock) -> Envelope:
     return decode(line)
 
 
+class _Recv:
+    """Buffered envelope receiver that preserves bytes past the first ``\\n``.
+
+    The plain ``_recv_line`` helper discards post-newline data — that's
+    safe when each test expects exactly one envelope per cursor_moved /
+    request, but the wave-values producer emits two envelopes
+    back-to-back per ``cursor_moved`` and TCP coalesces them into a
+    single recv on slower hosts (notably CI). This class keeps the
+    leftover bytes between reads so the second envelope isn't dropped.
+    """
+
+    def __init__(self, sock):
+        self._sock = sock
+        self._buf = b""
+
+    def next(self) -> Envelope:
+        while b"\n" not in self._buf:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise OSError("closed")
+            self._buf += chunk
+        line, _, self._buf = self._buf.partition(b"\n")
+        return decode(line)
+
+
 def test_cursor_moved_becomes_cursor_time_changed(hub_in_thread: _HubInThread):
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
@@ -650,6 +675,251 @@ def test_wave_set_scope_translates_to_wcp_set_scope(
 # ---------------------------------------------------------------------------
 # bye / cleanup
 # ---------------------------------------------------------------------------
+
+
+def _send_wave_add(view_sock, variables: list[str]) -> Envelope:
+    req = Envelope(
+        origin=Origin.VIEW,
+        kind=Kind.REQUEST,
+        type="wave_add_variables",
+        id=new_id(),
+        payload={"variables": variables},
+    )
+    view_sock.sendall(encode(req).encode("utf-8") + b"\n")
+    return req
+
+
+def test_cursor_moved_broadcasts_wave_values_changed_for_tracked_vars(
+    hub_in_thread: _HubInThread,
+):
+    """End-to-end producer: viewer adds variables → cursor moves → bridge
+    queries surfer → ``wave_values_changed`` lands on the bus."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    # Stage surfer's add_variables response so the bridge can record the
+    # variables as ``tracked``. ids/not_found shape matches surfer's PR #3.
+    listener.next_responses["add_variables"] = [
+        {
+            "type": "response",
+            "command": "add_variables",
+            "ids": [10, 11],
+            "not_found": [],
+        }
+    ]
+    # Stage surfer's query_variable_values response so the cursor-driven
+    # query has something to translate. timestamp echoes back as a
+    # decimal string per surfer PR #7's wire shape.
+    listener.next_responses["query_variable_values"] = [
+        {
+            "type": "response",
+            "command": "query_variable_values",
+            "timestamp": "12500000",
+            "values": [
+                {"variable": "tb.dut.q", "value": "1"},
+                {"variable": "tb.dut.clk", "value": "0"},
+            ],
+            "not_found": [],
+        }
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    rx = _Recv(view_sock)
+    try:
+        # Step 1: viewer adds variables. Wait for the reply so we know
+        # the bridge has finished updating its tracked-vars cache before
+        # we fire the cursor_moved.
+        req = _send_wave_add(view_sock, ["tb.dut.q", "tb.dut.clk"])
+        ack = rx.next()
+        assert ack.id == req.id
+
+        # Step 2: drive a cursor_moved through the WCP observer hook.
+        bridge.on_wcp_event(
+            "cursor_moved",
+            {"type": "event", "event": "cursor_moved", "timestamp": 12500000},
+        )
+
+        # First envelope on the bus: cursor_time_changed (synchronous
+        # translation on the listener thread).
+        env_cursor = rx.next()
+        assert env_cursor.type == "cursor_time_changed"
+        assert env_cursor.payload == {"t_fs": "12500000"}
+
+        # Second envelope: wave_values_changed, produced by the daemon
+        # thread that issued the query. The fake listener pops the
+        # staged response immediately, so this should arrive promptly.
+        env_values = rx.next()
+        assert env_values.type == "wave_values_changed"
+        assert env_values.origin is Origin.WAVE
+        assert env_values.payload["t_fs"] == "12500000"
+        values = env_values.payload["values"]
+        # Order matches surfer's response order (which mirrors the
+        # request, which is the order add_variables saw).
+        assert values == [
+            {"wave_scope": "tb.dut", "signal": "q", "value": "1"},
+            {"wave_scope": "tb.dut", "signal": "clk", "value": "0"},
+        ]
+
+        # And the bridge actually sent the query to surfer.
+        query_sent = next(
+            (
+                cmd
+                for cmd in listener.sent
+                if cmd.get("command") == "query_variable_values"
+            ),
+            None,
+        )
+        assert query_sent is not None
+        assert query_sent == {
+            "type": "command",
+            "command": "query_variable_values",
+            "variables": ["tb.dut.q", "tb.dut.clk"],
+        }
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_cursor_moved_without_tracked_variables_skips_query(
+    hub_in_thread: _HubInThread,
+):
+    """Until any wave_add_variables has happened, cursor moves don't
+    pay a WCP round-trip — there's nothing to sample."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        bridge.on_wcp_event(
+            "cursor_moved",
+            {"type": "event", "event": "cursor_moved", "timestamp": 9000},
+        )
+        # cursor_time_changed still lands (the user wants the cursor
+        # marker to track regardless of value plumbing).
+        env_cursor = _recv_line(view_sock)
+        assert env_cursor.type == "cursor_time_changed"
+        # But no query went to surfer — the listener's sent log is empty.
+        # Give any spurious worker thread time to act so we're not
+        # racing with it.
+        time.sleep(0.05)
+        assert listener.sent == []
+        # And the bus only ever saw the cursor_time_changed envelope
+        # (no wave_values_changed broadcast).
+        view_sock.settimeout(0.2)
+        with pytest.raises((TimeoutError, OSError, BlockingIOError)):
+            _recv_line(view_sock)
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_values_changed_drops_null_values(hub_in_thread: _HubInThread):
+    """Per the surfer protocol, ``value: null`` means the variable
+    resolved but has no transition before the sample point. The bridge
+    must filter those out so the viewer's last-known-value cache
+    survives — otherwise a freshly-loaded design would clobber static
+    Phase-8 snapshots with empty strings."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_responses["add_variables"] = [
+        {"type": "response", "command": "add_variables", "ids": [1, 2], "not_found": []}
+    ]
+    listener.next_responses["query_variable_values"] = [
+        {
+            "type": "response",
+            "command": "query_variable_values",
+            "timestamp": "100",
+            "values": [
+                {"variable": "tb.dut.q", "value": "1"},
+                {"variable": "tb.dut.preset", "value": None},
+            ],
+            "not_found": [],
+        }
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    rx = _Recv(view_sock)
+    try:
+        req = _send_wave_add(view_sock, ["tb.dut.q", "tb.dut.preset"])
+        _ = rx.next()  # ack — id matches req
+        assert req.id  # silence linter on unused-binding
+
+        bridge.on_wcp_event(
+            "cursor_moved",
+            {"type": "event", "event": "cursor_moved", "timestamp": 100},
+        )
+        _ = rx.next()  # cursor_time_changed
+        env = rx.next()
+        assert env.type == "wave_values_changed"
+        # Only the populated row appears; preset (value=null) is gone.
+        assert env.payload["values"] == [
+            {"wave_scope": "tb.dut", "signal": "q", "value": "1"},
+        ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_add_variables_not_found_paths_are_not_tracked(
+    hub_in_thread: _HubInThread,
+):
+    """Variables that surfer reports in ``not_found`` shouldn't be added
+    to the tracked-variables cache — querying them on every cursor_moved
+    would just waste a round-trip producing no values."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_responses["add_variables"] = [
+        {
+            "type": "response",
+            "command": "add_variables",
+            "ids": [3],
+            "not_found": ["tb.dut.bogus"],
+        }
+    ]
+    # If the bridge mistakenly tracked the bogus path, the cursor-driven
+    # query would include it. Stage a response that asserts on the
+    # variables list it's actually queried for.
+    listener.next_responses["query_variable_values"] = [
+        {
+            "type": "response",
+            "command": "query_variable_values",
+            "timestamp": "1",
+            "values": [{"variable": "tb.dut.real_signal", "value": "0"}],
+            "not_found": [],
+        }
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    rx = _Recv(view_sock)
+    try:
+        req = _send_wave_add(view_sock, ["tb.dut.real_signal", "tb.dut.bogus"])
+        _ = rx.next()  # ack
+        assert req.id
+
+        bridge.on_wcp_event(
+            "cursor_moved",
+            {"type": "event", "event": "cursor_moved", "timestamp": 1},
+        )
+        _ = rx.next()  # cursor_time_changed
+        _ = rx.next()  # wave_values_changed
+
+        query_sent = next(
+            (
+                cmd
+                for cmd in listener.sent
+                if cmd.get("command") == "query_variable_values"
+            ),
+            None,
+        )
+        assert query_sent is not None
+        # The bogus path is gone — only the resolved variable made it
+        # into the cursor-driven query.
+        assert query_sent["variables"] == ["tb.dut.real_signal"]
+    finally:
+        view_sock.close()
+        bridge.stop()
 
 
 def test_stop_unregisters_from_hub(hub_in_thread: _HubInThread):

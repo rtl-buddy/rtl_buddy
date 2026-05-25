@@ -41,16 +41,31 @@ def _write_suite(tmp_path: Path) -> Path:
 
 
 def _fake_marimo(tmp_path: Path, *, url: str | None, exit_after: bool = False) -> Path:
-    """Drop a shell script that mimics ``marimo edit``'s startup:
+    """Drop a Python script that mimics ``marimo edit``'s startup:
     optionally print a URL line, optionally exit. Returned path is
-    executable so subprocess.Popen can run it."""
-    sh = tmp_path / "fake_rb"
-    body = ["#!/usr/bin/env bash", "echo 'Update available 0.23.7 -> 0.23.8'"]
+    executable so subprocess.Popen can run it.
+
+    Python (rather than a bash script + sleep) because the
+    shutdown-cleanup test SIGTERMs the spawned process and expects
+    it to exit promptly. Bash defers signals until its foreground
+    command finishes; even ``exec sleep`` was unreliable on busy
+    Linux CI runners. Python's ``signal.signal(SIGTERM, sys.exit)``
+    gives a deterministic immediate-exit on SIGTERM, mirroring
+    what real marimo does via tornado's signal hooks.
+    """
+    sh = tmp_path / "fake_marimo.py"
+    body = [
+        "#!/usr/bin/env python3",
+        "import signal, sys, time",
+        "print('Update available 0.23.7 -> 0.23.8', flush=True)",
+    ]
     if url:
-        body.append(f"echo 'URL: {url}'")
+        body.append(f"print('URL: {url}', flush=True)")
     if not exit_after:
-        # Block forever so the URL-reader doesn't hit EOF.
-        body.append("sleep 60")
+        # Block until SIGTERM (or SIGINT) lands; handler exits 0.
+        body.append("signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))")
+        body.append("signal.signal(signal.SIGINT, lambda *_: sys.exit(0))")
+        body.append("time.sleep(60)")
     sh.write_text("\n".join(body) + "\n")
     sh.chmod(sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return sh
@@ -119,6 +134,62 @@ def test_launch_returns_url_when_subprocess_prints_one(
     # 60s after the test exits.
     try:
         os.kill(result.pid, 9)
+    except ProcessLookupError:
+        pass
+
+
+def test_launch_propagates_events_url_to_subprocess_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 3: when called with ``events_url``, the launcher exports
+    ``RB_HUB_EVENTS_URL`` so the spawned marimo can join the broker.
+    When omitted, no env var leaks through."""
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+    captured: dict[str, dict[str, str]] = {}
+    real_create = axi_notebook_launcher.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return await real_create(*args, **kwargs)
+
+    monkeypatch.setattr(axi_notebook_launcher.asyncio, "create_subprocess_exec", spy)
+
+    result = asyncio.run(
+        axi_notebook_launcher.launch(
+            test="basic",
+            suite_dir=str(suite),
+            project_root=tmp_path,
+            timeout_s=5.0,
+            events_url="ws://127.0.0.1:7000/api/events/sync",
+        )
+    )
+    assert captured["env"]["RB_HUB_EVENTS_URL"] == "ws://127.0.0.1:7000/api/events/sync"
+    try:
+        os.kill(result.pid, 9)
+    except ProcessLookupError:
+        pass
+
+    # Second pass without events_url — env stays clean.
+    captured.clear()
+    result2 = asyncio.run(
+        axi_notebook_launcher.launch(
+            test="basic",
+            suite_dir=str(suite),
+            project_root=tmp_path,
+            timeout_s=5.0,
+        )
+    )
+    assert "RB_HUB_EVENTS_URL" not in captured["env"]
+    try:
+        os.kill(result2.pid, 9)
     except ProcessLookupError:
         pass
 
@@ -270,8 +341,182 @@ def test_route_returns_json_url_on_success(
     assert payload["url"] == "http://localhost:31337"
     assert payload["test"] == "basic"
     assert payload["pid"] > 0
+    assert payload["reused"] is False
     # Background fake_marimo cleanup.
     try:
         os.kill(payload["pid"], 9)
     except ProcessLookupError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Session reuse + shutdown cleanup (Phase 2.5)
+# ---------------------------------------------------------------------------
+
+
+def test_repeat_request_for_same_test_reuses_cached_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second click on the SPA's "Open in marimo" button for the same
+    (test, suite_dir) returns the SAME url+pid+port. No duplicate
+    marimo spawn — locks the Phase 2.5 single-instance behaviour."""
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+    server = _make_viewer_server(tmp_path)
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+
+    query = {"test": ["basic"], "suite_dir": [str(suite)]}
+    first = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+    second = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert second["pid"] == first["pid"]
+    assert second["url"] == first["url"]
+    assert second["port"] == first["port"]
+    assert len(server._axi_notebook_sessions) == 1
+    try:
+        os.kill(first["pid"], 9)
+    except ProcessLookupError:
+        pass
+
+
+def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the user manually killed the spawned marimo (or it crashed),
+    the next click should respawn instead of returning a dead URL.
+
+    Mocks ``_is_pid_alive`` to force the "dead" branch rather than
+    racing the kernel — relying on real SIGKILL + reap timing was
+    flaky under CI scheduling latency.
+    """
+    from rtl_buddy.hub import viewer_http
+
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+    server = _make_viewer_server(tmp_path)
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+
+    query = {"test": ["basic"], "suite_dir": [str(suite)]}
+    first = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+    # Force the stale-cache branch deterministically.
+    monkeypatch.setattr(viewer_http, "_is_pid_alive", lambda pid: False)
+
+    second = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+    assert second["reused"] is False
+    assert second["pid"] != first["pid"]
+    for pid in (first["pid"], second["pid"]):
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+
+
+def test_shutdown_calls_terminate_on_every_session_and_clears_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ViewerServer.shutdown() SIGTERMs every spawned marimo and
+    clears the session cache. Without this, hub restarts orphan
+    marimos that nobody can reach.
+
+    Mocks ``_terminate_pid`` to record what got called rather than
+    asserting on kernel signal-delivery timing — CI runners can take
+    seconds to deliver SIGTERM under load, which made an earlier
+    poll-the-PID version flaky. The actual signal-sending logic is
+    one line (``os.kill(pid, SIGTERM)``); the contract the hub
+    promises is "every session.pid in the cache is signalled and the
+    cache is cleared", which this assertion covers.
+    """
+    from rtl_buddy.hub import viewer_http
+
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+    server = _make_viewer_server(tmp_path)
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            server._handle_axi_notebook(
+                _StubConnection(),
+                {"test": ["basic"], "suite_dir": [str(suite)]},
+            )
+        ).body
+    )
+    pid = payload["pid"]
+    assert os.kill(pid, 0) is None  # spawned + alive
+
+    terminated: list[int] = []
+    monkeypatch.setattr(viewer_http, "_terminate_pid", terminated.append)
+
+    asyncio.run(server.shutdown())
+
+    assert server._axi_notebook_sessions == {}
+    assert terminated == [pid]
+
+    # Cleanup of the still-alive fake_marimo (the mock prevented the
+    # real SIGTERM from going out).
+    try:
+        os.kill(pid, 9)
+    except ProcessLookupError:
+        pass
+
+
+def test_terminate_pid_sends_sigterm_to_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct unit test for the helper: locks the (pid, SIGTERM)
+    call shape so a regression that switches to SIGKILL or omits the
+    pid is caught immediately."""
+    import os as _os
+    import signal
+
+    from rtl_buddy.hub import viewer_http
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(_os, "kill", lambda p, s: sent.append((p, s)))
+    viewer_http._terminate_pid(12345)
+    assert sent == [(12345, signal.SIGTERM)]
+
+
+def test_terminate_pid_swallows_process_lookup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Race: process already exited between cache-check and kill.
+    Helper must not raise — best-effort cleanup."""
+    import os as _os
+
+    from rtl_buddy.hub import viewer_http
+
+    def boom(_pid, _sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(_os, "kill", boom)
+    # Should not raise.
+    viewer_http._terminate_pid(99999)

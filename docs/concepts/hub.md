@@ -117,13 +117,24 @@ Once the hub is up, the SPA can change models without restarting:
   ```
   `has_cdc` is end-to-end: `true` only when the model has a `cdc:` field AND the referenced cdc.yaml exists AND at least one analysis resolves cleanly for the model. The endpoint walks for `models.yaml` per request, so newly-edited files appear without a restart. When `--models-file PATH` was passed at start time, only that file is enumerated.
 - `GET /view.json?model=NAME` — build (or reuse) the per-model view.json at `.rtl-buddy/cache/view-<NAME>.json`, serve it, and promote `NAME` to the active model. `--models-file` constraints apply: `?model=` only honours entries in the pinned file. Per-model `asyncio.Lock` serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.
-- `view_changed` event — broadcast on every active-model change. Envelope:
+- `GET /tests` — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as `/models`; entries carry the resolved `(model, tb)` pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
+  ```json
+  {
+    "tests": [
+      {"name": "basic", "model": "ip_demo_tiny_npu", "tb": "tb_top", "tests_file": "/abs/path/to/tests.yaml"}
+    ],
+    "active": "basic"
+  }
+  ```
+- `GET /view.json?test=NAME` — build (or reuse) the per-`(model, tb)` view.json at `.rtl-buddy/cache/view-<MODEL>-tb-<TB>.json`, serve it, and promote the test (and its underlying model) to active. Per-test `asyncio.Lock` mirrors the per-model lock. The renderer runs in TB-rooted mode: rtl-buddy-view is invoked with `--top <model>` + `--tb-top <tb.toplevel>` so the rendered tree is rooted at the testbench top with the DUT recorded for the SPA's dashed-boundary overlay.
+- `view_changed` event — broadcast on every active-view change. Envelope:
   ```json
   {"v":1, "id":"…", "origin":"cli", "kind":"event", "type":"view_changed",
    "payload":{"model":"ip_dtnpu_dma", "models_file":"/abs/path/to/models.yaml",
-              "view_url":"/view.json?model=ip_dtnpu_dma"}}
+              "view_url":"/view.json?model=ip_dtnpu_dma",
+              "view_mode":"dut"}}
   ```
-  Sent to every connected client (SPA tabs, nvim, `rb wave` bridge) so they can refresh model-scoped state.
+  In TB-view mode (`?test=` switch) the payload carries `view_mode: "tb"` plus `test` + `tb` + `tests_file` fields (the `view_url` points at `/view.json?test=<NAME>`). v1.0 SPAs that don't know about `view_mode` ignore it and fall through to the legacy `model`-driven `switchModel` path — that's why the DUT-side envelope still carries the full set of legacy fields. Sent to every connected client (SPA tabs, nvim, `rb wave` bridge) so they can refresh view-scoped state.
 
 The active model is also recorded in `.rtl-buddy/hub.json` under `active_model` (optional field) and surfaced in `rb hub status` output.
 
@@ -159,7 +170,7 @@ http_port   = 0          # Same, for the viewer HTTP+WS layer (only used with --
 log_path    = ".rtl-buddy/hub.log"   # Relative paths resolve from the project root.
 
 [mapping]
-tb_prefix   = "tb.dut."  # Stripped from wave-side signal paths before resolving to the view.
+tb_prefix   = "tb.dut."  # Fallback for DUT-rooted views. When the loaded view.json carries tb_top (rtl-buddy-view v1.1, #99 / 6b), the resolver short-circuits to identity wave↔view mapping and tb_prefix is bypassed — the rendered TB tree already speaks the wave-side coordinate system.
 view_json   = ".rtl-buddy/view.json"  # Snapshot the resolver consumes. Defaults shown.
 
 # Optional pre-strip aliases — applied before tb_prefix is stripped.

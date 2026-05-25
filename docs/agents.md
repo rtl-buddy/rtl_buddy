@@ -1,14 +1,44 @@
 ---
-description: How to run rtl_buddy effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+description: How rtl_buddy is built for AI-agent use — the bundled skill, local docs access, machine mode, and the structured log and stdout contracts agents can rely on.
 ---
 
-# For Agents
+# Agent use of rtl-buddy
 
-Use this page to run `rtl_buddy` effectively from an AI agent, including local docs access, machine mode, log formats, and the recommended validation workflow.
+`rtl_buddy` is designed to be driven by AI coding agents as well as humans. This page describes the affordances that make agent integration practical:
+
+- a **bundled agent skill** that installs into Claude Code and Codex,
+- **local docs access** through the `rtl-buddy docs` command, so reference material always matches the installed version,
+- a **machine mode** (`--machine`) that switches the orchestration log to JSON Lines and emits a stable stdout envelope on exit,
+- and deterministic [exit codes](concepts/tests.md#exit-codes) that let an orchestrator distinguish test failures from configuration errors.
+
+## Bundled agent skill
+
+The `rtl_buddy` wheel ships an agent skill that teaches Claude Code and Codex the conventions for invoking `rtl_buddy` — when to use `--machine`, where logs are written, how multi-suite runs lay out artefacts, and which docs to consult. Because the skill ships with the wheel, its content is locked to the installed `rtl_buddy` major version.
+
+Users materialize the skill once with `rtl-buddy skill install`:
+
+```bash
+rtl-buddy skill install             # default: user-level
+rtl-buddy skill install --project   # project-level (overrides user-level for that project)
+rtl-buddy skill uninstall           # remove skill files
+```
+
+See [cli reference](reference/cli.md) for full `rb skill` interface.
+
+Install targets:
+
+| Scope | Claude Code | Codex |
+|-------|-------------|-------|
+| User (default) | `~/.claude/skills/rtl_buddy/SKILL.md` | `~/.codex/skills/rtl_buddy/SKILL.md` |
+| Project (`--project`) | `<root>/.claude/skills/rtl_buddy/SKILL.md` | `<root>/.agents/skills/rtl_buddy/SKILL.md` |
+
+User-level is the default because the skill is workflow-pattern guidance that changes rarely across `rtl_buddy` versions; a single copy per machine encourages keeping `rtl_buddy` aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent `rtl_buddy` major — Claude Code's resolution order puts the project copy first, so both scopes can coexist.
+
+For project-level installs, the install command prints the `.gitignore` lines to add. Project root is discovered by walking up for `root_config.yaml` (falling back to `.git/`), so `rtl-buddy skill install --project` is safe to run from a `verif/` subdirectory.
 
 ## Local docs access
 
-Use the bundled docs commands first when you need CLI or YAML reference:
+The wheel ships the full Markdown docs site alongside the CLI, exposed through:
 
 ```bash
 rtl-buddy docs list
@@ -16,165 +46,73 @@ rtl-buddy docs show agents
 rtl-buddy --machine docs show reference/yaml
 ```
 
-`docs list` shows each page's slug, title, and summary. `docs show --machine` returns lightweight metadata plus the canonical Markdown for the selected page. GitHub Pages remains a convenient human-facing fallback.
+This is the recommended reference surface for agents: the docs are local (no network), and their content always matches the installed version of `rtl_buddy`. `docs list` enumerates each page's slug, title, and description; `docs show` returns the canonical Markdown for a single page. GitHub Pages at <https://rtl-buddy.github.io/rtl_buddy/> remains available as a human-facing fallback.
 
-## Agent Skill Install
+## Machine mode
 
-The `rtl_buddy` wheel bundles an agent skill for Claude Code and Codex. Users run a one-time install to materialize it into their agent skill directories:
+Passing `--machine` switches `rtl_buddy` into a mode designed for programmatic consumption:
 
-```bash
-rtl-buddy skill install             # default: user-level
-rtl-buddy skill install --project   # project-level (overrides user-level for that project)
-rtl-buddy skill install --root PATH # explicit target (implies project-level layout)
-rtl-buddy skill status              # report installed version vs current
-rtl-buddy skill uninstall           # remove skill files
-```
+- `rtl_buddy.log` is written as **JSON Lines** instead of human-readable text.
+- Console output drops Rich formatting, colors, and spinners.
+- Commands that produce structured results print a single JSON envelope to **stdout** on exit.
 
-Targets:
-
-| Scope | Claude Code | Codex |
-|-------|-------------|-------|
-| User (default) | `~/.claude/skills/rtl_buddy/SKILL.md` | `~/.codex/skills/rtl_buddy/SKILL.md` |
-| Project (`--project`) | `<root>/.claude/skills/rtl_buddy/SKILL.md` | `<root>/.agents/skills/rtl_buddy/SKILL.md` |
-
-User-level is the recommended default — one install per machine, one place to keep current. Project-level is an opt-in override for projects pinned to a divergent `rtl_buddy` major; Claude Code's resolution order puts the project copy first, so both can coexist.
-
-For project-level installs, add the target dirs to your project's `.gitignore` — the install command prints the exact lines. `rtl-buddy skill install --project` discovers the project root via `root_config.yaml` (falling back to `.git/`), so it is safe to run from a `verif/` subdirectory.
-
-## Always use machine mode
-
-Run `rtl_buddy` with `--machine` in all agent-driven workflows:
+The intent is that an orchestrator can determine the outcome of a run by parsing the stdout envelope, and reconstruct timing or per-event detail from `rtl_buddy.log`, without screen-scraping human-formatted output.
 
 ```bash
 rtl-buddy --machine test basic
 rtl-buddy --machine regression -c design/regression.yaml
 ```
 
-In machine mode:
+### Stdout envelope
 
-- `rtl_buddy.log` is written as **JSON Lines** (one JSON object per line) instead of human-readable text.
-- Console output switches to plain, colorless text — no Rich formatting, no spinners.
-- All structured event fields (event name, status, durations, paths) are present in the log.
+In machine mode, structured-result commands print a single JSON object to stdout on exit:
 
-This makes it reliable to parse outcomes from `rtl_buddy.log` without screen-scraping.
+```json
+{
+  "command": "test",
+  "exit_code": 0,
+  "meta": {
+    "rtl_buddy_version": "2.4.0",
+    "argv": ["rtl-buddy", "--machine", "test", "basic"],
+    "cwd": "/path/to/suite",
+    "git": {"branch": "main", "commit": "abc1234", "modified": 0, "staged": 0}
+  },
+  "payload": {
+    "results": [
+      {"name": "basic", "result": "PASS", "desc": "basic completed"}
+    ]
+  }
+}
+```
 
-## Working directory rules
+The envelope shape is the same across commands:
 
-Use the command from the directory that matches its scope:
+- `command` — the subcommand that was run (`"test"`, `"regression"`, `"synth"`, …).
+- `exit_code` — integer exit code (see [exit codes](concepts/tests.md#exit-codes)).
+- `meta` — version, argv, working directory, and git status at invocation.
+- `payload` — command-specific structured data.
 
-- Run single-suite commands such as `test`, `randtest`, `wave`, and `fpv` from the suite directory that contains the relevant `tests.yaml` or `fpv.yaml`.
-- Run project-wide commands such as `regression`, `synth-regression`, `cdc-regression`, `fpv-regression`, `spec ...`, and `docs ...` from the project root unless you are intentionally narrowing scope.
-- Multi-suite commands change into each suite as they execute, so their `rtl_buddy.log` and `artefacts/` outputs are written per suite, not only in the repo-root directory where you launched the command.
+The top-level envelope fields are reserved and versioned by `meta.rtl_buddy_version` under `rtl_buddy`'s normal semantic-versioning rules. Adding optional fields under `meta` or `payload` is non-breaking; removing fields, renaming fields, changing field types, or changing the meaning of an existing field is breaking.
 
-## Log file locations
+Conventions inside `payload`:
 
-| File | Description |
-|------|-------------|
-| `rtl_buddy.log` | Orchestration log; JSONL in machine mode, human-readable otherwise |
-| `artefacts/{test_name}/test.log` | Simulation stdout for each test |
-| `artefacts/{test_name}/test.err` | Simulation stderr for each test |
-| `artefacts/{test_name}/test.randseed` | Seed used for this test run |
-| `artefacts/{test_name}/coverage.dat` | Coverage database (if coverage is enabled) |
-| `artefacts/{test_name}/compile.log` | Compile transcript |
-| `artefacts/{test_name}/run-NNNN/test.log` | Per-iteration output for `randtest` |
-| `test.log` | Symlink to the most recent test's log |
-| `test.err` | Symlink to the most recent test's stderr |
-| `test.randseed` | Symlink to the most recent test's seed |
+- `--list` commands (`test --list`, `synth --list`, …) populate `payload.names`.
+- Regression commands populate `payload.results`, with a `"suite"` field on each entry.
+- `docs list` populates `payload.pages` with `slug`, `title`, and `description` from page frontmatter.
 
-For single-suite commands, these files are written relative to the suite directory where you ran `rtl_buddy`. For multi-suite commands such as `regression`, each suite gets its own `rtl_buddy.log`, `artefacts/`, and latest-run symlinks inside that suite directory even though the command was launched from the project root.
+### JSONL log format
 
-## Machine mode log format
-
-Each line in `rtl_buddy.log` (machine mode) is a JSON object:
+In machine mode, each line of `rtl_buddy.log` is a JSON object describing one event:
 
 ```json
 {"event": "sim.completed", "test": "smoke", "duration_sec": 4.2, "message": "smoke: simulation completed in 4.20s"}
 {"event": "postproc.completed", "test": "smoke", "result": "PASS", "desc": "smoke completed", "message": "smoke: post-processing completed with result PASS (smoke completed)"}
 ```
 
-Key fields:
+Common fields:
 
-- `event`: dotted event name identifying what happened (e.g. `sim.start`, `compile.failed`, `postproc.completed`)
-- `message`: the human-readable message corresponding to the event
-- Other fields are event-specific (name, duration, seed, exit code, etc.)
+- `event` — dotted event name identifying what happened (`sim.start`, `compile.failed`, `postproc.completed`, …).
+- `message` — the human-readable rendering of the event.
+- Event-specific fields — test name, duration, seed, exit code, file paths, etc.
 
-## How pass/fail is detected
-
-Agents authoring tests need to follow the parser that `rtl_buddy` actually uses:
-
-- If `tests.yaml` sets `uvm:`, `rtl_buddy` parses the UVM Report Summary and compares it against `max_warns` / `max_errors`.
-- Otherwise, `rtl_buddy` parses `artefacts/{test_name}/test.log` and expects one stdout line starting with `PASS` or `FAIL`.
-- When emitting `FAIL`, also print an `ERR:` or `FAT:` line because the default failure parser expects it.
-- If neither `PASS` nor `FAIL` appears, the test result becomes `NA`.
-- Do not rely on simulator exit code alone for non-UVM pass/fail signalling.
-
-Minimal non-UVM example:
-
-```systemverilog
-if (test_passed) begin
-  $display("PASS smoke completed");
-end else begin
-  $display("FAIL smoke completed");
-  $display("ERR: expected done=1 before timeout");
-end
-```
-
-In machine mode, the authoritative per-test outcome appears in the `postproc.completed` event's `result` and `desc` fields.
-
-## Spec traceability commands
-
-The `rb spec` commands check the spec-to-test traceability layer. They do not affect simulation and are safe to run at any time:
-
-```bash
-# List all spec blocks discovered in the project
-rtl-buddy --machine spec list
-
-# Check which spec blocks have a linked design model (models.yaml spec: pointer)
-rtl-buddy --machine spec check-design
-
-# Check which coverage items are addressed by at least one test (tests.yaml covers:)
-rtl-buddy --machine spec check-coverage
-```
-
-In machine mode, `spec list` returns `{"blocks": [...]}` and `spec check-coverage` returns `{"items": [...]}` with a `"covered": true/false` field per item. Use these to identify uncovered items programmatically.
-
-All three commands default to searching `spec/`, `design/`, and `verif/` under the project root. Pass `--spec-dir`, `--design-dir`, or `--verif-dir` to narrow the scope.
-
-## Recommended validation workflow
-
-```bash
-# 1. Check rtl_buddy version
-rtl-buddy --version
-
-# 2. Dry-run: verify pre-flight config without compiling or simulating
-rtl-buddy --machine test basic --early-stop pre
-
-# 3. Run a single test
-rtl-buddy --machine test basic
-
-# 4. Check the log for outcome
-grep '"event"' rtl_buddy.log | tail -5
-
-# 5. Run a full regression
-rtl-buddy --machine regression -c design/regression.yaml
-```
-
-Use `--early-stop pre` to validate that config files, model paths, and testbench paths all resolve correctly before committing to a compile step.
-
-## Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | All tests passed |
-| 1 | One or more tests failed |
-| 2 | Fatal configuration or environment error |
-
-## Version checking
-
-Always verify the installed version before running, especially in CI or after dependency updates:
-
-```bash
-rtl-buddy --version
-```
-
-The version follows semantic versioning. Breaking YAML schema or CLI changes are signaled by a major version bump.
+The authoritative per-test outcome is the `postproc.completed` event's `result` and `desc` fields. For multi-suite commands, each suite directory gets its own `rtl_buddy.log`.

@@ -71,6 +71,7 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "scope_changed",
         "source_focused",
         "diagnostics_set",
+        "wave_values_changed",
     }
 )
 """Event ``type`` strings that broadcast to all clients except origin.
@@ -90,6 +91,7 @@ REQUEST_ROUTING: dict[str, Origin] = {
     "open_source": Origin.SRC,
     "view_pan_to": Origin.VIEW,
     "view_capture": Origin.VIEW,
+    "view_overlay_set": Origin.VIEW,
 }
 """Request ``type`` → ``origin`` of the client that handles it.
 

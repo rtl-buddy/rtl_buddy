@@ -1,6 +1,7 @@
 rtl-buddy-filetype: test_config
 testbenches:
   - name: tb_basic
+    toplevel: tb_basic
     filelist:
       - src/example.sv
 tests:

@@ -415,6 +415,30 @@ def cmd_view_pan(
 
 
 @send_app.command(
+    "overlay",
+    help=(
+        "Flip an overlay's enabled state on the SPA. Built-in NAMES "
+        "are 'clock', 'reset', 'axi-perf', 'wave'; an unknown name is "
+        "a no-op. Use --on / --off (default --on). Useful for agents "
+        "or scripted demos that want to direct the user's attention "
+        "to a specific overlay layer without a UI click."
+    ),
+)
+def cmd_view_overlay(
+    name: Annotated[str, typer.Argument(help="overlay name")],
+    on: Annotated[
+        bool,
+        typer.Option(
+            "--on/--off",
+            help="Enable (default) or disable the named overlay.",
+        ),
+    ] = True,
+) -> None:
+    with _open_or_exit() as h:
+        _print_response(h.request("view_overlay_set", {"name": name, "enabled": on}))
+
+
+@send_app.command(
     "capture",
     help=(
         "Ask the view peer (SPA) to snapshot the current graph and "

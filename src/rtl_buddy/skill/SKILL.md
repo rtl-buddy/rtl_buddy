@@ -13,29 +13,24 @@ Use <https://rtl-buddy.github.io/rtl_buddy/> only as a fallback reference.
 
 ## Always use `--machine`
 
-All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL and console output is plain text.
+All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL. Structured result commands, including `rb docs list` but excluding `rb docs show`, print a single JSON envelope to **stdout** on exit — parse this for results.
 
-See `rtl-buddy docs show agents` for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
+See `rtl-buddy docs show agents` for the stdout envelope schema, JSONL log format, and exit codes (0 pass, 1 test failures, 2 fatal).
 
 ## Version check
 
 Report `rtl-buddy --version` at the top of every run summary.
 This skill ships with the CLI, so its content matches the installed major. Surface any observed behavior differences in your summary.
 
-## YAML types
+## Config files
 
 Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 
-- **`root_config.yaml`** — project root, platform/build defaults, regression default path, synthesis tool defaults (`cfg-synth-tools`), PDK assets (`cfg-pdks`), synth/P&R platforms (`cfg-synth-platforms`, `cfg-pnr-platforms`).
-- **`regression.yaml`** — repo-level suite list for `regression`.
-- **`tests.yaml`** — suite-level tests/testbenches; run `test` and `randtest` from this directory.
-- **`models.yaml`** — design source filelists referenced by `tests.yaml` and `synth.yaml`.
-- **`synth.yaml`** — synthesis runs; `model` name is the top; `tool` selects `cfg-synth-tools` entry; `params`/`defines`/`tool_overrides` for per-run customization.
-- **`synth_regression.yaml`** — repo-level synthesis suite list for `synth-regression`.
-- **`pnr.yaml`** — P&R runs that consume an upstream `rb synth` artefact; each entry names `synth`/`synth-path`, `platform` (a `cfg-pnr-platforms` entry), and `constraints` (SDC). Only `tool: openroad` today.
-- **`cdc.yaml`** — CDC lint analyses; each entry names a `model`, `tool` (selects `cfg-cdc-tools` entry), an SDC, and optional waivers.
-- **`fpv.yaml`** — formal property verification runs; each entry names a `model`, `top`, a list of `properties:` (SV files with bound checker modules), `mode` (bmc/prove/cover/live), `depth`, and `engines:`. `tool` selects `cfg-fpv-tools` entry; only `sby` (SymbiYosys) today.
-- **`specs.yaml`** — spec traceability data; consumed by `rtl-buddy spec`.
+- `root_config.yaml` sets project defaults and tool/platform entries.
+- `tests.yaml` and `regression.yaml` drive sim suites; run `test`/`randtest` from the suite directory and `regression` from the repo root.
+- `models.yaml` lists design sources used by sim, synth, P&R, CDC, FPV, and hierarchy commands.
+- `synth.yaml`, `pnr.yaml`, `power.yaml`, `cdc.yaml`, and `fpv.yaml` configure implementation/analysis runs.
+- `specs.yaml` holds spec traceability data consumed by `rtl-buddy spec`.
 
 ## Pass/fail detection
 
@@ -44,29 +39,21 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact schemas.
 - When emitting `FAIL`, also print an `ERR:` or `FAT:` line. Missing markers report `NA`; simulator exit code alone is not authoritative.
 - See `rtl-buddy docs show agents` and `rtl-buddy docs show concepts/cocotb`.
 
-## Multi-suite discovery and CWD rules
+## Multi-suite runs
 
 - Discover suites with `rg --files -g '**/tests.yaml'`.
-- Run `test` / `randtest` from each suite directory.
-- Run `regression` from the repo root.
 - Summarize results per suite, not just globally.
 
 ## Artefact locations
 
 - `rtl_buddy.log` — JSONL in `--machine` mode; written to the suite root (CWD you invoked from).
 - `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for a single run.
-- `artefacts/<test>/compile.log`, `run.f` — compile outputs, always at the test root (not per run-id).
 - `artefacts/<test>/run-0001/test.log` etc. — per-iteration outputs for `randtest`.
 - `artefacts/<test>/dump.fst` — FST waveform produced by debug-mode builds (`-M debug`).
-- Symlinks `test.log`, `test.err`, `test.randseed` at the suite root point at the latest run.
 - For multi-suite runs, each suite directory has its own `rtl_buddy.log` and `artefacts/`; report logs per suite.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
 
 ## Waveform viewing
 
 - `rb wave <test>` opens `artefacts/<test>/dump.fst` in Surfer (runs debug sim first if no FST exists).
-- Signal layout files follow the convention `<test>.surfer` placed next to `tests.yaml` (e.g. `verif/sandbox/basic.surfer`). Use `variable_add <path>` and `zoom_fit` commands. See `verif/mem/tb_spsram.surfer` for a reference example.
 - Surfer must be configured in `cfg-surfer` in `root_config.yaml`. Run `rtl-buddy docs show concepts/root-config` for the schema.
-
-## Bugs & Improvements
-If you discover a rtl_buddy bug or potential improvement, you can post an issue on GitHub <https://github.com/rtl-buddy/rtl_buddy/> documenting your findings, with permission from your user.

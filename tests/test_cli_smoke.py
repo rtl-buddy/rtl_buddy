@@ -47,7 +47,7 @@ def test_docs_list_human():
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["docs", "list"])
     assert result.exit_code == 0, result.output
-    # Each line is "<slug> - <title>: <summary>"; at least one slug present.
+    # Each line is "<slug> - <title>: <description>"; at least one slug present.
     assert " - " in result.output
     assert ":" in result.output
 
@@ -57,12 +57,13 @@ def test_docs_list_machine_outputs_json():
     result = runner.invoke(rb.app, ["--machine", "docs", "list"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert "pages" in payload
-    assert isinstance(payload["pages"], list)
-    assert payload["pages"], "expected at least one bundled docs page"
-    # Each entry should have slug/title/summary keys.
-    first = payload["pages"][0]
-    for key in ("slug", "title", "summary"):
+    assert payload["command"] == "docs list"
+    assert payload["exit_code"] == 0
+    assert isinstance(payload["payload"]["pages"], list)
+    assert payload["payload"]["pages"], "expected at least one bundled docs page"
+    # Each entry should have slug/title/description keys.
+    first = payload["payload"]["pages"][0]
+    for key in ("slug", "title", "description"):
         assert key in first, f"{key} missing from page list item"
 
 

@@ -33,6 +33,7 @@ from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
 from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
+from .tools import ToolVersionConfig, ToolVersionConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -136,6 +137,7 @@ class RootConfigFile:
         rename="cfg-synth-efforts", default_factory=list
     )
     systemc: SystemCConfigFile | None = field(rename="cfg-systemc", default=None)
+    tools: list[ToolVersionConfigFile] = field(rename="cfg-tools", default_factory=list)
 
 
 class RootConfig:
@@ -188,6 +190,7 @@ class RootConfig:
         self.fpv_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
         self.systemc_cfg: SystemCConfig | None = None
+        self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -286,6 +289,11 @@ class RootConfig:
             # SystemC config (optional, single block)
             if data.systemc is not None:
                 self.systemc_cfg = data.systemc.initialise()
+
+            # cfg-tools min-version overrides (optional)
+            self.tool_version_cfgs = {
+                cfg.name: ToolVersionConfig.from_file(cfg) for cfg in data.tools
+            }
 
             # Initialise regression config
             self.cfg_rtl_reg = data.cfg_rtl_reg
@@ -608,6 +616,10 @@ class RootConfig:
                 f"synthesis effort '{name}' not found in cfg-synth-efforts"
             )
         return cfg
+
+    def get_tool_version_cfg(self, name: str) -> ToolVersionConfig | None:
+        """Get optional ``cfg-tools`` min-version pin for the given tool name."""
+        return self.tool_version_cfgs.get(name)
 
     def get_systemc_cfg(self) -> SystemCConfig | None:
         """

@@ -108,6 +108,41 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "wave_values_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["t_fs", "values"],
+            "additionalProperties": false,
+            "description": "Broadcast by the hub when surfer reports new values for the variables it's tracking — typically as a side-effect of cursor movement. Carries the timestamp at which the values were sampled plus one entry per (wave_scope, signal). Consumers merge into a last-known-value map; absent signals retain their previous value (no clear-on-omit semantics).",
+            "properties": {
+              "t_fs": {
+                "type": "string",
+                "pattern": "^-?[0-9]+$",
+                "description": "Sampling time in femtoseconds, decimal string (same encoding as cursor_time_changed)."
+              },
+              "values": {
+                "type": "array",
+                "description": "Per-signal value samples at t_fs. An empty array is legal (e.g. the cursor moved into a region the hub doesn't have variables tracked for) and clears nothing.",
+                "items": {
+                  "type": "object",
+                  "required": ["wave_scope", "signal", "value"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "wave_scope": { "type": "string", "minLength": 1, "description": "Surfer-side scope path, dotted (e.g. `tb.dut.fifo`)." },
+                    "signal":     { "type": "string", "minLength": 1, "description": "Bare signal name within wave_scope (no scope prefix)." },
+                    "value":      { "type": "string", "description": "SV literal — e.g. `1'b1`, `32'hDEAD_BEEF`, `1'bx`. Producers should emit the same encoding the Phase 8 offline overlay uses so the renderer can format both identically." }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "source_focused" } }, "required": ["type"] },
       "then": {
         "properties": {
@@ -377,6 +412,39 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "view_overlay_set" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["name", "enabled"],
+                "additionalProperties": false,
+                "description": "Ask the SPA to toggle an overlay's enabled state. Names follow the same convention as `graph.overlays_present` — built-ins today are `clock`, `reset`, `axi-perf`, `wave`. Enabling an unknown name is a no-op (the SPA silently drops it, matching the existing soft-miss semantics for unrecognised overlay names).",
+                "properties": {
+                  "name":    { "type": "string", "minLength": 1 },
+                  "enabled": { "type": "boolean" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "resolve_view_to_wave" } }, "required": ["type"] },
       "then": {
         "oneOf": [
@@ -589,24 +657,43 @@
           "kind": { "const": "event" },
           "payload": {
             "type": "object",
-            "required": ["model", "models_file", "view_url"],
+            "required": ["model", "view_url"],
             "additionalProperties": false,
-            "description": "Broadcast by the hub (origin=cli) whenever the active view.json model changes — driven by a SPA `?model=` switch today, by file-watch refresh later. Consumers should refetch model-scoped state.",
+            "description": "Broadcast by the hub (origin=cli) whenever the active view changes — driven by a SPA `?model=` or `?test=` switch today, by file-watch refresh later. Consumers should refetch view-scoped state. The `view_mode` field (rtl-buddy-view #99 / 6b) marks DUT vs TB renders; TB renders also carry `test`, `tb`, and `tests_file` fields, while DUT renders carry `models_file`.",
             "properties": {
               "model": {
                 "type": "string",
                 "minLength": 1,
-                "description": "The model name now serving on `GET /view.json` with no query."
+                "description": "The DUT model name. Always present — for TB renders this is the model the test pins."
               },
               "models_file": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Absolute path to the models.yaml that owns the entry."
+                "description": "Absolute path to the models.yaml that owns the entry. Set on DUT renders."
               },
               "view_url": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Convenience URL the SPA can load directly to display this model — e.g. `/view.json?model=ip_dtnpu_dma`."
+                "description": "Convenience URL the SPA can load directly — `/view.json?model=<NAME>` for DUT renders, `/view.json?test=<NAME>` for TB renders."
+              },
+              "view_mode": {
+                "enum": ["dut", "tb"],
+                "description": "Explicit render mode (#99 / 6b). v1.0 SPAs that don't know this field ignore it and fall through to the legacy model-driven switchModel path."
+              },
+              "test": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Test name. Set on TB renders only."
+              },
+              "tb": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Testbench name (from tests.yaml). Set on TB renders only."
+              },
+              "tests_file": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Absolute path to the tests.yaml that owns the entry. Set on TB renders only."
               }
             }
           }

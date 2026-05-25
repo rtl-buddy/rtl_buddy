@@ -68,7 +68,15 @@ WAVE_CAPABILITIES: tuple[str, ...] = (
     "signal_selected",
     "cursor_time_changed",
     "scope_changed",
+    "wave_values_changed",
 )
+
+# Maximum wall-time the bridge will wait on a query_variable_values
+# response before giving up on a cursor-driven sample. Short by design
+# — surfer's WCP is in-process and a query against a handful of
+# variables typically returns in <10 ms; anything longer than this and
+# the user has scrubbed past the sample point anyway.
+QUERY_TIMEOUT_SECONDS = 1.0
 
 
 class WaveHubBridgeError(Exception):
@@ -155,6 +163,17 @@ class WaveHubBridge:
         self._stop = threading.Event()
         self._send_lock = threading.Lock()
         self._reader_thread: threading.Thread | None = None
+        # Hierarchy strings the user has asked surfer to track via
+        # ``wave_add_variables``. ``query_variable_values`` only returns
+        # data for variables whose signal payload has been loaded — which
+        # the add_variables flow guarantees. The set is the
+        # working-cache for cursor-driven re-sampling.
+        self._tracked_variables: list[str] = []
+        # Single-in-flight gate for cursor-driven queries. Cursor
+        # scrubbing fires at ~60 Hz; one outstanding round-trip is enough
+        # to keep the viewer painted, and dropping the rest avoids
+        # piling up queries surfer can't process faster than they arrive.
+        self._query_in_flight = threading.Lock()
 
     # ------------------------------------------------------------------
     # connection
@@ -293,12 +312,37 @@ class WaveHubBridge:
                 type=envelope.type,
                 error=str(exc),
             )
+        # Cursor-driven wave-values producer. Runs AFTER the
+        # cursor_time_changed broadcast so peers always see the cursor
+        # advance before the new values land — without this ordering,
+        # a fast worker thread can race ahead and emit
+        # wave_values_changed first, which looks wrong in event logs
+        # even though the viewer's merge semantics are identical.
+        if event_name == "cursor_moved":
+            ts = msg.get("timestamp")
+            if (
+                isinstance(ts, int)
+                and self._tracked_variables
+                and self._query_in_flight.acquire(blocking=False)
+            ):
+                t = threading.Thread(
+                    target=self._produce_wave_values,
+                    args=(ts,),
+                    name="wave-hub-bridge-values",
+                    daemon=True,
+                )
+                t.start()
 
     def _wcp_to_hub_event(self, event_name: str, msg: dict) -> Envelope | None:
         if event_name == "cursor_moved":
             ts = msg.get("timestamp")
             if not isinstance(ts, int):
                 return None
+            # NB: the cursor-driven ``wave_values_changed`` producer is
+            # kicked off in :meth:`on_wcp_event` AFTER the
+            # ``cursor_time_changed`` envelope has been sent, so peers
+            # see cursor-move-then-values rather than the other way
+            # around. See the matching block there.
             return Envelope(
                 origin=Origin.WAVE,
                 kind=Kind.EVENT,
@@ -432,6 +476,23 @@ class WaveHubBridge:
         # the bridge has run for years without this round-trip.
         resp = self._listener.await_response("add_variables", timeout=2.0)
         reply_payload = self._build_add_reply(resp)
+        # Update the tracked-variables cache so cursor-driven
+        # ``wave_values_changed`` queries (below) target the set the
+        # user actually cares about. Track only the variables surfer
+        # resolved — querying for paths that came back in ``not_found``
+        # would just waste a round-trip.
+        not_found_set = set()
+        if isinstance(resp, dict):
+            nf = resp.get("not_found")
+            if isinstance(nf, list):
+                not_found_set = {s for s in nf if isinstance(s, str)}
+        resolved = [v for v in variables if v not in not_found_set]
+        if resolved:
+            existing = set(self._tracked_variables)
+            for v in resolved:
+                if v not in existing:
+                    self._tracked_variables.append(v)
+                    existing.add(v)
         self._reply_response(env, type_=env.type, payload=reply_payload)
 
     def _handle_set_cursor(self, env: Envelope) -> None:
@@ -523,6 +584,126 @@ class WaveHubBridge:
             {"type": "command", "command": "set_scope", "scope": scope}
         )
         self._reply_response(env, type_=env.type, payload={"ok": True})
+
+    def _produce_wave_values(self, native_timestamp: int) -> None:
+        """Sample every tracked variable at the cursor and broadcast.
+
+        Runs on a daemon thread; the in-flight gate is released before
+        return so the next cursor_moved can spawn its own worker.
+        """
+
+        try:
+            variables = list(self._tracked_variables)
+            if not variables:
+                return
+            self._send_to_surfer(
+                {
+                    "type": "command",
+                    "command": "query_variable_values",
+                    "variables": variables,
+                    # No timestamp → surfer samples at its current
+                    # cursor. The cursor_moved event we're responding
+                    # to means CursorSet has already landed, so this
+                    # matches the event's timestamp by construction
+                    # and avoids re-sending the value the bridge just
+                    # received in the event payload.
+                }
+            )
+            resp = self._listener.await_response(
+                "query_variable_values", timeout=QUERY_TIMEOUT_SECONDS
+            )
+            if resp is None:
+                # Either surfer didn't reply in time or the WCP socket
+                # dropped. Either way we just skip this sample; the
+                # next cursor_moved will retry.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "wave.hub.query_timeout",
+                    variables=len(variables),
+                )
+                return
+            envelope = self._wave_values_envelope(resp, native_timestamp)
+            if envelope is None:
+                return
+            try:
+                self._send_envelope(envelope)
+            except (OSError, HubProtocolError) as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "wave.hub.send_failed",
+                    type=envelope.type,
+                    error=str(exc),
+                )
+        except Exception:
+            logger.exception("wave.hub.produce_wave_values_failed")
+        finally:
+            self._query_in_flight.release()
+
+    def _wave_values_envelope(
+        self, resp: dict, fallback_native_ts: int
+    ) -> Envelope | None:
+        """Translate a surfer ``query_variable_values`` response into the
+        hub's ``wave_values_changed`` event envelope.
+
+        ``fallback_native_ts`` is the native-tick timestamp from the
+        cursor_moved event that triggered this query — used when the
+        response doesn't carry a parsable ``timestamp`` (defensive; the
+        new surfer command always sets one).
+        """
+
+        # surfer serializes the response timestamp as a decimal string
+        # (see surfer-wcp proto.rs). The cursor_moved event uses an
+        # integer in native ticks. The hub-side ``t_fs`` envelope wants
+        # a decimal string in *fs* — so we have to convert through
+        # surfer's tick → fs mapping, which the bridge doesn't track
+        # explicitly. Instead, reuse the cursor_moved event's timestamp
+        # (already in surfer-native ticks) since the new surfer command
+        # samples at-cursor and the two values agree by construction.
+        # If a future caller passes an explicit ``timestamp`` to the
+        # query, we re-derive from the response.
+        ts_raw = resp.get("timestamp")
+        native_ts: int
+        if isinstance(ts_raw, str):
+            try:
+                native_ts = int(ts_raw)
+            except ValueError:
+                native_ts = fallback_native_ts
+        elif isinstance(ts_raw, int):
+            native_ts = ts_raw
+        else:
+            native_ts = fallback_native_ts
+
+        rows = resp.get("values")
+        if not isinstance(rows, list):
+            return None
+        values: list[dict[str, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            variable = row.get("variable")
+            value = row.get("value")
+            if not isinstance(variable, str) or "." not in variable:
+                continue
+            if not isinstance(value, str):
+                # value is null when the variable has no transition
+                # before the sample point. Drop from the broadcast so
+                # the viewer's "absent signals retain prior values"
+                # semantics keep painting whatever was last known.
+                continue
+            scope, _, signal = variable.rpartition(".")
+            if not scope or not signal:
+                continue
+            values.append({"wave_scope": scope, "signal": signal, "value": value})
+
+        return Envelope(
+            origin=Origin.WAVE,
+            kind=Kind.EVENT,
+            type="wave_values_changed",
+            id=new_id(),
+            payload={"t_fs": str(native_ts), "values": values},
+        )
 
     @staticmethod
     def _build_add_reply(resp: dict | None) -> dict:

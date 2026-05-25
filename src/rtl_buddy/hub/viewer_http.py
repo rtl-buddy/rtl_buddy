@@ -37,6 +37,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..logging_utils import log_event
+from .event_broker import EventBroker
 
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,7 @@ class ViewerServer:
         project_root: Path | None = None,
         initial_model: str | None = None,
         models_file_pin: Path | None = None,
+        axi_perf_source: Path | None = None,
         hub_server: Any | None = None,
     ) -> None:
         self.hub_host = hub_host
@@ -188,6 +190,13 @@ class ViewerServer:
         self.project_root = project_root
         self.active_model = initial_model
         self.models_file_pin = models_file_pin
+        # Optional axi-perf.json the hub bakes into every model's
+        # generated view.json (Phase 2.5 of the marimo umbrella).
+        # ``rb hub start --axi-perf-from PATH`` populates this; the
+        # path is forwarded to rtl-buddy-view via the
+        # ``--overlay axi-perf=…`` form so the SPA's "Open in
+        # marimo" button gets the test/suite_dir metadata for free.
+        self.axi_perf_source = axi_perf_source
         self.hub_server = hub_server
         # Mirror the active model onto HubState so the ``state_snapshot``
         # request type can return it without reaching back into the HTTP
@@ -199,6 +208,27 @@ class ViewerServer:
         # ``?model=X`` / ``?model=Y`` requests run in parallel. Locks
         # are allocated lazily and never garbage-collected per session.
         self._model_locks: dict[str, asyncio.Lock] = {}
+        # Per-test lock map for ``?test=NAME`` (TB view, #99 / 6b).
+        # Same race-prevention as ``_model_locks`` — two SPA clicks on
+        # the same test funnel through one build, two clicks on
+        # different tests run in parallel.
+        self._test_locks: dict[str, asyncio.Lock] = {}
+        # Currently-active TB test (TB-view mode). None when the hub
+        # is serving a DUT view (default) or hasn't built any view
+        # yet. Flipped by ``?test=`` requests via
+        # ``_set_active_test``.
+        self.active_test: str | None = None
+        # Marimo "Open in marimo" session cache (Phase 2.5).
+        # ``(test, suite_dir) → LaunchResult``. Repeat clicks reuse
+        # the cached entry when the spawned marimo is still alive
+        # (``os.kill(pid, 0)`` succeeds). Per-key lock funnels
+        # concurrent requests for the same notebook through one
+        # spawn — analogous to ``_model_locks`` for /view.json?model=.
+        self._axi_notebook_sessions: dict[tuple[str, str], Any] = {}
+        self._axi_notebook_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Phase 3 SPA↔notebook sync. Opaque pub/sub — see
+        # ``event_broker.py`` for the relay semantics.
+        self._event_broker = EventBroker()
         self._server: Any | None = None
         self._bundle_index = self._resolve_bundle_index(viewer_bundle)
 
@@ -253,6 +283,14 @@ class ViewerServer:
             pass
 
     async def shutdown(self) -> None:
+        # Reap the marimo subprocesses we spawned for /api/axi-profile/
+        # notebook before tearing down the HTTP server. Without this
+        # they survive hub restarts as orphans — each one holds an
+        # OS port and a marimo session that nobody can reach (the SPA
+        # only knows the URL via the now-dead hub).
+        for key, session in list(self._axi_notebook_sessions.items()):
+            _terminate_pid(session.pid)
+            self._axi_notebook_sessions.pop(key, None)
         if self._server is None:
             return
         self._server.close()
@@ -279,7 +317,7 @@ class ViewerServer:
 
         # WS upgrade?  Let websockets handle it.
         if request.headers.get("Upgrade", "").lower() == "websocket":
-            if path == "/ws":
+            if path in ("/ws", "/api/events/sync"):
                 return None
             return _http_response(connection, 404, b"unknown ws path")
 
@@ -300,10 +338,16 @@ class ViewerServer:
         if path == "/models":
             return await self._handle_models(connection)
 
+        if path == "/tests":
+            return await self._handle_tests(connection)
+
         if path == "/api/axi-profile/notebook":
             return await self._handle_axi_notebook(connection, query)
 
         if path == "/view.json":
+            requested_test = query.get("test", [None])[0]
+            if requested_test is not None:
+                return await self._handle_view_json_for_test(connection, requested_test)
             requested = query.get("model", [None])[0]
             if requested is not None:
                 return await self._handle_view_json_for_model(connection, requested)
@@ -346,6 +390,11 @@ class ViewerServer:
         it's the user's notebook session, intended to outlive the
         single HTTP round-trip.
 
+        Repeat clicks for the same ``(test, suite_dir)`` reuse the
+        cached marimo when its pid is still alive (single-instance
+        per notebook, Phase 2.5). When the cached marimo has died
+        the entry is dropped and a fresh one spawns.
+
         Response::
 
           {
@@ -353,7 +402,8 @@ class ViewerServer:
             "pid":       12345,
             "port":      NNNN,
             "test":      "basic_traffic",
-            "suite_dir": "/abs/path/to/verif/demo_axi_2x2"
+            "suite_dir": "/abs/path/to/verif/demo_axi_2x2",
+            "reused":    false                            ← true when cache hit
           }
 
         Errors surface as JSON-bodied 4xx/5xx with a single ``error``
@@ -373,29 +423,69 @@ class ViewerServer:
             )
         test = (query.get("test") or [""])[0]
         suite_dir = (query.get("suite_dir") or [""])[0]
-        try:
-            result = await axi_notebook_launcher.launch(
-                test=test,
-                suite_dir=suite_dir,
-                project_root=self.project_root,
-            )
-        except axi_notebook_launcher.AxiNotebookLaunchError as e:
+
+        # Per-(test, suite_dir) lock funnels concurrent requests for
+        # the same notebook through one spawn. Without this, two SPA
+        # clicks within marimo's ~3 s startup window would both miss
+        # the cache and spawn duplicate processes on different ports.
+        key = (test, suite_dir)
+        lock = self._axi_notebook_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = self._axi_notebook_sessions.get(key)
+            if cached is not None and _is_pid_alive(cached.pid):
+                # Cache hit — return the same URL the user got last time.
+                body = _json.dumps(
+                    {
+                        "url": cached.url,
+                        "pid": cached.pid,
+                        "port": cached.port,
+                        "test": cached.test,
+                        "suite_dir": cached.suite_dir,
+                        "reused": True,
+                    }
+                ).encode()
+                return _http_response(
+                    connection, 200, body, content_type="application/json"
+                )
+            # Cache miss or stale → drop the dead entry, spawn fresh.
+            if cached is not None:
+                self._axi_notebook_sessions.pop(key, None)
+            try:
+                result = await axi_notebook_launcher.launch(
+                    test=test,
+                    suite_dir=suite_dir,
+                    project_root=self.project_root,
+                    events_url=(
+                        f"ws://127.0.0.1:{self.http_port}/api/events/sync"
+                        if self.http_port
+                        else None
+                    ),
+                )
+            except axi_notebook_launcher.AxiNotebookLaunchError as e:
+                return _http_response(
+                    connection,
+                    e.status,
+                    _json.dumps({"error": str(e)}).encode(),
+                    content_type="application/json",
+                )
+            # Cache under the resolved key (suite_dir may have been
+            # normalised to an absolute path by the launcher's
+            # validator; use the request key so the next request with
+            # the same input hits the cache).
+            self._axi_notebook_sessions[key] = result
+            body = _json.dumps(
+                {
+                    "url": result.url,
+                    "pid": result.pid,
+                    "port": result.port,
+                    "test": result.test,
+                    "suite_dir": result.suite_dir,
+                    "reused": False,
+                }
+            ).encode()
             return _http_response(
-                connection,
-                e.status,
-                _json.dumps({"error": str(e)}).encode(),
-                content_type="application/json",
+                connection, 200, body, content_type="application/json"
             )
-        body = _json.dumps(
-            {
-                "url": result.url,
-                "pid": result.pid,
-                "port": result.port,
-                "test": result.test,
-                "suite_dir": result.suite_dir,
-            }
-        ).encode()
-        return _http_response(connection, 200, body, content_type="application/json")
 
     async def _handle_models(self, connection: ServerConnection) -> Response:
         """``GET /models`` — list every model the hub can serve.
@@ -466,6 +556,64 @@ class ViewerServer:
             content_type="application/json",
         )
 
+    async def _handle_tests(self, connection: ServerConnection) -> Response:
+        """``GET /tests`` — list every test the hub can serve (#99 / 6b).
+
+        Walks per-request so a freshly-edited ``tests.yaml`` shows up
+        without restarting the hub. Each entry carries its resolved
+        ``(model, tb)`` pair so the SPA's TB-mode picker can label
+        options and skip an extra round-trip per click.
+
+        Empty list is the standalone / no-tests signal — the SPA's
+        DUT/TB toggle stays hidden in that case (matches the way
+        ``GET /models`` returns ``[]`` for standalone deployments).
+        """
+
+        from . import test_discovery
+
+        if self.project_root is None:
+            payload: dict[str, Any] = {"tests": [], "active": self.active_test}
+            return _http_response(
+                connection,
+                200,
+                json.dumps(payload).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        try:
+            entries = test_discovery.list_tests(self.project_root)
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(
+                logger,
+                logging.ERROR,
+                "hub.viewer_http.tests_failed",
+                error=str(exc),
+            )
+            return _http_response(
+                connection,
+                500,
+                f"failed to enumerate tests: {exc}".encode("utf-8"),
+            )
+
+        payload = {
+            "tests": [
+                {
+                    "name": e.name,
+                    "model": e.model,
+                    "tb": e.tb,
+                    "tests_file": str(e.tests_file),
+                }
+                for e in entries
+            ],
+            "active": self.active_test,
+        }
+        return _http_response(
+            connection,
+            200,
+            json.dumps(payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
     @staticmethod
     def _model_has_resolvable_cdc(model_cfg: Any) -> bool:
         """``has_cdc`` reflects end-to-end resolvability: the model
@@ -520,6 +668,7 @@ class ViewerServer:
                     view_builder.build_view_json,
                     project_root=self.project_root,
                     model_cfg=model_cfg,
+                    axi_perf_source=self.axi_perf_source,
                 )
             except FatalRtlBuddyError as exc:
                 log_event(
@@ -554,6 +703,10 @@ class ViewerServer:
         from .protocol import Envelope, Kind, Origin, new_id
 
         self.active_model = model_name
+        # Switching to a DUT view clears any TB-mode selection so the
+        # next ``GET /view.json`` (no query) returns the DUT bytes and
+        # the SPA's segmented control reflects the actual mode.
+        self.active_test = None
         if self.hub_server is not None:
             self.hub_server.state.active_model = model_name
         # ``view_json_path`` now points at the per-model cache so
@@ -582,6 +735,124 @@ class ViewerServer:
                     "model": model_name,
                     "models_file": str(models_file),
                     "view_url": f"/view.json?model={model_name}",
+                    # v1.1 protocol field (#99 / 6b): explicit
+                    # ``view_mode`` so SPA clients route the event
+                    # through the right action without inferring mode
+                    # from the URL. Legacy SPAs ignore unknown fields.
+                    "view_mode": "dut",
+                },
+            )
+            try:
+                await self.hub_server.broadcast_event(env, suppress_origin=None)
+            except Exception as exc:  # pragma: no cover - defensive
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "hub.viewer_http.broadcast_failed",
+                    error=str(exc),
+                )
+
+    async def _handle_view_json_for_test(
+        self, connection: ServerConnection, requested: str
+    ) -> Response:
+        """``GET /view.json?test=NAME`` — build (or reuse) the TB-rooted
+        view for the named test (#99 / 6b) and serve it. Updates
+        ``active_test`` + ``active_model`` on success and broadcasts
+        ``view_changed`` with ``view_mode='tb'``.
+        """
+
+        from . import test_discovery, view_builder
+        from ..errors import FatalRtlBuddyError
+
+        if self.project_root is None:
+            return _http_response(
+                connection,
+                400,
+                b"hub started without project_root; ?test= requires it",
+            )
+
+        try:
+            tests_yaml, test_cfg = test_discovery.resolve_test(
+                self.project_root, requested
+            )
+        except FatalRtlBuddyError as exc:
+            return _http_response(connection, 400, str(exc).encode("utf-8"))
+
+        # Per-test lock funnels concurrent ?test=NAME requests through
+        # one build_view_json call (same shape as ``_model_locks``).
+        lock = self._test_locks.setdefault(requested, asyncio.Lock())
+        async with lock:
+            try:
+                cache_path = await asyncio.to_thread(
+                    view_builder.build_view_json,
+                    project_root=self.project_root,
+                    model_cfg=test_cfg.get_model(),
+                    axi_perf_source=self.axi_perf_source,
+                    test_cfg=test_cfg,
+                )
+            except FatalRtlBuddyError as exc:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "hub.viewer_http.view_json_build_failed",
+                    test=requested,
+                    error=str(exc),
+                )
+                return _http_response(connection, 500, str(exc).encode("utf-8"))
+
+        await self._set_active_test(
+            test_name=requested,
+            tests_file=tests_yaml,
+            model_name=test_cfg.get_model().name,
+            tb_name=test_cfg.tb.name,
+            view_path=cache_path,
+        )
+
+        return _http_response(
+            connection,
+            200,
+            cache_path.read_bytes(),
+            content_type="application/json",
+        )
+
+    async def _set_active_test(
+        self,
+        *,
+        test_name: str,
+        tests_file: Path,
+        model_name: str,
+        tb_name: str,
+        view_path: Path,
+    ) -> None:
+        """Promote ``test_name`` to the active TB view: flip in-memory
+        state and broadcast ``view_changed`` with ``view_mode='tb'``.
+
+        The active model is also updated (the test pins both) so the
+        DUT picker reflects what's resolved under the hood.
+        Idempotent.
+        """
+        from .protocol import Envelope, Kind, Origin, new_id
+
+        self.active_test = test_name
+        self.active_model = model_name
+        if self.hub_server is not None:
+            self.hub_server.state.active_model = model_name
+        # ``view_json_path`` now points at the per-(model, tb) cache.
+        self.view_json_path = view_path
+
+        if self.hub_server is not None:
+            env = Envelope(
+                origin=Origin.CLI,
+                kind=Kind.EVENT,
+                type="view_changed",
+                id=new_id(),
+                payload={
+                    "model": model_name,
+                    "test": test_name,
+                    "tb": tb_name,
+                    "tests_file": str(tests_file),
+                    "view_url": f"/view.json?test={test_name}",
+                    "view_mode": "tb",
                 },
             )
             try:
@@ -615,6 +886,68 @@ class ViewerServer:
     # ------------------------------------------------------------------
 
     async def _handle_ws(self, ws: Any) -> None:
+        """Dispatch the WS handler by path.
+
+        ``/ws`` proxies hub envelopes (legacy). ``/api/events/sync``
+        joins the in-memory pub/sub broker for SPA↔notebook state
+        sync (Phase 3).
+        """
+        raw_path = getattr(getattr(ws, "request", None), "path", "/ws")
+        path, _, _ = raw_path.partition("?")
+        if path == "/api/events/sync":
+            await self._handle_event_sync_ws(ws)
+            return
+        await self._handle_ws_envelope_proxy(ws)
+
+    async def _handle_event_sync_ws(self, ws: Any) -> None:
+        """Bridge a WS client to the in-memory ``EventBroker``.
+
+        Every inbound message is broadcast to every other client.
+        The client's own outbound queue is drained by the writer
+        task. Disconnect cancels both tasks and removes the client
+        from the broker.
+        """
+        client_id, client = self._event_broker.add_client(name="ws")
+
+        async def reader() -> None:
+            try:
+                async for msg in ws:
+                    if isinstance(msg, bytes):
+                        try:
+                            text = msg.decode("utf-8")
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                        text = msg
+                    self._event_broker.broadcast(client_id, text)
+            except ConnectionClosed:
+                pass
+
+        async def writer() -> None:
+            try:
+                while True:
+                    msg = await client.queue.get()
+                    await ws.send(msg)
+            except ConnectionClosed:
+                pass
+
+        tasks = [
+            asyncio.create_task(reader(), name="event-sync-reader"),
+            asyncio.create_task(writer(), name="event-sync-writer"),
+        ]
+        try:
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+            for t in tasks:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+        finally:
+            self._event_broker.remove_client(client_id)
+
+    async def _handle_ws_envelope_proxy(self, ws: Any) -> None:
         """Proxy a WS connection to the hub's TCP port.
 
         Each WebSocket message is one hub envelope. Inbound (WS → hub)
@@ -685,6 +1018,44 @@ class ViewerServer:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """``os.kill(pid, 0)`` raises ProcessLookupError when the pid no
+    longer exists and PermissionError when it exists but belongs to
+    a different user. We only spawn marimo as the hub's own uid, so
+    PermissionError shouldn't fire in practice; treat any signal
+    failure as "dead" to avoid sticky stale entries.
+    """
+    import os
+    import signal
+
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    # signal.SIG_DFL is just here to keep linters happy about the
+    # import being intentional even when only os.kill is used.
+    del signal
+    return True
+
+
+def _terminate_pid(pid: int) -> None:
+    """Best-effort SIGTERM. Used during hub shutdown to clean up the
+    marimos we spawned for the SPA's "Open in marimo" flow.
+
+    No SIGKILL escalation, no wait — the hub is shutting down and
+    we don't want to block on a marimo process that's hung. The OS
+    will reap the orphan if SIGTERM fails to land within the kernel
+    grace period.
+    """
+    import os
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def _http_response(

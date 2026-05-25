@@ -110,7 +110,25 @@ class RtlBuddy:
 
     def cb_version(value: bool):
         if value:
-            print(f"rtl_buddy v{version('rtl-buddy')}")
+            if "--machine" in sys.argv:
+                print(
+                    json.dumps(
+                        {
+                            "command": "version",
+                            "exit_code": 0,
+                            "meta": {
+                                "rtl_buddy_version": version("rtl-buddy"),
+                                "argv": sys.argv[:],
+                                "cwd": os.getcwd(),
+                                "git": None,
+                            },
+                            "payload": {},
+                        },
+                        ensure_ascii=True,
+                    )
+                )
+            else:
+                print(f"rtl_buddy v{version('rtl-buddy')}")
             raise typer.Exit()
 
     def __init__(self, name):
@@ -240,6 +258,10 @@ class RtlBuddy:
         self.app.add_typer(
             self.spec_app, name="spec", help="spec traceability commands"
         )
+        self.app.command(
+            "tool-check",
+            help="check installed tool dependencies and subcommand readiness",
+        )(self.do_cmd_tool_check)
 
         if "." not in os.environ["PATH"].split(os.pathsep):
             os.environ["PATH"] = "." + os.pathsep + os.environ["PATH"]
@@ -337,7 +359,7 @@ class RtlBuddy:
 
         self.machine = machine
 
-        if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub"}:
+        if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
             return
 
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
@@ -601,9 +623,14 @@ class RtlBuddy:
         )
 
         if list_tests:
-            emit_console_text(
-                "  ".join(self.suite_cfg.get_test_names()), stream="stdout"
-            )
+            if self.machine:
+                self._emit_machine_result(
+                    "test --list", 0, names=list(self.suite_cfg.get_test_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(self.suite_cfg.get_test_names()), stream="stdout"
+                )
             raise typer.Exit(0)
 
         seed_mode: SeedMode = SeedMode.DEFAULT
@@ -639,10 +666,25 @@ class RtlBuddy:
                 dir_summary_paths=dir_summary_paths,
             )
         )
-        self._render_test_summary(
-            "Test Results Summary", suite_results, metadata=metadata
-        )
-        raise typer.Exit(self._exit_code_from_results(suite_results))
+        exit_code = self._exit_code_from_results(suite_results)
+        if self.machine:
+            self._emit_machine_result(
+                "test",
+                exit_code,
+                results=[
+                    {
+                        "name": r["test_name"],
+                        "result": r["results"].results["result"],
+                        "desc": r["results"].results["desc"],
+                    }
+                    for r in suite_results
+                ],
+            )
+        else:
+            self._render_test_summary(
+                "Test Results Summary", suite_results, metadata=metadata
+            )
+        raise typer.Exit(exit_code)
 
     def do_rand_test(
         self,
@@ -694,12 +736,13 @@ class RtlBuddy:
                 seed_mode=SeedMode.REPLAY,
                 replay_run_id=rpt_i,
             )
-            self._render_test_summary(
-                "RandTest Replay Summary",
-                suite_results,
-                include_run_id=True,
-                metadata=[f"Builder: {self.builder}"],
-            )
+            if not self.machine:
+                self._render_test_summary(
+                    "RandTest Replay Summary",
+                    suite_results,
+                    include_run_id=True,
+                    metadata=[f"Builder: {self.builder}"],
+                )
         else:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
@@ -708,14 +751,30 @@ class RtlBuddy:
                 seed_mode=SeedMode.NEW,
                 replay_run_id=None,
             )
-            self._render_test_summary(
-                "RandTest Results Summary",
-                suite_results,
-                include_run_id=True,
-                metadata=[f"Builder: {self.builder}"],
-            )
+            if not self.machine:
+                self._render_test_summary(
+                    "RandTest Results Summary",
+                    suite_results,
+                    include_run_id=True,
+                    metadata=[f"Builder: {self.builder}"],
+                )
 
-        raise typer.Exit(self._exit_code_from_results(suite_results))
+        exit_code = self._exit_code_from_results(suite_results)
+        if self.machine:
+            self._emit_machine_result(
+                "randtest",
+                exit_code,
+                results=[
+                    {
+                        "name": r["test_name"],
+                        "run_id": r["randmode_i"],
+                        "result": r["results"].results["result"],
+                        "desc": r["results"].results["desc"],
+                    }
+                    for r in suite_results
+                ],
+            )
+        raise typer.Exit(exit_code)
 
     def _append_skip_results(self, test_name, desc, run_ids, suite_results):
         test_results = SkipResults(name=test_name + "/results", desc=desc)
@@ -1134,7 +1193,23 @@ class RtlBuddy:
                 )
             )
 
-        self._render_regression_summary(reg_results, metadata=metadata)
+        if self.machine:
+            self._emit_machine_result(
+                "regression",
+                exit_code,
+                results=[
+                    {
+                        "suite": reg_result["test_suite"],
+                        "name": suite_result["test_name"],
+                        "result": suite_result["results"].results["result"],
+                        "desc": suite_result["results"].results["desc"],
+                    }
+                    for reg_result in reg_results
+                    for suite_result in reg_result["results"]
+                ],
+            )
+        else:
+            self._render_regression_summary(reg_results, metadata=metadata)
         raise typer.Exit(exit_code)
 
     def do_gen_model_filelist(
@@ -1191,10 +1266,34 @@ class RtlBuddy:
 
     def do_cmd_hier(
         self,
-        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        name: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "with --view dut (default): model name from models.yaml; "
+                    "with --view tb: test name from tests.yaml (the test "
+                    "pins both the model + the testbench top)"
+                )
+            ),
+        ],
         model_config: Annotated[
             str, typer.Option("-c", "--model-config", help="models.yaml to use")
         ] = "models.yaml",
+        test_config: Annotated[
+            str, typer.Option("--test-config", help="tests.yaml to use (--view tb)")
+        ] = "tests.yaml",
+        view: Annotated[
+            str,
+            typer.Option(
+                "--view",
+                help=(
+                    "what to render: 'dut' (default) renders the model "
+                    "hierarchy rooted at --top; 'tb' renders the testbench "
+                    "hierarchy with the DUT called out as a subtree. With "
+                    "--view tb the positional argument is a test name."
+                ),
+            ),
+        ] = "dut",
         fmt: Annotated[
             str,
             typer.Option(
@@ -1243,17 +1342,61 @@ class RtlBuddy:
         """
         render module hierarchy via rtl-buddy-view
         """
-        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        if view not in ("dut", "tb"):
+            raise FatalRtlBuddyError(
+                f"hier: --view must be 'dut' or 'tb', got {view!r}"
+            )
+
+        if view == "tb":
+            # The test pins both a model and a TB top — resolve via
+            # the existing SuiteConfig loader so the same parse path
+            # the simulator uses runs here too.
+            from .config.suite import SuiteConfig
+
+            suite = SuiteConfig(test_config)
+            tests = suite.get_tests(name)
+            test_cfg = list(tests)[0]
+            model_cfg = test_cfg.get_model()
+            log_event(
+                logger,
+                logging.INFO,
+                "command.hier",
+                command="hier",
+                test=name,
+                model=model_cfg.name,
+                tb=test_cfg.tb.name,
+                format=fmt,
+                output=output,
+                view="tb",
+            )
+            runner = RtlBuddyView(
+                name=self.name + "/hier",
+                model_cfg=model_cfg,
+                suite_dir=os.getcwd(),
+                format=fmt,
+                output=output,
+                frontend=frontend,
+                cdc_annotations=cdc_annotations,
+                rdc_annotations=rdc_annotations,
+                clock_legend=clock_legend,
+                executable=tool,
+                test_cfg=test_cfg,
+            )
+            raise typer.Exit(runner.run())
+
+        # --view dut (default): unchanged behaviour.
+        model_cfg = ModelConfigLoader(model_config).get_model(name)
         log_event(
             logger,
             logging.INFO,
             "command.hier",
             command="hier",
-            model=model_name,
+            model=name,
             format=fmt,
             output=output,
+            view="dut",
         )
-        view = RtlBuddyView(
+        runner = RtlBuddyView(
             name=self.name + "/hier",
             model_cfg=model_cfg,
             suite_dir=os.getcwd(),
@@ -1265,7 +1408,7 @@ class RtlBuddy:
             clock_legend=clock_legend,
             executable=tool,
         )
-        raise typer.Exit(view.run())
+        raise typer.Exit(runner.run())
 
     def do_cmd_axi_profile_discover(
         self,
@@ -1577,11 +1720,11 @@ class RtlBuddy:
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]
         if self.machine:
-            print(json.dumps({"pages": pages}, ensure_ascii=True))
+            self._emit_machine_result("docs list", 0, pages=pages)
             return
 
         for page in pages:
-            print(f"{page['slug']} - {page['title']}: {page['summary']}")
+            print(f"{page['slug']} - {page['title']}: {page['description']}")
 
     def do_docs_show(
         self,
@@ -1643,30 +1786,33 @@ class RtlBuddy:
 
         if not os.path.isdir(search_dir):
             emit_console_text(f"Spec directory not found: {search_dir}", style="yellow")
+            if self.machine:
+                self._emit_machine_result(
+                    "spec list", 1, error="Spec directory not found"
+                )
             raise typer.Exit(1)
 
         specs = discover_spec_configs(search_dir)
         blocks = all_spec_blocks(specs)
         if not blocks:
             emit_console_text("No spec blocks found.", style="yellow")
+            if self.machine:
+                self._emit_machine_result("spec list", 0, blocks=[])
             raise typer.Exit(0)
 
         if self.machine:
-            print(
-                json.dumps(
+            self._emit_machine_result(
+                "spec list",
+                0,
+                blocks=[
                     {
-                        "blocks": [
-                            {
-                                "block": b.name,
-                                "desc": b.desc,
-                                "path": cfg.get_path(),
-                                "coverage_items": len(b.coverage_items),
-                            }
-                            for cfg, b in blocks
-                        ]
-                    },
-                    ensure_ascii=True,
-                )
+                        "block": b.name,
+                        "desc": b.desc,
+                        "path": cfg.get_path(),
+                        "coverage_items": len(b.coverage_items),
+                    }
+                    for cfg, b in blocks
+                ],
             )
             raise typer.Exit(0)
 
@@ -1730,27 +1876,24 @@ class RtlBuddy:
         spec_to_models = build_spec_to_models_map(specs, models)
 
         if self.machine:
-            print(
-                json.dumps(
+            self._emit_machine_result(
+                "spec check-testplan",
+                0,
+                blocks=[
                     {
-                        "blocks": [
-                            {
-                                "block": b.name,
-                                "has_model": bool(
-                                    spec_to_models.get(f"{cfg.get_path()}::{b.name}")
-                                ),
-                                "models": [
-                                    {"path": p, "model": m}
-                                    for p, m in spec_to_models.get(
-                                        f"{cfg.get_path()}::{b.name}", []
-                                    )
-                                ],
-                            }
-                            for cfg, b in blocks
-                        ]
-                    },
-                    ensure_ascii=True,
-                )
+                        "block": b.name,
+                        "has_model": bool(
+                            spec_to_models.get(f"{cfg.get_path()}::{b.name}")
+                        ),
+                        "models": [
+                            {"path": p, "model": m}
+                            for p, m in spec_to_models.get(
+                                f"{cfg.get_path()}::{b.name}", []
+                            )
+                        ],
+                    }
+                    for cfg, b in blocks
+                ],
             )
             raise typer.Exit(0)
 
@@ -1819,20 +1962,20 @@ class RtlBuddy:
         cov_map = build_coverage_map(suite_tests)
 
         if self.machine:
-            items_out = []
-            for cfg, b in blocks:
-                for item in b.coverage_items:
-                    tests = cov_map.get(item.id, [])
-                    items_out.append(
-                        {
-                            "block": b.name,
-                            "id": item.id,
-                            "desc": item.desc,
-                            "covered": bool(tests),
-                            "tests": [{"path": p, "test": t} for p, t in tests],
-                        }
-                    )
-            print(json.dumps({"items": items_out}, ensure_ascii=True))
+            items_out = [
+                {
+                    "block": b.name,
+                    "id": item.id,
+                    "desc": item.desc,
+                    "covered": bool(cov_map.get(item.id)),
+                    "tests": [
+                        {"path": p, "test": t} for p, t in cov_map.get(item.id, [])
+                    ],
+                }
+                for cfg, b in blocks
+                for item in b.coverage_items
+            ]
+            self._emit_machine_result("spec check-coverage", 0, items=items_out)
             raise typer.Exit(0)
 
         rows = []
@@ -1867,6 +2010,56 @@ class RtlBuddy:
                 f"Uncovered items: {', '.join(uncovered)}", style="yellow"
             )
         raise typer.Exit(0)
+
+    def _synth_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["synth_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("gate_count", "area_um2", "wns_ps", "tns_ps"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _pnr_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["pnr_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("cell_count", "area_um2", "wns_setup_ps", "wns_hold_ps", "drc_count"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _power_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["power_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("mode", "total_w", "internal_w", "switching_w", "leakage_w"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _cdc_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["cdc_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("violations", "suppressed", "crossings"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _fpv_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["fpv_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("mode", "depth", "engines", "runtime_s"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
 
     def _render_synth_summary(self, title, synth_results, *, metadata=None):
         has_gates = any("gate_count" in r["results"].results for r in synth_results)
@@ -2005,14 +2198,29 @@ class RtlBuddy:
         )
 
         if list_synths:
-            emit_console_text("  ".join(suite_cfg.get_synth_names()), stream="stdout")
+            if self.machine:
+                self._emit_machine_result(
+                    "synth --list", 0, names=list(suite_cfg.get_synth_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_synth_names()), stream="stdout"
+                )
             raise typer.Exit(0)
 
         synth_results = self._do_synth_suite(
             suite_cfg, synth_name=synth_name, effort_override=effort
         )
-        self._render_synth_summary("Synthesis Results Summary", synth_results)
-        raise typer.Exit(self._exit_code_from_synth_results(synth_results))
+        exit_code = self._exit_code_from_synth_results(synth_results)
+        if self.machine:
+            self._emit_machine_result(
+                "synth",
+                exit_code,
+                results=[self._synth_result_row(r) for r in synth_results],
+            )
+        else:
+            self._render_synth_summary("Synthesis Results Summary", synth_results)
+        raise typer.Exit(exit_code)
 
     def do_cmd_pnr(
         self,
@@ -2069,7 +2277,12 @@ class RtlBuddy:
         )
 
         if list_runs:
-            emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            if self.machine:
+                self._emit_machine_result(
+                    "pnr --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
             raise typer.Exit(0)
 
         results = self._do_pnr_suite(
@@ -2079,8 +2292,16 @@ class RtlBuddy:
             emit_gds=emit_gds,
             emit_png=emit_png,
         )
-        self._render_pnr_summary("P&R Results Summary", results)
-        raise typer.Exit(0 if all(r["results"].is_pass() for r in results) else 1)
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "pnr",
+                exit_code,
+                results=[self._pnr_result_row(r) for r in results],
+            )
+        else:
+            self._render_pnr_summary("P&R Results Summary", results)
+        raise typer.Exit(exit_code)
 
     def _do_pnr_suite(
         self,
@@ -2245,7 +2466,12 @@ class RtlBuddy:
         )
 
         if list_runs:
-            emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            if self.machine:
+                self._emit_machine_result(
+                    "power --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
             raise typer.Exit(0)
 
         results = self._do_power_suite(
@@ -2253,8 +2479,16 @@ class RtlBuddy:
             power_name=power_name,
             reg_level=reg_level,
         )
-        self._render_power_summary("Power Results Summary", results)
-        raise typer.Exit(0 if all(r["results"].is_pass() for r in results) else 1)
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "power",
+                exit_code,
+                results=[self._power_result_row(r) for r in results],
+            )
+        else:
+            self._render_power_summary("Power Results Summary", results)
+        raise typer.Exit(exit_code)
 
     def _do_power_suite(
         self,
@@ -2424,6 +2658,7 @@ class RtlBuddy:
         )
 
         all_results = []
+        machine_rows = []
         try:
             for suite_cfg in power_reg.get_suite_configs():
                 suite_dir = os.path.dirname(suite_cfg.get_path())
@@ -2438,15 +2673,26 @@ class RtlBuddy:
                     suite_cfg, power_name=None, reg_level=reg_level
                 )
                 all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._power_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
         finally:
             os.chdir(start_dir)
 
-        self._render_power_summary(
-            "Power Regression Summary",
-            all_results,
-            metadata=[f"Reg Level: {reg_level}"],
-        )
-        raise typer.Exit(self._exit_code_from_power_results(all_results))
+        exit_code = self._exit_code_from_power_results(all_results)
+        if self.machine:
+            self._emit_machine_result(
+                "power-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_power_summary(
+                "Power Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     def do_synth_regression(
         self,
@@ -2505,6 +2751,7 @@ class RtlBuddy:
         )
 
         all_results = []
+        machine_rows = []
         try:
             for suite_cfg in synth_reg.get_suite_configs():
                 suite_dir = os.path.dirname(suite_cfg.get_path())
@@ -2522,15 +2769,26 @@ class RtlBuddy:
                     effort_override=effort,
                 )
                 all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._synth_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
         finally:
             os.chdir(start_dir)
 
-        self._render_synth_summary(
-            "Synthesis Regression Summary",
-            all_results,
-            metadata=[f"Reg Level: {reg_level}"],
-        )
-        raise typer.Exit(self._exit_code_from_synth_results(all_results))
+        exit_code = self._exit_code_from_synth_results(all_results)
+        if self.machine:
+            self._emit_machine_result(
+                "synth-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_synth_summary(
+                "Synthesis Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     # --- CDC subcommands ----------------------------------------------------
 
@@ -2655,14 +2913,27 @@ class RtlBuddy:
         )
 
         if list_cdcs:
-            emit_console_text(
-                "  ".join(suite_cfg.get_analysis_names()), stream="stdout"
-            )
+            if self.machine:
+                self._emit_machine_result(
+                    "cdc --list", 0, names=list(suite_cfg.get_analysis_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_analysis_names()), stream="stdout"
+                )
             raise typer.Exit(0)
 
         cdc_results = self._do_cdc_suite(suite_cfg, cdc_name=cdc_name)
-        self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
-        raise typer.Exit(self._exit_code_from_cdc_results(cdc_results))
+        exit_code = self._exit_code_from_cdc_results(cdc_results)
+        if self.machine:
+            self._emit_machine_result(
+                "cdc",
+                exit_code,
+                results=[self._cdc_result_row(r) for r in cdc_results],
+            )
+        else:
+            self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
+        raise typer.Exit(exit_code)
 
     def do_cdc_regression(
         self,
@@ -2709,6 +2980,7 @@ class RtlBuddy:
         )
 
         all_results = []
+        machine_rows = []
         try:
             for suite_cfg in cdc_reg.get_suite_configs():
                 suite_dir = os.path.dirname(suite_cfg.get_path())
@@ -2723,15 +2995,24 @@ class RtlBuddy:
                     suite_cfg, cdc_name=None, reg_level=reg_level
                 )
                 all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._cdc_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
         finally:
             os.chdir(start_dir)
 
-        self._render_cdc_summary(
-            "CDC Regression Summary",
-            all_results,
-            metadata=[f"Reg Level: {reg_level}"],
-        )
-        raise typer.Exit(self._exit_code_from_cdc_results(all_results))
+        exit_code = self._exit_code_from_cdc_results(all_results)
+        if self.machine:
+            self._emit_machine_result("cdc-regression", exit_code, results=machine_rows)
+        else:
+            self._render_cdc_summary(
+                "CDC Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     # --- FPV subcommands ----------------------------------------------------
 
@@ -2933,14 +3214,27 @@ class RtlBuddy:
         )
 
         if list_fpvs:
-            emit_console_text(
-                "  ".join(suite_cfg.get_verification_names()), stream="stdout"
-            )
+            if self.machine:
+                self._emit_machine_result(
+                    "fpv --list", 0, names=list(suite_cfg.get_verification_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_verification_names()), stream="stdout"
+                )
             raise typer.Exit(0)
 
         fpv_results = self._do_fpv_suite(suite_cfg, fpv_name=fpv_name)
-        self._render_fpv_summary("FPV Results Summary", fpv_results)
-        raise typer.Exit(self._exit_code_from_fpv_results(fpv_results))
+        exit_code = self._exit_code_from_fpv_results(fpv_results)
+        if self.machine:
+            self._emit_machine_result(
+                "fpv",
+                exit_code,
+                results=[self._fpv_result_row(r) for r in fpv_results],
+            )
+        else:
+            self._render_fpv_summary("FPV Results Summary", fpv_results)
+        raise typer.Exit(exit_code)
 
     def do_fpv_regression(
         self,
@@ -2987,6 +3281,7 @@ class RtlBuddy:
         )
 
         all_results = []
+        machine_rows = []
         try:
             for suite_cfg in fpv_reg.get_suite_configs():
                 suite_dir = os.path.dirname(suite_cfg.get_path())
@@ -3001,15 +3296,24 @@ class RtlBuddy:
                     suite_cfg, fpv_name=None, reg_level=reg_level
                 )
                 all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._fpv_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
         finally:
             os.chdir(start_dir)
 
-        self._render_fpv_summary(
-            "FPV Regression Summary",
-            all_results,
-            metadata=[f"Reg Level: {reg_level}"],
-        )
-        raise typer.Exit(self._exit_code_from_fpv_results(all_results))
+        exit_code = self._exit_code_from_fpv_results(all_results)
+        if self.machine:
+            self._emit_machine_result("fpv-regression", exit_code, results=machine_rows)
+        else:
+            self._render_fpv_summary(
+                "FPV Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     def do_cmd_wave(
         self,
@@ -3343,7 +3647,140 @@ class RtlBuddy:
         )
         vlog_fl.write_verible_filelist(selected, output_filepath=output)
 
-    def show_git_rev(self):
+    def do_cmd_tool_check(
+        self,
+        fmt: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                help="text | json",
+                case_sensitive=False,
+            ),
+        ] = "text",
+        required_for: Annotated[
+            str | None,
+            typer.Option(
+                "--required-for",
+                help="check only what `rb <subcommand>` needs",
+            ),
+        ] = None,
+        explain_tool: Annotated[
+            str | None,
+            typer.Option(
+                "--explain",
+                help="show install instructions for a single tool and exit",
+            ),
+        ] = None,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help="exit non-zero if any required tool is missing/outdated",
+            ),
+        ] = False,
+        include_optional: Annotated[
+            bool,
+            typer.Option(
+                "--include-optional/--no-include-optional",
+                help="include optional tools (default: yes)",
+            ),
+        ] = True,
+        probe_versions: Annotated[
+            bool,
+            typer.Option(
+                "--probe-versions/--no-probe-versions",
+                help="run `<tool> --version` to capture installed version "
+                "(default: yes)",
+            ),
+        ] = True,
+    ):
+        """
+        Detect installed tool dependencies and report subcommand readiness.
+        """
+        from . import tool_manifest as tm
+        from .config.root import _discover_root_cfg
+
+        setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+
+        # Opportunistic root_config discovery. tool-check must work outside a
+        # project, so we suppress the "not found" error log entirely.
+        root_cfg = None
+        root_logger = logging.getLogger("rtl_buddy.config.root")
+        prev_level = root_logger.level
+        root_logger.setLevel(logging.CRITICAL)
+        try:
+            if _discover_root_cfg() is not None:
+                root_cfg = RootConfig(name=self.name + "/tool-check/root_config")
+        except FatalRtlBuddyError:
+            root_cfg = None
+        finally:
+            root_logger.setLevel(prev_level)
+
+        specs = tm.get_manifest(root_cfg)
+        project_root = (
+            Path(root_cfg.get_project_rootdir()) if root_cfg is not None else None
+        )
+
+        if explain_tool is not None:
+            spec = next((s for s in specs if s.name == explain_tool), None)
+            if spec is None:
+                emit_console_text(
+                    f"tool-check: unknown tool '{explain_tool}'. "
+                    f"Known: {', '.join(s.name for s in specs)}",
+                    style="red",
+                    stream="stderr",
+                )
+                raise typer.Exit(1)
+            status = tm.check_tool(
+                spec, project_root=project_root, probe_versions=probe_versions
+            )
+            # Plain stdout — Rich's word-wrap would mangle paths.
+            print(tm.explain(spec, status))
+            raise typer.Exit(0)
+
+        statuses = tm.check_all(
+            specs,
+            project_root=project_root,
+            probe_versions=probe_versions,
+            include_optional=include_optional,
+        )
+        subcommands = tm.subcommand_readiness(statuses, specs)
+
+        if required_for is not None:
+            if required_for not in subcommands:
+                emit_console_text(
+                    f"tool-check: subcommand '{required_for}' has no "
+                    f"declared tool dependencies",
+                    style="yellow",
+                )
+                raise typer.Exit(0)
+            subcommands = {required_for: subcommands[required_for]}
+            wanted = set(subcommands[required_for]["tools"])
+            statuses = [s for s in statuses if s.name in wanted]
+
+        reported_exit_code = tm.compute_exit_code(
+            statuses,
+            required_for=required_for,
+            subcommands=tm.subcommand_readiness(statuses, specs),
+        )
+
+        # Use raw stdout — Rich's word-wrap would mangle JSON and break the
+        # alignment of the tool table.
+        if fmt.lower() == "json":
+            print(tm.render_json(statuses, subcommands, exit_code=reported_exit_code))
+        else:
+            print(
+                tm.render_text(statuses, subcommands, include_optional=include_optional)
+            )
+
+        # --required-for always enforces (exit 2 on miss); --strict enforces
+        # the global "any required tool missing" check (exit 1). Without
+        # either flag the command is purely informational.
+        if required_for is not None or strict:
+            raise typer.Exit(reported_exit_code)
+        raise typer.Exit(0)
+
+    def _collect_git_status(self) -> dict | None:
         status_result = subprocess.run(
             ["git", "status", "-sb"],
             stdout=subprocess.PIPE,
@@ -3358,32 +3795,61 @@ class RtlBuddy:
             text=True,
             check=False,
         )
-
         if status_result.returncode != 0 or commit_result.returncode != 0:
-            logger.debug("git metadata unavailable for banner")
-            return
-
+            return None
         status_lines = status_result.stdout.splitlines()
-        git_branch = status_lines[0][3:].split("...")[0] if status_lines else "unknown"
+        branch = status_lines[0][3:].split("...")[0] if status_lines else "unknown"
         file_lines = status_lines[1:]
         mod = sum(1 for ln in file_lines if len(ln) > 1 and ln[1] not in (" ", "?"))
         staged = sum(1 for ln in file_lines if len(ln) > 0 and ln[0] not in (" ", "?"))
-        git_commit = commit_result.stdout.strip()
+        return {
+            "branch": branch,
+            "commit": commit_result.stdout.strip(),
+            "modified": mod,
+            "staged": staged,
+        }
 
-        if mod > 0 or staged > 0:
-            git_str = (
-                f"git: {git_branch} | commit {git_commit} | mod {mod} | staged {staged}"
+    def _emit_machine_result(self, command: str, exit_code: int, **payload) -> None:
+        git = self._collect_git_status()
+        print(
+            json.dumps(
+                {
+                    "command": command,
+                    "exit_code": exit_code,
+                    "meta": {
+                        "rtl_buddy_version": version("rtl-buddy"),
+                        "argv": sys.argv[:],
+                        "cwd": os.getcwd(),
+                        "git": git,
+                    },
+                    "payload": payload,
+                },
+                ensure_ascii=True,
             )
-        else:
-            git_str = f"git: {git_branch} | commit {git_commit} | clean"
+        )
 
+    def show_git_rev(self):
+        git = self._collect_git_status()
+        if git is None:
+            logger.debug("git metadata unavailable for banner")
+            return
+        branch, commit, mod, staged = (
+            git["branch"],
+            git["commit"],
+            git["modified"],
+            git["staged"],
+        )
+        if mod > 0 or staged > 0:
+            git_str = f"git: {branch} | commit {commit} | mod {mod} | staged {staged}"
+        else:
+            git_str = f"git: {branch} | commit {commit} | clean"
         emit_console_text(git_str, style=None if is_machine_mode() else "dim")
         log_event(
             logger,
             logging.INFO,
             "git.status",
-            branch=git_branch,
-            commit=git_commit,
+            branch=branch,
+            commit=commit,
             modified=mod,
             staged=staged,
         )

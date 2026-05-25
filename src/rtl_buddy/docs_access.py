@@ -27,7 +27,7 @@ class DocsPage:
         return {
             "slug": self.slug,
             "title": self.title,
-            "summary": self.summary,
+            "description": self.summary,
         }
 
     def to_show_payload(self) -> dict:
