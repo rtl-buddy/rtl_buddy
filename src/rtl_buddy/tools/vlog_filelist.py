@@ -24,6 +24,9 @@ class VlogFilelist:
     def __init__(self, name, model_cfg, output_path):
         self.name = name
         self.output_path = output_path
+        # model_cfg may be None for callers that drive a multi-model
+        # generation flow (e.g. write_verible_filelist) and supply
+        # the models per call.
         self.model_cfg = model_cfg
 
     def _fail(self, event, message, **fields):
@@ -222,4 +225,65 @@ class VlogFilelist:
             log_event(
                 logger, logging.INFO, "filelist.write_done", output=output_filepath
             )
+        return
+
+    def write_verible_filelist(self, model_cfgs, output_filepath=None):
+        """Generate a verible.filelist from one or more ModelConfigs.
+
+        Verible-verilog-ls parses the filelist via
+        ``verilog-filelist.cc::AppendFileListFromContent`` which honours
+        only bare source-file paths and ``+incdir+`` / ``+define+``
+        directives — any other ``+``/``-`` line is silently ignored.
+        We strip ``-v`` / ``-y`` / ``+libext+`` here so the on-disk
+        filelist only carries lines that affect the LSP's symbol scope.
+        ``-F`` chains are always unrolled so the output is a flat list
+        the LSP can consume without further indirection.
+        """
+        if output_filepath is None:
+            output_filepath = self.output_path
+        log_event(
+            logger,
+            logging.DEBUG,
+            "verible_filelist.write_start",
+            output=output_filepath,
+            models=[m.name for m in model_cfgs],
+        )
+
+        if not model_cfgs:
+            self._fail(
+                "verible_filelist.no_models",
+                "no models supplied for verible filelist generation",
+            )
+
+        entries = []
+        for cfg in model_cfgs:
+            entries.extend(
+                self._extract(
+                    cfg.get_filelist(),
+                    unroll=True,
+                    fpath=os.path.abspath(cfg.get_model_path()),
+                )
+            )
+
+        filtered = [
+            (path, opt) for path, opt in entries if opt is None or opt == "+incdir+"
+        ]
+        lines = self._process(
+            filtered,
+            output_dir=os.path.dirname(output_filepath) or ".",
+            flatten=False,
+            strip=False,
+            deduplicate=True,
+        )
+
+        with open(output_filepath, "w") as f:
+            f.write("// rtl-buddy generated verible filelist\n")
+            f.writelines(lines)
+        log_event(
+            logger,
+            logging.INFO,
+            "verible_filelist.write_done",
+            output=output_filepath,
+            entries=len(lines),
+        )
         return

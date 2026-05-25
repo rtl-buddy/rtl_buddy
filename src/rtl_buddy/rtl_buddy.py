@@ -17,7 +17,7 @@ import click
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
-from .config.model import ModelConfigLoader
+from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
@@ -160,7 +160,27 @@ class RtlBuddy:
             name="axi-profile",
             help=("profile AXI interconnect performance via rtl-buddy-axi-profiler"),
         )
-        self.app.command("verible", help="run verible cmd")(self.do_verible)
+        self.verible_app = typer.Typer(
+            help="verible tooling and filelist generation", no_args_is_help=True
+        )
+        self.verible_app.command("lint", help="run verible-verilog-lint")(
+            self.do_verible_lint
+        )
+        self.verible_app.command("syntax", help="run verible-verilog-syntax")(
+            self.do_verible_syntax
+        )
+        self.verible_app.command("format", help="run verible-verilog-format")(
+            self.do_verible_format
+        )
+        self.verible_app.command(
+            "preprocessor", help="run verible-verilog-preprocessor"
+        )(self.do_verible_preprocessor)
+        self.verible_app.command(
+            "filelist",
+            help="generate verible.filelist from models.yaml so verible-verilog-ls "
+            "can resolve cross-file symbols",
+        )(self.do_verible_filelist)
+        self.app.add_typer(self.verible_app, name="verible", help="verible commands")
         self.app.command("wave", help="open waveform viewer for a test")(
             self.do_cmd_wave
         )
@@ -3083,13 +3103,12 @@ class RtlBuddy:
     def do_gen_vlog_run_script(self):
         assert False, "not yet impl"
 
-    def do_verible(
-        self,
-        cmd: Annotated[str, typer.Argument(help="Verible cmd")],
-        verible_args: Annotated[list[str], typer.Argument(...)] = [],
-    ):
-        """
-        run verible cmd
+    def _run_verible_passthrough(self, cmd: str, verible_args: list[str]):
+        """Shared dispatch for the verible passthrough subcommands.
+
+        Resolves the configured verible executable via root_config and
+        invokes it with the trailing ``verible_args``. Always exits via
+        ``typer.Exit`` so the binary's return code propagates.
         """
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
         if not verible_cfg.available:
@@ -3104,8 +3123,112 @@ class RtlBuddy:
             command=cmd,
             argv=" ".join(verible_args),
         )
-        exit_code = ver.do_cmd(cmd=cmd, verible_args=verible_args)
-        raise typer.Exit(exit_code)
+        raise typer.Exit(ver.do_cmd(cmd=cmd, verible_args=verible_args))
+
+    def do_verible_lint(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-lint"""
+        self._run_verible_passthrough("lint", verible_args)
+
+    def do_verible_syntax(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-syntax"""
+        self._run_verible_passthrough("syntax", verible_args)
+
+    def do_verible_format(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-format"""
+        self._run_verible_passthrough("format", verible_args)
+
+    def do_verible_preprocessor(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-preprocessor"""
+        self._run_verible_passthrough("preprocessor", verible_args)
+
+    def do_verible_filelist(
+        self,
+        models: Annotated[
+            list[str],
+            typer.Option(
+                "--model",
+                help=(
+                    "Model name(s) to include. May be repeated. Default: "
+                    "union of every model declared in any models.yaml under "
+                    "the project root."
+                ),
+            ),
+        ] = [],
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "Output path. Defaults to <project_root>/verible.filelist "
+                    "so verible-verilog-ls auto-discovers it."
+                ),
+            ),
+        ] = None,
+    ):
+        """
+        generate verible.filelist from models.yaml so verible-verilog-ls can
+        resolve cross-file symbols (go-to-definition, hover, references)
+        """
+        project_root = self.root_cfg.get_project_rootdir()
+        if output is None:
+            output = os.path.join(project_root, "verible.filelist")
+
+        all_entries = discover_model_configs(project_root)
+        if not all_entries:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible_filelist.no_models_discovered",
+                project_root=project_root,
+            )
+            raise FatalRtlBuddyError(f"no models.yaml files found under {project_root}")
+
+        if models:
+            by_name: dict[str, ModelConfig] = {}
+            for _, model in all_entries:
+                # First-found wins on duplicate names across files. Within a
+                # single models.yaml, ModelConfigLoader already rejects dupes.
+                by_name.setdefault(model.name, model)
+            missing = [name for name in models if name not in by_name]
+            if missing:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "verible_filelist.unknown_models",
+                    models=missing,
+                    available=sorted(by_name),
+                )
+                raise FatalRtlBuddyError(f"unknown model(s): {', '.join(missing)}")
+            selected = [by_name[name] for name in models]
+        else:
+            selected = [model for _, model in all_entries]
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.verible_filelist",
+            models=[m.name for m in selected],
+            output=output,
+        )
+        vlog_fl = VlogFilelist(
+            name=self.name + "/verible_filelist",
+            model_cfg=None,
+            output_path=output,
+        )
+        vlog_fl.write_verible_filelist(selected, output_filepath=output)
 
     def show_git_rev(self):
         status_result = subprocess.run(

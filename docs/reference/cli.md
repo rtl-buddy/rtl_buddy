@@ -47,7 +47,6 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ regression         run rtl regression                                                │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
-│ verible            run verible cmd                                                   │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ wave-install-nvim  install nvim plugin for rb wave annotation                        │
@@ -62,6 +61,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
+│ verible            verible commands                                                  │
 │ hub                manage the rtl-buddy-hub daemon                                   │
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
@@ -235,16 +235,20 @@ Usage: rtl-buddy axi-profile [OPTIONS] COMMAND [ARGS]...
 ## verible
 
 ```text
-Usage: rtl-buddy verible [OPTIONS] CMD [VERIBLE_ARGS]...                               
+Usage: rtl-buddy verible [OPTIONS] COMMAND [ARGS]...                                   
                                                                                         
- run verible cmd                                                                        
+ verible commands                                                                       
                                                                                         
-╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│ *    cmd               TEXT               Verible cmd [required]                     │
-│      verible_args      [VERIBLE_ARGS]...                                             │
-╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ lint          run verible-verilog-lint                                               │
+│ syntax        run verible-verilog-syntax                                             │
+│ format        run verible-verilog-format                                             │
+│ preprocessor  run verible-verilog-preprocessor                                       │
+│ filelist      generate verible.filelist from models.yaml so verible-verilog-ls can   │
+│               resolve cross-file symbols                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
