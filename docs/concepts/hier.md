@@ -14,6 +14,8 @@ description: How to render module hierarchy diagrams with rtl_buddy via the rb h
 
 `rb hier <model>` produces a module-hierarchy view of a model defined in `models.yaml`. It writes a stripped, deduplicated filelist into `artefacts/hier/<model>/hier.f`, then runs `rtl-buddy-view --top <model> --filelist hier.f` with the requested format and forwards the renderer's stdout to the terminal so it composes with shell pipes.
 
+`rb hier <test> --view tb` (rtl-buddy-view #99 / 6b) renders the **testbench** hierarchy for a test from `tests.yaml`, with the DUT called out as a subtree. The test pins both the model (DUT side) and the TB top, so the positional argument is a test name in this mode. The merged DUT + TB filelist is written to `artefacts/hier/<model>/tb/<tb_name>/hier.f` and the renderer is invoked with both `--top <model>` and `--tb-top <tb.toplevel>`. Cache key is `(model, tb_name)`, so two tests sharing a TB share the artefact.
+
 ## Installing rtl-buddy-view
 
 ```bash
@@ -59,9 +61,12 @@ rb hier demo_top -c design/demo_top/models.yaml
 
 # Pin a renderer build
 rb hier demo_top --tool /opt/rtl-buddy-view/bin/rtl-buddy-view
+
+# TB-rooted view — render the testbench for a test, DUT called out as subtree
+rb hier basic_traffic --view tb
 ```
 
-The model argument matches the `name:` of an entry in `models.yaml`. The runner uses that entry's filelist verbatim — same source of truth that `rb test`, `rb synth`, and `rb cdc` consume.
+The model argument matches the `name:` of an entry in `models.yaml`. The runner uses that entry's filelist verbatim — same source of truth that `rb test`, `rb synth`, and `rb cdc` consume. In `--view tb` mode the positional argument is a test name from `tests.yaml` instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from `--tb-top`.
 
 ## Parser frontend
 

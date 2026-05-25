@@ -517,3 +517,103 @@ def test_update_mapping_swaps_aliases_in_place(tmp_path: Path):
 
 def test_default_view_json_path_layout(tmp_path: Path):
     assert default_view_json_path(tmp_path) == tmp_path / ".rtl-buddy" / "view.json"
+
+
+# ---------------------------------------------------------------------------
+# TB-rooted view.json — identity wave↔view mapping (#99 / 6b)
+# ---------------------------------------------------------------------------
+
+
+def _tb_view_json(top: str = "tb_top") -> dict:
+    """v1.1 TB-rooted payload: ``top == tb_top`` (the rendered root
+    IS the testbench). DUT instance lives under ``<top>.u_dut`` and
+    the renderer recorded ``dut_top`` for the SPA boundary."""
+    return {
+        "schema_version": "1.1",
+        "tool": {"name": "rtl-buddy-view", "version": "0.1.0"},
+        "top": top,
+        "tb_top": top,
+        "dut_top": "dut",
+        "nodes": [
+            {"id": top, "module": top},
+            {"id": f"{top}.u_clkgen", "module": "clkgen"},
+            {"id": f"{top}.u_dut", "module": "dut"},
+            {"id": f"{top}.u_dut.u_leaf", "module": "leaf"},
+        ],
+        "edges": [
+            {"from": top, "to": f"{top}.u_clkgen"},
+            {"from": top, "to": f"{top}.u_dut"},
+            {"from": f"{top}.u_dut", "to": f"{top}.u_dut.u_leaf"},
+        ],
+    }
+
+
+def test_from_dict_records_tb_top_and_dut_top_when_present():
+    model = ViewModel.from_dict(_tb_view_json())
+    assert model.tb_top == "tb_top"
+    assert model.dut_top == "dut"
+    assert model.tb_rooted is True
+
+
+def test_from_dict_tb_rooted_false_when_tb_top_absent():
+    """v1.0 payloads (no tb_top) → DUT-rooted → identity mapping
+    bypass does not kick in. Same for v1.1 payloads where --top was
+    passed alone (tb_top=null)."""
+    model = ViewModel.from_dict(_sample_view_json())
+    assert model.tb_top is None
+    assert model.tb_rooted is False
+
+
+def test_view_to_wave_identity_when_tb_rooted(tmp_path: Path):
+    """TB-rooted view.json → view path IS the wave path, no
+    ``tb_prefix`` prepend even when one is configured. The renderer
+    elaborated from the TB top so the names match what surfer
+    already advertises."""
+    resolver = resolver_from_paths(
+        view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
+        # Configured tb_prefix is deliberately set — it MUST be
+        # bypassed when the view is TB-rooted.
+        tb_prefix="tb.dut.",
+    )
+    assert resolver.view_to_wave("tb_top.u_dut") == "tb_top.u_dut"
+    assert resolver.view_to_wave("tb_top.u_dut.u_leaf") == "tb_top.u_dut.u_leaf"
+    assert resolver.view_to_wave("tb_top") == "tb_top"
+
+
+def test_view_to_wave_unknown_path_returns_none_in_tb_rooted_mode(tmp_path: Path):
+    """Even in identity mode, the resolver still gates on node
+    existence — a stale request for a path that isn't in the view
+    returns None rather than passing through a guess."""
+    resolver = resolver_from_paths(
+        view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
+        tb_prefix="tb.dut.",
+    )
+    assert resolver.view_to_wave("tb_top.u_phantom") is None
+
+
+def test_wave_to_view_identity_when_tb_rooted(tmp_path: Path):
+    """Symmetric: wave path → view path is identity, no prefix
+    strip, gated on node existence."""
+    resolver = resolver_from_paths(
+        view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
+        tb_prefix="tb.dut.",
+    )
+    assert resolver.wave_to_view("tb_top.u_dut") == "tb_top.u_dut"
+    assert resolver.wave_to_view("tb_top.u_dut.u_leaf") == "tb_top.u_dut.u_leaf"
+    # Unknown path → None (not a guess), matching the DUT-rooted contract.
+    assert resolver.wave_to_view("tb_top.nothing") is None
+
+
+def test_tb_rooted_aliases_still_win(tmp_path: Path):
+    """Signal aliases consulted before the identity short-circuit
+    so projects with legacy renames keep working in TB-rooted mode.
+    """
+    resolver = resolver_from_paths(
+        view_json_path=_write_view_json(tmp_path, payload=_tb_view_json()),
+        tb_prefix="tb.dut.",
+        signal_aliases=[
+            SignalAlias(wave="tb_top.legacy_dut", view="tb_top.u_dut"),
+        ],
+    )
+    assert resolver.view_to_wave("tb_top.u_dut") == "tb_top.legacy_dut"
+    assert resolver.wave_to_view("tb_top.legacy_dut") == "tb_top.u_dut"

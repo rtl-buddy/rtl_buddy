@@ -657,24 +657,43 @@
           "kind": { "const": "event" },
           "payload": {
             "type": "object",
-            "required": ["model", "models_file", "view_url"],
+            "required": ["model", "view_url"],
             "additionalProperties": false,
-            "description": "Broadcast by the hub (origin=cli) whenever the active view.json model changes — driven by a SPA `?model=` switch today, by file-watch refresh later. Consumers should refetch model-scoped state.",
+            "description": "Broadcast by the hub (origin=cli) whenever the active view changes — driven by a SPA `?model=` or `?test=` switch today, by file-watch refresh later. Consumers should refetch view-scoped state. The `view_mode` field (rtl-buddy-view #99 / 6b) marks DUT vs TB renders; TB renders also carry `test`, `tb`, and `tests_file` fields, while DUT renders carry `models_file`.",
             "properties": {
               "model": {
                 "type": "string",
                 "minLength": 1,
-                "description": "The model name now serving on `GET /view.json` with no query."
+                "description": "The DUT model name. Always present — for TB renders this is the model the test pins."
               },
               "models_file": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Absolute path to the models.yaml that owns the entry."
+                "description": "Absolute path to the models.yaml that owns the entry. Set on DUT renders."
               },
               "view_url": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Convenience URL the SPA can load directly to display this model — e.g. `/view.json?model=ip_dtnpu_dma`."
+                "description": "Convenience URL the SPA can load directly — `/view.json?model=<NAME>` for DUT renders, `/view.json?test=<NAME>` for TB renders."
+              },
+              "view_mode": {
+                "enum": ["dut", "tb"],
+                "description": "Explicit render mode (#99 / 6b). v1.0 SPAs that don't know this field ignore it and fall through to the legacy model-driven switchModel path."
+              },
+              "test": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Test name. Set on TB renders only."
+              },
+              "tb": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Testbench name (from tests.yaml). Set on TB renders only."
+              },
+              "tests_file": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Absolute path to the tests.yaml that owns the entry. Set on TB renders only."
               }
             }
           }

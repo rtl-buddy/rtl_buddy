@@ -23,6 +23,7 @@ from pathlib import Path
 
 from .vlog_filelist import VlogFilelist
 from ..config.model import ModelConfig
+from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
@@ -50,6 +51,7 @@ class RtlBuddyView:
         axi_perf_annotations: str | None = None,
         clock_legend: bool = False,
         executable: str = "rtl-buddy-view",
+        test_cfg: TestConfig | None = None,
     ):
         self.name = name
         self.model_cfg = model_cfg
@@ -68,8 +70,23 @@ class RtlBuddyView:
         self.axi_perf_annotations = axi_perf_annotations
         self.clock_legend = clock_legend
         self.executable = executable
+        # Optional test that pins the TB top + TB filelist for the
+        # TB-rooted view (#99 / 6b). When set, the generated filelist
+        # is DUT+TB merged and rtl-buddy-view is invoked with both
+        # ``--top <model>`` AND ``--tb-top <tb.toplevel>`` so the
+        # rendered tree is rooted at the TB with the DUT recorded for
+        # the SPA's dashed-boundary overlay. When None, today's
+        # DUT-only invocation is byte-identical (no behavioural change
+        # for the unconditional ``rb hier <model>`` callers).
+        self.test_cfg = test_cfg
 
         artefact_root = Path(suite_dir) / "artefacts" / "hier" / model_cfg.name
+        if test_cfg is not None:
+            # Cache key for TB mode is (model, tb_name). Two tests
+            # sharing the same TB share the artefact — the test's
+            # other parameters (plusargs, sweep) don't affect the
+            # elaborated hierarchy, only its top + filelist do.
+            artefact_root = artefact_root / "tb" / test_cfg.tb.name
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
 
@@ -88,8 +105,22 @@ class RtlBuddyView:
         )
         # rtl-buddy-view rejects +incdir+/-y/-f, so strip everything
         # down to plain source paths.
+        #
+        # TB mode merges the test's TB filelist on top of the model
+        # filelist via VlogFilelist's existing test_filelist parameter
+        # (the same merge the compile flow uses). Order is DUT first,
+        # TB second — the TB modules instantiate the DUT, not the
+        # other way around, and Verible elaborates from the
+        # ``--tb-top`` regardless of file order.
+        test_filelist = (
+            self.test_cfg.tb.get_filelist() if self.test_cfg is not None else None
+        )
         vlog_fl.write_output(
-            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+            output_filepath=fl_path,
+            unroll=True,
+            strip=True,
+            deduplicate=True,
+            test_filelist=test_filelist,
         )
         return fl_path
 
@@ -103,6 +134,13 @@ class RtlBuddyView:
             "--format",
             self.format,
         ]
+        if self.test_cfg is not None and self.test_cfg.tb.toplevel is not None:
+            # ``--tb-top`` is independent of ``--top`` (rtl-buddy-view
+            # #99 / 6a). When both are supplied, the renderer elaborates
+            # from --tb-top and records the DUT name in
+            # ``view.json::dut_top`` so the SPA can mark the DUT
+            # subtree with a dashed boundary.
+            cmd += ["--tb-top", self.test_cfg.tb.toplevel]
         if self.output is not None:
             cmd += ["--output", self.output]
         if self.frontend is not None:

@@ -145,6 +145,15 @@ class ViewModel:
     edges_parent_to_children: dict[str, tuple[str, ...]]
     source_path: Path | None = None
     source_mtime_ns: int | None = None
+    # view.json v1.1 (rtl-buddy-view #99): when the renderer was
+    # invoked with ``--tb-top``, the rendered root is the testbench
+    # top and the wave path is the identity of the view path — no
+    # ``tb_prefix`` strip. ``tb_top`` is the recorded TB top name;
+    # the identity check at the view↔wave boundary is
+    # ``top == tb_top``. ``None`` for v1.0 payloads or DUT-only
+    # views, in which case the legacy tb_prefix strip applies.
+    tb_top: str | None = None
+    dut_top: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict, *, source_path: Path | None = None) -> "ViewModel":
@@ -174,6 +183,15 @@ class ViewModel:
             )
         if not isinstance(top, str) or not top:
             raise ResolverError("view.json missing top (or design.top)")
+
+        # v1.1 envelope fields (#99). Both nullable: omitted on v1.0
+        # payloads, ``None`` on TB-only or DUT-only renders. Wrong
+        # type is silently demoted to None to preserve the v1.0
+        # consumer-tolerant contract.
+        tb_top_raw = raw.get("tb_top")
+        tb_top = tb_top_raw if isinstance(tb_top_raw, str) and tb_top_raw else None
+        dut_top_raw = raw.get("dut_top")
+        dut_top = dut_top_raw if isinstance(dut_top_raw, str) and dut_top_raw else None
 
         # Same dual-schema acceptance for nodes: canonical uses `id` +
         # `source`; legacy fixtures use `instance_path` + `location`.
@@ -229,7 +247,22 @@ class ViewModel:
             nodes_by_path=nodes_by_path,
             edges_parent_to_children=edges_frozen,
             source_path=source_path,
+            tb_top=tb_top,
+            dut_top=dut_top,
         )
+
+    @property
+    def tb_rooted(self) -> bool:
+        """True when the rendered tree is the testbench top (#99 / 6b).
+
+        The renderer pins ``top == tb_top`` whenever ``--tb-top`` was
+        passed (see rtl-buddy-view's :mod:`render.json_render`
+        envelope rule). At this point view paths and wave paths are
+        the same coordinate frame — the SPA shows the TB hierarchy
+        verbatim, and surfer loads waveforms keyed by the same
+        instance paths.
+        """
+        return self.tb_top is not None and self.top == self.tb_top
 
 
 def _location_to_anchor(raw: object) -> SourceAnchor | None:
@@ -333,13 +366,26 @@ class Resolver:
         path optimistically; this is the "no resolver loaded" fallback
         the server's error handler exposes as unresolvable when the
         guess matters.
+
+        v1.1 (#99 / 6b): when the loaded view.json is TB-rooted
+        (``ViewModel.tb_rooted``), the wave path IS the view path —
+        the renderer elaborated from the testbench top so view paths
+        already match the names surfer / WCP advertise. ``tb_prefix``
+        is bypassed entirely in that mode; it stays as the v1.0
+        fallback for DUT-only renders.
         """
 
         if instance_path in self._view_alias_to_wave:
             return self._view_alias_to_wave[instance_path]
 
-        # Drop the design.top root if present, then prepend tb_prefix.
         model = self._load_if_possible()
+        if model is not None and model.tb_rooted:
+            # Identity mapping. Still gate on node existence so a
+            # typo or stale request returns ``None`` rather than a
+            # path the wave side will fail to find.
+            return instance_path if instance_path in model.nodes_by_path else None
+
+        # Drop the design.top root if present, then prepend tb_prefix.
         if model is not None:
             if instance_path not in model.nodes_by_path:
                 return None
@@ -354,10 +400,19 @@ class Resolver:
         return prefix + stripped
 
     def wave_to_view(self, wave_scope: str) -> str | None:
-        """Return the view instance path for a wave path, or ``None``."""
+        """Return the view instance path for a wave path, or ``None``.
+
+        v1.1 (#99 / 6b): when TB-rooted, the view path IS the wave
+        path; gate on node existence rather than the legacy
+        prefix-strip.
+        """
 
         if wave_scope in self._wave_alias_to_view:
             return self._wave_alias_to_view[wave_scope]
+
+        model = self._load_if_possible()
+        if model is not None and model.tb_rooted:
+            return wave_scope if wave_scope in model.nodes_by_path else None
 
         prefix = self._mapping.tb_prefix
         if prefix and wave_scope.startswith(prefix):
@@ -367,7 +422,6 @@ class Resolver:
         else:
             return None
 
-        model = self._load_if_possible()
         if model is None:
             return tail  # Best-effort.
 

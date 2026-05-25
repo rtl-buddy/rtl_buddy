@@ -186,3 +186,112 @@ def test_build_view_json_no_cdc_annotations_when_back_pointer_absent(
     monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
     view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
     assert captured["kwargs"]["cdc_annotations"] is None
+
+
+# --- TB view (rtl-buddy-view #99 / 6b) -----------------------------------
+
+
+def _test_cfg(model: ModelConfig, tb_name: str = "tb_basic"):
+    """Minimal TestConfig with a TestbenchConfig that has a toplevel."""
+    from rtl_buddy.config.test import TestbenchConfig, TestConfig
+
+    tb = TestbenchConfig(name=tb_name, filelist=[], toplevel="tb_top")
+    return TestConfig(
+        name="t1",
+        desc="",
+        model=model,
+        _reglvl=0,
+        pa=None,
+        pd=None,
+        uvm=None,
+        preproc_path=None,
+        postproc_path=None,
+        sweep_path=None,
+        tb=tb,
+        timeout=None,
+    )
+
+
+def test_view_json_path_for_tb_keys_on_model_and_tb(tmp_path):
+    """Cache key is (model, tb) — two tests sharing the same TB
+    share the artefact."""
+    assert (
+        view_builder.view_json_path_for_tb(tmp_path, "demo", "tb_basic")
+        == tmp_path / ".rtl-buddy" / "cache" / "view-demo-tb-tb_basic.json"
+    )
+    # DUT-view path is untouched.
+    assert (
+        view_builder.view_json_path(tmp_path, "demo")
+        == tmp_path / ".rtl-buddy" / "cache" / "view-demo.json"
+    )
+
+
+def test_build_view_json_tb_mode_uses_tb_cache_path_and_forwards_test_cfg(
+    tmp_path, monkeypatch
+):
+    """When ``test_cfg`` is supplied, the builder writes to the
+    (model, tb)-keyed cache file and passes the test_cfg through to
+    RtlBuddyView so the wrapper can emit --tb-top + merge filelists."""
+    from rtl_buddy.hub import cdc_builder
+
+    monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+
+    captured = {}
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            captured["kwargs"] = kwargs
+            self.artefact_dir = str(
+                tmp_path / "artefacts" / "hier" / "demo" / "tb" / "tb_basic"
+            )
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+
+        def run(self) -> int:
+            out = Path(captured["kwargs"]["output"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("{}")
+            return 0
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
+
+    model = _model(tmp_path)
+    test_cfg = _test_cfg(model)
+    result = view_builder.build_view_json(
+        project_root=tmp_path, model_cfg=model, test_cfg=test_cfg
+    )
+    assert result == view_builder.view_json_path_for_tb(tmp_path, "demo", "tb_basic")
+    assert result.is_file()
+    # The wrapper received the test_cfg, so it'll emit --tb-top.
+    assert captured["kwargs"]["test_cfg"] is test_cfg
+
+
+def test_build_view_json_tb_mode_error_message_mentions_test_name(
+    tmp_path, monkeypatch
+):
+    """Failure path surfaces the test name in the error so the user
+    can spot which TB-mode click broke."""
+    from rtl_buddy.hub import cdc_builder
+
+    monkeypatch.setattr(cdc_builder, "build_domain_map", lambda **kwargs: None)
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+
+    class FailingRunner:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(
+                tmp_path / "artefacts" / "hier" / "demo" / "tb" / "tb_basic"
+            )
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+            (Path(self.artefact_dir) / "hier.log").write_text("$ rtl-buddy-view ...\n")
+
+        def run(self) -> int:
+            return 7
+
+    monkeypatch.setattr(view_builder, "RtlBuddyView", FailingRunner)
+
+    model = _model(tmp_path)
+    test_cfg = _test_cfg(model)
+    with pytest.raises(FatalRtlBuddyError, match=r"--test t1"):
+        view_builder.build_view_json(
+            project_root=tmp_path, model_cfg=model, test_cfg=test_cfg
+        )

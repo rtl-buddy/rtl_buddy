@@ -702,6 +702,10 @@ async def test_view_json_query_param_flips_active_model_and_broadcasts(
                 "model": "demo",
                 "models_file": str(tmp_path / "models.yaml"),
                 "view_url": "/view.json?model=demo",
+                # rtl-buddy-view #99 / 6b: explicit mode marker so
+                # SPA clients route the event through the right
+                # action without inferring mode from the URL.
+                "view_mode": "dut",
             }
 
         # active_model flipped in memory.
@@ -804,3 +808,205 @@ def _hello(client: str) -> Envelope:
             "capabilities": [],
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# /tests + /view.json?test= (rtl-buddy-view #99 / 6b)
+# ---------------------------------------------------------------------------
+
+
+def _write_tests_yaml(
+    path: Path,
+    testbenches: list[dict],
+    tests: list[dict],
+) -> None:
+    """Write a minimal tests.yaml. Each testbench needs ``name`` +
+    ``filelist`` (+ optional ``toplevel``); each test needs ``name``,
+    ``model``, ``model_path``, ``testbench``, and the boilerplate
+    set of optional ``None`` fields that serde requires."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["rtl-buddy-filetype: test_config", "testbenches:"]
+    for tb in testbenches:
+        lines.append(f"  - name: {tb['name']}")
+        if "toplevel" in tb:
+            lines.append(f"    toplevel: {tb['toplevel']}")
+        lines.append("    filelist: []")
+    lines.append("tests:")
+    for t in tests:
+        lines.append(f"  - name: {t['name']}")
+        # ``desc`` is required (non-optional) on TestConfigFile —
+        # serde refuses an empty value.
+        lines.append(f"    desc: {t.get('desc', 'test fixture entry')}")
+        lines.append(f"    model: {t['model']}")
+        lines.append(f"    model_path: {t.get('model_path', 'models.yaml')}")
+        lines.append(f"    reglvl: {t.get('reglvl', 0)}")
+        for k in ("plusargs", "plusdefines", "uvm", "preproc", "postproc", "sweep"):
+            lines.append(f"    {k}:")
+        lines.append(f"    testbench: {t['testbench']}")
+        lines.append("    sim_timeout:")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_tests_endpoint_lists_tests_from_discovery(tmp_path: Path):
+    """``GET /tests`` walks every tests.yaml and reports each entry's
+    resolved ``(model, tb)`` pair."""
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    _write_tests_yaml(
+        tmp_path / "tests.yaml",
+        testbenches=[{"name": "tb_basic", "toplevel": "tb_top"}],
+        tests=[
+            {"name": "t1", "model": "demo", "testbench": "tb_basic"},
+            {"name": "t2", "model": "demo", "testbench": "tb_basic"},
+        ],
+    )
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/tests"
+        status, headers, body = await asyncio.to_thread(_http_get, url)
+        assert status == 200
+        assert "application/json" in headers.get("Content-Type", "")
+        payload = _json.loads(body)
+        names = [t["name"] for t in payload["tests"]]
+        assert sorted(names) == ["t1", "t2"]
+        # Each entry carries the resolved model + tb so the SPA
+        # picker can label options without an extra round-trip.
+        for t in payload["tests"]:
+            assert t["model"] == "demo"
+            assert t["tb"] == "tb_basic"
+        assert payload["active"] is None
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_tests_endpoint_empty_when_no_tests_yaml(tmp_path: Path):
+    """Standalone / no-tests deployments → empty list. The SPA's
+    DUT/TB toggle stays hidden in that case."""
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/tests"
+        status, _, body = await asyncio.to_thread(_http_get, url)
+        assert status == 200
+        payload = _json.loads(body)
+        assert payload == {"tests": [], "active": None}
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_view_json_query_test_param_unknown_400(tmp_path: Path):
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    _write_tests_yaml(
+        tmp_path / "tests.yaml",
+        testbenches=[{"name": "tb_basic", "toplevel": "tb_top"}],
+        tests=[{"name": "t1", "model": "demo", "testbench": "tb_basic"}],
+    )
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json?test=missing"
+        status, _, body = await asyncio.to_thread(_http_get_allow_4xx, url)
+        assert status == 400
+        assert b"missing" in body
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_view_json_query_test_param_flips_active_test_and_broadcasts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """End-to-end TB-view switch:
+    1. ?test=t1 resolves the test (model + tb pair).
+    2. build_view_json is invoked with the test_cfg (mocked).
+    3. active_test + active_model flip in memory.
+    4. view_changed event broadcast with view_mode='tb' + test + tb.
+    """
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    _write_tests_yaml(
+        tmp_path / "tests.yaml",
+        testbenches=[{"name": "tb_basic", "toplevel": "tb_top"}],
+        tests=[{"name": "t1", "model": "demo", "testbench": "tb_basic"}],
+    )
+
+    from rtl_buddy.hub import view_builder
+
+    captured: dict = {}
+    cache_path = tmp_path / ".rtl-buddy" / "cache" / "view-demo-tb-tb_basic.json"
+
+    def fake_build_view_json(
+        *, project_root, model_cfg, axi_perf_source=None, test_cfg=None
+    ):
+        captured["model"] = model_cfg.name
+        captured["test_cfg"] = test_cfg
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            '{"schema_version":"1.1","top":"tb_top","tb_top":"tb_top","dut_top":"demo"}'
+        )
+        return cache_path
+
+    monkeypatch.setattr(view_builder, "build_view_json", fake_build_view_json)
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        ws_url = f"ws://127.0.0.1:{viewer.http_port}/ws"
+        async with websockets.connect(ws_url) as ws:
+            await ws.send(encode(_hello("view")))
+            welcome = decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
+            assert welcome.type == "welcome"
+
+            url = f"http://127.0.0.1:{viewer.http_port}/view.json?test=t1"
+            status, _, body = await asyncio.to_thread(_http_get, url)
+            assert status == 200
+            assert b"tb_top" in body
+
+            event = decode(await asyncio.wait_for(ws.recv(), timeout=2.0))
+            assert event.type == "view_changed"
+            assert event.kind == Kind.EVENT
+            assert event.payload["view_mode"] == "tb"
+            assert event.payload["test"] == "t1"
+            assert event.payload["model"] == "demo"
+            assert event.payload["tb"] == "tb_basic"
+            assert event.payload["view_url"] == "/view.json?test=t1"
+
+        # In-memory state flipped.
+        assert viewer.active_test == "t1"
+        assert viewer.active_model == "demo"
+        # Builder received the resolved test_cfg.
+        assert captured["model"] == "demo"
+        assert captured["test_cfg"] is not None
+        assert captured["test_cfg"].name == "t1"
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_switch_model_clears_active_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Switching back from TB → DUT view clears active_test so the
+    next bare ``GET /view.json`` returns the DUT bytes."""
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    from rtl_buddy.hub import view_builder
+
+    dut_path = tmp_path / ".rtl-buddy" / "cache" / "view-demo.json"
+
+    def fake_build_view_json(
+        *, project_root, model_cfg, axi_perf_source=None, test_cfg=None
+    ):
+        dut_path.parent.mkdir(parents=True, exist_ok=True)
+        dut_path.write_text('{"schema_version":"1.0","top":"demo"}')
+        return dut_path
+
+    monkeypatch.setattr(view_builder, "build_view_json", fake_build_view_json)
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        # Pretend a TB view was previously selected.
+        viewer.active_test = "t_old"
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        await asyncio.to_thread(_http_get, url)
+        assert viewer.active_test is None
+        assert viewer.active_model == "demo"
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)

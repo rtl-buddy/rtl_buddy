@@ -347,3 +347,146 @@ def test_rb_hier_viewer_exit_propagates(minimal_project: Path):
         ],
     )
     assert result.exit_code == 1
+
+
+# --- --view tb mode (rtl-buddy-view #99 / 6b) -----------------------------
+
+
+def test_wrapper_emits_tb_top_and_caches_under_tb_subdir(tmp_path: Path):
+    """When ``test_cfg`` is supplied the wrapper forwards ``--tb-top
+    <tb.toplevel>`` alongside the existing ``--top <model>`` and the
+    generated filelist lands at ``artefacts/hier/<model>/tb/<tb>/hier.f``.
+    Two tests sharing the same TB therefore share the artefact (cache
+    key = (model, tb), not test name)."""
+    from rtl_buddy.config.test import TestbenchConfig, TestConfig
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    tb_src = tmp_path / "src" / "tb.sv"
+    tb_src.write_text("module tb_top; example u_dut(); endmodule\n")
+    tb = TestbenchConfig(
+        name="tb_basic",
+        filelist=[str(tb_src)],
+        toplevel="tb_top",
+    )
+    test_cfg = TestConfig(
+        name="basic",
+        desc="",
+        model=model,
+        _reglvl=0,
+        pa=None,
+        pd=None,
+        uvm=None,
+        preproc_path=None,
+        postproc_path=None,
+        sweep_path=None,
+        tb=tb,
+        timeout=None,
+    )
+    script, record = _make_fake_view(tmp_path)
+
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        format="json",
+        executable=str(script),
+        test_cfg=test_cfg,
+    )
+    assert view.run() == 0
+
+    argv = json.loads(record.read_text())
+    # --top is still the DUT model; --tb-top is the TB toplevel.
+    assert argv[argv.index("--top") + 1] == "example"
+    assert argv[argv.index("--tb-top") + 1] == "tb_top"
+    # Filelist artefact landed under artefacts/hier/<model>/tb/<tb>/.
+    expected_fl = (
+        tmp_path / "artefacts" / "hier" / "example" / "tb" / "tb_basic" / "hier.f"
+    )
+    assert expected_fl.is_file()
+    # The actual --filelist arg points at that exact file.
+    assert argv[argv.index("--filelist") + 1] == str(expected_fl)
+
+
+def test_wrapper_dut_only_does_not_emit_tb_top(tmp_path: Path):
+    """Sanity: when ``test_cfg`` is None (today's ``rb hier <model>``
+    path), the wrapper invokes the renderer with no ``--tb-top``
+    flag — byte-identical CLI to the v1.0 contract."""
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    assert "--tb-top" not in argv
+
+
+def test_rb_hier_view_tb_resolves_test_and_invokes_renderer(minimal_project: Path):
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "basic",
+            "--view",
+            "tb",
+            "--test-config",
+            "tests.yaml",
+            "--format",
+            "json",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    # ``basic`` test pins model=example (DUT) + tb=tb_basic (toplevel=tb_basic).
+    assert argv[argv.index("--top") + 1] == "example"
+    assert argv[argv.index("--tb-top") + 1] == "tb_basic"
+    # Filelist landed under the (model, tb) cache path.
+    assert (
+        minimal_project
+        / "artefacts"
+        / "hier"
+        / "example"
+        / "tb"
+        / "tb_basic"
+        / "hier.f"
+    ).is_file()
+
+
+def test_rb_hier_view_must_be_dut_or_tb(minimal_project: Path):
+    """An unknown --view value surfaces as a FatalRtlBuddyError before
+    we shell out to the renderer."""
+    script, _ = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier",
+            "basic",
+            "--view",
+            "wave",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code != 0

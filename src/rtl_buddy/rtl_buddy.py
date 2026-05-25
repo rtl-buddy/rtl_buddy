@@ -1238,10 +1238,34 @@ class RtlBuddy:
 
     def do_cmd_hier(
         self,
-        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        name: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "with --view dut (default): model name from models.yaml; "
+                    "with --view tb: test name from tests.yaml (the test "
+                    "pins both the model + the testbench top)"
+                )
+            ),
+        ],
         model_config: Annotated[
             str, typer.Option("-c", "--model-config", help="models.yaml to use")
         ] = "models.yaml",
+        test_config: Annotated[
+            str, typer.Option("--test-config", help="tests.yaml to use (--view tb)")
+        ] = "tests.yaml",
+        view: Annotated[
+            str,
+            typer.Option(
+                "--view",
+                help=(
+                    "what to render: 'dut' (default) renders the model "
+                    "hierarchy rooted at --top; 'tb' renders the testbench "
+                    "hierarchy with the DUT called out as a subtree. With "
+                    "--view tb the positional argument is a test name."
+                ),
+            ),
+        ] = "dut",
         fmt: Annotated[
             str,
             typer.Option(
@@ -1290,17 +1314,61 @@ class RtlBuddy:
         """
         render module hierarchy via rtl-buddy-view
         """
-        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        if view not in ("dut", "tb"):
+            raise FatalRtlBuddyError(
+                f"hier: --view must be 'dut' or 'tb', got {view!r}"
+            )
+
+        if view == "tb":
+            # The test pins both a model and a TB top — resolve via
+            # the existing SuiteConfig loader so the same parse path
+            # the simulator uses runs here too.
+            from .config.suite import SuiteConfig
+
+            suite = SuiteConfig(test_config)
+            tests = suite.get_tests(name)
+            test_cfg = list(tests)[0]
+            model_cfg = test_cfg.get_model()
+            log_event(
+                logger,
+                logging.INFO,
+                "command.hier",
+                command="hier",
+                test=name,
+                model=model_cfg.name,
+                tb=test_cfg.tb.name,
+                format=fmt,
+                output=output,
+                view="tb",
+            )
+            runner = RtlBuddyView(
+                name=self.name + "/hier",
+                model_cfg=model_cfg,
+                suite_dir=os.getcwd(),
+                format=fmt,
+                output=output,
+                frontend=frontend,
+                cdc_annotations=cdc_annotations,
+                rdc_annotations=rdc_annotations,
+                clock_legend=clock_legend,
+                executable=tool,
+                test_cfg=test_cfg,
+            )
+            raise typer.Exit(runner.run())
+
+        # --view dut (default): unchanged behaviour.
+        model_cfg = ModelConfigLoader(model_config).get_model(name)
         log_event(
             logger,
             logging.INFO,
             "command.hier",
             command="hier",
-            model=model_name,
+            model=name,
             format=fmt,
             output=output,
+            view="dut",
         )
-        view = RtlBuddyView(
+        runner = RtlBuddyView(
             name=self.name + "/hier",
             model_cfg=model_cfg,
             suite_dir=os.getcwd(),
@@ -1312,7 +1380,7 @@ class RtlBuddy:
             clock_legend=clock_legend,
             executable=tool,
         )
-        raise typer.Exit(view.run())
+        raise typer.Exit(runner.run())
 
     def do_cmd_axi_profile_discover(
         self,

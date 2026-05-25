@@ -208,6 +208,16 @@ class ViewerServer:
         # ``?model=X`` / ``?model=Y`` requests run in parallel. Locks
         # are allocated lazily and never garbage-collected per session.
         self._model_locks: dict[str, asyncio.Lock] = {}
+        # Per-test lock map for ``?test=NAME`` (TB view, #99 / 6b).
+        # Same race-prevention as ``_model_locks`` — two SPA clicks on
+        # the same test funnel through one build, two clicks on
+        # different tests run in parallel.
+        self._test_locks: dict[str, asyncio.Lock] = {}
+        # Currently-active TB test (TB-view mode). None when the hub
+        # is serving a DUT view (default) or hasn't built any view
+        # yet. Flipped by ``?test=`` requests via
+        # ``_set_active_test``.
+        self.active_test: str | None = None
         # Marimo "Open in marimo" session cache (Phase 2.5).
         # ``(test, suite_dir) → LaunchResult``. Repeat clicks reuse
         # the cached entry when the spawned marimo is still alive
@@ -328,10 +338,16 @@ class ViewerServer:
         if path == "/models":
             return await self._handle_models(connection)
 
+        if path == "/tests":
+            return await self._handle_tests(connection)
+
         if path == "/api/axi-profile/notebook":
             return await self._handle_axi_notebook(connection, query)
 
         if path == "/view.json":
+            requested_test = query.get("test", [None])[0]
+            if requested_test is not None:
+                return await self._handle_view_json_for_test(connection, requested_test)
             requested = query.get("model", [None])[0]
             if requested is not None:
                 return await self._handle_view_json_for_model(connection, requested)
@@ -540,6 +556,64 @@ class ViewerServer:
             content_type="application/json",
         )
 
+    async def _handle_tests(self, connection: ServerConnection) -> Response:
+        """``GET /tests`` — list every test the hub can serve (#99 / 6b).
+
+        Walks per-request so a freshly-edited ``tests.yaml`` shows up
+        without restarting the hub. Each entry carries its resolved
+        ``(model, tb)`` pair so the SPA's TB-mode picker can label
+        options and skip an extra round-trip per click.
+
+        Empty list is the standalone / no-tests signal — the SPA's
+        DUT/TB toggle stays hidden in that case (matches the way
+        ``GET /models`` returns ``[]`` for standalone deployments).
+        """
+
+        from . import test_discovery
+
+        if self.project_root is None:
+            payload: dict[str, Any] = {"tests": [], "active": self.active_test}
+            return _http_response(
+                connection,
+                200,
+                json.dumps(payload).encode("utf-8"),
+                content_type="application/json",
+            )
+
+        try:
+            entries = test_discovery.list_tests(self.project_root)
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(
+                logger,
+                logging.ERROR,
+                "hub.viewer_http.tests_failed",
+                error=str(exc),
+            )
+            return _http_response(
+                connection,
+                500,
+                f"failed to enumerate tests: {exc}".encode("utf-8"),
+            )
+
+        payload = {
+            "tests": [
+                {
+                    "name": e.name,
+                    "model": e.model,
+                    "tb": e.tb,
+                    "tests_file": str(e.tests_file),
+                }
+                for e in entries
+            ],
+            "active": self.active_test,
+        }
+        return _http_response(
+            connection,
+            200,
+            json.dumps(payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
     @staticmethod
     def _model_has_resolvable_cdc(model_cfg: Any) -> bool:
         """``has_cdc`` reflects end-to-end resolvability: the model
@@ -629,6 +703,10 @@ class ViewerServer:
         from .protocol import Envelope, Kind, Origin, new_id
 
         self.active_model = model_name
+        # Switching to a DUT view clears any TB-mode selection so the
+        # next ``GET /view.json`` (no query) returns the DUT bytes and
+        # the SPA's segmented control reflects the actual mode.
+        self.active_test = None
         if self.hub_server is not None:
             self.hub_server.state.active_model = model_name
         # ``view_json_path`` now points at the per-model cache so
@@ -657,6 +735,124 @@ class ViewerServer:
                     "model": model_name,
                     "models_file": str(models_file),
                     "view_url": f"/view.json?model={model_name}",
+                    # v1.1 protocol field (#99 / 6b): explicit
+                    # ``view_mode`` so SPA clients route the event
+                    # through the right action without inferring mode
+                    # from the URL. Legacy SPAs ignore unknown fields.
+                    "view_mode": "dut",
+                },
+            )
+            try:
+                await self.hub_server.broadcast_event(env, suppress_origin=None)
+            except Exception as exc:  # pragma: no cover - defensive
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "hub.viewer_http.broadcast_failed",
+                    error=str(exc),
+                )
+
+    async def _handle_view_json_for_test(
+        self, connection: ServerConnection, requested: str
+    ) -> Response:
+        """``GET /view.json?test=NAME`` — build (or reuse) the TB-rooted
+        view for the named test (#99 / 6b) and serve it. Updates
+        ``active_test`` + ``active_model`` on success and broadcasts
+        ``view_changed`` with ``view_mode='tb'``.
+        """
+
+        from . import test_discovery, view_builder
+        from ..errors import FatalRtlBuddyError
+
+        if self.project_root is None:
+            return _http_response(
+                connection,
+                400,
+                b"hub started without project_root; ?test= requires it",
+            )
+
+        try:
+            tests_yaml, test_cfg = test_discovery.resolve_test(
+                self.project_root, requested
+            )
+        except FatalRtlBuddyError as exc:
+            return _http_response(connection, 400, str(exc).encode("utf-8"))
+
+        # Per-test lock funnels concurrent ?test=NAME requests through
+        # one build_view_json call (same shape as ``_model_locks``).
+        lock = self._test_locks.setdefault(requested, asyncio.Lock())
+        async with lock:
+            try:
+                cache_path = await asyncio.to_thread(
+                    view_builder.build_view_json,
+                    project_root=self.project_root,
+                    model_cfg=test_cfg.get_model(),
+                    axi_perf_source=self.axi_perf_source,
+                    test_cfg=test_cfg,
+                )
+            except FatalRtlBuddyError as exc:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "hub.viewer_http.view_json_build_failed",
+                    test=requested,
+                    error=str(exc),
+                )
+                return _http_response(connection, 500, str(exc).encode("utf-8"))
+
+        await self._set_active_test(
+            test_name=requested,
+            tests_file=tests_yaml,
+            model_name=test_cfg.get_model().name,
+            tb_name=test_cfg.tb.name,
+            view_path=cache_path,
+        )
+
+        return _http_response(
+            connection,
+            200,
+            cache_path.read_bytes(),
+            content_type="application/json",
+        )
+
+    async def _set_active_test(
+        self,
+        *,
+        test_name: str,
+        tests_file: Path,
+        model_name: str,
+        tb_name: str,
+        view_path: Path,
+    ) -> None:
+        """Promote ``test_name`` to the active TB view: flip in-memory
+        state and broadcast ``view_changed`` with ``view_mode='tb'``.
+
+        The active model is also updated (the test pins both) so the
+        DUT picker reflects what's resolved under the hood.
+        Idempotent.
+        """
+        from .protocol import Envelope, Kind, Origin, new_id
+
+        self.active_test = test_name
+        self.active_model = model_name
+        if self.hub_server is not None:
+            self.hub_server.state.active_model = model_name
+        # ``view_json_path`` now points at the per-(model, tb) cache.
+        self.view_json_path = view_path
+
+        if self.hub_server is not None:
+            env = Envelope(
+                origin=Origin.CLI,
+                kind=Kind.EVENT,
+                type="view_changed",
+                id=new_id(),
+                payload={
+                    "model": model_name,
+                    "test": test_name,
+                    "tb": tb_name,
+                    "tests_file": str(tests_file),
+                    "view_url": f"/view.json?test={test_name}",
+                    "view_mode": "tb",
                 },
             )
             try:
