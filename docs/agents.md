@@ -83,6 +83,35 @@ Use the command from the directory that matches its scope:
 
 For single-suite commands, these files are written relative to the suite directory where you ran `rtl_buddy`. For multi-suite commands such as `regression`, each suite gets its own `rtl_buddy.log`, `artefacts/`, and latest-run symlinks inside that suite directory even though the command was launched from the project root.
 
+## Machine mode stdout envelope
+
+In machine mode, commands that produce structured results print a single JSON object to **stdout** on exit:
+
+```json
+{
+  "command": "test",
+  "exit_code": 0,
+  "meta": {
+    "rtl_buddy_version": "2.4.0",
+    "argv": ["rtl-buddy", "--machine", "test", "basic"],
+    "cwd": "/path/to/suite",
+    "git": {"branch": "main", "commit": "abc1234", "modified": 0, "staged": 0}
+  },
+  "results": [
+    {"name": "basic", "result": "PASS", "desc": "basic completed"}
+  ]
+}
+```
+
+The envelope fields are the same across all commands:
+
+- `command`: the subcommand that was run (e.g. `"test"`, `"regression"`, `"synth"`)
+- `exit_code`: integer exit code (0 = all pass, 1 = at least one failure)
+- `meta`: version, argv, working directory, and git status at invocation
+- Additional payload fields vary by command (e.g. `results`, `names`, `pages`, `blocks`, `items`)
+
+Commands that emit a `--list` output (e.g. `test --list`, `synth --list`) include a `names` array. Regression commands include a `results` array with a `"suite"` field on each entry.
+
 ## Machine mode log format
 
 Each line in `rtl_buddy.log` (machine mode) is a JSON object:
@@ -136,7 +165,7 @@ rtl-buddy --machine spec check-design
 rtl-buddy --machine spec check-coverage
 ```
 
-In machine mode, `spec list` returns `{"blocks": [...]}` and `spec check-coverage` returns `{"items": [...]}` with a `"covered": true/false` field per item. Use these to identify uncovered items programmatically.
+In machine mode, all three commands return the standard JSON envelope (see [Machine mode stdout envelope](#machine-mode-stdout-envelope)). `spec list` includes `"blocks": [...]` and `spec check-coverage` includes `"items": [...]` with a `"covered": true/false` field per item. Use these to identify uncovered items programmatically.
 
 All three commands default to searching `spec/`, `design/`, and `verif/` under the project root. Pass `--spec-dir`, `--design-dir`, or `--verif-dir` to narrow the scope.
 
