@@ -1,0 +1,117 @@
+---
+description: How to render module hierarchy diagrams with rtl_buddy via the rb hier command and the standalone rtl-buddy-view renderer.
+---
+
+# Hierarchy Rendering
+
+> **Integration type:** Pluggable — curated. `rb hier` shells out to the standalone [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view) renderer at subprocess granularity; rtl_buddy is not coupled to its Python API.
+>
+> **External binary required:** `rtl-buddy-view` — install with `uv tool install rtl-buddy-view` (or `pip install rtl-buddy-view`).
+>
+> **Optional:** `graphviz` (`dot`) for SVG/PNG conversion of `--format dot`; `pyslang` for `--frontend slang`.
+>
+> See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
+
+`rb hier <model>` produces a module-hierarchy view of a model defined in `models.yaml`. It writes a stripped, deduplicated filelist into `artefacts/hier/<model>/hier.f`, then runs `rtl-buddy-view --top <model> --filelist hier.f` with the requested format and forwards the renderer's stdout to the terminal so it composes with shell pipes.
+
+## Installing rtl-buddy-view
+
+```bash
+uv tool install rtl-buddy-view    # recommended — isolated tool env
+# or
+uv pip install rtl-buddy-view     # into the project venv
+```
+
+Once installed, the binary lands on `PATH` as `rtl-buddy-view`. Override with `--tool /absolute/path/to/rtl-buddy-view` if you need a specific build.
+
+For `--format dot` rendering to SVG/PNG, install Graphviz (`brew install graphviz` / `apt install graphviz`) and pipe the output through `dot` (see [Output formats](#output-formats) below).
+
+## Output formats
+
+`--format` selects one of four renderers:
+
+| Format | What you get |
+|--------|--------------|
+| `tree` (default) | ASCII tree, ideal for terminal inspection |
+| `dot` | Graphviz DOT source — pipe through `dot -Tsvg` / `-Tpng` for graphics |
+| `mermaid` | Mermaid diagram source — paste into Markdown that renders Mermaid |
+| `json` | Structured JSON (schema_version, tool.\*, design.top, nodes, edges) for programmatic consumption |
+
+When `-o`/`--output` is not set, the renderer's stdout passes through to your terminal so `rb hier x --format dot | dot -Tsvg -o x.svg` works as a one-liner.
+
+## Running `rb hier`
+
+```bash
+# ASCII tree (default)
+rb hier demo_top
+
+# Save Mermaid source to a file
+rb hier demo_top --format mermaid -o demo_top.mmd
+
+# DOT → SVG via Graphviz
+rb hier demo_top --format dot | dot -Tsvg -o demo_top.svg
+
+# JSON export for downstream tooling
+rb hier demo_top --format json -o demo_top.hier.json
+
+# Point at a non-default models.yaml
+rb hier demo_top -c design/demo_top/models.yaml
+
+# Pin a renderer build
+rb hier demo_top --tool /opt/rtl-buddy-view/bin/rtl-buddy-view
+```
+
+The model argument matches the `name:` of an entry in `models.yaml`. The runner uses that entry's filelist verbatim — same source of truth that `rb test`, `rb synth`, and `rb cdc` consume.
+
+## Parser frontend
+
+`--frontend` is forwarded as-is to `rtl-buddy-view`. The default frontend ships with the renderer; `--frontend slang` uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.
+
+## CDC and RDC annotations
+
+`rb hier` can overlay clock-domain and reset-domain information when the corresponding analyzer pass has emitted a JSON map:
+
+```bash
+# Clock-domain overlay — colors each module by its primary clock
+rtl-buddy-cdc --emit-domain-map -o clocks.json ...
+rb hier demo_top --format dot --cdc-annotations clocks.json | dot -Tsvg -o hier.svg
+
+# With a side legend mapping color → clock name (dot format only)
+rb hier demo_top --format dot --cdc-annotations clocks.json --clock-legend | dot -Tsvg -o hier.svg
+
+# Reset-domain overlay — colors each module by its primary reset
+rtl-buddy-cdc --emit-reset-domain-map -o resets.json ...
+rb hier demo_top --format dot --rdc-annotations resets.json | dot -Tsvg -o hier.svg
+```
+
+Both annotation files are JSON keyed by hierarchical instance path. `rb hier` validates that the files exist before invoking the renderer; the renderer's JSON contract (`schema_version`, `tool.*`, `design.top`, `nodes`, `edges`) is the integration boundary.
+
+`--clock-legend` is honored only for `--format dot`; the tree and Mermaid renderers ignore it.
+
+## Artefacts
+
+Per-model outputs land under the current directory's `artefacts/hier/<model>/`:
+
+| File | Contents |
+|---|---|
+| `hier.f` | Stripped, deduplicated filelist passed to the renderer |
+| `hier.log` | Renderer stderr (its stdout goes to your terminal when `-o` is not set) |
+
+When `-o <path>` is supplied the renderer writes directly to that path; otherwise its stdout is the diagram source itself.
+
+## Pass/fail detection
+
+`rb hier` exits with the renderer's exit code. A non-zero exit means the renderer reported a parse, elaboration, or output error — check `hier.log` for the captured stderr.
+
+The `Failed to locate rtl-buddy-view` error before the renderer runs is the most common failure mode and indicates that `rtl-buddy-view` is not installed in the active venv or on `PATH`. Run `rb tool-check --explain rtl-buddy-view` for the install hint.
+
+## Hub integration
+
+The [coordination hub](hub.md) consumes `rb hier`'s JSON output (`--format json`) to drive the rtl-buddy-view SPA's interactive hierarchy view. Annotation files (`--cdc-annotations`, `--rdc-annotations`, `--overlay axi-perf=...`) are surfaced as overlays in the SPA when the hub is running.
+
+`rb hub start --model <name>` discovers the model's `models.yaml`, invokes `rb hier` under the hood, and serves the result alongside live diagnostics and AXI-perf overlays — `rb hier` is the underlying renderer for both the static CLI use case and the live SPA flow.
+
+## Out of scope (today)
+
+- **rtl-buddy-view only.** No alternative hierarchy renderers are wired up. The integration is intentionally subprocess-granularity so a viewer release can be picked up via `uv sync` without code changes here.
+- **In-place SVG/PNG.** `rb hier` does not directly emit SVG or PNG — it emits DOT and lets you pipe through Graphviz. This keeps the rtl_buddy ↔ renderer boundary at "text in, text out" and avoids a Graphviz dependency for the common terminal-inspection flow.
