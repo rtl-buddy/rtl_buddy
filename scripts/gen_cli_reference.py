@@ -31,6 +31,7 @@ SUBCOMMANDS = [
     "cdc-regression",
     "fpv",
     "fpv-regression",
+    "tool-check",
 ]
 
 HEADER = """\
