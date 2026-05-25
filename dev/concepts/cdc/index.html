@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.">
+        <meta name="description" content="How to run CDC lint with rtl_buddy via the rb cdc command, cdc.yaml, and the standalone rtl-buddy-cdc analyzer.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/wave/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cdc/">
       
       
-        <link rel="prev" href="../spec-traceability/">
+        <link rel="prev" href="../power/">
       
       
-        <link rel="next" href="../hier/">
+        <link rel="next" href="../fpv/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Waveform Viewer - RTL Buddy</title>
+        <title>CDC Lint - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#waveform-viewer-rb-wave" class="md-skip">
+        <a href="#cdc-lint" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Waveform Viewer
+              CDC Lint
             
           </span>
         </div>
@@ -558,37 +558,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Waveform Viewer
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../wave/" class="md-nav__link">
         
   
   
@@ -604,142 +577,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#basic-usage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Basic usage
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configuration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#signal-value-annotation" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Signal value annotation
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Signal value annotation">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it works
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#active-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Active scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#nvim-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        nvim setup
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adding signals to Surfer from nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-signal-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-signal mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#editor-socket-reuse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Editor socket reuse
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#surfer-build" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Surfer build
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -889,10 +726,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CDC Lint
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -908,6 +772,164 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#supported-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported backend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#installing-rtl-buddy-cdc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing rtl-buddy-cdc
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cdc-config-cdcyaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CDC config: cdc.yaml
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CDC config: cdc.yaml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-inputs-come-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where inputs come from
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#root-config-cfg-cdc-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Root config: cfg-cdc-tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-cdc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running CDC
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artefacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#passfail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope (today)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1342,10 +1364,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#basic-usage" class="md-nav__link">
+  <a href="#supported-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Basic usage
+        Supported backend
       
     </span>
   </a>
@@ -1353,10 +1375,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#installing-rtl-buddy-cdc" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Installing rtl-buddy-cdc
       
     </span>
   </a>
@@ -1364,22 +1386,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#signal-value-annotation" class="md-nav__link">
+  <a href="#cdc-config-cdcyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Signal value annotation
+        CDC config: cdc.yaml
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Signal value annotation">
+    <nav class="md-nav" aria-label="CDC config: cdc.yaml">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
+  <a href="#fields" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How it works
+        Fields
       
     </span>
   </a>
@@ -1387,54 +1409,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#active-scope" class="md-nav__link">
+  <a href="#where-inputs-come-from" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Active scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#nvim-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        nvim setup
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adding signals to Surfer from nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-signal-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-signal mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#editor-socket-reuse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Editor socket reuse
+        Where inputs come from
       
     </span>
   </a>
@@ -1447,10 +1425,76 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#surfer-build" class="md-nav__link">
+  <a href="#root-config-cfg-cdc-tools" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Surfer build
+        Root config: cfg-cdc-tools
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-cdc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running CDC
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results table
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artefacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#passfail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope (today)
       
     </span>
   </a>
@@ -1477,83 +1521,197 @@
   
 
 
-<h1 id="waveform-viewer-rb-wave">Waveform Viewer (<code>rb wave</code>)</h1>
+<h1 id="cdc-lint">CDC Lint</h1>
 <blockquote>
-<p><strong>Integration type:</strong> Integrated tool. <code>rb wave</code> is built around Surfer today; Vaporview / VS Code support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/84">issue #84</a>.</p>
-<p><strong>External binary required:</strong> Surfer, built from the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork on the <code>rtl-buddy</code> branch. Mainline Surfer works for basic FST viewing but not for WCP signal-value annotation. See <a href="#surfer-build">Surfer build</a>.</p>
-<p><strong>Editor integration:</strong> nvim for the full annotation round-trip (declaration jump + live signal values + add-from-editor). Any editor can be configured via <code>editor-cmd</code> for one-way "open at line".</p>
+<p><strong>Integration type:</strong> Pluggable — curated. <code>rb cdc</code> is built around <a href="https://github.com/rtl-buddy/rtl-buddy-cdc">rtl-buddy-cdc</a> today; a SpyGlass-style commercial backend would plug in as a sibling driver (see <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">issue #85</a>).</p>
+<p><strong>External binary required:</strong> <code>rtl-buddy-cdc</code> — install with <code>uv tool install rtl-buddy-cdc</code> (or <code>pip install rtl-buddy-cdc</code>).</p>
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
-<p><code>rb wave</code> opens the <a href="https://surfer-project.org/">Surfer</a> waveform viewer for a test and connects it to your editor via the <strong>WCP</strong> (Waveform Client Protocol). When you right-click a signal in Surfer and choose <strong>Go to declaration</strong>, rtl-buddy:</p>
-<ol>
-<li>Resolves the signal to its source file and line number</li>
-<li>Opens (or reuses) your editor at that location</li>
-<li>Annotates the signal's waveform value at the current cursor position as inline virtual text</li>
-</ol>
-<h2 id="basic-usage">Basic usage</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>verif/sandbox
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w">          </span><span class="c1"># runs debug sim if no FST exists, then opens Surfer</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--resim<span class="w">  </span><span class="c1"># force re-run of debug sim</span>
+<p><code>rb cdc</code> drives the standalone <code>rtl-buddy-cdc lint</code> CLI: it generates a filelist from the model's <code>models.yaml</code>, hands the SystemVerilog sources, SDC, and optional waivers to the analyzer, and parses the JSON report into a pass/fail verdict.</p>
+<p>The flow is intentionally compact and config-driven — per-analysis knobs (model, SDC, waivers, frontend) live in <code>cdc.yaml</code>, tool-wide defaults live in <code>cfg-cdc-tools</code> in <code>root_config.yaml</code>.</p>
+<h2 id="supported-backend">Supported backend</h2>
+<p>Today only <code>rtl-buddy-cdc</code> is wired up. The <code>tool:</code> field in <code>cdc.yaml</code> selects it; the runner raises a clear error if no matching <code>cfg-cdc-tools</code> entry exists. Adding a commercial backend parallels how <code>rb fpv</code> is structured — implement a sibling driver under <code>src/rtl_buddy/tools/</code>, then dispatch from <code>CdcRunner</code>.</p>
+<h2 id="installing-rtl-buddy-cdc">Installing rtl-buddy-cdc</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-cdc<span class="w">    </span><span class="c1"># recommended — isolated tool env</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># or</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>rtl-buddy-cdc<span class="w">     </span><span class="c1"># into the project venv</span>
 </code></pre></div>
-<p>Signal layout files are loaded automatically: if <code>basic.surfer</code> exists next to <code>tests.yaml</code>, Surfer opens with those signals pre-loaded.</p>
-<h2 id="configuration">Configuration</h2>
-<p>Add a <code>cfg-surfer</code> section to <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-default&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../surfer/target/release/surfer&quot;</span><span class="w">  </span><span class="c1"># or bare name on PATH</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">wcp-port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">                              </span><span class="c1"># 0 = OS assigns a free port</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nvim</span><span class="nv"> </span><span class="s">+%l</span><span class="nv"> </span><span class="s">%f&quot;</span><span class="w">               </span><span class="c1"># %f = file, %l = line</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">editor-terminal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tmux&quot;</span><span class="w">                  </span><span class="c1"># tmux | iterm2 | terminal | &quot;&quot;</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">editor-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-nvim.sock&quot;</span><span class="w">  </span><span class="c1"># enables nvim reuse</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">ctrl-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-ctrl.sock&quot;</span><span class="w">    </span><span class="c1"># enables nvim → Surfer</span>
+<p>Once installed, the binary lands on <code>PATH</code> as <code>rtl-buddy-cdc</code>. The default <code>cfg-cdc-tools</code> entry in <code>root_config.yaml</code> resolves it from <code>PATH</code>; override with an absolute path if you need a specific version.</p>
+<h2 id="cdc-config-cdcyaml">CDC config: <code>cdc.yaml</code></h2>
+<p><code>cdc.yaml</code> declares one or more CDC analyses. Each entry references a model from <code>models.yaml</code>, an SDC describing the clocks, and an optional waivers file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc_config</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">analyses</span><span class="p">:</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_cdc_full&quot;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Full-design</span><span class="nv"> </span><span class="s">CDC</span><span class="nv"> </span><span class="s">lint,</span><span class="nv"> </span><span class="s">no</span><span class="nv"> </span><span class="s">waivers&quot;</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top&quot;</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top.sdc&quot;</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">waivers</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top_waivers.yaml&quot;</span><span class="w">     </span><span class="c1"># optional</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">frontend</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;slang&quot;</span><span class="w">                    </span><span class="c1"># optional — overrides default</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 </code></pre></div>
-<p>See <a href="../../reference/yaml/">YAML Formats</a> for all fields.</p>
-<h2 id="signal-value-annotation">Signal value annotation</h2>
-<h3 id="how-it-works">How it works</h3>
-<p>When a <code>goto_declaration</code> event arrives from Surfer, rtl-buddy:</p>
-<ol>
-<li>Reads the signal value at the cursor timestamp from the FST via <strong>pywellen</strong></li>
-<li>Enumerates all other signals in the same module scope using the FST hierarchy</li>
-<li>Runs a <strong>single bulk grep</strong> across the SV source files to map every signal to its declaration line (result cached for the session)</li>
-<li>Pushes all values to the editor as EOL virtual text</li>
-</ol>
-<p>Moving the Surfer time cursor fires a <code>cursor_moved</code> WCP event, which re-reads all scope signal values and updates the annotations live — no interaction required.</p>
-<p>Two signals declared on the same source line are combined into one annotation:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kt">logic</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">;</span><span class="w">    </span><span class="err">▶</span><span class="w"> </span><span class="n">a</span><span class="o">=</span><span class="mh">8&#39;h0a</span><span class="w">  </span><span class="n">b</span><span class="o">=</span><span class="mh">8&#39;h05</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kt">logic</span><span class="w"> </span><span class="n">clk</span><span class="p">;</span><span class="w">     </span><span class="err">▶</span><span class="w"> </span><span class="mb">1&#39;b0</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
+<h3 id="fields">Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>Analysis identifier used on the command line and in <code>artefacts/&lt;name&gt;/</code></td>
+</tr>
+<tr>
+<td><code>desc</code></td>
+<td>Human-readable description</td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>Backend tool name — must match a <code>cfg-cdc-tools</code> entry (only <code>rtl-buddy-cdc</code> today)</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>Model name from <code>models.yaml</code></td>
+</tr>
+<tr>
+<td><code>model_path</code></td>
+<td>Path to <code>models.yaml</code>, resolved relative to <code>cdc.yaml</code></td>
+</tr>
+<tr>
+<td><code>constraints</code></td>
+<td>SDC path (required), resolved relative to <code>cdc.yaml</code></td>
+</tr>
+<tr>
+<td><code>waivers</code></td>
+<td>Optional waivers YAML, resolved relative to <code>cdc.yaml</code></td>
+</tr>
+<tr>
+<td><code>frontend</code></td>
+<td>Optional parser frontend — forwarded as-is to <code>rtl-buddy-cdc --frontend</code> (rtl_buddy does not validate the set so the analyzer can add frontends without an rtl_buddy release)</td>
+</tr>
+<tr>
+<td><code>reglvl</code></td>
+<td>Regression level for filtering, or a dict <code>{tool_name: level, default: level}</code></td>
+</tr>
+<tr>
+<td><code>tool_overrides</code></td>
+<td>Optional per-tool overrides (e.g. <code>sync_depth</code>, <code>extra_args</code>), keyed by tool name</td>
+</tr>
+</tbody>
+</table>
+<h3 id="where-inputs-come-from">Where inputs come from</h3>
+<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb fpv</code> use), strips down to plain source paths (no <code>+incdir+</code>, no <code>-y</code>, no <code>-f</code>), and passes them as positional arguments to <code>rtl-buddy-cdc lint</code> alongside <code>--top</code>, <code>--sdc</code>, and optionally <code>--waivers</code>. The top module is taken from the model's <code>name:</code> field.</p>
+<h2 id="root-config-cfg-cdc-tools">Root config: <code>cfg-cdc-tools</code></h2>
+<p><code>cfg-cdc-tools</code> declares the CDC tools available to all suites in this project:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">cfg-cdc-tools</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span><span class="w">           </span><span class="c1"># binary on PATH, or absolute path</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">      </span><span class="nt">sync-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">                 </span><span class="c1"># optional — passed via --sync-depth</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">                </span><span class="c1"># optional — appended verbatim</span>
 </code></pre></div>
-<h3 id="active-scope">Active scope</h3>
-<p>Clicking any signal in Surfer's signal list sets the <strong>active scope</strong> — the module instance used to resolve signal names. rtl-buddy updates the scope cache automatically via the <code>scope_changed</code> WCP event, so annotation context is always current without requiring a "Go to declaration".</p>
-<h3 id="nvim-setup">nvim setup</h3>
-<p>The annotation feature requires a small nvim plugin. Install it once:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>wave-install-nvim
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>Referenced by <code>tool:</code> in <code>cdc.yaml</code></td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>Binary name (PATH-resolved) or absolute path</td>
+</tr>
+<tr>
+<td><code>opts.sync-depth</code></td>
+<td>Default synchronizer depth, forwarded via <code>--sync-depth</code></td>
+</tr>
+<tr>
+<td><code>opts.extra-args</code></td>
+<td>Passed through verbatim to the analyzer command line</td>
+</tr>
+</tbody>
+</table>
+<h2 id="running-cdc">Running CDC</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># All analyses in the default ./cdc.yaml</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>cdc
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># A single analysis from a specific config</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rb<span class="w"> </span>cdc<span class="w"> </span>demo_cdc_full<span class="w"> </span>-c<span class="w"> </span>cdc/demo_top/cdc.yaml
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># List analyses without executing</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>rb<span class="w"> </span>cdc<span class="w"> </span>-c<span class="w"> </span>cdc/demo_top/cdc.yaml<span class="w"> </span>--list
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Regression across multiple cdc.yaml suites, filtered by reglvl</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>rb<span class="w"> </span>cdc-regression<span class="w"> </span>-c<span class="w"> </span>cdc_regression.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
 </code></pre></div>
-<p>This copies <code>rtl_buddy_wave.lua</code> to <code>~/.local/share/nvim/site/plugin/</code>, which nvim auto-sources at startup. No <code>init.lua</code> changes are needed. Reinstall after rtl-buddy upgrades with <code>--force</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>wave-install-nvim<span class="w"> </span>--force
+<h2 id="results-table">Results table</h2>
+<p>A summary table prints after each run, with one row per analysis:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>                       CDC Results Summary
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>┃ CDC Analysis    ┃ Result ┃ Violations ┃ Suppressed ┃ Crossings ┃
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>┡━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>│ demo_cdc_full   │ PASS   │ 0          │ 3          │ 142       │
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>└─────────────────┴────────┴────────────┴────────────┴───────────┘
 </code></pre></div>
-<p>If the plugin is missing when <code>rb wave</code> starts with <code>editor-sock</code> configured, a warning is shown:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING  nvim plugin not installed — run &quot;rb wave-install-nvim&quot; to enable wave annotations
-</code></pre></div>
-<h3 id="adding-signals-to-surfer-from-nvim">Adding signals to Surfer from nvim</h3>
-<p>With <code>ctrl-sock</code> configured, place the cursor on any signal name in nvim and press <strong><code>&lt;Space&gt;wa</code></strong> (<code>&lt;leader&gt;wa</code>) to add it to Surfer's waveform view.</p>
-<p>The signal is resolved using the active scope — click a signal in Surfer first to establish the instance context (e.g. clicking <code>tb_top.i_dut.clk</code> sets scope <code>tb_top.i_dut</code>), then add signals freely from nvim.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>nvim: cursor on &quot;rst&quot;  →  &lt;Space&gt;wa  →  Surfer adds tb_top.i_dut.rst to waveform
-</code></pre></div>
-<p>The keymap requires <code>ctrl-sock</code> to be set in <code>cfg-surfer</code> and <code>rb wave</code> to be running. A warning is shown if the socket is unreachable.</p>
-<h3 id="single-signal-mode">Single-signal mode</h3>
-<p>To annotate only the signal you right-clicked (not the whole scope):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--focused-signal
-</code></pre></div>
-<h3 id="editor-socket-reuse">Editor socket reuse</h3>
-<p>When <code>editor-sock</code> is set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use. Subsequent <code>goto_declaration</code> and <code>cursor_moved</code> events reuse the running instance via <code>--remote-expr nvim_exec2(...)</code> — no new windows, no command-line flicker.</p>
-<p>The socket is probed with a 300 ms timeout. If the socket is stale (nvim has been closed), the next <code>goto_declaration</code> opens a fresh nvim window.</p>
-<h2 id="surfer-build">Surfer build</h2>
-<p>The annotation features require Surfer built from the <code>rtl-buddy</code> branch:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nb">cd</span><span class="w"> </span>../surfer<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>rtl-buddy
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release
-</code></pre></div>
-<p>Point <code>cfg-surfer.path</code> at <code>../surfer/target/release/surfer</code> (relative to <code>root_config.yaml</code>) or install the binary on <code>PATH</code>.</p>
+<ul>
+<li><strong>Violations</strong> — non-waived findings parsed from <code>summary.violations</code> in the JSON report.</li>
+<li><strong>Suppressed</strong> — waiver-matched findings, parsed from <code>summary.suppressed</code>.</li>
+<li><strong>Crossings</strong> — total clock-domain crossings detected (informational, parsed from <code>summary.crossings</code>).</li>
+</ul>
+<h2 id="artefacts">Artefacts</h2>
+<p>Per-analysis outputs land under <code>&lt;suite&gt;/artefacts/&lt;analysis&gt;/</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cdc.f</code></td>
+<td>Generated filelist (unrolled, deduplicated)</td>
+</tr>
+<tr>
+<td><code>cdc.log</code></td>
+<td>Combined stdout/stderr from both analyzer invocations</td>
+</tr>
+<tr>
+<td><code>cdc.txt</code></td>
+<td>Human-readable findings report</td>
+</tr>
+<tr>
+<td><code>cdc.json</code></td>
+<td>Machine-readable JSON report (parsed for the results table)</td>
+</tr>
+</tbody>
+</table>
+<p><code>rb cdc</code> runs the analyzer twice per analysis — once with <code>--format text</code> for human consumption, once with <code>--format json</code> for the parsed verdict. If this becomes a hotspot, both views could be rendered from a single JSON probe; today the duplicate elaborate keeps the output decoupled.</p>
+<h2 id="passfail-detection">Pass/fail detection</h2>
+<p>A run is PASS when:
+1. <code>rtl-buddy-cdc</code> exits with code 0 or 1 (1 = rule violations found, the analyzer's "ran cleanly" signal), AND
+2. The JSON report parses successfully, AND
+3. <code>summary.violations</code> is <code>0</code>.</p>
+<p>A run is FAIL when violations are present, when the JSON report is missing or malformed, or when the analyzer exits with any other code (typically 2 = elaboration failure). The failure description includes the violation count and points at <code>cdc.log</code> for diagnosis.</p>
+<p>SKIP is returned when the analysis's <code>reglvl</code> is above the <code>-l</code> filter passed to <code>rb cdc-regression</code>.</p>
+<h2 id="hub-integration">Hub integration</h2>
+<p>When the <a href="../hub/">coordination hub</a> is running for the current project, every successful <code>rb cdc</code> analysis publishes its violations to the hub as a <code>diagnostics_set</code> event under the source key <code>rb-cdc:&lt;analysis_name&gt;</code>. The rtl-buddy-view SPA's on-canvas badge layer and <code>rtl-buddy-nvim</code>'s <code>rtlbuddy</code> diagnostics namespace light up immediately — no <code>rb hub send</code> copy-paste.</p>
+<p>The publish step is best-effort: missing hub, no live PID, connect failure, or a malformed JSON payload all silently no-op with a debug-level log line. The CDC analysis itself is never failed by a sidecar UI being unreachable.</p>
+<p>Re-running an analysis after a fix replaces (or clears) just that source-key slot, so a project with several analyses doesn't have one fix wiping all the others.</p>
+<h2 id="out-of-scope-today">Out of scope (today)</h2>
+<ul>
+<li><strong>rtl-buddy-cdc only.</strong> Commercial CDC tools (SpyGlass CDC, JasperGold CDC, Questa CDC) are not yet wired up — adding them follows the same pattern documented for <code>rb fpv</code>'s SymbiYosys backend.</li>
+<li><strong>Reset-domain crossing (RDC).</strong> Reset-domain analysis is a planned extension of <code>rtl-buddy-cdc</code>; once it lands there, <code>rb cdc</code> will surface its findings alongside CDC. Today RDC overlays surface in <code>rb hier --rdc-annotations</code> via a separate analyzer pass.</li>
+</ul>
 
 
 

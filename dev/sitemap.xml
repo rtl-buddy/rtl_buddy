@@ -25,6 +25,14 @@
          <lastmod>2026-05-25</lastmod>
     </url>
     <url>
+         <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/axi-profile/</loc>
+         <lastmod>2026-05-25</lastmod>
+    </url>
+    <url>
+         <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cdc/</loc>
+         <lastmod>2026-05-25</lastmod>
+    </url>
+    <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cocotb/</loc>
          <lastmod>2026-05-25</lastmod>
     </url>
@@ -34,6 +42,10 @@
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/</loc>
+         <lastmod>2026-05-25</lastmod>
+    </url>
+    <url>
+         <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hier/</loc>
          <lastmod>2026-05-25</lastmod>
     </url>
     <url>
@@ -70,6 +82,10 @@
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/</loc>
+         <lastmod>2026-05-25</lastmod>
+    </url>
+    <url>
+         <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/</loc>
          <lastmod>2026-05-25</lastmod>
     </url>
     <url>

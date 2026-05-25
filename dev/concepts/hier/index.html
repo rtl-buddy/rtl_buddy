@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How rb wave opens Surfer with live signal value annotation in your editor via the WCP protocol.">
+        <meta name="description" content="How to render module hierarchy diagrams with rtl_buddy via the rb hier command and the standalone rtl-buddy-view renderer.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/wave/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hier/">
       
       
-        <link rel="prev" href="../spec-traceability/">
+        <link rel="prev" href="../wave/">
       
       
-        <link rel="next" href="../hier/">
+        <link rel="next" href="../hub/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Waveform Viewer - RTL Buddy</title>
+        <title>Hierarchy Rendering - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#waveform-viewer-rb-wave" class="md-skip">
+        <a href="#hierarchy-rendering" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Waveform Viewer
+              Hierarchy Rendering
             
           </span>
         </div>
@@ -558,6 +558,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../wave/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -577,7 +605,7 @@
   <span class="md-ellipsis">
     
   
-    Waveform Viewer
+    Hierarchy Rendering
   
 
     
@@ -595,7 +623,7 @@
   <span class="md-ellipsis">
     
   
-    Waveform Viewer
+    Hierarchy Rendering
   
 
     
@@ -621,10 +649,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#basic-usage" class="md-nav__link">
+  <a href="#installing-rtl-buddy-view" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Basic usage
+        Installing rtl-buddy-view
       
     </span>
   </a>
@@ -632,10 +660,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#output-formats" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Output formats
       
     </span>
   </a>
@@ -643,93 +671,76 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#signal-value-annotation" class="md-nav__link">
+  <a href="#running-rb-hier" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Signal value annotation
+        Running rb hier
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Signal value annotation">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it works
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#active-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Active scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#nvim-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        nvim setup
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adding signals to Surfer from nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-signal-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-signal mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#editor-socket-reuse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Editor socket reuse
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#surfer-build" class="md-nav__link">
+  <a href="#parser-frontend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Surfer build
+        Parser frontend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cdc-and-rdc-annotations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CDC and RDC annotations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artefacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#passfail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope (today)
       
     </span>
   </a>
@@ -740,34 +751,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../hier/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Hierarchy Rendering
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1342,10 +1325,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#basic-usage" class="md-nav__link">
+  <a href="#installing-rtl-buddy-view" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Basic usage
+        Installing rtl-buddy-view
       
     </span>
   </a>
@@ -1353,10 +1336,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#configuration" class="md-nav__link">
+  <a href="#output-formats" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Configuration
+        Output formats
       
     </span>
   </a>
@@ -1364,93 +1347,76 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#signal-value-annotation" class="md-nav__link">
+  <a href="#running-rb-hier" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Signal value annotation
+        Running rb hier
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Signal value annotation">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it works
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#active-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Active scope
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#nvim-setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        nvim setup
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#adding-signals-to-surfer-from-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Adding signals to Surfer from nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#single-signal-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Single-signal mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#editor-socket-reuse" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Editor socket reuse
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#surfer-build" class="md-nav__link">
+  <a href="#parser-frontend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Surfer build
+        Parser frontend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cdc-and-rdc-annotations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CDC and RDC annotations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artefacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#passfail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope (today)
       
     </span>
   </a>
@@ -1477,83 +1443,119 @@
   
 
 
-<h1 id="waveform-viewer-rb-wave">Waveform Viewer (<code>rb wave</code>)</h1>
+<h1 id="hierarchy-rendering">Hierarchy Rendering</h1>
 <blockquote>
-<p><strong>Integration type:</strong> Integrated tool. <code>rb wave</code> is built around Surfer today; Vaporview / VS Code support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/84">issue #84</a>.</p>
-<p><strong>External binary required:</strong> Surfer, built from the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork on the <code>rtl-buddy</code> branch. Mainline Surfer works for basic FST viewing but not for WCP signal-value annotation. See <a href="#surfer-build">Surfer build</a>.</p>
-<p><strong>Editor integration:</strong> nvim for the full annotation round-trip (declaration jump + live signal values + add-from-editor). Any editor can be configured via <code>editor-cmd</code> for one-way "open at line".</p>
+<p><strong>Integration type:</strong> Pluggable — curated. <code>rb hier</code> shells out to the standalone <a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a> renderer at subprocess granularity; rtl_buddy is not coupled to its Python API.</p>
+<p><strong>External binary required:</strong> <code>rtl-buddy-view</code> — install with <code>uv tool install rtl-buddy-view</code> (or <code>pip install rtl-buddy-view</code>).</p>
+<p><strong>Optional:</strong> <code>graphviz</code> (<code>dot</code>) for SVG/PNG conversion of <code>--format dot</code>; <code>pyslang</code> for <code>--frontend slang</code>.</p>
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
-<p><code>rb wave</code> opens the <a href="https://surfer-project.org/">Surfer</a> waveform viewer for a test and connects it to your editor via the <strong>WCP</strong> (Waveform Client Protocol). When you right-click a signal in Surfer and choose <strong>Go to declaration</strong>, rtl-buddy:</p>
-<ol>
-<li>Resolves the signal to its source file and line number</li>
-<li>Opens (or reuses) your editor at that location</li>
-<li>Annotates the signal's waveform value at the current cursor position as inline virtual text</li>
-</ol>
-<h2 id="basic-usage">Basic usage</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>verif/sandbox
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w">          </span><span class="c1"># runs debug sim if no FST exists, then opens Surfer</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--resim<span class="w">  </span><span class="c1"># force re-run of debug sim</span>
+<p><code>rb hier &lt;model&gt;</code> produces a module-hierarchy view of a model defined in <code>models.yaml</code>. It writes a stripped, deduplicated filelist into <code>artefacts/hier/&lt;model&gt;/hier.f</code>, then runs <code>rtl-buddy-view --top &lt;model&gt; --filelist hier.f</code> with the requested format and forwards the renderer's stdout to the terminal so it composes with shell pipes.</p>
+<h2 id="installing-rtl-buddy-view">Installing rtl-buddy-view</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-view<span class="w">    </span><span class="c1"># recommended — isolated tool env</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># or</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>rtl-buddy-view<span class="w">     </span><span class="c1"># into the project venv</span>
 </code></pre></div>
-<p>Signal layout files are loaded automatically: if <code>basic.surfer</code> exists next to <code>tests.yaml</code>, Surfer opens with those signals pre-loaded.</p>
-<h2 id="configuration">Configuration</h2>
-<p>Add a <code>cfg-surfer</code> section to <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-surfer</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-default&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../surfer/target/release/surfer&quot;</span><span class="w">  </span><span class="c1"># or bare name on PATH</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">wcp-port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">                              </span><span class="c1"># 0 = OS assigns a free port</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nvim</span><span class="nv"> </span><span class="s">+%l</span><span class="nv"> </span><span class="s">%f&quot;</span><span class="w">               </span><span class="c1"># %f = file, %l = line</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">editor-terminal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tmux&quot;</span><span class="w">                  </span><span class="c1"># tmux | iterm2 | terminal | &quot;&quot;</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">editor-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-nvim.sock&quot;</span><span class="w">  </span><span class="c1"># enables nvim reuse</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">ctrl-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-ctrl.sock&quot;</span><span class="w">    </span><span class="c1"># enables nvim → Surfer</span>
+<p>Once installed, the binary lands on <code>PATH</code> as <code>rtl-buddy-view</code>. Override with <code>--tool /absolute/path/to/rtl-buddy-view</code> if you need a specific build.</p>
+<p>For <code>--format dot</code> rendering to SVG/PNG, install Graphviz (<code>brew install graphviz</code> / <code>apt install graphviz</code>) and pipe the output through <code>dot</code> (see <a href="#output-formats">Output formats</a> below).</p>
+<h2 id="output-formats">Output formats</h2>
+<p><code>--format</code> selects one of four renderers:</p>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>What you get</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tree</code> (default)</td>
+<td>ASCII tree, ideal for terminal inspection</td>
+</tr>
+<tr>
+<td><code>dot</code></td>
+<td>Graphviz DOT source — pipe through <code>dot -Tsvg</code> / <code>-Tpng</code> for graphics</td>
+</tr>
+<tr>
+<td><code>mermaid</code></td>
+<td>Mermaid diagram source — paste into Markdown that renders Mermaid</td>
+</tr>
+<tr>
+<td><code>json</code></td>
+<td>Structured JSON (schema_version, tool.*, design.top, nodes, edges) for programmatic consumption</td>
+</tr>
+</tbody>
+</table>
+<p>When <code>-o</code>/<code>--output</code> is not set, the renderer's stdout passes through to your terminal so <code>rb hier x --format dot | dot -Tsvg -o x.svg</code> works as a one-liner.</p>
+<h2 id="running-rb-hier">Running <code>rb hier</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># ASCII tree (default)</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># Save Mermaid source to a file</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>mermaid<span class="w"> </span>-o<span class="w"> </span>demo_top.mmd
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># DOT → SVG via Graphviz</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>demo_top.svg
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="c1"># JSON export for downstream tooling</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>json<span class="w"> </span>-o<span class="w"> </span>demo_top.hier.json
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="c1"># Point at a non-default models.yaml</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>-c<span class="w"> </span>design/demo_top/models.yaml
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="c1"># Pin a renderer build</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--tool<span class="w"> </span>/opt/rtl-buddy-view/bin/rtl-buddy-view
 </code></pre></div>
-<p>See <a href="../../reference/yaml/">YAML Formats</a> for all fields.</p>
-<h2 id="signal-value-annotation">Signal value annotation</h2>
-<h3 id="how-it-works">How it works</h3>
-<p>When a <code>goto_declaration</code> event arrives from Surfer, rtl-buddy:</p>
-<ol>
-<li>Reads the signal value at the cursor timestamp from the FST via <strong>pywellen</strong></li>
-<li>Enumerates all other signals in the same module scope using the FST hierarchy</li>
-<li>Runs a <strong>single bulk grep</strong> across the SV source files to map every signal to its declaration line (result cached for the session)</li>
-<li>Pushes all values to the editor as EOL virtual text</li>
-</ol>
-<p>Moving the Surfer time cursor fires a <code>cursor_moved</code> WCP event, which re-reads all scope signal values and updates the annotations live — no interaction required.</p>
-<p>Two signals declared on the same source line are combined into one annotation:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kt">logic</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">;</span><span class="w">    </span><span class="err">▶</span><span class="w"> </span><span class="n">a</span><span class="o">=</span><span class="mh">8&#39;h0a</span><span class="w">  </span><span class="n">b</span><span class="o">=</span><span class="mh">8&#39;h05</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kt">logic</span><span class="w"> </span><span class="n">clk</span><span class="p">;</span><span class="w">     </span><span class="err">▶</span><span class="w"> </span><span class="mb">1&#39;b0</span><span class="w"> </span><span class="p">[</span><span class="n">i_dut</span><span class="p">]</span>
+<p>The model argument matches the <code>name:</code> of an entry in <code>models.yaml</code>. The runner uses that entry's filelist verbatim — same source of truth that <code>rb test</code>, <code>rb synth</code>, and <code>rb cdc</code> consume.</p>
+<h2 id="parser-frontend">Parser frontend</h2>
+<p><code>--frontend</code> is forwarded as-is to <code>rtl-buddy-view</code>. The default frontend ships with the renderer; <code>--frontend slang</code> uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.</p>
+<h2 id="cdc-and-rdc-annotations">CDC and RDC annotations</h2>
+<p><code>rb hier</code> can overlay clock-domain and reset-domain information when the corresponding analyzer pass has emitted a JSON map:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Clock-domain overlay — colors each module by its primary clock</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rtl-buddy-cdc<span class="w"> </span>--emit-domain-map<span class="w"> </span>-o<span class="w"> </span>clocks.json<span class="w"> </span>...
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="c1"># With a side legend mapping color → clock name (dot format only)</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span>--clock-legend<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="c1"># Reset-domain overlay — colors each module by its primary reset</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>rtl-buddy-cdc<span class="w"> </span>--emit-reset-domain-map<span class="w"> </span>-o<span class="w"> </span>resets.json<span class="w"> </span>...
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--rdc-annotations<span class="w"> </span>resets.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
 </code></pre></div>
-<h3 id="active-scope">Active scope</h3>
-<p>Clicking any signal in Surfer's signal list sets the <strong>active scope</strong> — the module instance used to resolve signal names. rtl-buddy updates the scope cache automatically via the <code>scope_changed</code> WCP event, so annotation context is always current without requiring a "Go to declaration".</p>
-<h3 id="nvim-setup">nvim setup</h3>
-<p>The annotation feature requires a small nvim plugin. Install it once:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>wave-install-nvim
-</code></pre></div>
-<p>This copies <code>rtl_buddy_wave.lua</code> to <code>~/.local/share/nvim/site/plugin/</code>, which nvim auto-sources at startup. No <code>init.lua</code> changes are needed. Reinstall after rtl-buddy upgrades with <code>--force</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>wave-install-nvim<span class="w"> </span>--force
-</code></pre></div>
-<p>If the plugin is missing when <code>rb wave</code> starts with <code>editor-sock</code> configured, a warning is shown:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING  nvim plugin not installed — run &quot;rb wave-install-nvim&quot; to enable wave annotations
-</code></pre></div>
-<h3 id="adding-signals-to-surfer-from-nvim">Adding signals to Surfer from nvim</h3>
-<p>With <code>ctrl-sock</code> configured, place the cursor on any signal name in nvim and press <strong><code>&lt;Space&gt;wa</code></strong> (<code>&lt;leader&gt;wa</code>) to add it to Surfer's waveform view.</p>
-<p>The signal is resolved using the active scope — click a signal in Surfer first to establish the instance context (e.g. clicking <code>tb_top.i_dut.clk</code> sets scope <code>tb_top.i_dut</code>), then add signals freely from nvim.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>nvim: cursor on &quot;rst&quot;  →  &lt;Space&gt;wa  →  Surfer adds tb_top.i_dut.rst to waveform
-</code></pre></div>
-<p>The keymap requires <code>ctrl-sock</code> to be set in <code>cfg-surfer</code> and <code>rb wave</code> to be running. A warning is shown if the socket is unreachable.</p>
-<h3 id="single-signal-mode">Single-signal mode</h3>
-<p>To annotate only the signal you right-clicked (not the whole scope):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave<span class="w"> </span>basic<span class="w"> </span>--focused-signal
-</code></pre></div>
-<h3 id="editor-socket-reuse">Editor socket reuse</h3>
-<p>When <code>editor-sock</code> is set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use. Subsequent <code>goto_declaration</code> and <code>cursor_moved</code> events reuse the running instance via <code>--remote-expr nvim_exec2(...)</code> — no new windows, no command-line flicker.</p>
-<p>The socket is probed with a 300 ms timeout. If the socket is stale (nvim has been closed), the next <code>goto_declaration</code> opens a fresh nvim window.</p>
-<h2 id="surfer-build">Surfer build</h2>
-<p>The annotation features require Surfer built from the <code>rtl-buddy</code> branch:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nb">cd</span><span class="w"> </span>../surfer<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>rtl-buddy
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release
-</code></pre></div>
-<p>Point <code>cfg-surfer.path</code> at <code>../surfer/target/release/surfer</code> (relative to <code>root_config.yaml</code>) or install the binary on <code>PATH</code>.</p>
+<p>Both annotation files are JSON keyed by hierarchical instance path. <code>rb hier</code> validates that the files exist before invoking the renderer; the renderer's JSON contract (<code>schema_version</code>, <code>tool.*</code>, <code>design.top</code>, <code>nodes</code>, <code>edges</code>) is the integration boundary.</p>
+<p><code>--clock-legend</code> is honored only for <code>--format dot</code>; the tree and Mermaid renderers ignore it.</p>
+<h2 id="artefacts">Artefacts</h2>
+<p>Per-model outputs land under the current directory's <code>artefacts/hier/&lt;model&gt;/</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hier.f</code></td>
+<td>Stripped, deduplicated filelist passed to the renderer</td>
+</tr>
+<tr>
+<td><code>hier.log</code></td>
+<td>Renderer stderr (its stdout goes to your terminal when <code>-o</code> is not set)</td>
+</tr>
+</tbody>
+</table>
+<p>When <code>-o &lt;path&gt;</code> is supplied the renderer writes directly to that path; otherwise its stdout is the diagram source itself.</p>
+<h2 id="passfail-detection">Pass/fail detection</h2>
+<p><code>rb hier</code> exits with the renderer's exit code. A non-zero exit means the renderer reported a parse, elaboration, or output error — check <code>hier.log</code> for the captured stderr.</p>
+<p>The <code>Failed to locate rtl-buddy-view</code> error before the renderer runs is the most common failure mode and indicates that <code>rtl-buddy-view</code> is not installed in the active venv or on <code>PATH</code>. Run <code>rb tool-check --explain rtl-buddy-view</code> for the install hint.</p>
+<h2 id="hub-integration">Hub integration</h2>
+<p>The <a href="../hub/">coordination hub</a> consumes <code>rb hier</code>'s JSON output (<code>--format json</code>) to drive the rtl-buddy-view SPA's interactive hierarchy view. Annotation files (<code>--cdc-annotations</code>, <code>--rdc-annotations</code>, <code>--overlay axi-perf=...</code>) are surfaced as overlays in the SPA when the hub is running.</p>
+<p><code>rb hub start --model &lt;name&gt;</code> discovers the model's <code>models.yaml</code>, invokes <code>rb hier</code> under the hood, and serves the result alongside live diagnostics and AXI-perf overlays — <code>rb hier</code> is the underlying renderer for both the static CLI use case and the live SPA flow.</p>
+<h2 id="out-of-scope-today">Out of scope (today)</h2>
+<ul>
+<li><strong>rtl-buddy-view only.</strong> No alternative hierarchy renderers are wired up. The integration is intentionally subprocess-granularity so a viewer release can be picked up via <code>uv sync</code> without code changes here.</li>
+<li><strong>In-place SVG/PNG.</strong> <code>rb hier</code> does not directly emit SVG or PNG — it emits DOT and lets you pipe through Graphviz. This keeps the rtl_buddy ↔ renderer boundary at "text in, text out" and avoids a Graphviz dependency for the common terminal-inspection flow.</li>
+</ul>
 
 
 

@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to run OpenROAD place-and-route with rtl_buddy via the rb pnr command, pnr.yaml, and cfg-pnr-platforms.">
+        <meta name="description" content="How to profile AXI interconnect performance with rtl_buddy via the rb axi-profile subcommand group, models.yaml fields, and the standalone rtl-buddy-axi-profiler.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/axi-profile/">
       
       
-        <link rel="prev" href="../synthesis/">
+        <link rel="prev" href="../fpv/">
       
       
-        <link rel="next" href="../power/">
+        <link rel="next" href="../tool-check/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Place-and-Route - RTL Buddy</title>
+        <title>AXI Profiling - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#place-and-route" class="md-skip">
+        <a href="#axi-interconnect-profiling" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Place-and-Route
+              AXI Profiling
             
           </span>
         </div>
@@ -670,37 +670,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Place-and-Route
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../pnr/" class="md-nav__link">
         
   
   
@@ -716,198 +689,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#supported-backend" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Supported backend
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#installing-openroad" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Installing OpenROAD
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Installing OpenROAD">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#version-expectations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Version expectations
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#installing-klayout-optional" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Installing KLayout (optional)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pr-config-pnryaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        P&amp;R config: pnr.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="P&amp;R config: pnr.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#where-inputs-come-from" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where inputs come from
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#root-config-cfg-pdks-and-cfg-pnr-platforms" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Root config: cfg-pdks and cfg-pnr-platforms
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running-pr" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running P&amp;R
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Running P&amp;R">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#-gds-and-png" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        --gds and --png
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#results-table" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Results table
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#artefacts" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Artefacts
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#passfail-detection" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pass/fail detection
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#out-of-scope-today" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Out of scope (today)
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1001,10 +782,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../axi-profile/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AXI Profiling
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1020,6 +828,136 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#installing-rtl-buddy-axi-profiler" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing rtl-buddy-axi-profiler
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#modelsyaml-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        models.yaml fields
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#subcommand-discover" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subcommand: discover
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#subcommand-gen-monitor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subcommand: gen-monitor
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#subcommand-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subcommand: run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#subcommand-notebook" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subcommand: notebook
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artefacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#passfail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope (today)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1398,10 +1336,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#supported-backend" class="md-nav__link">
+  <a href="#installing-rtl-buddy-axi-profiler" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Supported backend
+        Installing rtl-buddy-axi-profiler
       
     </span>
   </a>
@@ -1409,38 +1347,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#installing-openroad" class="md-nav__link">
+  <a href="#modelsyaml-fields" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Installing OpenROAD
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Installing OpenROAD">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#version-expectations" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Version expectations
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#installing-klayout-optional" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Installing KLayout (optional)
+        models.yaml fields
       
     </span>
   </a>
@@ -1448,49 +1358,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pr-config-pnryaml" class="md-nav__link">
+  <a href="#subcommand-discover" class="md-nav__link">
     <span class="md-ellipsis">
       
-        P&amp;R config: pnr.yaml
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="P&amp;R config: pnr.yaml">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Fields
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#where-inputs-come-from" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where inputs come from
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#root-config-cfg-pdks-and-cfg-pnr-platforms" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Root config: cfg-pdks and cfg-pnr-platforms
+        Subcommand: discover
       
     </span>
   </a>
@@ -1498,38 +1369,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#running-pr" class="md-nav__link">
+  <a href="#subcommand-gen-monitor" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Running P&amp;R
+        Subcommand: gen-monitor
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Running P&amp;R">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#-gds-and-png" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        --gds and --png
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#results-table" class="md-nav__link">
+  <a href="#subcommand-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Results table
+        Subcommand: run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#subcommand-notebook" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subcommand: notebook
       
     </span>
   </a>
@@ -1541,6 +1406,17 @@
     <span class="md-ellipsis">
       
         Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
       
     </span>
   </a>
@@ -1589,125 +1465,35 @@
   
 
 
-<h1 id="place-and-route">Place-and-Route</h1>
+<h1 id="axi-interconnect-profiling">AXI Interconnect Profiling</h1>
 <blockquote>
-<p><strong>Integration type:</strong> Integrated tool. <code>rb pnr</code> is built around OpenROAD today.</p>
-<p><strong>External binary required:</strong> <code>openroad</code> ≥ <code>25Q1</code> — see <a href="#installing-openroad">Installing OpenROAD</a>.</p>
-<p><strong>Optional:</strong> <code>klayout</code> for <code>--gds</code> / <code>--png</code> streamout and rendering — see <a href="#installing-klayout-optional">Installing KLayout</a>.</p>
+<p><strong>Integration type:</strong> Pluggable — curated. <code>rb axi-profile</code> drives the standalone <a href="https://github.com/rtl-buddy/rtl-buddy-axi-profiler">rtl-buddy-axi-profiler</a> at subprocess granularity; rtl_buddy is not coupled to its Python API.</p>
+<p><strong>External binary required:</strong> <code>axi-profiler</code> — install with <code>uv tool install rtl-buddy-axi-profiler</code>.</p>
+<p><strong>Optional extras:</strong> <code>[parquet]</code> (pyarrow) for <code>--emit-txns-parquet</code>; <code>[notebook]</code> (marimo + altair + polars) for <code>rb axi-profile notebook</code>.</p>
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
-<p><code>rb pnr</code> drives OpenROAD through a templated Tcl flow that consumes the tech-mapped netlist from an upstream <code>rb synth</code> run. It produces routed DEF, a post-route netlist + SDC, a timing report, and a DRC report under <code>pnr/&lt;run&gt;/artefacts/</code>.</p>
-<p>The flow is intentionally compact and config-driven — block-level knobs live in <code>pnr.yaml</code>, technology-level knobs live in <code>cfg-pdks</code> + <code>cfg-pnr-platforms</code> in <code>root_config.yaml</code>.</p>
-<h2 id="supported-backend">Supported backend</h2>
-<p>Today only <code>openroad</code> is wired up. The <code>tool:</code> field in <code>pnr.yaml</code> selects it; the runner skips any other value with a clear message.</p>
-<h2 id="installing-openroad">Installing OpenROAD</h2>
-<p><code>openroad</code> must be on <code>PATH</code>, or its absolute path must be configured
-via a <code>cfg-pnr-tools</code> entry in <code>root_config.yaml</code> (see
-<a href="../../reference/yaml/#root_configyaml">yaml.md</a>). Build from source (no
-official macOS binaries):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>ln<span class="w"> </span>-s<span class="w"> </span>/path/to/OpenROAD/build/bin/openroad<span class="w"> </span>/usr/local/bin/openroad
+<p><code>rb axi-profile</code> is a workflow for measuring AXI interconnect performance directly from a simulation trace. The four subcommands form a pipeline:</p>
+<ol>
+<li><strong><code>discover</code></strong> — parse RTL to produce an <code>axi-bundles.yaml</code> manifest of the model's AXI interfaces.</li>
+<li><strong><code>gen-monitor</code></strong> — emit a bind-style SystemVerilog monitor whose <code>axi-stream</code> taps are added to the testbench's filelist.</li>
+<li><strong><code>run</code></strong> — ingest a test's FST trace and emit per-test <code>axi-perf.json</code> (and optionally a per-transaction Parquet).</li>
+<li><strong><code>notebook</code></strong> — launch the packaged marimo notebook against the per-transaction Parquet for interactive deep-dive.</li>
+</ol>
+<p>The four wrappers share the same subprocess-granularity integration: pass <code>--tool /path/to/axi-profiler</code> to pin a specific build, otherwise the binary on <code>PATH</code> is used.</p>
+<h2 id="installing-rtl-buddy-axi-profiler">Installing rtl-buddy-axi-profiler</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-axi-profiler<span class="w">                    </span><span class="c1"># base — discover, gen-monitor, run</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">&#39;rtl-buddy-axi-profiler[parquet]&#39;</span><span class="w">          </span><span class="c1"># adds pyarrow for --emit-txns-parquet</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">&#39;rtl-buddy-axi-profiler[notebook]&#39;</span><span class="w">         </span><span class="c1"># adds marimo + altair + polars for rb axi-profile notebook</span>
 </code></pre></div>
-<p>See <code>tools/openroad/BUILD_OSX.md</code> in the project template for the macOS recipe.</p>
-<h3 id="version-expectations">Version expectations</h3>
-<p><code>rb pnr</code> probes <code>openroad -version</code> and compares it against an internal
-<code>MIN_OPENROAD_VERSION</code> (currently <code>25Q1</code>). Older builds may still work for
-the basic flow but are unvalidated — a <code>pnr.openroad_version_below_min</code>
-warning is emitted and the run continues. The version is also logged at
-INFO as <code>pnr.openroad_version</code> so it shows up in <code>rtl_buddy.log</code>.</p>
-<h2 id="installing-klayout-optional">Installing KLayout (optional)</h2>
-<p>KLayout is only required when streaming out GDS with <code>--gds</code> or rendering
-PNGs with <code>--png</code>. The basic P&amp;R flow works without it.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>brew<span class="w"> </span>install<span class="w"> </span>--cask<span class="w"> </span>klayout<span class="w">            </span><span class="c1"># macOS</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># or download from https://klayout.de</span>
-</code></pre></div>
-<p><code>rb pnr</code> resolves <code>klayout</code> from <code>PATH</code>. If KLayout is not present,
-<code>--gds</code>/<code>--png</code> logs <code>pnr.no_klayout</code> and skips streamout/render
-without failing the run.</p>
-<h2 id="pr-config-pnryaml">P&amp;R config: <code>pnr.yaml</code></h2>
-<p><code>pnr.yaml</code> declares one or more P&amp;R runs. Each entry references an upstream <code>rb synth</code> entry by path + name, an SDC, and a <code>cfg-pnr-platforms</code> name from <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pnr_config</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nt">runs</span><span class="p">:</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_pnr_nangate45&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;OpenROAD</span><span class="nv"> </span><span class="s">P&amp;R</span><span class="nv"> </span><span class="s">on</span><span class="nv"> </span><span class="s">Nangate45</span><span class="nv"> </span><span class="s">typ</span><span class="nv"> </span><span class="s">corner&quot;</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">synth</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_synth_nangate45&quot;</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">synth-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../synth/demo/synth.yaml&quot;</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../synth/demo/constraints.sdc&quot;</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">platform</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nangate45_typ&quot;</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">floorplan</span><span class="p">:</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">      </span><span class="nt">utilization</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.55</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">      </span><span class="nt">aspect</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">      </span><span class="nt">core-margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2.0</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
-</code></pre></div>
-<h3 id="fields">Fields</h3>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>Run identifier used on the command line and in <code>artefacts/&lt;name&gt;/</code></td>
-</tr>
-<tr>
-<td><code>desc</code></td>
-<td>Human-readable description</td>
-</tr>
-<tr>
-<td><code>tool</code></td>
-<td>Backend tool name — only <code>"openroad"</code> is supported today</td>
-</tr>
-<tr>
-<td><code>synth</code></td>
-<td>Name of the upstream <code>rb synth</code> entry to consume</td>
-</tr>
-<tr>
-<td><code>synth-path</code></td>
-<td>Path to the <code>synth.yaml</code> containing <code>synth</code>, resolved relative to <code>pnr.yaml</code></td>
-</tr>
-<tr>
-<td><code>constraints</code></td>
-<td>SDC path (required), resolved relative to <code>pnr.yaml</code></td>
-</tr>
-<tr>
-<td><code>platform</code></td>
-<td><code>cfg-pnr-platforms</code> entry name</td>
-</tr>
-<tr>
-<td><code>floorplan.utilization</code></td>
-<td>Core utilization (0–1); 55% is a reasonable default</td>
-</tr>
-<tr>
-<td><code>floorplan.aspect</code></td>
-<td>Die aspect ratio; 1.0 = square</td>
-</tr>
-<tr>
-<td><code>floorplan.core-margin</code></td>
-<td>Margin in microns between core area and die edge</td>
-</tr>
-<tr>
-<td><code>reglvl</code></td>
-<td>Regression level for filtering (same semantics as <code>rb synth</code>)</td>
-</tr>
-</tbody>
-</table>
-<h3 id="where-inputs-come-from">Where inputs come from</h3>
-<p>The runner reads the upstream <code>synth.yaml</code> to find the tech-mapped netlist at <code>&lt;synth_dir&gt;/artefacts/&lt;synth_name&gt;/synth_netlist.v</code>. The top module is taken from the synth entry's <code>model:</code> field. The SDC and the PDK Liberty/LEF come from <code>constraints:</code> and the selected <code>cfg-pnr-platforms</code> entry respectively — no path duplication.</p>
-<h2 id="root-config-cfg-pdks-and-cfg-pnr-platforms">Root config: <code>cfg-pdks</code> and <code>cfg-pnr-platforms</code></h2>
-<p>PDK assets live in <code>cfg-pdks</code> (per-process, corners as sub-fields — see the <a href="../synthesis/#pdk-and-synth-platform-configuration">synthesis page</a>). <code>cfg-pnr-platforms</code> is the P&amp;R-side selector:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-pnr-platforms</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nangate45_typ&quot;</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">pdk</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nangate45&quot;</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">corner</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;typ&quot;</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">cts-buffer</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;BUF_X4&quot;</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">routing-layers</span><span class="p">:</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">      </span><span class="nt">signal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;metal2-metal8&quot;</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">      </span><span class="nt">clock</span><span class="p">:</span><span class="w">  </span><span class="s">&quot;metal4-metal8&quot;</span>
+<p>The base install gives you <code>discover</code>, <code>gen-monitor</code>, and <code>run</code> without parquet. The <code>[parquet]</code> extra unlocks <code>--emit-txns-parquet</code>, which is the prerequisite for <code>rb axi-profile notebook</code>. The <code>[notebook]</code> extra additionally brings in marimo so the notebook can be launched.</p>
+<h2 id="modelsyaml-fields"><code>models.yaml</code> fields</h2>
+<p>Two optional fields on each <code>models.yaml</code> entry drive <code>rb axi-profile</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">models</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;soc_top&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;-F</span><span class="nv"> </span><span class="s">soc_top.f&quot;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">axi_bundles</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;axi-bundles.yaml&quot;</span><span class="w">               </span><span class="c1"># manifest path (input to run / gen-monitor)</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">axi_monitor_out</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../verif/soc_top/gen/axi_perf_mon.sv&quot;</span><span class="w">  </span><span class="c1"># where gen-monitor writes</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1718,143 +1504,138 @@ without failing the run.</p>
 </thead>
 <tbody>
 <tr>
-<td><code>name</code></td>
-<td>Referenced by <code>platform:</code> in <code>pnr.yaml</code></td>
+<td><code>axi_bundles</code></td>
+<td>Relative path from <code>models.yaml</code> to the model's checked-in <code>axi-bundles.yaml</code> manifest. Consumed by <code>rb axi-profile run</code> and <code>rb axi-profile gen-monitor</code>; produced by <code>rb axi-profile discover</code>.</td>
 </tr>
 <tr>
-<td><code>pdk</code></td>
-<td><code>cfg-pdks</code> entry name</td>
-</tr>
-<tr>
-<td><code>corner</code></td>
-<td>Corner from the PDK used for STA; defaults to the first declared corner</td>
-</tr>
-<tr>
-<td><code>cts-buffer</code></td>
-<td>Standard cell name passed to <code>clock_tree_synthesis -root_buf</code> / <code>-buf_list</code></td>
-</tr>
-<tr>
-<td><code>routing-layers.signal</code></td>
-<td>Layer range for signal routing (e.g. <code>metal2-metal8</code>)</td>
-</tr>
-<tr>
-<td><code>routing-layers.clock</code></td>
-<td>Layer range for clock routing (typically higher metals)</td>
+<td><code>axi_monitor_out</code></td>
+<td>Relative path from <code>models.yaml</code> to where <code>rb axi-profile gen-monitor</code> writes the generated SV monitor. Typically points into the verif testbench source tree so the file is picked up by the tb's filelist (e.g. <code>../verif/soc_top/gen/axi_perf_mon.sv</code>).</td>
 </tr>
 </tbody>
 </table>
-<h2 id="running-pr">Running P&amp;R</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># All runs in the default ./pnr.yaml</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>pnr
+<p>Both fields are optional from rtl_buddy's perspective; missing them surfaces a clear error from the subcommand that needs them, pointing at the prerequisite command.</p>
+<h2 id="subcommand-discover">Subcommand: <code>discover</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Generate axi-bundles.yaml at the path declared in models.yaml</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>discover<span class="w"> </span>soc_top
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Custom output path</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>discover<span class="w"> </span>soc_top<span class="w"> </span>-o<span class="w"> </span>/tmp/axi-bundles.yaml
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Different models.yaml</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>discover<span class="w"> </span>soc_top<span class="w"> </span>-c<span class="w"> </span>design/soc_top/models.yaml
+</code></pre></div>
+<p>The runner writes a stripped, deduplicated filelist for the model, then invokes <code>axi-profiler discover --top &lt;model&gt; --filelist &lt;fl&gt; --output &lt;path&gt;</code>. When <code>-o</code> is omitted, the output goes to the model's <code>axi_bundles:</code> path if set, otherwise to <code>artefacts/axi/&lt;model&gt;/axi-bundles.yaml</code>.</p>
+<p>The generated <code>axi-bundles.yaml</code> is a checked-in manifest — re-running <code>discover</code> after RTL changes lets you diff the manifest in code review. The <code>--amend</code> option is reserved for a future user-edit merge workflow; passing it today emits a warning.</p>
+<h2 id="subcommand-gen-monitor">Subcommand: <code>gen-monitor</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Emit SV monitor at model.axi_monitor_out</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>gen-monitor<span class="w"> </span>soc_top
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Custom output path</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>gen-monitor<span class="w"> </span>soc_top<span class="w"> </span>-o<span class="w"> </span>/tmp/axi_perf_mon.sv
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># Match the testbench&#39;s `timeprecision`</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>gen-monitor<span class="w"> </span>soc_top<span class="w"> </span>--time-precision<span class="w"> </span>1ps
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Cap per-bundle FIFO depth (drained only at $finish)</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>gen-monitor<span class="w"> </span>soc_top<span class="w"> </span>--buffer-cap<span class="w"> </span><span class="m">16384</span>
+</code></pre></div>
+<p>The runner reads the manifest from <code>model.axi_bundles</code> and invokes <code>axi-profiler gen-monitor &lt;manifest&gt; --output &lt;path&gt;</code>. The generated <code>.sv</code> file uses SystemVerilog <code>bind</code> semantics so the monitor instances live alongside the DUT without modifying its source.</p>
+<p>You add the generated SV to the testbench's filelist once. If <code>axi_monitor_out:</code> points at a path inside the verif tree (e.g. <code>../verif/soc_top/gen/axi_perf_mon.sv</code>), that's a one-time step — subsequent <code>gen-monitor</code> runs just rewrite the file in place.</p>
+<p><code>--time-precision</code> must match the IEEE 1800 <code>timeprecision</code> of the wrapping testbench, otherwise the monitor's timestamp arithmetic will be off by a power of ten. <code>--buffer-cap</code> bounds memory growth on extremely long traces — the buffer is drained to disk only at <code>$finish</code>.</p>
+<h2 id="subcommand-run">Subcommand: <code>run</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Ingest the test&#39;s FST and emit axi-perf.json</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># A single run from a specific config</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Also produce the per-txn parquet that the notebook reads</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test<span class="w"> </span>--emit-txns-parquet
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Reglvl-gated runs (1000 by default for tech-mapped flows)</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># Explicit parquet path (implies --emit-txns-parquet)</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test<span class="w"> </span>--emit-txns-parquet-path<span class="w"> </span>/tmp/txns.parquet
 <a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># List runs without executing</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>rb<span class="w"> </span>pnr<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>--list
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># Custom output path for axi-perf.json</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test<span class="w"> </span>-o<span class="w"> </span>/tmp/axi-perf.json
 <a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># Stream out a routed GDS via KLayout after the run</span>
-<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>--gds
-<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>
-<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="c1"># Render a PNG of the GDS (implies --gds)</span>
-<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>rb<span class="w"> </span>pnr<span class="w"> </span>demo_pnr_nangate45<span class="w"> </span>-c<span class="w"> </span>pnr/demo/pnr.yaml<span class="w"> </span>--png
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># Override the FST top scope (default = the test&#39;s tb name)</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test<span class="w"> </span>--tb-prefix<span class="w"> </span>my_custom_wrapper
 </code></pre></div>
-<h3 id="-gds-and-png"><code>--gds</code> and <code>--png</code></h3>
-<p>When <code>--gds</code> is requested, <code>rb pnr</code> invokes KLayout headlessly after a
-successful OpenROAD run, merging the routed DEF with the PDK's standard
-cell GDS to produce <code>artefacts/&lt;run&gt;/&lt;design&gt;.gds</code>. <code>--png</code> additionally
-renders a 2048×2048 PNG via the bundled <code>gds2png.py</code> helper. Both helpers
-ship inside the wheel under <code>rtl_buddy/pnr/klayout/</code> and are copied into
-the artefact dir at run time. KLayout failures emit <code>pnr.gds_failed</code> /
-<code>pnr.png_failed</code> warnings but do not fail the P&amp;R run — timing/DRC
-metrics remain authoritative.</p>
-<h2 id="results-table">Results table</h2>
-<p>A summary table prints after each run:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>                              P&amp;R Results Summary
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>┏━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┓
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>┃ P&amp;R Run  ┃ Result ┃ Desc     ┃ Cells ┃ Area    ┃ WNS Setup┃ WNS Hold ┃ DRCs ┃
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>┡━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━┩
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>│ demo_…   │ PASS   │ P&amp;R …    │ 1392  │ 3213 µm²│ +4.350 ns│ +0.080 ns│ 0    │
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>└──────────┴────────┴──────────┴───────┴─────────┴──────────┴──────────┴──────┘
-</code></pre></div>
-<ul>
-<li><strong>Cells</strong> — <code>Number of instances</code> from OpenROAD's floorplan log.</li>
-<li><strong>Area</strong> — <code>Design area … um^2</code> from <code>report_design_area</code>.</li>
-<li><strong>WNS Setup / WNS Hold</strong> — <code>report_worst_slack -max</code> / <code>-min</code>.</li>
-<li><strong>DRCs</strong> — non-empty line count of <code>route.drc.rpt</code>. Zero == clean route.</li>
-</ul>
-<h2 id="artefacts">Artefacts</h2>
-<p>Per-run outputs land under <code>pnr/&lt;run&gt;/artefacts/</code>:</p>
+<p>The runner resolves everything from <code>tests.yaml</code> and the standard artefact layout:</p>
 <table>
 <thead>
 <tr>
-<th>File</th>
-<th>Contents</th>
+<th>Input</th>
+<th>Where it comes from</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>pnr.log</code></td>
-<td>Full OpenROAD log</td>
+<td>Model</td>
+<td><code>tests.yaml</code> → <code>model:</code></td>
 </tr>
 <tr>
-<td><code>pnr.tcl</code></td>
-<td>Templated Tcl handed to OpenROAD</td>
+<td>Manifest</td>
+<td><code>model.axi_bundles</code> in <code>models.yaml</code> (must exist — run <code>discover</code> first)</td>
 </tr>
 <tr>
-<td><code>&lt;design&gt;.def</code></td>
-<td>Routed DEF</td>
+<td>FST trace</td>
+<td><code>&lt;suite_dir&gt;/artefacts/&lt;test&gt;/dump.fst</code> (same convention as <code>rb wave</code>)</td>
 </tr>
 <tr>
-<td><code>&lt;design&gt;.routed.v</code></td>
-<td>Post-route gate-level netlist</td>
-</tr>
-<tr>
-<td><code>&lt;design&gt;.routed.sdc</code></td>
-<td>Post-route SDC</td>
-</tr>
-<tr>
-<td><code>timing.rpt</code></td>
-<td>Worst-path timing report (full clock expanded)</td>
-</tr>
-<tr>
-<td><code>route.drc.rpt</code></td>
-<td>DRC violations (empty file = clean)</td>
-</tr>
-<tr>
-<td><code>route.maze.log</code></td>
-<td>Detail-route maze log</td>
-</tr>
-<tr>
-<td><code>&lt;design&gt;.gds</code></td>
-<td>Routed GDS — only when <code>--gds</code>/<code>--png</code> is set</td>
-</tr>
-<tr>
-<td><code>&lt;design&gt;.png</code></td>
-<td>Layout render — only when <code>--png</code> is set</td>
-</tr>
-<tr>
-<td><code>klayout.def2stream.log</code></td>
-<td>KLayout output for the DEF→GDS step (when used)</td>
-</tr>
-<tr>
-<td><code>klayout.gds2png.log</code></td>
-<td>KLayout output for the GDS→PNG render (when used)</td>
+<td>Top scope prefix</td>
+<td>The test's <code>testbenches:</code> entry name in <code>tests.yaml</code></td>
 </tr>
 </tbody>
 </table>
+<p>You only type <code>rb axi-profile run &lt;test&gt;</code> — everything else auto-resolves. The <code>--tb-prefix</code> override exists for setups where the Verilator wrapper renames the testbench scope; pass an empty string to disable prefix matching entirely.</p>
+<p>Pass <code>--emit-txns-parquet</code> to also write per-transaction rows to <code>artefacts/axi/&lt;test&gt;/axi-txns.parquet</code> — that's the canonical location <code>rb axi-profile notebook</code> reads. Requires the <code>axi-profiler</code> <code>[parquet]</code> extra (pyarrow).</p>
+<h2 id="subcommand-notebook">Subcommand: <code>notebook</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Foreground (default) — opens marimo in your browser</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>notebook<span class="w"> </span>my_test
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Pin the marimo edit-server port</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>notebook<span class="w"> </span>my_test<span class="w"> </span>--port<span class="w"> </span><span class="m">2718</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># Hub-initiated (SPA opens the URL; marimo runs headless without a token)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>notebook<span class="w"> </span>my_test<span class="w"> </span>--headless
+</code></pre></div>
+<p>The runner resolves three things up-front:</p>
+<ol>
+<li>The per-test parquet at <code>artefacts/axi/&lt;test&gt;/axi-txns.parquet</code> — missing → clear error pointing at <code>rb axi-profile run &lt;test&gt; --emit-txns-parquet</code>.</li>
+<li>The notebook template via <code>importlib.resources.files('rtl_buddy_axi_profiler.notebook') / 'template.py'</code>.</li>
+<li>The <code>marimo</code> binary on <code>PATH</code> — missing → install hint for <code>rtl-buddy-axi-profiler[notebook]</code>.</li>
+</ol>
+<p>It then spawns <code>marimo edit &lt;template&gt;</code> with <code>$AXI_TXNS_PARQUET</code> exported so the template's first cell loads the parquet. <code>--headless</code> adds <code>--no-token</code> so the SPA can navigate to the URL without threading a per-session token through the hub→browser handoff — loopback-only, so the security trade is fine.</p>
+<p><code>--daemon</code> is accepted but currently falls back to foreground; background detach is a follow-up (same pattern as <code>rb hub start</code>).</p>
+<h2 id="artefacts">Artefacts</h2>
+<p>Per-model and per-test outputs land under <code>artefacts/axi/</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>artefacts/axi/
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>├── &lt;model&gt;/
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>│   ├── axi.f                                    # filelist used by discover / gen-monitor
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>│   ├── axi-bundles.yaml                         # only when -o defaults here
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│   ├── axi-profile-discover.log                 # stderr from `axi-profiler discover`
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>│   └── axi-profile-gen-monitor.log              # stderr from `axi-profiler gen-monitor`
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>└── &lt;test&gt;/
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    ├── axi.f                                    # filelist used by run
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    ├── axi-perf.json                            # aggregate per-bundle throughput / latency
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    ├── axi-txns.parquet                         # per-transaction rows (only with --emit-txns-parquet)
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    ├── axi-profile-run.log                      # stderr from `axi-profiler run`
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    └── axi-profile-notebook.log                 # stderr from marimo
+</code></pre></div>
+<p><code>axi-perf.json</code> is the artefact picked up by <code>rb hier --overlay axi-perf=...</code> and by the hub's view-builder when <code>--axi-perf-from</code> is wired up — see <a href="../hub/">Hub</a> for the SPA overlay flow.</p>
+<h2 id="hub-integration">Hub integration</h2>
+<p>When the <a href="../hub/">coordination hub</a> is running, two paths surface AXI-perf data in the rtl-buddy-view SPA:</p>
+<ul>
+<li><strong>Static overlay</strong>: <code>rb hub start --axi-perf-from &lt;test&gt;</code> threads the test's <code>axi-perf.json</code> into the SPA's view builder, decorating each AXI bundle node with throughput badges.</li>
+<li><strong>Notebook launch</strong>: the SPA's "Open in marimo" button calls <code>/api/axi-profile/notebook?test=&lt;name&gt;</code>, which invokes <code>rb axi-profile notebook &lt;test&gt; --headless</code> and proxies the marimo URL back to the SPA. The user gets the full interactive notebook without leaving the hub UI.</li>
+</ul>
+<p>Both flows reuse the same per-test artefact layout, so the static and interactive views agree on what data they're showing.</p>
 <h2 id="passfail-detection">Pass/fail detection</h2>
-<p>A run is PASS when:
-1. <code>openroad</code> exits with code 0.
-2. The log has no <code>[ERROR ...]</code> lines.</p>
-<p>Otherwise FAIL is returned with the exit code or error count in the description. SKIP is returned when the run's <code>reglvl</code> is above the <code>-l</code> filter or when <code>tool:</code> is not <code>openroad</code>.</p>
+<p>Each <code>rb axi-profile</code> subcommand exits with the underlying <code>axi-profiler</code> exit code. A non-zero exit means the profiler reported an elaboration, ingest, or write error — check the relevant <code>.log</code> file under <code>artefacts/axi/</code>.</p>
+<p>Missing prerequisites (no <code>axi_bundles:</code> in <code>models.yaml</code>, no FST at the expected path, no <code>marimo</code> for <code>notebook</code>) surface as a clear <code>FatalRtlBuddyError</code> <em>before</em> invoking <code>axi-profiler</code>, so the error is anchored at the prerequisite step rather than buried in profiler output.</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
-<li>Multi-corner signoff.</li>
-<li>Tape-out-grade PPA tuning. The defaults are calibrated for teaching demos and quick PPA sanity checks.</li>
+<li><strong>Non-AXI protocols.</strong> AXI4 / AXI4-Lite / AXI4-Stream are supported by <code>rtl-buddy-axi-profiler</code>'s bundle discovery; AHB, APB, TileLink, and custom protocols are not. The pluggable wrapper boundary makes adding sibling profilers straightforward, but no other profilers are wired up yet.</li>
+<li><strong>Background-detached <code>notebook</code>.</strong> <code>--daemon</code> is accepted for forward compatibility but runs in foreground today.</li>
+<li><strong>Manifest user-edit merging.</strong> <code>rb axi-profile discover --amend &lt;prev&gt;</code> is reserved for merging user edits across re-runs; today the manifest is rewritten in full and you diff in git.</li>
 </ul>
 
 
