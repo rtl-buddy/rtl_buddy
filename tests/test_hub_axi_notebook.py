@@ -324,7 +324,14 @@ def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If the user manually killed the spawned marimo (or it crashed),
-    the next click should respawn instead of returning a dead URL."""
+    the next click should respawn instead of returning a dead URL.
+
+    Mocks ``_is_pid_alive`` to force the "dead" branch rather than
+    racing the kernel — relying on real SIGKILL + reap timing was
+    flaky under CI scheduling latency.
+    """
+    from rtl_buddy.hub import viewer_http
+
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url="http://localhost:31337")
     server = _make_viewer_server(tmp_path)
@@ -340,25 +347,19 @@ def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
     first = json.loads(
         asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
     )
-    # Simulate the spawned marimo dying.
-    try:
-        os.kill(first["pid"], 9)
-    except ProcessLookupError:
-        pass
-    # Give the kernel a moment to reap.
-    import time
-
-    time.sleep(0.2)
+    # Force the stale-cache branch deterministically.
+    monkeypatch.setattr(viewer_http, "_is_pid_alive", lambda pid: False)
 
     second = json.loads(
         asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
     )
     assert second["reused"] is False
     assert second["pid"] != first["pid"]
-    try:
-        os.kill(second["pid"], 9)
-    except ProcessLookupError:
-        pass
+    for pid in (first["pid"], second["pid"]):
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
 
 
 def test_shutdown_terminates_spawned_marimos(
@@ -393,15 +394,18 @@ def test_shutdown_terminates_spawned_marimos(
     assert server._axi_notebook_sessions == {}
 
     # SIGTERM is best-effort; the fake_marimo (a bash sleep 60) does
-    # exit on SIGTERM in practice. Give it a beat.
+    # exit on SIGTERM in practice but the kernel scheduler can take
+    # several seconds on a busy CI runner. Generous poll window so
+    # the test doesn't false-flag under load.
     import time
 
-    for _ in range(20):
-        time.sleep(0.1)
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             break
+        time.sleep(0.1)
     else:  # pragma: no cover
         try:
             os.kill(pid, 9)
