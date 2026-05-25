@@ -1451,6 +1451,7 @@
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
 <p><code>rb hier &lt;model&gt;</code> produces a module-hierarchy view of a model defined in <code>models.yaml</code>. It writes a stripped, deduplicated filelist into <code>artefacts/hier/&lt;model&gt;/hier.f</code>, then runs <code>rtl-buddy-view --top &lt;model&gt; --filelist hier.f</code> with the requested format and forwards the renderer's stdout to the terminal so it composes with shell pipes.</p>
+<p><code>rb hier &lt;test&gt; --view tb</code> (rtl-buddy-view #99 / 6b) renders the <strong>testbench</strong> hierarchy for a test from <code>tests.yaml</code>, with the DUT called out as a subtree. The test pins both the model (DUT side) and the TB top, so the positional argument is a test name in this mode. The merged DUT + TB filelist is written to <code>artefacts/hier/&lt;model&gt;/tb/&lt;tb_name&gt;/hier.f</code> and the renderer is invoked with both <code>--top &lt;model&gt;</code> and <code>--tb-top &lt;tb.toplevel&gt;</code>. Cache key is <code>(model, tb_name)</code>, so two tests sharing a TB share the artefact.</p>
 <h2 id="installing-rtl-buddy-view">Installing rtl-buddy-view</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-view<span class="w">    </span><span class="c1"># recommended — isolated tool env</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># or</span>
@@ -1505,8 +1506,11 @@
 <a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
 <a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="c1"># Pin a renderer build</span>
 <a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--tool<span class="w"> </span>/opt/rtl-buddy-view/bin/rtl-buddy-view
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="c1"># TB-rooted view — render the testbench for a test, DUT called out as subtree</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>rb<span class="w"> </span>hier<span class="w"> </span>basic_traffic<span class="w"> </span>--view<span class="w"> </span>tb
 </code></pre></div>
-<p>The model argument matches the <code>name:</code> of an entry in <code>models.yaml</code>. The runner uses that entry's filelist verbatim — same source of truth that <code>rb test</code>, <code>rb synth</code>, and <code>rb cdc</code> consume.</p>
+<p>The model argument matches the <code>name:</code> of an entry in <code>models.yaml</code>. The runner uses that entry's filelist verbatim — same source of truth that <code>rb test</code>, <code>rb synth</code>, and <code>rb cdc</code> consume. In <code>--view tb</code> mode the positional argument is a test name from <code>tests.yaml</code> instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from <code>--tb-top</code>.</p>
 <h2 id="parser-frontend">Parser frontend</h2>
 <p><code>--frontend</code> is forwarded as-is to <code>rtl-buddy-view</code>. The default frontend ships with the renderer; <code>--frontend slang</code> uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.</p>
 <h2 id="cdc-and-rdc-annotations">CDC and RDC annotations</h2>
