@@ -439,6 +439,11 @@ class ViewerServer:
                     test=test,
                     suite_dir=suite_dir,
                     project_root=self.project_root,
+                    events_url=(
+                        f"ws://127.0.0.1:{self.http_port}/api/events/sync"
+                        if self.http_port
+                        else None
+                    ),
                 )
             except axi_notebook_launcher.AxiNotebookLaunchError as e:
                 return _http_response(

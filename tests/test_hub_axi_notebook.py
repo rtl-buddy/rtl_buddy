@@ -138,6 +138,62 @@ def test_launch_returns_url_when_subprocess_prints_one(
         pass
 
 
+def test_launch_propagates_events_url_to_subprocess_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Phase 3: when called with ``events_url``, the launcher exports
+    ``RB_HUB_EVENTS_URL`` so the spawned marimo can join the broker.
+    When omitted, no env var leaks through."""
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+    captured: dict[str, dict[str, str]] = {}
+    real_create = axi_notebook_launcher.asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        captured["env"] = kwargs["env"]
+        return await real_create(*args, **kwargs)
+
+    monkeypatch.setattr(axi_notebook_launcher.asyncio, "create_subprocess_exec", spy)
+
+    result = asyncio.run(
+        axi_notebook_launcher.launch(
+            test="basic",
+            suite_dir=str(suite),
+            project_root=tmp_path,
+            timeout_s=5.0,
+            events_url="ws://127.0.0.1:7000/api/events/sync",
+        )
+    )
+    assert captured["env"]["RB_HUB_EVENTS_URL"] == "ws://127.0.0.1:7000/api/events/sync"
+    try:
+        os.kill(result.pid, 9)
+    except ProcessLookupError:
+        pass
+
+    # Second pass without events_url — env stays clean.
+    captured.clear()
+    result2 = asyncio.run(
+        axi_notebook_launcher.launch(
+            test="basic",
+            suite_dir=str(suite),
+            project_root=tmp_path,
+            timeout_s=5.0,
+        )
+    )
+    assert "RB_HUB_EVENTS_URL" not in captured["env"]
+    try:
+        os.kill(result2.pid, 9)
+    except ProcessLookupError:
+        pass
+
+
 def test_launch_raises_when_subprocess_exits_before_url(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

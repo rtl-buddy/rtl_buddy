@@ -210,6 +210,7 @@ async def launch(
     suite_dir: str,
     project_root: Path,
     timeout_s: float = DEFAULT_TIMEOUT_S,
+    events_url: str | None = None,
 ) -> LaunchResult:
     """Validate inputs, spawn marimo headless, return the URL.
 
@@ -245,6 +246,11 @@ async def launch(
     # marimo's URL line as soon as it's printed (rather than after
     # the kernel's block-buffer fills).
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if events_url:
+        # Phase 3 sync (axi-profiler#16): the notebook template's
+        # ``notebook/sync.py`` reads this and joins the hub event
+        # broker so SPA bundle clicks reach the notebook.
+        env["RB_HUB_EVENTS_URL"] = events_url
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(resolved_suite),
