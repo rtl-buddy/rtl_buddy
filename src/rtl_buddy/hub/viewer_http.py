@@ -37,6 +37,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..logging_utils import log_event
+from .event_broker import EventBroker
 
 
 logger = logging.getLogger(__name__)
@@ -215,6 +216,9 @@ class ViewerServer:
         # spawn — analogous to ``_model_locks`` for /view.json?model=.
         self._axi_notebook_sessions: dict[tuple[str, str], Any] = {}
         self._axi_notebook_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Phase 3 SPA↔notebook sync. Opaque pub/sub — see
+        # ``event_broker.py`` for the relay semantics.
+        self._event_broker = EventBroker()
         self._server: Any | None = None
         self._bundle_index = self._resolve_bundle_index(viewer_bundle)
 
@@ -303,7 +307,7 @@ class ViewerServer:
 
         # WS upgrade?  Let websockets handle it.
         if request.headers.get("Upgrade", "").lower() == "websocket":
-            if path == "/ws":
+            if path in ("/ws", "/api/events/sync"):
                 return None
             return _http_response(connection, 404, b"unknown ws path")
 
@@ -681,6 +685,68 @@ class ViewerServer:
     # ------------------------------------------------------------------
 
     async def _handle_ws(self, ws: Any) -> None:
+        """Dispatch the WS handler by path.
+
+        ``/ws`` proxies hub envelopes (legacy). ``/api/events/sync``
+        joins the in-memory pub/sub broker for SPA↔notebook state
+        sync (Phase 3).
+        """
+        raw_path = getattr(getattr(ws, "request", None), "path", "/ws")
+        path, _, _ = raw_path.partition("?")
+        if path == "/api/events/sync":
+            await self._handle_event_sync_ws(ws)
+            return
+        await self._handle_ws_envelope_proxy(ws)
+
+    async def _handle_event_sync_ws(self, ws: Any) -> None:
+        """Bridge a WS client to the in-memory ``EventBroker``.
+
+        Every inbound message is broadcast to every other client.
+        The client's own outbound queue is drained by the writer
+        task. Disconnect cancels both tasks and removes the client
+        from the broker.
+        """
+        client_id, client = self._event_broker.add_client(name="ws")
+
+        async def reader() -> None:
+            try:
+                async for msg in ws:
+                    if isinstance(msg, bytes):
+                        try:
+                            text = msg.decode("utf-8")
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                        text = msg
+                    self._event_broker.broadcast(client_id, text)
+            except ConnectionClosed:
+                pass
+
+        async def writer() -> None:
+            try:
+                while True:
+                    msg = await client.queue.get()
+                    await ws.send(msg)
+            except ConnectionClosed:
+                pass
+
+        tasks = [
+            asyncio.create_task(reader(), name="event-sync-reader"),
+            asyncio.create_task(writer(), name="event-sync-writer"),
+        ]
+        try:
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+            for t in tasks:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+        finally:
+            self._event_broker.remove_client(client_id)
+
+    async def _handle_ws_envelope_proxy(self, ws: Any) -> None:
         """Proxy a WS connection to the hub's TCP port.
 
         Each WebSocket message is one hub envelope. Inbound (WS → hub)

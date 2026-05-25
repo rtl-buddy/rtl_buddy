@@ -60,6 +60,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ cdc-regression     run CDC lint regression                                           │
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
+│ tool-check         check installed tool dependencies and subcommand readiness        │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
 │ hub                manage the rtl-buddy-hub daemon                                   │
@@ -460,5 +461,31 @@ Usage: rtl-buddy fpv-regression [OPTIONS]
 │                                [default: (Use ./fpv_regression.yaml if present)]     │
 │ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
 │ --help                         Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## tool-check
+
+```text
+Usage: rtl-buddy tool-check [OPTIONS]                                                  
+                                                                                        
+ check installed tool dependencies and subcommand readiness                             
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --format                                       TEXT  text | json [default: text]     │
+│ --required-for                                 TEXT  check only what `rb             │
+│                                                      <subcommand>` needs             │
+│ --explain                                      TEXT  show install instructions for a │
+│                                                      single tool and exit            │
+│ --strict                                             exit non-zero if any required   │
+│                                                      tool is missing/outdated        │
+│ --include-optional    --no-include-optional          include optional tools          │
+│                                                      (default: yes)                  │
+│                                                      [default: include-optional]     │
+│ --probe-versions      --no-probe-versions            run `<tool> --version` to       │
+│                                                      capture installed version       │
+│                                                      (default: yes)                  │
+│                                                      [default: probe-versions]       │
+│ --help                                               Show this message and exit.     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

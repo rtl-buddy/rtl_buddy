@@ -257,6 +257,10 @@ class RtlBuddy:
         self.app.add_typer(
             self.spec_app, name="spec", help="spec traceability commands"
         )
+        self.app.command(
+            "tool-check",
+            help="check installed tool dependencies and subcommand readiness",
+        )(self.do_cmd_tool_check)
 
         if "." not in os.environ["PATH"].split(os.pathsep):
             os.environ["PATH"] = "." + os.pathsep + os.environ["PATH"]
@@ -354,7 +358,7 @@ class RtlBuddy:
 
         self.machine = machine
 
-        if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub"}:
+        if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
             return
 
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
@@ -3460,6 +3464,139 @@ class RtlBuddy:
             output_path=output,
         )
         vlog_fl.write_verible_filelist(selected, output_filepath=output)
+
+    def do_cmd_tool_check(
+        self,
+        fmt: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                help="text | json",
+                case_sensitive=False,
+            ),
+        ] = "text",
+        required_for: Annotated[
+            str | None,
+            typer.Option(
+                "--required-for",
+                help="check only what `rb <subcommand>` needs",
+            ),
+        ] = None,
+        explain_tool: Annotated[
+            str | None,
+            typer.Option(
+                "--explain",
+                help="show install instructions for a single tool and exit",
+            ),
+        ] = None,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help="exit non-zero if any required tool is missing/outdated",
+            ),
+        ] = False,
+        include_optional: Annotated[
+            bool,
+            typer.Option(
+                "--include-optional/--no-include-optional",
+                help="include optional tools (default: yes)",
+            ),
+        ] = True,
+        probe_versions: Annotated[
+            bool,
+            typer.Option(
+                "--probe-versions/--no-probe-versions",
+                help="run `<tool> --version` to capture installed version "
+                "(default: yes)",
+            ),
+        ] = True,
+    ):
+        """
+        Detect installed tool dependencies and report subcommand readiness.
+        """
+        from . import tool_manifest as tm
+        from .config.root import _discover_root_cfg
+
+        setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+
+        # Opportunistic root_config discovery. tool-check must work outside a
+        # project, so we suppress the "not found" error log entirely.
+        root_cfg = None
+        root_logger = logging.getLogger("rtl_buddy.config.root")
+        prev_level = root_logger.level
+        root_logger.setLevel(logging.CRITICAL)
+        try:
+            if _discover_root_cfg() is not None:
+                root_cfg = RootConfig(name=self.name + "/tool-check/root_config")
+        except FatalRtlBuddyError:
+            root_cfg = None
+        finally:
+            root_logger.setLevel(prev_level)
+
+        specs = tm.get_manifest(root_cfg)
+        project_root = (
+            Path(root_cfg.get_project_rootdir()) if root_cfg is not None else None
+        )
+
+        if explain_tool is not None:
+            spec = next((s for s in specs if s.name == explain_tool), None)
+            if spec is None:
+                emit_console_text(
+                    f"tool-check: unknown tool '{explain_tool}'. "
+                    f"Known: {', '.join(s.name for s in specs)}",
+                    style="red",
+                    stream="stderr",
+                )
+                raise typer.Exit(1)
+            status = tm.check_tool(
+                spec, project_root=project_root, probe_versions=probe_versions
+            )
+            # Plain stdout — Rich's word-wrap would mangle paths.
+            print(tm.explain(spec, status))
+            raise typer.Exit(0)
+
+        statuses = tm.check_all(
+            specs,
+            project_root=project_root,
+            probe_versions=probe_versions,
+            include_optional=include_optional,
+        )
+        subcommands = tm.subcommand_readiness(statuses, specs)
+
+        if required_for is not None:
+            if required_for not in subcommands:
+                emit_console_text(
+                    f"tool-check: subcommand '{required_for}' has no "
+                    f"declared tool dependencies",
+                    style="yellow",
+                )
+                raise typer.Exit(0)
+            subcommands = {required_for: subcommands[required_for]}
+            wanted = set(subcommands[required_for]["tools"])
+            statuses = [s for s in statuses if s.name in wanted]
+
+        reported_exit_code = tm.compute_exit_code(
+            statuses,
+            required_for=required_for,
+            subcommands=tm.subcommand_readiness(statuses, specs),
+        )
+
+        # Use raw stdout — Rich's word-wrap would mangle JSON and break the
+        # alignment of the tool table.
+        if fmt.lower() == "json":
+            print(tm.render_json(statuses, subcommands, exit_code=reported_exit_code))
+        else:
+            print(
+                tm.render_text(statuses, subcommands, include_optional=include_optional)
+            )
+
+        # --required-for always enforces (exit 2 on miss); --strict enforces
+        # the global "any required tool missing" check (exit 1). Without
+        # either flag the command is purely informational.
+        if required_for is not None or strict:
+            raise typer.Exit(reported_exit_code)
+        raise typer.Exit(0)
 
     def _collect_git_status(self) -> dict | None:
         status_result = subprocess.run(
