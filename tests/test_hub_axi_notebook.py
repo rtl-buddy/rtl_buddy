@@ -377,12 +377,23 @@ def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
             pass
 
 
-def test_shutdown_terminates_spawned_marimos(
+def test_shutdown_calls_terminate_on_every_session_and_clears_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ViewerServer.shutdown() SIGTERMs every spawned marimo and
     clears the session cache. Without this, hub restarts orphan
-    marimos that nobody can reach."""
+    marimos that nobody can reach.
+
+    Mocks ``_terminate_pid`` to record what got called rather than
+    asserting on kernel signal-delivery timing — CI runners can take
+    seconds to deliver SIGTERM under load, which made an earlier
+    poll-the-PID version flaky. The actual signal-sending logic is
+    one line (``os.kill(pid, SIGTERM)``); the contract the hub
+    promises is "every session.pid in the cache is signalled and the
+    cache is cleared", which this assertion covers.
+    """
+    from rtl_buddy.hub import viewer_http
+
     suite = _write_suite(tmp_path)
     fake = _fake_marimo(tmp_path, url="http://localhost:31337")
     server = _make_viewer_server(tmp_path)
@@ -403,27 +414,53 @@ def test_shutdown_terminates_spawned_marimos(
         ).body
     )
     pid = payload["pid"]
-    assert os.kill(pid, 0) is None  # alive
+    assert os.kill(pid, 0) is None  # spawned + alive
+
+    terminated: list[int] = []
+    monkeypatch.setattr(viewer_http, "_terminate_pid", terminated.append)
 
     asyncio.run(server.shutdown())
+
     assert server._axi_notebook_sessions == {}
+    assert terminated == [pid]
 
-    # SIGTERM is best-effort; the fake_marimo (a bash sleep 60) does
-    # exit on SIGTERM in practice but the kernel scheduler can take
-    # several seconds on a busy CI runner. Generous poll window so
-    # the test doesn't false-flag under load.
-    import time
+    # Cleanup of the still-alive fake_marimo (the mock prevented the
+    # real SIGTERM from going out).
+    try:
+        os.kill(pid, 9)
+    except ProcessLookupError:
+        pass
 
-    deadline = time.monotonic() + 10.0
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.1)
-    else:  # pragma: no cover
-        try:
-            os.kill(pid, 9)
-        except ProcessLookupError:
-            pass
-        raise AssertionError(f"marimo pid {pid} survived shutdown SIGTERM")
+
+def test_terminate_pid_sends_sigterm_to_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct unit test for the helper: locks the (pid, SIGTERM)
+    call shape so a regression that switches to SIGKILL or omits the
+    pid is caught immediately."""
+    import os as _os
+    import signal
+
+    from rtl_buddy.hub import viewer_http
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(_os, "kill", lambda p, s: sent.append((p, s)))
+    viewer_http._terminate_pid(12345)
+    assert sent == [(12345, signal.SIGTERM)]
+
+
+def test_terminate_pid_swallows_process_lookup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Race: process already exited between cache-check and kill.
+    Helper must not raise — best-effort cleanup."""
+    import os as _os
+
+    from rtl_buddy.hub import viewer_http
+
+    def boom(_pid, _sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(_os, "kill", boom)
+    # Should not raise.
+    viewer_http._terminate_pid(99999)
