@@ -122,6 +122,7 @@ class RtlBuddy:
                                 "cwd": os.getcwd(),
                                 "git": None,
                             },
+                            "payload": {},
                         },
                         ensure_ascii=True,
                     )
@@ -1623,11 +1624,11 @@ class RtlBuddy:
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]
         if self.machine:
-            print(json.dumps({"pages": pages}, ensure_ascii=True))
+            self._emit_machine_result("docs list", 0, pages=pages)
             return
 
         for page in pages:
-            print(f"{page['slug']} - {page['title']}: {page['summary']}")
+            print(f"{page['slug']} - {page['title']}: {page['description']}")
 
     def do_docs_show(
         self,
@@ -3640,7 +3641,7 @@ class RtlBuddy:
                         "cwd": os.getcwd(),
                         "git": git,
                     },
-                    **payload,
+                    "payload": payload,
                 },
                 ensure_ascii=True,
             )
