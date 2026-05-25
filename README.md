@@ -5,9 +5,9 @@
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-rtl--buddy.github.io-blue)](https://rtl-buddy.github.io/rtl_buddy/)
 
-`rtl_buddy` is a Python CLI for Verilog and SystemVerilog RTL design and verification workflows: simulator-driven tests and randomized regressions, filelist generation, synthesis, place-and-route, power analysis, CDC lint, formal property verification, waveform viewing, hierarchy rendering, spec traceability, and adjacent automation. It is designed to work well for both humans and AI agents.
+`rtl_buddy` is a Python CLI for Verilog and SystemVerilog RTL design and verification workflows: simulator-driven tests and randomized regressions, filelist generation, synthesis, place-and-route, power analysis, CDC lint, formal property verification, waveform viewing, hierarchy rendering, AXI interconnect profiling, spec traceability, and adjacent automation. It is designed to work well for both humans and AI agents.
 
-It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day RTL work. Current first-class flows cover Verilator/VCS simulation (with optional cocotb), Yosys synthesis (with optional yosys-slang frontend), OpenROAD-based place-and-route and power analysis, [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) CDC lint, SymbiYosys formal verification, and Surfer-based waveform viewing with live editor annotation. Basic Verible command integration exists; broader first-class Verible and PeakRDL workflows are on the roadmap.
+It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day RTL work. Current first-class flows cover Verilator/VCS simulation (with optional cocotb), Yosys synthesis (with optional yosys-slang frontend), OpenROAD-based place-and-route and power analysis, [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) CDC lint, SymbiYosys formal verification, and Surfer-based waveform viewing with live editor annotation. Verible command integration covers lint, syntax, format, preprocessor, and `verible.filelist` generation; broader first-class Verible and PeakRDL workflows are on the roadmap.
 
 Typical commands look like:
 
@@ -20,6 +20,8 @@ uv run rb synth -c synth/sandbox/synth.yaml
 uv run rb cdc -c cdc/sandbox/cdc.yaml
 uv run rb fpv -c fpv/sandbox/fpv.yaml
 uv run rb wave basic
+uv run rb axi-profile run basic
+uv run rb tool-check
 ```
 
 ## Why `rtl_buddy`
@@ -44,13 +46,15 @@ uv run rb wave basic
 - **CDC lint** (`rb cdc`, `rb cdc-regression`): first-class integration with [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc)
 - **Formal property verification** (`rb fpv`, `rb fpv-regression`): SymbiYosys-driven proofs with reproducible solver pinning; `rb wave-fpv` opens the counterexample VCD for a failed run
 - **Waveform viewing** (`rb wave`): opens [Surfer](https://surfer-project.org/) with live signal-value annotation in your editor via the WCP protocol
-- **Hierarchy rendering** (`rb hier`): module hierarchy diagrams via [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view)
-- **Coordination hub** (`rb hub`): TCP + HTTP/WebSocket broker that mediates between the rtl-buddy-view SPA, Surfer (via `rb wave`), and editor adapters; optional macOS LaunchAgent install
+- **Hierarchy rendering** (`rb hier`): module hierarchy diagrams via [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view), with optional CDC and RDC clock-domain annotations
+- **AXI interconnect profiling** (`rb axi-profile`): discover AXI bundles from RTL, emit a bind-style SV monitor, ingest a test's FST into per-test `axi-perf.json` + per-transaction Parquet, and launch a packaged marimo notebook for interactive analysis
+- **Coordination hub** (`rb hub`): TCP + HTTP/WebSocket broker that mediates between the rtl-buddy-view SPA, Surfer (via `rb wave`), and editor adapters; supports runtime model switching, AXI-perf overlays, and CDC diagnostics; optional macOS LaunchAgent install
 - **Spec traceability** (`rb spec`): trace `specs.yaml` items to design models (`check-design`) and tests (`check-coverage`)
+- **Tool dependency check** (`rb tool-check`): declarative manifest of external tool dependencies — reports which `rb` subcommands are ready and which are blocked on missing or out-of-version tools
 - **Coverage workflows**: collect, merge, summarize, and export Verilator coverage
 - **cocotb support**: Verilator + VPI cocotb tests integrated into the standard test/regression flow
 - **Hookable execution flow**: plug in your own sweep generation, test preprocessing, and postprocessing scripts
-- **Verible integration**: invoke lint, syntax, formatting, and preprocessing commands through the same project config
+- **Verible integration** (`rb verible`): invoke lint, syntax, formatting, and preprocessor commands through the same project config, plus generate `verible.filelist` from `models.yaml` for `verible-verilog-ls`
 - **Rich outputs for humans**: displays pretty formatted for easy reading
 - **Structured logging for machines**: emits JSONL logs for interpretation by CI systems, automation, and coding agents
 - **Cross-project reuse**: keep one tool interface while adapting it to different RTL repo layouts and builder setups
