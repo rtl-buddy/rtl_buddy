@@ -2739,11 +2739,22 @@ class RtlBuddy:
         from .tools.fpv_log_parse import summarize_engines
 
         rows = []
+        has_vacuity = False
+        has_coi = False
+        has_assumes = False
         for r in fpv_results:
             res = r["results"].results
             engines = res.get("engines") or []
             runtime = res.get("runtime_s")
             per_engine = res.get("per_engine") or []
+            vacuity = res.get("vacuity")
+            vacuity_cell = self._format_vacuity_cell(vacuity)
+            has_vacuity |= vacuity_cell is not None
+            coi = res.get("coi")
+            coi_cell = self._format_coi_cell(coi)
+            has_coi |= coi_cell is not None
+            assumes_cell = self._format_assumes_cell(coi)
+            has_assumes |= assumes_cell is not None
             row = {
                 "fpv_name": r["fpv_name"],
                 "result": res["result"],
@@ -2752,6 +2763,9 @@ class RtlBuddy:
                 "depth": str(res.get("depth", "-")),
                 "engines": ", ".join(engines) if engines else "-",
                 "engine_results": summarize_engines(per_engine) if per_engine else "-",
+                "vacuity": vacuity_cell or "-",
+                "coi": coi_cell or "-",
+                "assumes": assumes_cell or "-",
                 "runtime": f"{runtime:.1f}s" if runtime is not None else "-",
             }
             rows.append(row)
@@ -2764,8 +2778,14 @@ class RtlBuddy:
             ("depth", "Depth"),
             ("engines", "Engines"),
             ("engine_results", "Engine Results"),
-            ("runtime", "Runtime"),
         ]
+        if has_vacuity:
+            columns.append(("vacuity", "Vacuity"))
+        if has_coi:
+            columns.append(("coi", "COI"))
+        if has_assumes:
+            columns.append(("assumes", "Assumes"))
+        columns.append(("runtime", "Runtime"))
         render_summary(
             title=title,
             columns=columns,
@@ -2773,6 +2793,71 @@ class RtlBuddy:
             logger=logger,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _format_vacuity_cell(vacuity):
+        """Return a short Vacuity cell, or None if the run didn't do a vacuity pass.
+
+        Shape: `"<vacuous>/<total> vacuous"` so the column is silent when
+        every antecedent is reachable, loud when it isn't.
+        """
+        if not vacuity:
+            return None
+        total = vacuity.get("candidates", 0)
+        if total == 0:
+            return None
+        vacuous = vacuity.get("vacuous", 0)
+        unknown = sum(
+            1 for c in vacuity.get("covers", []) if c.get("status") == "unknown"
+        )
+        if vacuous == 0 and unknown == 0:
+            return f"{total} ok"
+        parts = []
+        if vacuous:
+            parts.append(f"{vacuous}/{total} vacuous")
+        if unknown:
+            parts.append(f"{unknown} unknown")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _format_coi_cell(coi):
+        """Return a short COI cell, or None when no COI data was produced.
+
+        Shape: `"<percent>% (<coi>/<total>)"` so the column carries both
+        the rolled-up ratio and the raw counts behind it. A coverage of
+        100% is still surfaced so the user sees the pass came with full
+        structural reach.
+        """
+        if not coi:
+            return None
+        total = coi.get("total_cells", 0)
+        if total == 0:
+            return None
+        coi_cells = coi.get("coi_cells", 0)
+        percent = coi.get("percent", 0.0)
+        return f"{percent:.0f}% ({coi_cells}/{total})"
+
+    @staticmethod
+    def _format_assumes_cell(coi):
+        """Return a short Assumes cell ('N used, M dead'), or None if N/A.
+
+        Built from the COI pass's $assume cell counts. Silent when the
+        design has no $assume cells at all (`0 used, 0 dead` is just
+        clutter). Loud when any are dead so the user knows to look.
+        """
+        if not coi:
+            return None
+        assumes = coi.get("assumes")
+        if not assumes:
+            return None
+        total = assumes.get("total", 0)
+        if total == 0:
+            return None
+        used = assumes.get("in_assert_coi", 0)
+        dead = assumes.get("dead", 0)
+        if dead == 0:
+            return f"{used} used"
+        return f"{used} used, {dead} dead"
 
     def _exit_code_from_fpv_results(self, fpv_results):
         return 0 if all(r["results"].is_pass() for r in fpv_results) else 1

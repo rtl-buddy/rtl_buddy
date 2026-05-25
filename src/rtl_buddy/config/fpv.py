@@ -108,6 +108,18 @@ class FpvConfigFile:
     engines: list[str] = field(default_factory=lambda: ["smtbmc yices"])
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # When true (default for `bmc` / `prove`), run a secondary sby pass
+    # in `cover` mode after the primary proof using auto-derived cover
+    # properties for every `a |-> b` antecedent in the property set.
+    # Surfaces vacuous proofs (antecedent never holds → assert never
+    # actually constrained the design). Skipped automatically for
+    # `cover` / `live` modes.
+    vacuity: bool | None = None
+    # When true (default), run a yosys cone-of-influence walk after the
+    # primary proof and report what % of design cells are reachable
+    # from at least one assertion. A direct "what's still unverified"
+    # signal; complements the proof verdict.
+    coi: bool | None = None
 
     def initialise(self, config_dir: str) -> "FpvConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -135,6 +147,8 @@ class FpvConfigFile:
             engines=list(self.engines),
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            vacuity=self.vacuity,
+            coi=self.coi,
         )
 
 
@@ -152,6 +166,32 @@ class FpvConfig:
     _reglvl: int | dict | None
     constraints: str | None = dc_field(default=None)
     tool_overrides: dict | None = dc_field(default=None)
+    vacuity: bool | None = dc_field(default=None)
+    coi: bool | None = dc_field(default=None)
+
+    def vacuity_enabled(self) -> bool:
+        """Whether to run the vacuity cover pass for this verification.
+
+        Defaults to True for the proof modes (`bmc` / `prove`) and False
+        for cover/live modes where the user is already exploring
+        reachability directly. A user-supplied `vacuity:` field
+        overrides either way.
+        """
+        if self.vacuity is not None:
+            return bool(self.vacuity)
+        return self.mode in ("bmc", "prove")
+
+    def coi_enabled(self) -> bool:
+        """Whether to run the COI coverage pass for this verification.
+
+        Defaults to True — the analysis is fast (yosys structural walk,
+        no SMT) and gives a coverage signal independent of how many
+        cycles the proof bound covered. Users disable it by setting
+        ``coi: false`` in `fpv.yaml`.
+        """
+        if self.coi is not None:
+            return bool(self.coi)
+        return True
 
     def get_name(self) -> str:
         return self.name

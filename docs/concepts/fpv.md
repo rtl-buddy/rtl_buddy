@@ -85,6 +85,8 @@ verifications:
 | `engines` | List of sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |
 | `reglvl` | Regression level for filtering (same semantics as `rb synth` / `rb cdc`) |
 | `tool_overrides` | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
+| `vacuity` | Optional bool. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived cover properties for every `a \|-> b` antecedent in the property set — flags vacuous proofs. Defaults to false for `cover` / `live` modes. See [Vacuity covers](#vacuity-covers). |
+| `coi` | Optional bool. When true (default), run a yosys cone-of-influence pass and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](#cone-of-influence-coverage). |
 
 ### Where inputs come from
 
@@ -154,6 +156,77 @@ A summary table prints after each run:
 
 > **Per-property granularity is not surfaced.** Sby has no structured per-assertion output today — `fpv.xml` is JUnit-style per-task only and the prose log doesn't tag individual assertions. Per-engine status is the finest grain `rb fpv` exposes; per-property aggregation would need a yosys-frontend change to dump assertion identifiers + per-COI status.
 
+## Cone-of-influence coverage
+
+After every primary proof, `rb fpv` runs a structural yosys pass that:
+
+1. Reads the same design + constraints + properties sby just used.
+2. Counts total cells per module.
+3. Selects every `$assert` cell and walks its cone of influence backwards (`t:$assert %coi`).
+4. Reports the fraction of design cells reached by at least one assertion.
+
+Logic *outside* every property's COI is provably unverified by the property set — a direct, actionable "what's still uncovered" signal that simulation coverage doesn't give you. When the COI pass produces data, the results table grows a **COI** column:
+
+```text
+FPV Run     Result   Description                ...   COI
+counter_inv PASS     property proved (bmc, 32)        73% (38/52)
+```
+
+- Per-module rollup lives in `FpvResults.results["coi"]["per_module"]` so machine consumers can find under-verified blocks.
+- The COI pass is enabled by default (`coi: true`) and adds a few seconds to the run; disable per verification with `coi: false` in `fpv.yaml`.
+- The pass uses `yosys` on `PATH`. If yosys is missing or errors the pass is logged as a warning and the COI column shows `-` — the primary proof verdict is unaffected.
+
+Artefacts:
+
+- `coi.ys` — generated yosys script.
+- `coi.log` — full yosys log (parsed for `stat` output).
+
+## Dead-assume detection
+
+The same yosys pass that computes COI coverage also rolls up `$assume` cells, splitting them into those whose logic intersects with the assertion COI versus those that don't. The latter are *structurally dead* — they constrain signals no assertion ever observes, usually a sign the environment spec drifted from the property set.
+
+When the design has any `$assume` cells, the results table grows an **Assumes** column:
+
+```text
+FPV Run     Result   Description                ...   Assumes
+counter_inv PASS     property proved (bmc, 32)        3 used, 2 dead
+```
+
+- `N used` (all assumes are inside the assertion COI) — silent, just a sanity confirmation.
+- `M used, K dead` — `K` assumes are not reachable from any assertion. Either remove them or extend the assertion set to cover the signal they constrain.
+
+The detection is structural and conservative: it does not prove an assumption is *semantically* dead, just that yosys's elaborated graph shows no path from the assume to any assertion. In particular, assumes inside dead-code regions or untouched submodules will surface here. The detection rides on the same `coi.ys`/`coi.log` artefacts.
+
+## Vacuity covers
+
+A property `a |-> b` is *vacuously true* whenever the antecedent `a` never holds — the assertion passes but tells us nothing about `b`. `rb fpv` auto-derives a `cover property` for each `|->` / `|=>` antecedent in your property set and runs a secondary sby cover-mode pass to check whether each one is reachable.
+
+The vacuity pass is enabled by default for `mode: bmc` and `mode: prove` and disabled for `mode: cover` / `mode: live` (where the user is already exploring reachability). Override with `vacuity: true` / `vacuity: false` per verification in `fpv.yaml`.
+
+When vacuity reports any unreachable antecedent, the results table grows a **Vacuity** column:
+
+```text
+FPV Run     Result   Description                ...   Vacuity
+counter_inv PASS     property proved (bmc, 32)        1/3 vacuous
+```
+
+- `N ok` — every antecedent reached
+- `M/N vacuous` — `M` antecedents never reached → those `|->` properties are vacuously true (fix your assumptions or your stimulus)
+- `K unknown` — sby's cover output didn't tag this cover either way (logfile missing, sby died)
+
+Per-antecedent detail is preserved in `FpvResults.results["vacuity"]["covers"]` for machine consumers and reported in the log:
+
+- `cover_vacuity_<N>_<label>: cover property (<clocking> <antecedent>);` — synthesized into `vacuity_covers.sv`
+- `vacuity.log` — full secondary sby pass log
+- `vacuity_workdir/` — sby workdir from the cover pass
+
+Scope today:
+
+- Single-line antecedents only (the most common case).
+- Clocking and `disable iff` clauses on the same line as the implication are preserved.
+- Sequence-valued antecedents (`(req ##2 ack) |-> done`) are extracted but treated as boolean for the cover — close enough for the reachability signal.
+- Multi-line antecedents land in a follow-up.
+
 ## Artefacts
 
 Per-run outputs land under `fpv/<run>/artefacts/`:
@@ -166,6 +239,9 @@ Per-run outputs land under `fpv/<run>/artefacts/`:
 | `sby_workdir/status` | Sby's verdict file (`PASS`, `FAIL`, `UNKNOWN`, or `ERROR`) |
 | `sby_workdir/engine_<N>/trace.vcd` | Counterexample VCD on failed properties |
 | `sby_workdir/engine_<N>/logfile.txt` | Per-engine log |
+| `vacuity_covers.sv` | Auto-generated sidecar module with one `cover property` per `\|->` antecedent (only when the vacuity pass ran) |
+| `vacuity.sby` / `vacuity.log` / `vacuity_workdir/` | Secondary sby cover-mode pass for vacuity checks |
+| `coi.ys` / `coi.log` | yosys script + log for the cone-of-influence pass (only when `coi: true`) |
 
 ## Pass/fail detection
 
