@@ -108,9 +108,11 @@ The envelope fields are the same across all commands:
 - `command`: the subcommand that was run (e.g. `"test"`, `"regression"`, `"synth"`)
 - `exit_code`: integer exit code (0 = all pass, 1 = at least one failure)
 - `meta`: version, argv, working directory, and git status at invocation
-- Additional payload fields vary by command (e.g. `results`, `names`, `pages`, `blocks`, `items`)
+- Additional payload fields vary by command (e.g. `results`, `names`, `blocks`, `items`)
 
 Commands that emit a `--list` output (e.g. `test --list`, `synth --list`) include a `names` array. Regression commands include a `results` array with a `"suite"` field on each entry.
+
+The `docs` commands (`docs list`, `docs show`) are excluded from this envelope — they output lightweight bare JSON (e.g. `{"pages": [...]}`, `{"slug": ..., "content": ...}`) since their primary payload is already Markdown text.
 
 ## Machine mode log format
 
@@ -165,7 +167,7 @@ rtl-buddy --machine spec check-design
 rtl-buddy --machine spec check-coverage
 ```
 
-In machine mode, all three commands return the standard JSON envelope (see [Machine mode stdout envelope](#machine-mode-stdout-envelope)). `spec list` includes `"blocks": [...]` and `spec check-coverage` includes `"items": [...]` with a `"covered": true/false` field per item. Use these to identify uncovered items programmatically.
+In machine mode, `spec list` returns the standard JSON envelope with `"blocks": [...]` and `spec check-coverage` returns one with `"items": [...]` — each item has a `"covered": true/false` field. Use these to identify uncovered items programmatically. See [Machine mode stdout envelope](#machine-mode-stdout-envelope) for the wrapper shape.
 
 All three commands default to searching `spec/`, `design/`, and `verif/` under the project root. Pass `--spec-dir`, `--design-dir`, or `--verif-dir` to narrow the scope.
 

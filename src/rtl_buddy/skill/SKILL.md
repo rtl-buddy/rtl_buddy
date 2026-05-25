@@ -14,8 +14,9 @@ Use <https://rtl-buddy.github.io/rtl_buddy/> only as a fallback reference.
 ## Always use `--machine`
 
 All agent invocations must use `--machine` so `rtl_buddy.log` is JSONL and console output is plain text.
+Commands that produce structured results (`test`, `regression`, `synth`, `pnr`, `power`, `cdc`, `fpv`, `spec`, and their `--list`/regression variants) also print a single JSON envelope to **stdout** on exit — parse this for results rather than scraping the log.
 
-See `rtl-buddy docs show agents` for the JSONL schema and exit codes (0 pass, 1 test failures, 2 fatal).
+See `rtl-buddy docs show agents` for the stdout envelope schema, JSONL log format, and exit codes (0 pass, 1 test failures, 2 fatal).
 
 ## Version check
 

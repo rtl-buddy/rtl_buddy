@@ -1623,7 +1623,7 @@ class RtlBuddy:
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]
         if self.machine:
-            self._emit_machine_result("docs list", 0, pages=pages)
+            print(json.dumps({"pages": pages}, ensure_ascii=True))
             return
 
         for page in pages:
@@ -1650,7 +1650,7 @@ class RtlBuddy:
                     f"Unknown section '{anchor}' in page '{page_slug}'. Run `rtl-buddy docs show {page_slug}` to see available sections."
                 )
             if self.machine:
-                self._emit_machine_result("docs show", 0, **section)
+                print(json.dumps(section, ensure_ascii=True))
                 return
             print(section["content"])
             return
@@ -1662,7 +1662,7 @@ class RtlBuddy:
             )
 
         if self.machine:
-            self._emit_machine_result("docs show", 0, **page.to_show_payload())
+            print(json.dumps(page.to_show_payload(), ensure_ascii=True))
             return
 
         print(page.content, end="" if page.content.endswith("\n") else "\n")
