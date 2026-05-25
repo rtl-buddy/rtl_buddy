@@ -279,6 +279,31 @@ def _recv_line(sock) -> Envelope:
     return decode(line)
 
 
+class _Recv:
+    """Buffered envelope receiver that preserves bytes past the first ``\\n``.
+
+    The plain ``_recv_line`` helper discards post-newline data — that's
+    safe when each test expects exactly one envelope per cursor_moved /
+    request, but the wave-values producer emits two envelopes
+    back-to-back per ``cursor_moved`` and TCP coalesces them into a
+    single recv on slower hosts (notably CI). This class keeps the
+    leftover bytes between reads so the second envelope isn't dropped.
+    """
+
+    def __init__(self, sock):
+        self._sock = sock
+        self._buf = b""
+
+    def next(self) -> Envelope:
+        while b"\n" not in self._buf:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise OSError("closed")
+            self._buf += chunk
+        line, _, self._buf = self._buf.partition(b"\n")
+        return decode(line)
+
+
 def test_cursor_moved_becomes_cursor_time_changed(hub_in_thread: _HubInThread):
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
@@ -699,12 +724,13 @@ def test_cursor_moved_broadcasts_wave_values_changed_for_tracked_vars(
     bridge = WaveHubBridge.connect((host, port), listener=listener)
     bridge.start()
     view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    rx = _Recv(view_sock)
     try:
         # Step 1: viewer adds variables. Wait for the reply so we know
         # the bridge has finished updating its tracked-vars cache before
         # we fire the cursor_moved.
         req = _send_wave_add(view_sock, ["tb.dut.q", "tb.dut.clk"])
-        ack = _recv_line(view_sock)
+        ack = rx.next()
         assert ack.id == req.id
 
         # Step 2: drive a cursor_moved through the WCP observer hook.
@@ -715,14 +741,14 @@ def test_cursor_moved_broadcasts_wave_values_changed_for_tracked_vars(
 
         # First envelope on the bus: cursor_time_changed (synchronous
         # translation on the listener thread).
-        env_cursor = _recv_line(view_sock)
+        env_cursor = rx.next()
         assert env_cursor.type == "cursor_time_changed"
         assert env_cursor.payload == {"t_fs": "12500000"}
 
         # Second envelope: wave_values_changed, produced by the daemon
         # thread that issued the query. The fake listener pops the
         # staged response immediately, so this should arrive promptly.
-        env_values = _recv_line(view_sock)
+        env_values = rx.next()
         assert env_values.type == "wave_values_changed"
         assert env_values.origin is Origin.WAVE
         assert env_values.payload["t_fs"] == "12500000"
@@ -813,17 +839,18 @@ def test_wave_values_changed_drops_null_values(hub_in_thread: _HubInThread):
     bridge = WaveHubBridge.connect((host, port), listener=listener)
     bridge.start()
     view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    rx = _Recv(view_sock)
     try:
         req = _send_wave_add(view_sock, ["tb.dut.q", "tb.dut.preset"])
-        _ = _recv_line(view_sock)  # ack — id matches req
+        _ = rx.next()  # ack — id matches req
         assert req.id  # silence linter on unused-binding
 
         bridge.on_wcp_event(
             "cursor_moved",
             {"type": "event", "event": "cursor_moved", "timestamp": 100},
         )
-        _ = _recv_line(view_sock)  # cursor_time_changed
-        env = _recv_line(view_sock)
+        _ = rx.next()  # cursor_time_changed
+        env = rx.next()
         assert env.type == "wave_values_changed"
         # Only the populated row appears; preset (value=null) is gone.
         assert env.payload["values"] == [
@@ -865,17 +892,18 @@ def test_add_variables_not_found_paths_are_not_tracked(
     bridge = WaveHubBridge.connect((host, port), listener=listener)
     bridge.start()
     view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    rx = _Recv(view_sock)
     try:
         req = _send_wave_add(view_sock, ["tb.dut.real_signal", "tb.dut.bogus"])
-        _ = _recv_line(view_sock)  # ack
+        _ = rx.next()  # ack
         assert req.id
 
         bridge.on_wcp_event(
             "cursor_moved",
             {"type": "event", "event": "cursor_moved", "timestamp": 1},
         )
-        _ = _recv_line(view_sock)  # cursor_time_changed
-        _ = _recv_line(view_sock)  # wave_values_changed
+        _ = rx.next()  # cursor_time_changed
+        _ = rx.next()  # wave_values_changed
 
         query_sent = next(
             (
