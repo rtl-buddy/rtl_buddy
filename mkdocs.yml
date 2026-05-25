@@ -44,11 +44,15 @@ nav:
       - cocotb: concepts/cocotb.md
       - Spec Traceability: concepts/spec-traceability.md
       - Waveform Viewer: concepts/wave.md
+      - Hierarchy Rendering: concepts/hier.md
       - Hub: concepts/hub.md
       - Synthesis: concepts/synthesis.md
       - Place-and-Route: concepts/pnr.md
       - Power Analysis: concepts/power.md
+      - CDC Lint: concepts/cdc.md
       - Formal Property Verification: concepts/fpv.md
+      - AXI Profiling: concepts/axi-profile.md
+      - Tool Check: concepts/tool-check.md
   - Reference:
       - CLI: reference/cli.md
       - YAML Formats: reference/yaml.md
