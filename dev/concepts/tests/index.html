@@ -530,6 +530,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1441,6 +1452,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1655,6 +1677,30 @@
 <li>compilation fails</li>
 <li>simulation times out</li>
 </ul>
+<h3 id="exit-codes">Exit codes</h3>
+<p><code>rtl_buddy</code> returns one of three exit codes from test commands:</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>All tests passed</td>
+</tr>
+<tr>
+<td>1</td>
+<td>One or more tests failed</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Fatal configuration or environment error</td>
+</tr>
+</tbody>
+</table>
 <h2 id="running-tests">Running tests</h2>
 <p>Run a named test:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
