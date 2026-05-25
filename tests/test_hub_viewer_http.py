@@ -669,7 +669,7 @@ async def test_view_json_query_param_flips_active_model_and_broadcasts(
 
     captured_view = tmp_path / ".rtl-buddy" / "cache" / "view-demo.json"
 
-    def fake_build_view_json(*, project_root, model_cfg):
+    def fake_build_view_json(*, project_root, model_cfg, axi_perf_source=None):
         captured_view.parent.mkdir(parents=True, exist_ok=True)
         captured_view.write_text('{"schema_version":"1.0","top":"demo"}')
         return captured_view
@@ -726,7 +726,7 @@ async def test_view_json_no_query_serves_active_model(
 
     cache_path = tmp_path / ".rtl-buddy" / "cache" / "view-demo.json"
 
-    def fake_build_view_json(*, project_root, model_cfg):
+    def fake_build_view_json(*, project_root, model_cfg, axi_perf_source=None):
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text('{"top":"demo"}')
         return cache_path
@@ -757,7 +757,7 @@ async def test_concurrent_same_model_requests_serialise(
     call_count = {"n": 0}
     cache_path = tmp_path / ".rtl-buddy" / "cache" / "view-demo.json"
 
-    def fake_build(*, project_root, model_cfg):
+    def fake_build(*, project_root, model_cfg, axi_perf_source=None):
         call_count["n"] += 1
         # Block long enough that the second request piles up behind
         # the lock, then release.

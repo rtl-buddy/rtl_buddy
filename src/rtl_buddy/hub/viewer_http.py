@@ -174,6 +174,7 @@ class ViewerServer:
         project_root: Path | None = None,
         initial_model: str | None = None,
         models_file_pin: Path | None = None,
+        axi_perf_source: Path | None = None,
         hub_server: Any | None = None,
     ) -> None:
         self.hub_host = hub_host
@@ -188,6 +189,13 @@ class ViewerServer:
         self.project_root = project_root
         self.active_model = initial_model
         self.models_file_pin = models_file_pin
+        # Optional axi-perf.json the hub bakes into every model's
+        # generated view.json (Phase 2.5 of the marimo umbrella).
+        # ``rb hub start --axi-perf-from PATH`` populates this; the
+        # path is forwarded to rtl-buddy-view via the
+        # ``--overlay axi-perf=…`` form so the SPA's "Open in
+        # marimo" button gets the test/suite_dir metadata for free.
+        self.axi_perf_source = axi_perf_source
         self.hub_server = hub_server
         # Mirror the active model onto HubState so the ``state_snapshot``
         # request type can return it without reaching back into the HTTP
@@ -577,6 +585,7 @@ class ViewerServer:
                     view_builder.build_view_json,
                     project_root=self.project_root,
                     model_cfg=model_cfg,
+                    axi_perf_source=self.axi_perf_source,
                 )
             except FatalRtlBuddyError as exc:
                 log_event(

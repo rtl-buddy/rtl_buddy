@@ -47,6 +47,7 @@ class RtlBuddyView:
         frontend: str | None = None,
         cdc_annotations: str | None = None,
         rdc_annotations: str | None = None,
+        axi_perf_annotations: str | None = None,
         clock_legend: bool = False,
         executable: str = "rtl-buddy-view",
     ):
@@ -57,6 +58,14 @@ class RtlBuddyView:
         self.frontend = frontend
         self.cdc_annotations = cdc_annotations
         self.rdc_annotations = rdc_annotations
+        # Path to an ``axi-perf.json`` (the ``rb axi-profile run``
+        # output for a given test). When set, rtl-buddy-view bakes
+        # the per-bundle/interconnect throughput overlay AND emits a
+        # top-level ``axi_perf.{source,test,suite_dir}`` block that
+        # the SPA's "Open in marimo" button uses to skip its prompt
+        # (Phase 2.5 of the marimo umbrella). Passed via the new
+        # ``--overlay axi-perf=PATH`` form.
+        self.axi_perf_annotations = axi_perf_annotations
         self.clock_legend = clock_legend
         self.executable = executable
 
@@ -102,6 +111,8 @@ class RtlBuddyView:
             cmd += ["--cdc-annotations", self.cdc_annotations]
         if self.rdc_annotations is not None:
             cmd += ["--rdc-annotations", self.rdc_annotations]
+        if self.axi_perf_annotations is not None:
+            cmd += ["--overlay", f"axi-perf={self.axi_perf_annotations}"]
         if self.clock_legend:
             cmd += ["--clock-legend"]
         return cmd
@@ -130,6 +141,13 @@ class RtlBuddyView:
         ):
             raise FatalRtlBuddyError(
                 f"hier: cdc-annotations file not found: {self.cdc_annotations}"
+            )
+        if self.axi_perf_annotations is not None and not os.path.isfile(
+            self.axi_perf_annotations
+        ):
+            raise FatalRtlBuddyError(
+                f"hier: axi-perf annotations file not found: "
+                f"{self.axi_perf_annotations}"
             )
 
         if self.rdc_annotations is not None and not os.path.isfile(

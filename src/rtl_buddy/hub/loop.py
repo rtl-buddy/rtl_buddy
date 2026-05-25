@@ -126,6 +126,7 @@ async def _run(
     view_json_override: Path | None = None,
     initial_model: str | None = None,
     models_file_pin: Path | None = None,
+    axi_perf_source: Path | None = None,
 ) -> int:
     if view_json_override is not None:
         # ``rb hub start --model`` already resolved + generated the
@@ -170,6 +171,7 @@ async def _run(
             project_root=project_root,
             initial_model=initial_model,
             models_file_pin=models_file_pin,
+            axi_perf_source=axi_perf_source,
             hub_server=server,
         )
         _vhost, vport = await _start_listener(
@@ -263,6 +265,7 @@ def serve(
     view_json_override: Path | None = None,
     initial_model: str | None = None,
     models_file_pin: Path | None = None,
+    axi_perf_source: Path | None = None,
 ) -> int:
     """Run the hub event loop until exit. Returns the process exit code.
 
@@ -278,6 +281,12 @@ def serve(
     ``models_file_pin`` records ``--models-file PATH``: when set, both
     ``GET /models`` and ``GET /view.json?model=`` honour the pin and
     refuse model names that aren't in that file.
+
+    ``axi_perf_source`` records ``--axi-perf-from PATH``: forwarded
+    to every ``view_builder.build_view_json`` call so the generated
+    view.json carries the axi-perf overlay + source metadata the
+    SPA's "Open in marimo" button reads. Phase 2.5 of the marimo
+    umbrella.
     """
 
     try:
@@ -290,6 +299,7 @@ def serve(
                 view_json_override=view_json_override,
                 initial_model=initial_model,
                 models_file_pin=models_file_pin,
+                axi_perf_source=axi_perf_source,
             )
         )
     except _PortInUseError as exc:

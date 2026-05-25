@@ -60,6 +60,7 @@ def build_view_json(
     *,
     project_root: Path,
     model_cfg: ModelConfig,
+    axi_perf_source: Path | None = None,
 ) -> Path:
     """Generate view.json for ``model_cfg`` at the stable cache path
     and return it. Raises ``FatalRtlBuddyError`` when the
@@ -72,6 +73,14 @@ def build_view_json(
     ``--cdc-annotations`` to rtl-buddy-view. The SPA's clock overlay
     toggle then has data to render against. Models without ``cdc:``
     fall through to the no-overlay path unchanged.
+
+    When ``axi_perf_source`` is supplied (via the hub's
+    ``--axi-perf-from`` start-up flag), the builder also passes
+    ``--overlay axi-perf=<path>`` so rtl-buddy-view bakes the
+    throughput overlay AND records the test/suite_dir metadata that
+    the SPA's "Open in marimo" button reads to skip its prompt
+    (Phase 2.5 of the marimo umbrella). When not supplied, the
+    no-overlay path runs unchanged.
     """
 
     # Build the domain map FIRST so a misconfigured cdc: back-pointer
@@ -96,6 +105,7 @@ def build_view_json(
         model=model_cfg.name,
         path=str(out_path),
         cdc_annotations=str(domain_map) if domain_map else "",
+        axi_perf=str(axi_perf_source) if axi_perf_source else "",
     )
     runner = RtlBuddyView(
         name=f"hub/view/{model_cfg.name}",
@@ -105,6 +115,7 @@ def build_view_json(
         output=str(out_path),
         executable=viewer_exe,
         cdc_annotations=str(domain_map) if domain_map else None,
+        axi_perf_annotations=str(axi_perf_source) if axi_perf_source else None,
     )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():

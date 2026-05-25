@@ -155,6 +155,22 @@ def cmd_start(
             ),
         ),
     ] = None,
+    axi_perf_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--axi-perf-from",
+            help=(
+                "Path to an axi-perf.json (output of `rb axi-profile run`). "
+                "The hub bakes its per-bundle/interconnect throughput overlay "
+                "into every generated view.json AND records the source's "
+                "test/suite_dir so the SPA's 'Open in marimo' button skips "
+                "its prompt. Use the canonical "
+                "<suite>/artefacts/axi/<test>/axi-perf.json layout so the "
+                "test/suite_dir derivation lands. Only used with "
+                "--serve-viewer."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Bind, write ``hub.json``, run the server loop.
 
@@ -221,6 +237,15 @@ def cmd_start(
     # before the asyncio loop starts so a missing model or a tool
     # failure surfaces synchronously with a clear error, not as a
     # 404 the user discovers in the browser later.
+    # Up-front existence check on --axi-perf-from so the user gets a
+    # clear error before the hub binds its sockets, not later on the
+    # first SPA refresh.
+    if axi_perf_from is not None and not axi_perf_from.is_file():
+        emit_console_text(
+            f"--axi-perf-from: file not found: {axi_perf_from}", style="red"
+        )
+        raise typer.Exit(code=2)
+
     view_json_override: Path | None = None
     if model is not None:
         _models_yaml, loader = hub_model_discovery.resolve_model(
@@ -228,7 +253,9 @@ def cmd_start(
         )
         model_cfg = loader.get_model(model)
         view_json_override = hub_view_builder.build_view_json(
-            project_root=project_root, model_cfg=model_cfg
+            project_root=project_root,
+            model_cfg=model_cfg,
+            axi_perf_source=axi_perf_from,
         )
         emit_console_text(
             f"rb hub: generated view.json for {model!r} at {view_json_override}",
@@ -246,6 +273,7 @@ def cmd_start(
         serve_viewer=serve_viewer,
         viewer_bundle=str(viewer_bundle) if viewer_bundle else "",
         model=model or "",
+        axi_perf_from=str(axi_perf_from) if axi_perf_from else "",
     )
     raise typer.Exit(
         code=hub_loop.serve(
@@ -256,6 +284,7 @@ def cmd_start(
             view_json_override=view_json_override,
             initial_model=model,
             models_file_pin=models_file,
+            axi_perf_source=axi_perf_from,
         )
     )
 

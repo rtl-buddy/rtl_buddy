@@ -115,6 +115,63 @@ def test_wrapper_forwards_optional_flags(tmp_path: Path):
     assert "--clock-legend" in argv
 
 
+def test_wrapper_forwards_axi_perf_annotations_as_overlay(tmp_path: Path):
+    """The hub uses --axi-perf-from to bake throughput overlays into
+    every model's generated view.json. Locks the new --overlay
+    axi-perf=PATH passthrough (Phase 2.5 of the marimo umbrella)."""
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    axi_perf = tmp_path / "axi-perf.json"
+    axi_perf.write_text("{}")
+    script, record = _make_fake_view(tmp_path)
+
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        axi_perf_annotations=str(axi_perf),
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    assert "--overlay" in argv
+    assert f"axi-perf={axi_perf}" in argv
+
+
+def test_wrapper_rejects_missing_axi_perf_annotations(tmp_path: Path):
+    """File-existence check fires before the viewer is spawned so the
+    user gets a clean error, not a viewer-side overlay-load
+    backtrace."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    script, _ = _make_fake_view(tmp_path)
+
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        axi_perf_annotations=str(tmp_path / "missing.json"),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        view.run()
+    assert "axi-perf" in str(exc.value)
+
+
 def test_wrapper_propagates_viewer_exit_code(tmp_path: Path):
     src = tmp_path / "src" / "example.sv"
     src.parent.mkdir()
