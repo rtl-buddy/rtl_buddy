@@ -51,6 +51,7 @@ tests:
 | `uvm` | UVM report thresholds (see below) |
 | `sweep` | Sweep expansion script (see [Plugins](plugins.md)) |
 | `preproc` | Pre-processing script (see [Plugins](plugins.md)) |
+| `assertions` | Boolean: compile in SVA (`--assert`) and report firings (see [Assertion-Based Verification](abv-simulation.md)) |
 
 ### Regression levels
 

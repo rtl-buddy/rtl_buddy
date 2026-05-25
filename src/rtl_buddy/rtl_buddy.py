@@ -384,9 +384,12 @@ class RtlBuddy:
     ):
         rows = []
         has_coverage = False
+        has_assertions = False
         for suite_result in suite_results:
             cov_summary = self._format_coverage_summary(suite_result["results"])
             has_coverage |= cov_summary is not None
+            assert_summary = self._format_assertions_summary(suite_result["results"])
+            has_assertions |= assert_summary is not None
             row = {
                 "test_name": suite_result["test_name"],
                 "result": suite_result["results"].results["result"],
@@ -400,12 +403,16 @@ class RtlBuddy:
                 )
             if cov_summary is not None:
                 row["coverage"] = cov_summary
+            if assert_summary is not None:
+                row["assertions"] = assert_summary
             rows.append(row)
 
         columns = [("test_name", "Test")]
         if include_run_id:
             columns.append(("run_id", "Run"))
         columns.extend([("result", "Result"), ("desc", "Description")])
+        if has_assertions:
+            columns.append(("assertions", "Assertions"))
         if has_coverage:
             columns.append(("coverage", "Coverage"))
         render_summary(
@@ -417,16 +424,22 @@ class RtlBuddy:
     ):
         rows = []
         has_coverage = False
+        has_assertions = False
         for reg_result in reg_results:
             for suite_result in reg_result["results"]:
                 cov_summary = self._format_coverage_summary(suite_result["results"])
                 has_coverage |= cov_summary is not None
+                assert_summary = self._format_assertions_summary(
+                    suite_result["results"]
+                )
+                has_assertions |= assert_summary is not None
                 rows.append(
                     {
                         "suite_name": reg_result["test_suite"],
                         "test_name": suite_result["test_name"],
                         "result": suite_result["results"].results["result"],
                         "desc": suite_result["results"].results["desc"],
+                        "assertions": assert_summary or "",
                         "coverage": cov_summary or "",
                     }
                 )
@@ -437,6 +450,8 @@ class RtlBuddy:
             ("result", "Result"),
             ("desc", "Description"),
         ]
+        if has_assertions:
+            columns.append(("assertions", "Assertions"))
         if has_coverage:
             columns.append(("coverage", "Coverage"))
         render_summary(
@@ -792,6 +807,19 @@ class RtlBuddy:
 
     def _format_coverage_summary(self, test_results):
         return self.coverage.format_summary(test_results)
+
+    @staticmethod
+    def _format_assertions_summary(test_results):
+        """Return a short Assertions cell, or None when the test didn't enable SVA.
+
+        Shape: `"<fired> fired"` so the column doubles as a hit-counter and a
+        pass/fail signal (anything > 0 fired is a FAIL already reflected in the
+        Result column).
+        """
+        assertions = test_results.results.get("assertions")
+        if not assertions or not assertions.get("enabled"):
+            return None
+        return f"{assertions.get('fired', 0)} fired"
 
     def _do_test_suite(
         self,

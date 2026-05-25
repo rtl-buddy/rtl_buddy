@@ -49,6 +49,7 @@ nav:
       - Place-and-Route: concepts/pnr.md
       - Power Analysis: concepts/power.md
       - Formal Property Verification: concepts/fpv.md
+      - Assertion-Based Verification (sim): concepts/abv-simulation.md
   - Reference:
       - CLI: reference/cli.md
       - YAML Formats: reference/yaml.md

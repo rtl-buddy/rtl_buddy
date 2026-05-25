@@ -137,7 +137,42 @@ class VlogSim:
 
     def _coverage_enabled(self):
         compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
-        return any(opt.startswith("--coverage") for opt in compile_opts)
+        if any(opt.startswith("--coverage") for opt in compile_opts):
+            return True
+        # Verilator-side `--coverage-user` injected by assertions=true is enough
+        # to produce a coverage.dat that the cov pipeline can read.
+        if self._assertions_enabled() and self._get_simulator_family() == "verilator":
+            return True
+        return False
+
+    def _assertions_enabled(self):
+        """SVA assertions requested for this test (Verilator-only today)."""
+        return bool(getattr(self.test_cfg, "assertions", False))
+
+    def _get_verilator_assertion_flags(self, builder_opts: list[str]) -> list[str]:
+        """Return Verilator-specific flags needed to compile in SVA + cover hits.
+
+        Idempotent: skips flags already present in the builder's configured opts.
+        """
+        if not self._assertions_enabled():
+            return []
+        if self._get_simulator_family() != "verilator":
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.assertions_not_verilator",
+                test=self.test_name,
+                simulator=self._get_simulator_family(),
+            )
+            return []
+
+        existing = set(builder_opts)
+        extras: list[str] = []
+        if "--assert" not in existing:
+            extras.append("--assert")
+        if not any(opt == "--coverage-user" for opt in existing):
+            extras.append("--coverage-user")
+        return extras
 
     def _get_simulator_family(self):
         """
@@ -311,6 +346,17 @@ class VlogSim:
             run_cmd += ["--Mdir", self._get_build_dir()]
 
         run_cmd += self._get_extra_compile_flags()
+
+        assertion_flags = self._get_verilator_assertion_flags(builder_opts)
+        if assertion_flags:
+            run_cmd += assertion_flags
+            log_event(
+                logger,
+                logging.INFO,
+                "compile.assertions_enabled",
+                test=self.test_name,
+                flags=assertion_flags,
+            )
 
         # add test plus-defines
         run_cmd += self._get_plusdefines()
@@ -570,6 +616,8 @@ class VlogSim:
 
         run_id = self.run_id if run_id is None else run_id
         log_path = self._get_log_path(run_id=run_id)
+        err_path = self._get_err_path(run_id=run_id)
+        assertions_enabled = self._assertions_enabled()
 
         if self.test_cfg.uvm:
             self.vlog_post = UvmVlogPost(
@@ -577,11 +625,18 @@ class VlogSim:
                 path=log_path,
                 max_warns=self.test_cfg.uvm.max_warns,
                 max_errors=self.test_cfg.uvm.max_errors,
+                err_path=err_path,
+                assertions_enabled=assertions_enabled,
             )
 
         # default post-processing (VlogPost)
         else:
-            self.vlog_post = VlogPost(name=self.test_name, path=log_path)
+            self.vlog_post = VlogPost(
+                name=self.test_name,
+                path=log_path,
+                err_path=err_path,
+                assertions_enabled=assertions_enabled,
+            )
         results = self.vlog_post.get_results()
         if self._coverage_enabled():
             cov = VlogCov(

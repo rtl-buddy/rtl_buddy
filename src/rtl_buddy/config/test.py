@@ -142,6 +142,10 @@ class TestConfig:
       sweep_path (str | None): Path to sweep expansion Python script (expands one test into many).
       preproc_path (str | None): Path to pre-processing Python script (runs before compile).
       postproc_path (str | None): Path to post-processing Python script (runs after simulation).
+      assertions (bool): When True and the builder is Verilator, compile in SVA via
+        `--assert` and surface assertion-failed counts in the `rb test` results
+        table. Also enables `--coverage-user` so concurrent `cover` property hits
+        flow into the existing coverage pipeline.
     """
 
     name: str
@@ -157,6 +161,7 @@ class TestConfig:
     tb: TestbenchConfig
     timeout: int | None
     covers: list[str] | None = None
+    assertions: bool = False
     default_timeout: int = 60  # NOTE: potential for config through root config
 
     def get_name(self):
@@ -415,6 +420,7 @@ class TestConfigFile:
     tb: str = field(rename="testbench")
     timeout: int | None = field(rename="sim_timeout")
     covers: list[str] | None = None
+    assertions: bool = False
 
     def initialise(self, config_dir, tbs):
         tb = tbs[self.tb]
@@ -435,4 +441,5 @@ class TestConfigFile:
             tb,
             self.timeout,
             covers=self.covers,
+            assertions=self.assertions,
         )
