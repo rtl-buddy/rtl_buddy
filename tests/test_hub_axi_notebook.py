@@ -270,8 +270,141 @@ def test_route_returns_json_url_on_success(
     assert payload["url"] == "http://localhost:31337"
     assert payload["test"] == "basic"
     assert payload["pid"] > 0
+    assert payload["reused"] is False
     # Background fake_marimo cleanup.
     try:
         os.kill(payload["pid"], 9)
     except ProcessLookupError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Session reuse + shutdown cleanup (Phase 2.5)
+# ---------------------------------------------------------------------------
+
+
+def test_repeat_request_for_same_test_reuses_cached_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second click on the SPA's "Open in marimo" button for the same
+    (test, suite_dir) returns the SAME url+pid+port. No duplicate
+    marimo spawn — locks the Phase 2.5 single-instance behaviour."""
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+    server = _make_viewer_server(tmp_path)
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+
+    query = {"test": ["basic"], "suite_dir": [str(suite)]}
+    first = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+    second = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert second["pid"] == first["pid"]
+    assert second["url"] == first["url"]
+    assert second["port"] == first["port"]
+    assert len(server._axi_notebook_sessions) == 1
+    try:
+        os.kill(first["pid"], 9)
+    except ProcessLookupError:
+        pass
+
+
+def test_cache_drops_stale_entry_and_respawns_when_pid_is_dead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the user manually killed the spawned marimo (or it crashed),
+    the next click should respawn instead of returning a dead URL."""
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+    server = _make_viewer_server(tmp_path)
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+
+    query = {"test": ["basic"], "suite_dir": [str(suite)]}
+    first = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+    # Simulate the spawned marimo dying.
+    try:
+        os.kill(first["pid"], 9)
+    except ProcessLookupError:
+        pass
+    # Give the kernel a moment to reap.
+    import time
+
+    time.sleep(0.2)
+
+    second = json.loads(
+        asyncio.run(server._handle_axi_notebook(_StubConnection(), query)).body
+    )
+    assert second["reused"] is False
+    assert second["pid"] != first["pid"]
+    try:
+        os.kill(second["pid"], 9)
+    except ProcessLookupError:
+        pass
+
+
+def test_shutdown_terminates_spawned_marimos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ViewerServer.shutdown() SIGTERMs every spawned marimo and
+    clears the session cache. Without this, hub restarts orphan
+    marimos that nobody can reach."""
+    suite = _write_suite(tmp_path)
+    fake = _fake_marimo(tmp_path, url="http://localhost:31337")
+    server = _make_viewer_server(tmp_path)
+
+    monkeypatch.setattr(axi_notebook_launcher.shutil, "which", lambda _: "marimo")
+    monkeypatch.setattr(
+        axi_notebook_launcher,
+        "_build_cmd",
+        lambda *, suite_dir, test, port: [str(fake)],
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            server._handle_axi_notebook(
+                _StubConnection(),
+                {"test": ["basic"], "suite_dir": [str(suite)]},
+            )
+        ).body
+    )
+    pid = payload["pid"]
+    assert os.kill(pid, 0) is None  # alive
+
+    asyncio.run(server.shutdown())
+    assert server._axi_notebook_sessions == {}
+
+    # SIGTERM is best-effort; the fake_marimo (a bash sleep 60) does
+    # exit on SIGTERM in practice. Give it a beat.
+    import time
+
+    for _ in range(20):
+        time.sleep(0.1)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+    else:  # pragma: no cover
+        try:
+            os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+        raise AssertionError(f"marimo pid {pid} survived shutdown SIGTERM")

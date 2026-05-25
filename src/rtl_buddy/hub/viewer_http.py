@@ -199,6 +199,14 @@ class ViewerServer:
         # ``?model=X`` / ``?model=Y`` requests run in parallel. Locks
         # are allocated lazily and never garbage-collected per session.
         self._model_locks: dict[str, asyncio.Lock] = {}
+        # Marimo "Open in marimo" session cache (Phase 2.5).
+        # ``(test, suite_dir) → LaunchResult``. Repeat clicks reuse
+        # the cached entry when the spawned marimo is still alive
+        # (``os.kill(pid, 0)`` succeeds). Per-key lock funnels
+        # concurrent requests for the same notebook through one
+        # spawn — analogous to ``_model_locks`` for /view.json?model=.
+        self._axi_notebook_sessions: dict[tuple[str, str], Any] = {}
+        self._axi_notebook_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._server: Any | None = None
         self._bundle_index = self._resolve_bundle_index(viewer_bundle)
 
@@ -253,6 +261,14 @@ class ViewerServer:
             pass
 
     async def shutdown(self) -> None:
+        # Reap the marimo subprocesses we spawned for /api/axi-profile/
+        # notebook before tearing down the HTTP server. Without this
+        # they survive hub restarts as orphans — each one holds an
+        # OS port and a marimo session that nobody can reach (the SPA
+        # only knows the URL via the now-dead hub).
+        for key, session in list(self._axi_notebook_sessions.items()):
+            _terminate_pid(session.pid)
+            self._axi_notebook_sessions.pop(key, None)
         if self._server is None:
             return
         self._server.close()
@@ -346,6 +362,11 @@ class ViewerServer:
         it's the user's notebook session, intended to outlive the
         single HTTP round-trip.
 
+        Repeat clicks for the same ``(test, suite_dir)`` reuse the
+        cached marimo when its pid is still alive (single-instance
+        per notebook, Phase 2.5). When the cached marimo has died
+        the entry is dropped and a fresh one spawns.
+
         Response::
 
           {
@@ -353,7 +374,8 @@ class ViewerServer:
             "pid":       12345,
             "port":      NNNN,
             "test":      "basic_traffic",
-            "suite_dir": "/abs/path/to/verif/demo_axi_2x2"
+            "suite_dir": "/abs/path/to/verif/demo_axi_2x2",
+            "reused":    false                            ← true when cache hit
           }
 
         Errors surface as JSON-bodied 4xx/5xx with a single ``error``
@@ -373,29 +395,64 @@ class ViewerServer:
             )
         test = (query.get("test") or [""])[0]
         suite_dir = (query.get("suite_dir") or [""])[0]
-        try:
-            result = await axi_notebook_launcher.launch(
-                test=test,
-                suite_dir=suite_dir,
-                project_root=self.project_root,
-            )
-        except axi_notebook_launcher.AxiNotebookLaunchError as e:
+
+        # Per-(test, suite_dir) lock funnels concurrent requests for
+        # the same notebook through one spawn. Without this, two SPA
+        # clicks within marimo's ~3 s startup window would both miss
+        # the cache and spawn duplicate processes on different ports.
+        key = (test, suite_dir)
+        lock = self._axi_notebook_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = self._axi_notebook_sessions.get(key)
+            if cached is not None and _is_pid_alive(cached.pid):
+                # Cache hit — return the same URL the user got last time.
+                body = _json.dumps(
+                    {
+                        "url": cached.url,
+                        "pid": cached.pid,
+                        "port": cached.port,
+                        "test": cached.test,
+                        "suite_dir": cached.suite_dir,
+                        "reused": True,
+                    }
+                ).encode()
+                return _http_response(
+                    connection, 200, body, content_type="application/json"
+                )
+            # Cache miss or stale → drop the dead entry, spawn fresh.
+            if cached is not None:
+                self._axi_notebook_sessions.pop(key, None)
+            try:
+                result = await axi_notebook_launcher.launch(
+                    test=test,
+                    suite_dir=suite_dir,
+                    project_root=self.project_root,
+                )
+            except axi_notebook_launcher.AxiNotebookLaunchError as e:
+                return _http_response(
+                    connection,
+                    e.status,
+                    _json.dumps({"error": str(e)}).encode(),
+                    content_type="application/json",
+                )
+            # Cache under the resolved key (suite_dir may have been
+            # normalised to an absolute path by the launcher's
+            # validator; use the request key so the next request with
+            # the same input hits the cache).
+            self._axi_notebook_sessions[key] = result
+            body = _json.dumps(
+                {
+                    "url": result.url,
+                    "pid": result.pid,
+                    "port": result.port,
+                    "test": result.test,
+                    "suite_dir": result.suite_dir,
+                    "reused": False,
+                }
+            ).encode()
             return _http_response(
-                connection,
-                e.status,
-                _json.dumps({"error": str(e)}).encode(),
-                content_type="application/json",
+                connection, 200, body, content_type="application/json"
             )
-        body = _json.dumps(
-            {
-                "url": result.url,
-                "pid": result.pid,
-                "port": result.port,
-                "test": result.test,
-                "suite_dir": result.suite_dir,
-            }
-        ).encode()
-        return _http_response(connection, 200, body, content_type="application/json")
 
     async def _handle_models(self, connection: ServerConnection) -> Response:
         """``GET /models`` — list every model the hub can serve.
@@ -685,6 +742,44 @@ class ViewerServer:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """``os.kill(pid, 0)`` raises ProcessLookupError when the pid no
+    longer exists and PermissionError when it exists but belongs to
+    a different user. We only spawn marimo as the hub's own uid, so
+    PermissionError shouldn't fire in practice; treat any signal
+    failure as "dead" to avoid sticky stale entries.
+    """
+    import os
+    import signal
+
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    # signal.SIG_DFL is just here to keep linters happy about the
+    # import being intentional even when only os.kill is used.
+    del signal
+    return True
+
+
+def _terminate_pid(pid: int) -> None:
+    """Best-effort SIGTERM. Used during hub shutdown to clean up the
+    marimos we spawned for the SPA's "Open in marimo" flow.
+
+    No SIGKILL escalation, no wait — the hub is shutting down and
+    we don't want to block on a marimo process that's hung. The OS
+    will reap the orphan if SIGTERM fails to land within the kernel
+    grace period.
+    """
+    import os
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def _http_response(
