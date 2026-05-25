@@ -71,6 +71,7 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "scope_changed",
         "source_focused",
         "diagnostics_set",
+        "wave_values_changed",
     }
 )
 """Event ``type`` strings that broadcast to all clients except origin.

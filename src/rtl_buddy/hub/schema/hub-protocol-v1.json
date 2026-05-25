@@ -108,6 +108,41 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "wave_values_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["t_fs", "values"],
+            "additionalProperties": false,
+            "description": "Broadcast by the hub when surfer reports new values for the variables it's tracking — typically as a side-effect of cursor movement. Carries the timestamp at which the values were sampled plus one entry per (wave_scope, signal). Consumers merge into a last-known-value map; absent signals retain their previous value (no clear-on-omit semantics).",
+            "properties": {
+              "t_fs": {
+                "type": "string",
+                "pattern": "^-?[0-9]+$",
+                "description": "Sampling time in femtoseconds, decimal string (same encoding as cursor_time_changed)."
+              },
+              "values": {
+                "type": "array",
+                "description": "Per-signal value samples at t_fs. An empty array is legal (e.g. the cursor moved into a region the hub doesn't have variables tracked for) and clears nothing.",
+                "items": {
+                  "type": "object",
+                  "required": ["wave_scope", "signal", "value"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "wave_scope": { "type": "string", "minLength": 1, "description": "Surfer-side scope path, dotted (e.g. `tb.dut.fifo`)." },
+                    "signal":     { "type": "string", "minLength": 1, "description": "Bare signal name within wave_scope (no scope prefix)." },
+                    "value":      { "type": "string", "description": "SV literal — e.g. `1'b1`, `32'hDEAD_BEEF`, `1'bx`. Producers should emit the same encoding the Phase 8 offline overlay uses so the renderer can format both identically." }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "source_focused" } }, "required": ["type"] },
       "then": {
         "properties": {

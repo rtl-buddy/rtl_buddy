@@ -289,6 +289,7 @@ def test_vendored_schema_has_expected_types():
         "wave_set_viewport",
         "wave_zoom_to_range",
         "wave_zoom_to_fit",
+        "wave_values_changed",
         "view_pan_to",
         "view_capture",
         "wave_set_viewport",
