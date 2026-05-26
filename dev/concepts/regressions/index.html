@@ -365,6 +365,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../execution-context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../root-config/" class="md-nav__link">
         
   
@@ -1160,7 +1188,7 @@
   <span class="md-ellipsis">
     
   
-    Migrations
+    Development
   
 
     
@@ -1173,6 +1201,121 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/guidelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/docs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Documentation Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1442,6 +1585,7 @@
 <li>The path set in <code>root_config.yaml</code> under <code>cfg-rtl-reg.reg-cfg-path</code></li>
 </ol>
 <p>This means you can drop a <code>regression.yaml</code> at the repo root and run <code>rtl-buddy regression</code> without any flags, even if <code>root_config.yaml</code> points elsewhere.</p>
+<p>Each suite's outputs land under that suite's own <code>tests.yaml</code> directory; the orchestration log and any merged coverage artifacts land under <code>dirname(regression.yaml)</code>. See <a href="../execution-context/">Execution Context</a> for how the per-suite re-anchoring works.</p>
 <h3 id="regression-levels">Regression levels</h3>
 <p><code>rtl_buddy</code> filters tests by the <code>reglvl</code> value set in each <code>tests.yaml</code>. Use <code>--reg-level</code> and <code>--start-level</code> to select a range:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Run all tests with reglvl &lt;= 2000</span>

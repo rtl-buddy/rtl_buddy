@@ -365,6 +365,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../execution-context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../root-config/" class="md-nav__link">
         
   
@@ -1237,7 +1265,7 @@
   <span class="md-ellipsis">
     
   
-    Migrations
+    Development
   
 
     
@@ -1250,6 +1278,121 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/guidelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/docs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Documentation Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1765,7 +1908,7 @@
 <p>The symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root always point to the most recent run.</p>
 <p>For machine-readable logs (JSON Lines), use <code>--machine</code>. See <a href="../../agents/">For Agents</a>.</p>
 <h2 id="path-and-working-directory">Path and working directory</h2>
-<p><code>test</code> and <code>randtest</code> do <strong>not</strong> automatically change directory to the suite directory. Run them from the directory containing <code>tests.yaml</code>, or pass an explicit <code>--test-config</code> path.</p>
+<p><code>test</code> and <code>randtest</code> anchor outputs on the directory containing <code>tests.yaml</code>. You can run them from anywhere — invoke <code>rb test -c path/to/tests.yaml</code> and the artifact tree, <code>rtl_buddy.log</code>, and builder scratch all land under <code>dirname(tests.yaml)</code>, not your shell's cwd. See <a href="../execution-context/">Execution Context</a> for the full picture and the worked example for invoking from a sibling directory.</p>
 <p>Paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved relative to the suite file's directory, not the invocation directory.</p>
 <p>Plusargs are passed to the simulator verbatim. If a plusarg should reference a suite-local file, resolve it explicitly in preproc using <code>suite_dir</code>. Bare output filenames can remain artifact-relative so they land under <code>artefacts/{test_name}/</code>.</p>
 <h2 id="full-schema">Full schema</h2>

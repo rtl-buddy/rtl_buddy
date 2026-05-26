@@ -6,28 +6,34 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, RTL test automation, coverage, and YAML-based verification flows.">
+        <meta name="description" content="Documentation authoring rules for rtl_buddy, including frontmatter, page structure, generated files, and local validation.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/development/docs/">
       
+      
+        <link rel="prev" href="../guidelines/">
+      
+      
+        <link rel="next" href="../../migrations/submodule-to-uv/">
       
       
         
       
       
-      <link rel="icon" href="/rtl_buddy/dev/assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>RTL Buddy</title>
+        <title>Documentation Guidelines - RTL Buddy</title>
       
     
     
-      <link rel="stylesheet" href="/rtl_buddy/dev/assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
       
 
@@ -46,7 +52,7 @@
       
     
     
-    <script>__md_scope=new URL("/rtl_buddy/dev",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -62,6 +68,11 @@
     <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
+      
+        
+        <a href="#documentation-guidelines" class="md-skip">
+          Skip to content
+        </a>
       
     </div>
     <div data-md-component="announce">
@@ -79,7 +90,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="/rtl_buddy/dev/." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -99,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              
+              Documentation Guidelines
             
           </span>
         </div>
@@ -189,7 +200,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="/rtl_buddy/dev/." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -219,7 +230,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -246,7 +257,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/install/" class="md-nav__link">
+      <a href="../../install/" class="md-nav__link">
         
   
   
@@ -273,7 +284,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/quickstart/" class="md-nav__link">
+      <a href="../../quickstart/" class="md-nav__link">
         
   
   
@@ -352,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/execution-context/" class="md-nav__link">
+      <a href="../../concepts/execution-context/" class="md-nav__link">
         
   
   
@@ -380,7 +391,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/root-config/" class="md-nav__link">
+      <a href="../../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -408,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/tests/" class="md-nav__link">
+      <a href="../../concepts/tests/" class="md-nav__link">
         
   
   
@@ -436,7 +447,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/regressions/" class="md-nav__link">
+      <a href="../../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -464,7 +475,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/coverage/" class="md-nav__link">
+      <a href="../../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -492,7 +503,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/plugins/" class="md-nav__link">
+      <a href="../../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -520,7 +531,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/cocotb/" class="md-nav__link">
+      <a href="../../concepts/cocotb/" class="md-nav__link">
         
   
   
@@ -548,7 +559,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/spec-traceability/" class="md-nav__link">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
         
   
   
@@ -576,7 +587,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/wave/" class="md-nav__link">
+      <a href="../../concepts/wave/" class="md-nav__link">
         
   
   
@@ -604,7 +615,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/hier/" class="md-nav__link">
+      <a href="../../concepts/hier/" class="md-nav__link">
         
   
   
@@ -632,7 +643,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/hub/" class="md-nav__link">
+      <a href="../../concepts/hub/" class="md-nav__link">
         
   
   
@@ -660,7 +671,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/synthesis/" class="md-nav__link">
+      <a href="../../concepts/synthesis/" class="md-nav__link">
         
   
   
@@ -688,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/pnr/" class="md-nav__link">
+      <a href="../../concepts/pnr/" class="md-nav__link">
         
   
   
@@ -716,7 +727,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/power/" class="md-nav__link">
+      <a href="../../concepts/power/" class="md-nav__link">
         
   
   
@@ -744,7 +755,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/cdc/" class="md-nav__link">
+      <a href="../../concepts/cdc/" class="md-nav__link">
         
   
   
@@ -772,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/fpv/" class="md-nav__link">
+      <a href="../../concepts/fpv/" class="md-nav__link">
         
   
   
@@ -800,7 +811,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/abv-simulation/" class="md-nav__link">
+      <a href="../../concepts/abv-simulation/" class="md-nav__link">
         
   
   
@@ -828,7 +839,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/axi-profile/" class="md-nav__link">
+      <a href="../../concepts/axi-profile/" class="md-nav__link">
         
   
   
@@ -856,7 +867,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/tool-check/" class="md-nav__link">
+      <a href="../../concepts/tool-check/" class="md-nav__link">
         
   
   
@@ -943,7 +954,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/reference/cli/" class="md-nav__link">
+      <a href="../../reference/cli/" class="md-nav__link">
         
   
   
@@ -971,7 +982,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/reference/yaml/" class="md-nav__link">
+      <a href="../../reference/yaml/" class="md-nav__link">
         
   
   
@@ -1006,7 +1017,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/agents/" class="md-nav__link">
+      <a href="../../agents/" class="md-nav__link">
         
   
   
@@ -1030,8 +1041,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -1042,11 +1055,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
           <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
@@ -1067,7 +1080,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1085,7 +1098,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/development/guidelines/" class="md-nav__link">
+      <a href="../guidelines/" class="md-nav__link">
         
   
   
@@ -1110,10 +1123,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/development/docs/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Documentation Guidelines
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1129,6 +1169,81 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#frontmatter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontmatter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-style" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing Style
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#page-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Page Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#generated-pages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generated Pages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1200,7 +1315,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/migrations/submodule-to-uv/" class="md-nav__link">
+      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
         
   
   
@@ -1228,7 +1343,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/migrations/v2-to-v3/" class="md-nav__link">
+      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
         
   
   
@@ -1263,7 +1378,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/known-issues/" class="md-nav__link">
+      <a href="../../known-issues/" class="md-nav__link">
         
   
   
@@ -1290,7 +1405,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/CONTRIBUTING/" class="md-nav__link">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
         
   
   
@@ -1327,6 +1442,71 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#frontmatter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontmatter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-style" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing Style
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#page-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Page Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#generated-pages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generated Pages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -1339,8 +1519,89 @@
               
               <article class="md-content__inner md-typeset">
                 
-  <h1>404 - Not found</h1>
+                  
 
+
+  
+  
+
+
+<h1 id="documentation-guidelines">Documentation Guidelines</h1>
+<p>These rules apply to files under <code>docs/</code>.
+The docs are both the human-facing site and the local reference surface exposed by <code>rb docs list</code> and <code>rb docs show</code>.</p>
+<h2 id="frontmatter">Frontmatter</h2>
+<p>Every docs page must start with a YAML frontmatter block containing a <code>description:</code> field:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>---
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gu">description: One or two sentences describing what this page covers.</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="gu">---</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="gh"># Page Title</span>
+</code></pre></div>
+<p>The <code>description:</code> value is used as the page summary in <code>rb docs list</code> and <code>rb docs show --machine</code>.
+Agents read it to decide which page to fetch; make it accurate and specific.</p>
+<p>Rules:</p>
+<ul>
+<li>Required on every page except <code>reference/cli.md</code>, which is auto-generated.</li>
+<li>One or two sentences; focus on what the page covers, not that it "explains" or "describes" something.</li>
+<li>CI enforces this via <code>scripts/check_docs_frontmatter.py --check</code>.</li>
+</ul>
+<h2 id="writing-style">Writing Style</h2>
+<p>Write for both humans and agents:</p>
+<ul>
+<li>Be concise. Agents parse these pages programmatically. Long preambles add noise.</li>
+<li>Be complete. Every H2 section should stand alone. Agents may fetch a single section via <code>rb docs show slug#anchor</code>.</li>
+<li>Keep one topic per H2. If a section covers two things, split it.</li>
+<li>Prefer prose for explanations. Bullets are fine for option lists, checklists, and step sequences.</li>
+</ul>
+<h2 id="page-structure">Page Structure</h2>
+<p>Use this shape for hand-written pages:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>---
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="gu">description: ...</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="gu">---</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="gh"># Title</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>Opening sentence or short paragraph that orients the reader.
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="gu">## Section One</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>Content.
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="gu">## Section Two</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>Content.
+</code></pre></div>
+<p>Avoid deeply nested subsections (<code>###</code> and below) when the content can be reorganized into top-level H2 sections.</p>
+<h2 id="generated-pages">Generated Pages</h2>
+<p><code>docs/reference/cli.md</code> is generated from <code>rtl-buddy --help</code> output by <code>scripts/gen_cli_reference.py</code>.
+Do not edit it by hand; changes will be overwritten.
+Edit CLI help strings in <code>src/rtl_buddy/rtl_buddy.py</code> instead.</p>
+<p>CI auto-commits regenerated <code>cli.md</code> if it drifts.
+Its <code>description:</code> frontmatter is part of the generated output and is maintained by the generator, not by hand.</p>
+<h2 id="local-checks">Local Checks</h2>
+<p>Run the docs checks before opening a PR that touches docs:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/check_docs_frontmatter.py<span class="w"> </span>--check
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>uv<span class="w"> </span>run<span class="w"> </span>--group<span class="w"> </span>docs<span class="w"> </span>mkdocs<span class="w"> </span>build<span class="w"> </span>--strict
+</code></pre></div>
+<p>For CLI help changes, regenerate the CLI reference first:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/gen_cli_reference.py
+</code></pre></div>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
               </article>
             </div>
           
@@ -1383,10 +1644,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "/rtl_buddy/dev", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "/rtl_buddy/dev/assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="/rtl_buddy/dev/assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>

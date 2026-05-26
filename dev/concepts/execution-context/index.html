@@ -6,28 +6,34 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Python CLI for Verilog and SystemVerilog regression testing, Verilator and VCS simulation workflows, RTL test automation, coverage, and YAML-based verification flows.">
+        <meta name="description" content="Where rtl_buddy puts artifacts and logs, and how relative paths are resolved when you invoke rb from outside the suite directory.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/execution-context/">
       
+      
+        <link rel="prev" href="../../quickstart/">
+      
+      
+        <link rel="next" href="../root-config/">
       
       
         
       
       
-      <link rel="icon" href="/rtl_buddy/dev/assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>RTL Buddy</title>
+        <title>Execution Context - RTL Buddy</title>
       
     
     
-      <link rel="stylesheet" href="/rtl_buddy/dev/assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
       
 
@@ -46,7 +52,7 @@
       
     
     
-    <script>__md_scope=new URL("/rtl_buddy/dev",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -62,6 +68,11 @@
     <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
+      
+        
+        <a href="#execution-context" class="md-skip">
+          Skip to content
+        </a>
       
     </div>
     <div data-md-component="announce">
@@ -79,7 +90,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="/rtl_buddy/dev/." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -99,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              
+              Execution Context
             
           </span>
         </div>
@@ -189,7 +200,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="/rtl_buddy/dev/." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -219,7 +230,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -246,7 +257,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/install/" class="md-nav__link">
+      <a href="../../install/" class="md-nav__link">
         
   
   
@@ -273,7 +284,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/quickstart/" class="md-nav__link">
+      <a href="../../quickstart/" class="md-nav__link">
         
   
   
@@ -297,8 +308,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -309,11 +322,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -334,7 +347,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -349,10 +362,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/execution-context/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Context
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -368,6 +408,114 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-three-anchors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The three anchors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A worked example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-command-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-command mapping
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-rtl_buddylog-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where rtl_buddy.log lives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hook-scripts-sweep-preproc-postproc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts (sweep, preproc, postproc)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#path-resolution-rules-for-config-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path resolution rules for config files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#future-redirecting-the-artifact-root" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Future: redirecting the artifact root
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -380,7 +528,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/root-config/" class="md-nav__link">
+      <a href="../root-config/" class="md-nav__link">
         
   
   
@@ -408,7 +556,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/tests/" class="md-nav__link">
+      <a href="../tests/" class="md-nav__link">
         
   
   
@@ -436,7 +584,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/regressions/" class="md-nav__link">
+      <a href="../regressions/" class="md-nav__link">
         
   
   
@@ -464,7 +612,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/coverage/" class="md-nav__link">
+      <a href="../coverage/" class="md-nav__link">
         
   
   
@@ -492,7 +640,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/plugins/" class="md-nav__link">
+      <a href="../plugins/" class="md-nav__link">
         
   
   
@@ -520,7 +668,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/cocotb/" class="md-nav__link">
+      <a href="../cocotb/" class="md-nav__link">
         
   
   
@@ -548,7 +696,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/spec-traceability/" class="md-nav__link">
+      <a href="../spec-traceability/" class="md-nav__link">
         
   
   
@@ -576,7 +724,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/wave/" class="md-nav__link">
+      <a href="../wave/" class="md-nav__link">
         
   
   
@@ -604,7 +752,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/hier/" class="md-nav__link">
+      <a href="../hier/" class="md-nav__link">
         
   
   
@@ -632,7 +780,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/hub/" class="md-nav__link">
+      <a href="../hub/" class="md-nav__link">
         
   
   
@@ -660,7 +808,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/synthesis/" class="md-nav__link">
+      <a href="../synthesis/" class="md-nav__link">
         
   
   
@@ -688,7 +836,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/pnr/" class="md-nav__link">
+      <a href="../pnr/" class="md-nav__link">
         
   
   
@@ -716,7 +864,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/power/" class="md-nav__link">
+      <a href="../power/" class="md-nav__link">
         
   
   
@@ -744,7 +892,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/cdc/" class="md-nav__link">
+      <a href="../cdc/" class="md-nav__link">
         
   
   
@@ -772,7 +920,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/fpv/" class="md-nav__link">
+      <a href="../fpv/" class="md-nav__link">
         
   
   
@@ -800,7 +948,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/abv-simulation/" class="md-nav__link">
+      <a href="../abv-simulation/" class="md-nav__link">
         
   
   
@@ -828,7 +976,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/axi-profile/" class="md-nav__link">
+      <a href="../axi-profile/" class="md-nav__link">
         
   
   
@@ -856,7 +1004,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/concepts/tool-check/" class="md-nav__link">
+      <a href="../tool-check/" class="md-nav__link">
         
   
   
@@ -943,7 +1091,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/reference/cli/" class="md-nav__link">
+      <a href="../../reference/cli/" class="md-nav__link">
         
   
   
@@ -971,7 +1119,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/reference/yaml/" class="md-nav__link">
+      <a href="../../reference/yaml/" class="md-nav__link">
         
   
   
@@ -1006,7 +1154,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/agents/" class="md-nav__link">
+      <a href="../../agents/" class="md-nav__link">
         
   
   
@@ -1085,7 +1233,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/development/guidelines/" class="md-nav__link">
+      <a href="../../development/guidelines/" class="md-nav__link">
         
   
   
@@ -1113,7 +1261,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/development/docs/" class="md-nav__link">
+      <a href="../../development/docs/" class="md-nav__link">
         
   
   
@@ -1200,7 +1348,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/migrations/submodule-to-uv/" class="md-nav__link">
+      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
         
   
   
@@ -1228,7 +1376,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/migrations/v2-to-v3/" class="md-nav__link">
+      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
         
   
   
@@ -1263,7 +1411,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/known-issues/" class="md-nav__link">
+      <a href="../../known-issues/" class="md-nav__link">
         
   
   
@@ -1290,7 +1438,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rtl_buddy/dev/CONTRIBUTING/" class="md-nav__link">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
         
   
   
@@ -1327,6 +1475,104 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-three-anchors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The three anchors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-worked-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A worked example
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-command-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-command mapping
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-rtl_buddylog-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where rtl_buddy.log lives
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hook-scripts-sweep-preproc-postproc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts (sweep, preproc, postproc)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#path-resolution-rules-for-config-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path resolution rules for config files
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#future-redirecting-the-artifact-root" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Future: redirecting the artifact root
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -1339,8 +1585,213 @@
               
               <article class="md-content__inner md-typeset">
                 
-  <h1>404 - Not found</h1>
+                  
 
+
+  
+  
+
+
+<h1 id="execution-context">Execution Context</h1>
+<p><code>rtl_buddy</code> commands always anchor their work on the <strong>primary config file</strong> (<code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, …), not on the directory you happened to run <code>rb</code> from. This means the same command produces the same artifact layout regardless of where you invoked it.</p>
+<p>If you've ever run <code>rb</code> from a design directory and ended up with a stray <code>verif/artefacts/</code> or <code>rtl_buddy.log</code> next to your RTL sources, this page explains why that no longer happens.</p>
+<h2 id="the-three-anchors">The three anchors</h2>
+<p>Every command has three paths it cares about:</p>
+<table>
+<thead>
+<tr>
+<th>Anchor</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>invocation_cwd</code></td>
+<td>The directory you ran <code>rb</code> from — your shell's working directory.</td>
+</tr>
+<tr>
+<td><code>command_root</code></td>
+<td>The directory containing the command's primary config file.</td>
+</tr>
+<tr>
+<td><code>artifact_root</code></td>
+<td>Where the artifact tree lives. Defaults to <code>command_root/artefacts/</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>And one rule that ties them together:</p>
+<blockquote>
+<p><strong>Config-driven commands anchor to their primary config. Explicit CLI input/output paths anchor to your shell's cwd.</strong></p>
+</blockquote>
+<p>Generated outputs (<code>artefacts/&lt;name&gt;/</code>, <code>rtl_buddy.log</code>, builder scratch) go under the command root. Things you typed on the command line (<code>-o out.svg</code>, an output filelist path) follow normal shell semantics — they land where you told them to.</p>
+<h2 id="a-worked-example">A worked example</h2>
+<p>Suppose your repo looks like this:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>repo/
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── design/&lt;block&gt;/        # RTL sources
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>└── verif/&lt;block&gt;/
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    └── tests.yaml
+</code></pre></div>
+<p>You're sitting in <code>repo/design/&lt;block&gt;</code> (looking at the RTL) and want to run a quick test. You point <code>rb</code> at the suite with <code>-c</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>repo/design/&lt;block&gt;
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic<span class="w"> </span>-c<span class="w"> </span>../../verif/&lt;block&gt;/tests.yaml
+</code></pre></div>
+<p>Here is what each anchor resolves to:</p>
+<ul>
+<li><code>invocation_cwd</code> = <code>repo/design/&lt;block&gt;</code></li>
+<li><code>command_root</code> = <code>repo/verif/&lt;block&gt;</code> (<code>dirname(tests.yaml)</code>)</li>
+<li><code>artifact_root</code> = <code>repo/verif/&lt;block&gt;/artefacts</code></li>
+</ul>
+<p>So the test creates <code>repo/verif/&lt;block&gt;/artefacts/basic/...</code> and <code>repo/verif/&lt;block&gt;/rtl_buddy.log</code>. Nothing lands in <code>design/&lt;block&gt;</code>.</p>
+<p>If you'd passed an explicit output:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>filelist<span class="w"> </span>&lt;model&gt;<span class="w"> </span>out.f<span class="w"> </span>-c<span class="w"> </span>../../verif/&lt;block&gt;/models.yaml
+</code></pre></div>
+<p>The filelist lands at <code>repo/design/&lt;block&gt;/out.f</code> (your shell's cwd) because <code>out.f</code> is a user-supplied output path. The orchestration log still lands at <code>dirname(models.yaml)/rtl_buddy.log</code>.</p>
+<h2 id="per-command-mapping">Per-command mapping</h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>command_root</th>
+<th>artifact_root</th>
+<th>External tool CWD</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test</code>, <code>randtest</code></td>
+<td><code>dirname(tests.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/&lt;test&gt;[/run-NNNN]</code></td>
+</tr>
+<tr>
+<td><code>regression</code></td>
+<td><code>dirname(regression.yaml)</code></td>
+<td>each suite's own <code>artefacts/</code></td>
+<td>per-suite, same as <code>test</code></td>
+</tr>
+<tr>
+<td><code>wave</code>, <code>wave --resim</code></td>
+<td><code>dirname(tests.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/&lt;test&gt;</code></td>
+</tr>
+<tr>
+<td><code>synth</code></td>
+<td><code>dirname(synth.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/&lt;synth&gt;</code></td>
+</tr>
+<tr>
+<td><code>cdc</code></td>
+<td><code>dirname(cdc.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/&lt;cdc&gt;</code></td>
+</tr>
+<tr>
+<td><code>fpv</code></td>
+<td><code>dirname(fpv.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/&lt;fpv&gt;</code></td>
+</tr>
+<tr>
+<td><code>pnr</code></td>
+<td><code>dirname(pnr.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/&lt;pnr&gt;</code></td>
+</tr>
+<tr>
+<td><code>power</code></td>
+<td><code>dirname(power.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/&lt;power&gt;</code></td>
+</tr>
+<tr>
+<td><code>hier --view dut</code></td>
+<td><code>dirname(models.yaml)</code></td>
+<td><code>&lt;model_root&gt;/artefacts/hier/&lt;model&gt;</code></td>
+<td><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>hier --view tb</code></td>
+<td><code>dirname(tests.yaml)</code></td>
+<td><code>&lt;suite&gt;/artefacts/hier/&lt;test&gt;</code></td>
+<td><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>axi-profile run</code></td>
+<td><code>dirname(tests.yaml)</code></td>
+<td><code>&lt;suite&gt;/artefacts/axi/&lt;test&gt;</code></td>
+<td><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>axi-profile discover</code></td>
+<td><code>dirname(models.yaml)</code></td>
+<td><code>&lt;model_root&gt;/artefacts/axi/&lt;model&gt;</code></td>
+<td><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>filelist</code></td>
+<td><code>dirname(models.yaml)</code> (reads)</td>
+<td>explicit <code>-o</code> / argument</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>saif</code></td>
+<td><code>invocation_cwd</code></td>
+<td>explicit output argument</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>hub</code></td>
+<td>project root</td>
+<td><code>.rtl-buddy/...</code></td>
+<td>project root</td>
+</tr>
+</tbody>
+</table>
+<p>For a fuller reference (<code>docs</code>, <code>skill</code>, edge cases), see the <a href="../../development/guidelines/#command-roots">engineering guidelines</a> — the table there is the policy this page describes.</p>
+<h2 id="where-rtl_buddylog-lives">Where <code>rtl_buddy.log</code> lives</h2>
+<p>The orchestration log is always written to <code>command_root/rtl_buddy.log</code>. In <code>--machine</code> mode it is JSONL; otherwise plain text. For <code>regression</code>, each suite's iteration re-anchors the log to that suite's directory, and the final summary phase re-anchors back to <code>dirname(regression.yaml)</code>. Open the latest log from wherever the <em>primary</em> config lives, not from where you ran <code>rb</code>.</p>
+<h2 id="hook-scripts-sweep-preproc-postproc">Hook scripts (<code>sweep</code>, <code>preproc</code>, <code>postproc</code>)</h2>
+<p>Hook scripts execute via <code>exec()</code> inside the <code>rb</code> process and receive <code>suite_dir</code> and <code>artifact_dir</code> as namespace variables. <strong>Always use these variables.</strong> Do not call <code>os.getcwd()</code> inside a hook — the process CWD stays at <code>invocation_cwd</code> (the same as your shell), which is no longer the same as <code>suite_dir</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># inside a sweep / preproc / postproc script</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>    <span class="c1"># wrong — invocation cwd</span>
+</code></pre></div>
+<h2 id="path-resolution-rules-for-config-files">Path resolution rules for config files</h2>
+<p><code>rtl_buddy</code> resolves config-owned paths from the config file that owns them:</p>
+<ul>
+<li><code>regression.yaml</code> resolves listed suite configs relative to itself.</li>
+<li><code>tests.yaml</code> resolves testbench filelists, hook script paths, and suite-local assets relative to the suite directory.</li>
+<li><code>models.yaml</code> resolves model filelist entries relative to the <code>models.yaml</code> file that declared them.</li>
+<li><code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, <code>power.yaml</code> resolve their own fields relative to their config directory.</li>
+</ul>
+<p>A relative path inside a YAML file never depends on where you ran <code>rb</code>. Absolute paths pass through unchanged.</p>
+<h2 id="future-redirecting-the-artifact-root">Future: redirecting the artifact root</h2>
+<p>The artifact root defaults to <code>command_root/artefacts/</code>. The <code>ExecutionContext</code> carrier is built to accept an explicit override so a future <code>--artifact-root</code> flag (or <code>root_config.yaml</code> field) can redirect large artifacts — synthesis netlists, simulation waveforms — onto a separate disk without touching command code. None of this is wired today; this page will update when it ships.</p>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="../../development/guidelines/#execution-contexts">Engineering Guidelines — Execution Contexts</a> — the policy form of this page.</li>
+<li><a href="../regressions/">Regressions</a> — how the orchestration log re-anchors per suite.</li>
+<li><a href="../root-config/">Root Config</a> — how <code>root_config.yaml</code> is discovered (walks up from the command root).</li>
+</ul>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
               </article>
             </div>
           
@@ -1383,10 +1834,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "/rtl_buddy/dev", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "/rtl_buddy/dev/assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="/rtl_buddy/dev/assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>
