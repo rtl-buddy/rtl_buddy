@@ -18,7 +18,7 @@
         <link rel="prev" href="../cdc/">
       
       
-        <link rel="next" href="../axi-profile/">
+        <link rel="next" href="../abv-simulation/">
       
       
         
@@ -945,6 +945,39 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cone-of-influence-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cone-of-influence coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dead-assume-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dead-assume detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vacuity-covers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vacuity covers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#artefacts" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -992,6 +1025,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../abv-simulation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1526,6 +1587,39 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cone-of-influence-coverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cone-of-influence coverage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dead-assume-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dead-assume detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vacuity-covers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vacuity covers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#artefacts" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1696,6 +1790,14 @@
 <td><code>tool_overrides</code></td>
 <td>Optional per-tool overrides for <code>timeout</code> or <code>extra_args</code>, keyed by FPV tool name</td>
 </tr>
+<tr>
+<td><code>vacuity</code></td>
+<td>Optional bool. When true (default for <code>bmc</code> / <code>prove</code>), run a secondary sby cover-mode pass over auto-derived cover properties for every <code>a \|-&gt; b</code> antecedent in the property set — flags vacuous proofs. Defaults to false for <code>cover</code> / <code>live</code> modes. See <a href="#vacuity-covers">Vacuity covers</a>.</td>
+</tr>
+<tr>
+<td><code>coi</code></td>
+<td>Optional bool. When true (default), run a yosys cone-of-influence pass and report the fraction of design cells reachable from at least one assertion. See <a href="#cone-of-influence-coverage">Cone-of-influence coverage</a>.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="where-inputs-come-from">Where inputs come from</h3>
@@ -1775,6 +1877,64 @@
 <blockquote>
 <p><strong>Per-property granularity is not surfaced.</strong> Sby has no structured per-assertion output today — <code>fpv.xml</code> is JUnit-style per-task only and the prose log doesn't tag individual assertions. Per-engine status is the finest grain <code>rb fpv</code> exposes; per-property aggregation would need a yosys-frontend change to dump assertion identifiers + per-COI status.</p>
 </blockquote>
+<h2 id="cone-of-influence-coverage">Cone-of-influence coverage</h2>
+<p>After every primary proof, <code>rb fpv</code> runs a structural yosys pass that:</p>
+<ol>
+<li>Reads the same design + constraints + properties sby just used.</li>
+<li>Counts total cells per module.</li>
+<li>Selects every <code>$assert</code> cell and walks its cone of influence backwards (<code>t:$assert %ci*</code> — yosys's transitive input-cone operator).</li>
+<li>Reports the fraction of design cells reached by at least one assertion.</li>
+</ol>
+<p>Logic <em>outside</em> every property's COI is provably unverified by the property set — a direct, actionable "what's still uncovered" signal that simulation coverage doesn't give you. When the COI pass produces data, the results table grows a <strong>COI</strong> column:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>FPV Run     Result   Description                ...   COI
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>counter_inv PASS     property proved (bmc, 32)        73% (38/52)
+</code></pre></div>
+<ul>
+<li>Per-module rollup lives in <code>FpvResults.results["coi"]["per_module"]</code> so machine consumers can find under-verified blocks.</li>
+<li>The COI pass is enabled by default (<code>coi: true</code>) and adds a few seconds to the run; disable per verification with <code>coi: false</code> in <code>fpv.yaml</code>.</li>
+<li>The pass uses <code>yosys</code> on <code>PATH</code>. If yosys is missing or errors the pass is logged as a warning and the COI column shows <code>-</code> — the primary proof verdict is unaffected.</li>
+</ul>
+<p>Artefacts:</p>
+<ul>
+<li><code>coi.ys</code> — generated yosys script.</li>
+<li><code>coi.log</code> — full yosys log (parsed for <code>stat</code> output).</li>
+</ul>
+<h2 id="dead-assume-detection">Dead-assume detection</h2>
+<p>The same yosys pass that computes COI coverage also rolls up <code>$assume</code> cells, splitting them into those whose logic intersects with the assertion COI versus those that don't. The latter are <em>structurally dead</em> — they constrain signals no assertion ever observes, usually a sign the environment spec drifted from the property set.</p>
+<p>When the design has any <code>$assume</code> cells, the results table grows an <strong>Assumes</strong> column:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>FPV Run     Result   Description                ...   Assumes
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>counter_inv PASS     property proved (bmc, 32)        3 used, 2 dead
+</code></pre></div>
+<ul>
+<li><code>N used</code> (all assumes are inside the assertion COI) — silent, just a sanity confirmation.</li>
+<li><code>M used, K dead</code> — <code>K</code> assumes are not reachable from any assertion. Either remove them or extend the assertion set to cover the signal they constrain.</li>
+</ul>
+<p>The detection is structural and conservative: it does not prove an assumption is <em>semantically</em> dead, just that yosys's elaborated graph shows no path from the assume to any assertion. In particular, assumes inside dead-code regions or untouched submodules will surface here. The detection rides on the same <code>coi.ys</code>/<code>coi.log</code> artefacts.</p>
+<h2 id="vacuity-covers">Vacuity covers</h2>
+<p>A property <code>a |-&gt; b</code> is <em>vacuously true</em> whenever the antecedent <code>a</code> never holds — the assertion passes but tells us nothing about <code>b</code>. <code>rb fpv</code> auto-derives a <code>cover property</code> for each <code>|-&gt;</code> / <code>|=&gt;</code> antecedent in your property set and runs a secondary sby cover-mode pass to check whether each one is reachable.</p>
+<p>The vacuity pass is enabled by default for <code>mode: bmc</code> and <code>mode: prove</code> and disabled for <code>mode: cover</code> / <code>mode: live</code> (where the user is already exploring reachability). Override with <code>vacuity: true</code> / <code>vacuity: false</code> per verification in <code>fpv.yaml</code>.</p>
+<p>When vacuity reports any unreachable antecedent, the results table grows a <strong>Vacuity</strong> column:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>FPV Run     Result   Description                ...   Vacuity
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>counter_inv PASS     property proved (bmc, 32)        1/3 vacuous
+</code></pre></div>
+<ul>
+<li><code>N ok</code> — every antecedent reached</li>
+<li><code>M/N vacuous</code> — <code>M</code> antecedents never reached → those <code>|-&gt;</code> properties are vacuously true (fix your assumptions or your stimulus)</li>
+<li><code>K unknown</code> — sby's cover output didn't tag this cover either way (logfile missing, sby died)</li>
+</ul>
+<p>Per-antecedent detail is preserved in <code>FpvResults.results["vacuity"]["covers"]</code> for machine consumers and reported in the log:</p>
+<ul>
+<li><code>cover_vacuity_&lt;N&gt;_&lt;label&gt;: cover property (&lt;clocking&gt; &lt;antecedent&gt;);</code> — synthesized into <code>vacuity_covers.sv</code></li>
+<li><code>vacuity.log</code> — full secondary sby pass log</li>
+<li><code>vacuity_workdir/</code> — sby workdir from the cover pass</li>
+</ul>
+<p>Scope today:</p>
+<ul>
+<li>Single-line antecedents only (the most common case).</li>
+<li>Clocking and <code>disable iff</code> clauses on the same line as the implication are preserved.</li>
+<li>Sequence-valued antecedents (<code>(req ##2 ack) |-&gt; done</code>) are extracted but treated as boolean for the cover — close enough for the reachability signal.</li>
+<li>Multi-line antecedents land in a follow-up.</li>
+</ul>
 <h2 id="artefacts">Artefacts</h2>
 <p>Per-run outputs land under <code>fpv/&lt;run&gt;/artefacts/</code>:</p>
 <table>
@@ -1809,6 +1969,18 @@
 <td><code>sby_workdir/engine_&lt;N&gt;/logfile.txt</code></td>
 <td>Per-engine log</td>
 </tr>
+<tr>
+<td><code>vacuity_covers.sv</code></td>
+<td>Auto-generated sidecar module with one <code>cover property</code> per <code>\|-&gt;</code> antecedent (only when the vacuity pass ran)</td>
+</tr>
+<tr>
+<td><code>vacuity.sby</code> / <code>vacuity.log</code> / <code>vacuity_workdir/</code></td>
+<td>Secondary sby cover-mode pass for vacuity checks</td>
+</tr>
+<tr>
+<td><code>coi.ys</code> / <code>coi.log</code></td>
+<td>yosys script + log for the cone-of-influence pass (only when <code>coi: true</code>)</td>
+</tr>
 </tbody>
 </table>
 <h2 id="passfail-detection">Pass/fail detection</h2>
@@ -1816,8 +1988,8 @@
 <p>A run is FAIL when sby writes <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>, or when it exits non-zero. The failure description points at the counterexample trace inside <code>sby_workdir/engine_&lt;N&gt;/</code> so the user can open it in <code>gtkwave</code>, <code>surfer</code>, or via <code>rb wave-fpv</code> (below).</p>
 <p>SKIP is returned when the run's <code>reglvl</code> is above the <code>-l</code> filter passed to <code>rb fpv-regression</code>.</p>
 <h2 id="opening-counterexamples">Opening counterexamples</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Open the CEX VCD for a failed verification in the configured surfer.</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Open the CEX VCD for a failed verification in the configured surfer.</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
 </code></pre></div>
 <p><code>rb wave-fpv</code> resolves the trace at <code>fpv/&lt;suite&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine wins when more than one produced a trace). The configured surfer comes from the same <code>cfg-surfer</code> entry that <code>rb wave</code> uses; override with <code>--surfer &lt;name&gt;</code>. Raises if the verification has not been run yet or the proof passed (no CEX was produced).</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>

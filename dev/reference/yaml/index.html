@@ -783,6 +783,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../concepts/abv-simulation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../concepts/axi-profile/" class="md-nav__link">
         
   
@@ -1966,6 +1994,11 @@
 <td>list of strings</td>
 <td>IDs of spec coverage items this test addresses (e.g. <code>["BLOCK-COV-01"]</code>). Used by <code>rb spec check-coverage</code>; has no effect at simulation time.</td>
 </tr>
+<tr>
+<td><code>assertions</code></td>
+<td>bool</td>
+<td>When true and the builder is Verilator, compile in SVA via <code>--assert</code> (and <code>--coverage-user</code> for cover-property hits) and add an <code>Assertions</code> column to the <code>rb test</code> results table. See <a href="../../concepts/abv-simulation/">Assertion-Based Verification</a>.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="cocotb-testbenches">cocotb testbenches</h3>
@@ -2534,6 +2567,16 @@
 <td><code>tool_overrides</code></td>
 <td>dict</td>
 <td>Optional per-tool overrides for <code>timeout</code> or <code>extra_args</code>, keyed by FPV tool name</td>
+</tr>
+<tr>
+<td><code>vacuity</code></td>
+<td>bool</td>
+<td>Optional. When true (default for <code>bmc</code> / <code>prove</code>), run a secondary sby cover-mode pass over auto-derived covers for every <code>\|-&gt;</code> / <code>\|=&gt;</code> antecedent in the property set. Default is false for <code>cover</code> / <code>live</code> modes. See <a href="../../concepts/fpv/#vacuity-covers">Vacuity covers</a>.</td>
+</tr>
+<tr>
+<td><code>coi</code></td>
+<td>bool</td>
+<td>Optional. When true (default), run a yosys cone-of-influence pass after the primary proof and report the fraction of design cells reachable from at least one assertion. See <a href="../../concepts/fpv/#cone-of-influence-coverage">Cone-of-influence coverage</a>.</td>
 </tr>
 </tbody>
 </table>
