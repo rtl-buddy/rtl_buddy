@@ -50,20 +50,12 @@ src/rtl_buddy/
     └── ...                # filelist, sim, postproc, verible wrappers
 ```
 
-## Development Rules
-
-- Keep changes targeted. Avoid broad refactors unless the task requires them.
-- Preserve CLI behavior unless intentionally changing it.
-- Treat YAML config classes and runtime behavior as part of the public interface for downstream RTL projects.
-- When adding or changing behavior, update downstream docs and validation assets after validating the implementation.
-
 ## Implementation Notes
 
 - `rtl_buddy.py` owns CLI wiring, global options, and command dispatch.
 - `RootConfig` selects platform, builder, verible, and regression config from `root_config.yaml`.
 - `TestRunner` drives PRE, COMPILE, SIM, and POST with early-stop support.
 - `VlogSim` captures the suite cwd once, but both compile and sim now run from per-test workspaces under `artefacts/<sanitized-test>/`; repeated runs use `artefacts/<sanitized-test>/run-0001/`, while `test.log`, `test.err`, and `test.randseed` in the suite directory remain latest-run symlinks.
-- Compile-side generated files such as `run.f`, `compile.log`, builder outputs, and relative `builder-simv` paths are resolved from the per-test artefact root, not from the suite directory.
 - `VlogFilelist` handles `.f` parsing and transformations. It resolves model entries from the real `models.yaml` location, resolves testbench entries from the suite cwd, and writes paths relative to the directory containing the generated `run.f`.
 - Nested raw coverage paths such as `artefacts/<test>/run-0001/coverage.dat` must preserve the suite-root hint during LCOV/Coverview `SF:` rewriting. When updating coverage path logic, make sure duplicate basenames still resolve against the originating suite root instead of falling back to repo-wide basename matching.
 - Hook scripts (`sweep`, `preproc`, `postproc`) are executed dynamically and should be treated as compatibility-sensitive APIs.
@@ -73,7 +65,7 @@ src/rtl_buddy/
 
 ## Validation
 
-Typical checks:
+For validation policy (what to run for which change), see [Validation](docs/development/guidelines.md#validation) in the engineering guidelines. Concrete commands:
 
 ```bash
 # from a project root that has `rtl_buddy` installed
@@ -128,43 +120,15 @@ uv run pytest --cov --cov-report=html            # write htmlcov/index.html
 
 Coverage configuration lives in `[tool.coverage.*]` in `pyproject.toml` (source = `src/rtl_buddy`, excludes the bundled `skill/` and `docs/`). No `--cov` is set in `pytest.ini` so plain `pytest` stays fast; pass `--cov` explicitly when you want a coverage run.
 
-## Logging Practices
+## Logging and Error Handling
 
-All runtime logging goes through `log_event()` in `src/rtl_buddy/logging_utils.py`. Do not use `logger.info(f"...")` directly — use `log_event(logger, level, "event.name", key=value, ...)` so that both human and machine modes produce correct output.
+Policy lives in [Logging](docs/development/guidelines.md#logging) and [Error Handling](docs/development/guidelines.md#error-handling). Code-level helpers and entry points in this repo:
 
-### How it works
-
-- **Human mode (default)**: `_human_message()` converts each event into a readable sentence for `rtl_buddy.log` and the console. Machine-oriented fields are not visible.
-- **Machine mode (`--machine`)**: `rtl_buddy.log` is written as JSON Lines with the event name, all fields, and the human message. Console output is plain text.
-
-### Adding new events
-
-1. Choose a dotted event name following the existing convention (e.g. `compile.start`, `sim.timeout`, `suite_config.load_failed`).
-2. Call `log_event(logger, logging.<LEVEL>, "your.event", field1=val1, ...)`.
-3. If the event is logged at **WARNING or above**, add a dedicated `case` entry in `_human_message()`. Users see these messages directly, so they must be clear and actionable.
-4. DEBUG and INFO events may rely on the wildcard fallback formatter, which converts `"foo.bar"` to `"foo bar"` and appends select fields.
-
-### Error handling
-
-- Fatal config/environment errors: log at `logging.ERROR`, then `raise FatalRtlBuddyError(...)`. The top-level `run()` catches these and exits with code 2.
-- Per-test filelist failures: log at `logging.ERROR`, then `raise FilelistError(...)`. `TestRunner` catches these and records a `FilelistFailResults`.
-- Sweep/preproc script failures: return an error string from `pre()` or `_expand_tests_with_sweep()`. The caller records a `SetupFailResults` and continues.
+- `log_event(logger, level, "event.name", **fields)` in `src/rtl_buddy/logging_utils.py` — the only sanctioned runtime-logging call. Do not use `logger.info(f"...")` directly.
+- `_human_message()` in the same module — add a `case` entry for any new WARNING or ERROR event so the human-mode message stays clear.
+- Exception classes: `FatalRtlBuddyError` (top-level `run()` exits with code 2), `FilelistError` (caught by `TestRunner`, becomes `FilelistFailResults`), and the setup-failure string contract from `pre()` / `_expand_tests_with_sweep()` (becomes `SetupFailResults`).
 - Do not use `logger.critical()` — the old `ExitHandler` abort pattern has been removed.
-
-### Console output
-
-- Use `emit_console_text()` for direct user-facing output (e.g. git status banner, regression directory).
-- Use `render_summary()` for result tables — it writes a Rich table to the console and plain text to the log file.
-- Use `task_status()` for spinners on long-running phases (compile, sim). Falls back to plain text on non-interactive terminals.
-
-## Required Follow-Through
-
-After meaningful `rtl_buddy` changes:
-
-1. **If any CLI command, flag, or help text changed**: run `python scripts/gen_cli_reference.py` and commit the updated `docs/reference/cli.md` in the same PR. The file is committed to the repo and must stay in sync — CI will catch drift via `python scripts/gen_cli_reference.py --check`.
-2. **If you add or edit a docs page**: ensure it has a non-empty `description:` YAML frontmatter field. CI enforces this via `python scripts/check_docs_frontmatter.py --check`. See `docs/CONTRIBUTING.md` for the required format.
-3. Update any downstream agent docs if command behavior, YAML schema, version expectations, or validation notes changed.
-4. Update downstream integrations to the intended commit as needed.
+- Console helpers: `emit_console_text()` for direct user-facing output, `render_summary()` for result tables (Rich on console, plain text in the log), `task_status()` for spinners on long-running phases.
 
 ## Skill Distribution
 
@@ -191,11 +155,11 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 
 ## Release Workflow
 
-Releases are triggered by merging a PR to `main` with a `version/` label, or via `workflow_dispatch`.
+Release policy (when stable vs pre-release, do-not-do rules) lives in [Releases](docs/development/guidelines.md#releases). This section covers what the workflow does mechanically.
 
 ### Stable release
 
-Apply one of `version/patch`, `version/minor`, or `version/major` to the PR. On merge:
+Triggered by merging a PR to `main` with a `version/{patch,minor,major}` label. On merge:
 
 1. The workflow computes the next `vMAJOR.MINOR.PATCH` tag, creates it, and pushes it.
 2. A GitHub release is created (not marked pre-release).
@@ -204,15 +168,12 @@ Apply one of `version/patch`, `version/minor`, or `version/major` to the PR. On 
 
 ### Pre-release
 
-Pre-releases are cut from a **feature branch** via `workflow_dispatch` — never by merging to `main`. Merging to `main` with a `version/` label always produces a stable release.
+Cut from a feature branch via `workflow_dispatch` with the **Mark as pre-release** checkbox enabled:
 
-To cut a pre-release:
-
-1. Run the Release workflow on your feature branch with the desired bump type and the **Mark as pre-release** checkbox enabled.
-2. The workflow appends `rcN` to the computed base tag (PEP 440). If `v2.3.0rc1` already exists, the next is `v2.3.0rc2`.
-3. A GitHub release is created and marked **pre-release**.
-4. The wheel is published to PyPI as a pre-release version (e.g. `2.3.0rc1`). Unqualified version ranges (`>=2.2.0`) will not resolve to it.
-5. Docs are **not** published — the `latest` alias is not updated.
+1. The workflow appends `rcN` to the computed base tag (PEP 440). If `v2.3.0rc1` already exists, the next is `v2.3.0rc2`.
+2. A GitHub release is created and marked **pre-release**.
+3. The wheel is published to PyPI as a pre-release version (e.g. `2.3.0rc1`). Unqualified version ranges (`>=2.2.0`) will not resolve to it.
+4. Docs are **not** published — the `latest` alias is not updated.
 
 The version is computed from the latest stable tag at dispatch time. If `main` advances and releases the same bump tier before your branch merges, the next RC will shift to the following version — that is expected and acceptable.
 
