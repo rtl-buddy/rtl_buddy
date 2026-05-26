@@ -7,6 +7,10 @@ description: Entry point for contributing to rtl_buddy, with links to the detail
 This page is the entry point for contributors and maintainers.
 Detailed rules live under the Development section so they are visible in the docs site, available through `rb docs show`, and not duplicated across agent-only files.
 
+## Environment Setup
+
+Start with [Environment Setup](development/setup.md) for cloning, `uv sync`, pre-commit hooks, running the test suite, and building the wheel/sdist locally.
+
 ## Development Guidelines
 
 Read [Engineering Guidelines](development/guidelines.md) before changing runtime behavior, command execution, YAML loading, subprocess wrappers, logging, errors, release mechanics, or the bundled agent skill.

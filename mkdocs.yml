@@ -60,6 +60,7 @@ nav:
       - YAML Formats: reference/yaml.md
   - For Agents: agents.md
   - Development:
+      - Environment Setup: development/setup.md
       - Engineering Guidelines: development/guidelines.md
       - Documentation Guidelines: development/docs.md
   - Migrations:
