@@ -259,7 +259,13 @@ class _ThreadedHub:
             fut.result(timeout=5.0)
         except Exception:
             pass
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        # Race: shutdown() completing causes _async_start to return and
+        # the runner thread's finally may run loop.close() before we get
+        # here. Treat RuntimeError as "already stopped".
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except RuntimeError:
+            pass
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
