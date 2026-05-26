@@ -292,6 +292,15 @@ class RtlBuddy:
             return exc.exit_code
         except (FatalRtlBuddyError, FilelistError) as exc:
             emit_console_text(str(exc), style="red")
+            if self.machine:
+                # Machine consumers parse stdout JSON; a silent stdout
+                # forces them to scrape stderr for an ad-hoc message.
+                # Emit an envelope so the failure surface matches the
+                # success surface.
+                command = (
+                    getattr(self, "_pending_invoked_subcommand", None) or "rtl_buddy"
+                )
+                self._emit_machine_result(command, 2, error=str(exc))
             return 2
         # standalone_mode=False makes click *return* the exit code from
         # `typer.Exit(code=N)` rather than re-raise it, so we have to
@@ -4000,7 +4009,21 @@ class RtlBuddy:
             git_str = f"git: {branch} | commit {commit} | mod {mod} | staged {staged}"
         else:
             git_str = f"git: {branch} | commit {commit} | clean"
-        emit_console_text(git_str, style=None if is_machine_mode() else "dim")
+        # The git status already rides inside every machine-mode JSON
+        # envelope via _emit_machine_result.meta.git — skip the human
+        # banner so machine consumers don't see redundant stderr noise.
+        if is_machine_mode():
+            log_event(
+                logger,
+                logging.INFO,
+                "git.status",
+                branch=branch,
+                commit=commit,
+                modified=mod,
+                staged=staged,
+            )
+            return
+        emit_console_text(git_str, style="dim")
         log_event(
             logger,
             logging.INFO,

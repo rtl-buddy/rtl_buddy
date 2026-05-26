@@ -145,6 +145,54 @@ def test_test_list_skips_root_config_load(minimal_project: Path):
     assert "basic" in result.output
 
 
+def test_machine_mode_emits_json_envelope_on_fatal_error(
+    minimal_project: Path, capsys, monkeypatch
+):
+    """``rb --machine <cmd>`` must emit a JSON envelope on stdout even on
+    FatalRtlBuddyError. Without it, machine consumers see nothing and have
+    to scrape stderr — defeating the point of --machine."""
+    import json
+
+    rb = RtlBuddy(name="test_cli_machine_err")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["rb", "--machine", "test", "bogus_test_name", "-c", "tests.yaml"],
+    )
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+
+    assert exit_code == 2, captured
+    assert captured.out, "expected JSON envelope on stdout in machine mode"
+    payload = json.loads(captured.out)
+    assert payload["command"] == "test"
+    assert payload["exit_code"] == 2
+    assert "error" in payload["payload"]
+    assert "bogus_test_name" in payload["payload"]["error"]
+    # Human-readable message still rides on stderr.
+    assert "bogus_test_name" in captured.err
+
+
+def test_machine_mode_skips_git_banner_on_stderr(minimal_project: Path, capsys):
+    """The git-rev banner is human-only — machine consumers already get
+    git status inside every JSON envelope via meta.git. Suppress the
+    stderr banner so machine output stays tight."""
+    rb = RtlBuddy(name="test_cli_machine_no_banner")
+    import sys
+
+    saved_argv = sys.argv[:]
+    sys.argv = ["rb", "--machine", "test", "--list", "-c", "tests.yaml"]
+    try:
+        exit_code = rb.run()
+    finally:
+        sys.argv = saved_argv
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured
+    assert "git:" not in captured.err, (
+        "machine mode should not emit the human git banner to stderr; "
+        f"got: {captured.err!r}"
+    )
+
+
 def test_synth_list_skips_root_config_load(tmp_path: Path, monkeypatch):
     """``rb synth --list`` should not require a valid root_config.yaml.
 
