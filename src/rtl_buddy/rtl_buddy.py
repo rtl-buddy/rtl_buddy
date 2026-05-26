@@ -15,6 +15,7 @@ from typing_extensions import Annotated
 import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
+from .config.root import _discover_root_cfg
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
@@ -432,7 +433,21 @@ class RtlBuddy:
         attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
 
-        if self.root_cfg is None:
+        # Build root_cfg on first entry; on later entries, only rebuild if
+        # the new command root walks up to a different root_config.yaml —
+        # so regression loops whose suites span project roots get the
+        # right tool/platform defaults per suite. Suites that share a
+        # root keep the cached instance.
+        rebuild = self.root_cfg is None
+        if not rebuild:
+            try:
+                new_root_path = _discover_root_cfg(start_dir=ctx.command_root)
+            except FatalRtlBuddyError:
+                new_root_path = None
+            current_root_path = getattr(self.root_cfg, "root_cfg_path", None)
+            rebuild = new_root_path is not None and new_root_path != current_root_path
+
+        if rebuild:
             self.root_cfg = RootConfig(
                 name=self.name + "/root_config",
                 builder_override=self._builder_override,
@@ -1209,6 +1224,11 @@ class RtlBuddy:
                     "test_suite": self._display_path(
                         suite_cfg.get_path(), base_dir=start_dir
                     ),
+                    # Absolute suite dir — used as the coverage source_root.
+                    # Avoid recombining the display path with command_root,
+                    # which breaks when invocation cwd differs from
+                    # command_root.
+                    "test_suite_path": str(Path(suite_cfg.get_path()).resolve().parent),
                     "results": suite_results,
                 }
             )
@@ -1251,19 +1271,14 @@ class RtlBuddy:
                         coverage_per_test=coverage_per_test,
                         reg_results=reg_results,
                         coverage_merge_info_process=coverage_merge_info_process,
-                        source_roots=[
-                            os.path.dirname(
-                                os.path.join(reg_outdir, reg_result["test_suite"])
-                            )
-                        ],
+                        source_roots=[reg_result["test_suite_path"]],
                         dir_summary_paths=dir_summary_paths,
                     )
                 )
         else:
             reg_outdir = str(ctx.command_root)
             regression_source_roots = [
-                os.path.dirname(os.path.join(reg_outdir, reg_result["test_suite"]))
-                for reg_result in reg_results
+                reg_result["test_suite_path"] for reg_result in reg_results
             ]
             metadata.extend(
                 self.coverage.build_metadata(

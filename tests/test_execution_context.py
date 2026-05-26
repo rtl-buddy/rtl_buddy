@@ -135,6 +135,58 @@ def test_for_dir_uses_explicit_command_root(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Artifact root redirection — forward-ready for `--artifact-root` (see PR #219
+# review). Exercises the dataclass-level override that lets a future CLI flag
+# send artefacts onto a different disk, outside the root_config.yaml tree.
+# ---------------------------------------------------------------------------
+
+
+def test_for_command_honors_artifact_root_outside_command_tree(tmp_path: Path):
+    project = tmp_path / "project"
+    cfg = project / "verif" / "block" / "tests.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("rtl-buddy-filetype: test_config\n")
+    # Artefact target lives in a completely separate subtree — outside the
+    # project root that holds root_config.yaml.
+    elsewhere = tmp_path / "scratch_disk" / "rtl_buddy_artefacts"
+    elsewhere.mkdir(parents=True)
+
+    ctx = ExecutionContext.for_command(
+        invocation_cwd=project,
+        primary_config=cfg,
+        artifact_root=elsewhere,
+    )
+
+    # Override is honored; downstream artefact paths land outside the project tree.
+    assert ctx.artifact_root == elsewhere.resolve()
+    artefact = ctx.artifact_dir("foo")
+    assert artefact == elsewhere.resolve() / "foo"
+    # The override is independent of command_root — the project tree
+    # containing root_config.yaml is not in the artefact path.
+    assert project.resolve() not in artefact.parents
+    # Command root + log path still anchor on the primary config (only the
+    # artefact tree is redirected).
+    assert ctx.command_root == cfg.parent.resolve()
+    assert ctx.log_path == cfg.parent.resolve() / "rtl_buddy.log"
+
+
+def test_for_dir_honors_artifact_root_outside_command_tree(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    elsewhere = tmp_path / "scratch_disk" / "artefacts"
+
+    ctx = ExecutionContext.for_dir(
+        invocation_cwd=tmp_path,
+        command_root=project,
+        artifact_root=elsewhere,
+    )
+
+    assert ctx.artifact_root == elsewhere.resolve()
+    assert ctx.command_root == project.resolve()
+    assert project.resolve() not in ctx.artifact_dir("x").parents
+
+
+# ---------------------------------------------------------------------------
 # End-to-end: invoking from an unrelated directory keeps it clean (#216)
 # ---------------------------------------------------------------------------
 
