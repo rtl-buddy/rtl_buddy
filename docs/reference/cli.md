@@ -311,6 +311,7 @@ Usage: rtl-buddy skill [OPTIONS] COMMAND [ARGS]...
 │ uninstall        Remove the installed rtl_buddy skill files from the selected scope. │
 │ status           Report whether the skill is installed and whether it matches the    │
 │                  current package version.                                            │
+│ view             Print the bundled rtl_buddy skill to stdout.                        │
 │ print-gitignore  Print the gitignore lines for project-level skill installs.         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

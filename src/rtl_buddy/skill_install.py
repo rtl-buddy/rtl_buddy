@@ -294,6 +294,12 @@ def cmd_status(
         typer.echo(f"  [{label:>6}] {target_dir}  — {state}")
 
 
+@app.command("view")
+def cmd_view():
+    """Print the bundled rtl_buddy skill to stdout."""
+    typer.echo(_bundled_skill_text(), nl=False)
+
+
 @app.command("print-gitignore")
 def cmd_print_gitignore():
     """Print the gitignore lines for project-level skill installs."""
