@@ -4,6 +4,23 @@
 
 This repo is the source-of-truth implementation of the `rtl_buddy` CLI.
 
+## Canonical Guidelines
+
+Read these before opening issues or PRs, or before changing runtime behavior:
+
+- [docs/development/guidelines.md](docs/development/guidelines.md) — engineering rules: execution contexts, path ownership, artifact layout, subprocesses, dependencies, logging, errors, validation, releases, **issue triage**, and **milestones**.
+- [docs/development/docs.md](docs/development/docs.md) — documentation authoring rules.
+- [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — contributor entry point that links to both.
+
+Issue conventions worth knowing up front:
+
+- Type, Priority, and Effort are org-level GitHub Issue Fields, not labels. Templates under `.github/ISSUE_TEMPLATE/` pre-bind Type.
+- Area is captured with repo-level `area/*` labels (`area/test`, `area/abv`, `area/impl`, `area/hier`, `area/axi-profile`, `area/hub`, `area/skill`, `area/config`, `area/tooling`, `area/infra`). Plus `discussion`.
+- The `version/{patch,minor,major}` labels are PR-only and drive the release workflow.
+- Multi-issue long-running efforts get a theme-named milestone (e.g. "Hub Phase 3"), not a version-named one.
+
+Where this file overlaps with the canonical guidelines, treat the guidelines as authoritative.
+
 ## Key Files
 
 ```text
