@@ -116,11 +116,38 @@ def test_write_vacuity_module_handles_empty_candidate_list(tmp_path):
     out = tmp_path / "vacuity_covers.sv"
     write_vacuity_module([], str(out))
     text = out.read_text()
-    assert "module rtl_buddy_vacuity_covers;" in text
+    # Always declares clk + rst_n as the canonical clocking ports, even
+    # with zero candidates — so the module is syntactically valid.
+    assert "module rtl_buddy_vacuity_covers (" in text
+    assert "input logic clk" in text
+    assert "input logic rst_n" in text
     assert "endmodule" in text
     # No declared covers when there's nothing to check (the header
     # comment intentionally mentions "cover property" — exclude it).
     assert ": cover property" not in text
+
+
+def test_write_vacuity_module_emits_bind_when_requested(tmp_path):
+    p = _make_props(
+        tmp_path,
+        """
+        p_req: assert property (@(posedge clk) disable iff (!rst_n) req |-> ack);
+        """,
+    )
+    cands = extract_candidates([p])
+    out = tmp_path / "vacuity_covers.sv"
+    write_vacuity_module(cands, str(out), bind_to="dut")
+    text = out.read_text()
+    # `req` was referenced in the antecedent — it becomes a port.
+    assert "input logic req" in text
+    # clk + rst_n always declared.
+    assert "input logic clk" in text
+    assert "input logic rst_n" in text
+    # bind directive present so slang sees the cover module bound into
+    # the DUT scope (slang doesn't infer free identifiers the way the
+    # native verilog frontend does).
+    assert "bind dut rtl_buddy_vacuity_covers" in text
+    assert ".clk" in text and ".rst_n" in text and ".req" in text
 
 
 # ---------------------------------------------------------------------------

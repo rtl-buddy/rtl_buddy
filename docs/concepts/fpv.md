@@ -87,6 +87,7 @@ verifications:
 | `tool_overrides` | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
 | `vacuity` | Optional bool. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived cover properties for every `a \|-> b` antecedent in the property set — flags vacuous proofs. Defaults to false for `cover` / `live` modes. See [Vacuity covers](#vacuity-covers). |
 | `coi` | Optional bool. When true (default), run a yosys cone-of-influence pass and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](#cone-of-influence-coverage). |
+| `frontend` | SystemVerilog frontend: `"verilog"` (default — fast, no plugin, immediate-assert + simple-concurrent SVA only) or `"slang"` (yosys-slang plugin — required for concurrent SVA `\|->` / `\|=>` / sequence operators and for `bind` to elaborate). `slang` requires `cfg-fpv-tools[].opts.plugin-path` in root_config.yaml. See [Choosing a frontend](#choosing-a-frontend). |
 
 ### Where inputs come from
 
@@ -115,6 +116,15 @@ cfg-fpv-tools:
 | `opts.timeout` | Per-task timeout in seconds, written to the sby `[options]` block |
 | `opts.extra-args` | Passed through verbatim to the sby command line |
 | `opts.solver-versions` | Optional map of solver name → exact version. Probed before every run; hard-fails on mismatch. Known solvers: `yices`, `z3`, `boolector`, `bitwuzla`, `btormc`, `abc` |
+
+### Choosing a frontend
+
+Two SystemVerilog frontends are supported under `rb fpv`:
+
+- **`frontend: verilog`** (default) — yosys's native verilog reader. No plugin needed. Handles immediate `assert (expr);` inside `always` blocks plus simple concurrent assertions (`assert property (@clk expr);`). Rejects `|->` / `|=>`, `##N`, sequence operators, and SV `bind`.
+- **`frontend: slang`** — yosys-slang plugin (built from [povik/yosys-slang](https://github.com/povik/yosys-slang) or the rtl-buddy [fork](https://github.com/rtl-buddy/yosys-slang)). Required for concurrent SVA implications (`a |-> b`, `a |=> b`), sequence operators, and `bind` directives to elaborate. Requires `cfg-fpv-tools[].opts.plugin-path` in `root_config.yaml`.
+
+When in doubt, **start with `verilog`** — it's the path most rtl_buddy demos use. Move to `slang` only when you need `|->` / `|=>` for vacuity covers or a richer SVA dialect.
 
 ### Solver version pinning
 

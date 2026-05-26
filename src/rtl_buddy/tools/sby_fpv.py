@@ -91,6 +91,24 @@ class SbyFpv:
     def _vacuity_workdir_path(self) -> str:
         return os.path.join(self.artefact_dir, "vacuity_workdir")
 
+    def _resolve_plugin_path(self, plugin_path: str | None) -> str | None:
+        """Resolve a yosys plugin path against the project root.
+
+        Mirrors :func:`tools.synth_yosys.resolve_plugin_path`. Absolute
+        paths pass through; relative paths are taken relative to the
+        project root (the directory containing ``root_config.yaml``).
+        ``None`` returns ``None`` so callers can distinguish
+        unconfigured from configured-but-empty.
+        """
+        if not plugin_path:
+            return None
+        p = Path(plugin_path)
+        if p.is_absolute():
+            return str(p)
+        if self.root_cfg is None:
+            return str(p.resolve())
+        return str((Path(self.root_cfg.get_project_rootdir()) / p).resolve())
+
     def _coi_script_path(self) -> str:
         return os.path.join(self.artefact_dir, "coi.ys")
 
@@ -200,8 +218,26 @@ class SbyFpv:
         # Order: design sources -> constraints (assumes in scope first) ->
         # properties (asserts that depend on those assumes).
         lines.append("[script]")
+        frontend = cfg.get_frontend()
+        if frontend == "slang":
+            plugin = self._resolve_plugin_path(opts.plugin_path)
+            if not plugin:
+                raise FatalRtlBuddyError(
+                    f"{cfg.get_name()}: fpv frontend=slang requires "
+                    f"`cfg-fpv-tools[].opts.plugin-path` to point at the "
+                    f"built yosys-slang shared library"
+                )
+            # `plugin -i` is idempotent within a yosys session — only
+            # emit the directive when slang is actually used so the
+            # default verilog path stays plugin-free.
+            lines.append(f"plugin -i {plugin}")
         for inc in incdirs:
-            lines.append(f"verilog_defaults -add -I {inc}")
+            if frontend == "slang":
+                # slang's preprocessor uses --include-directory; we
+                # accept the same incdirs the filelist already parsed.
+                lines.append(f"verilog_defaults -add -I {inc}")
+            else:
+                lines.append(f"verilog_defaults -add -I {inc}")
         constraints = cfg.get_constraints()
         constraint_files = [constraints] if constraints else []
         all_sources = (
@@ -210,9 +246,21 @@ class SbyFpv:
             + list(cfg.get_properties())
             + list(extra_property_files)
         )
-        for src in all_sources:
-            # Use basename — files are dropped into the sby workdir under [files].
-            lines.append(f"read -sv -formal {os.path.basename(src)}")
+        if frontend == "slang":
+            # slang elaborates eagerly and handles SV `bind` directives,
+            # concurrent SVA implications, and full sequence operators
+            # that the native verilog frontend rejects. The `--top`
+            # arg is required for `bind` to resolve — slang's
+            # elaborator only pulls in bound modules under the
+            # designated top. All files are read in one invocation so
+            # bind statements at compilation-unit scope see every
+            # declared module.
+            src_args = " ".join(os.path.basename(s) for s in all_sources)
+            lines.append(f"read_slang --top {cfg.get_top()} {src_args}")
+        else:
+            for src in all_sources:
+                # Use basename — files are dropped into the sby workdir under [files].
+                lines.append(f"read -sv -formal {os.path.basename(src)}")
         lines.append(f"prep -top {cfg.get_top()}")
         lines.append("")
 
@@ -326,6 +374,12 @@ class SbyFpv:
         # caught this only sees X% of the design") as on a passing one.
         coi = None
         if cfg.coi_enabled():
+            # The COI walk needs the same frontend the proof used —
+            # mixing verilog + slang frontends in the same yosys
+            # invocation produces inconsistent `$check` cell sets.
+            opts_for_coi = self.tool_cfg.get_opts(
+                cfg.get_tool_overrides_for(self.tool_cfg.get_name())
+            )
             coi = run_coi_analysis(
                 name=cfg.get_name(),
                 yosys_exe="yosys",
@@ -336,6 +390,8 @@ class SbyFpv:
                 top=cfg.get_top(),
                 script_path=self._coi_script_path(),
                 log_path=self._coi_log_path(),
+                frontend=cfg.get_frontend(),
+                plugin_path=self._resolve_plugin_path(opts_for_coi.plugin_path),
             )
 
         # Sby exit code conventions:
@@ -405,7 +461,15 @@ class SbyFpv:
             )
             return None
 
-        vacuity_sv = write_vacuity_module(candidates, self._vacuity_sv_path())
+        # Bind the synthesized covers into the DUT so they see clk /
+        # rst_n / signal ports by name — needed for slang (which does
+        # not infer free identifiers) and harmless for the verilog
+        # frontend.
+        vacuity_sv = write_vacuity_module(
+            candidates,
+            self._vacuity_sv_path(),
+            bind_to=cfg.get_top(),
+        )
         sby_path = self._render_sby(
             output_path=self._vacuity_sby_path(),
             sources=sources,

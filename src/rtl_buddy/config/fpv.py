@@ -31,6 +31,10 @@ class FpvToolOpts:
     timeout: int | None = None
     extra_args: str = ""
     solver_versions: dict[str, str] = dc_field(default_factory=dict)
+    # Absolute or project-relative path to the yosys-slang shared
+    # library. Required when any verification picks `frontend: slang`;
+    # ignored for the default verilog frontend.
+    plugin_path: str | None = None
 
 
 @serde
@@ -44,6 +48,7 @@ class FpvToolOptsFile:
     solver_versions: dict[str, str] = field(
         rename="solver-versions", default_factory=dict
     )
+    plugin_path: str | None = field(rename="plugin-path", default=None)
 
 
 @serde
@@ -69,15 +74,18 @@ class FpvToolConfig:
         timeout = self._cfg.opts.timeout
         extra_args = self._cfg.opts.extra_args
         solver_versions = dict(self._cfg.opts.solver_versions)
+        plugin_path = self._cfg.opts.plugin_path
         if overrides:
             timeout = overrides.get("timeout", timeout)
             extra_args = overrides.get("extra_args", extra_args)
             if "solver_versions" in overrides:
                 solver_versions = dict(overrides["solver_versions"])
+            plugin_path = overrides.get("plugin_path", plugin_path)
         return FpvToolOpts(
             timeout=timeout,
             extra_args=extra_args,
             solver_versions=solver_versions,
+            plugin_path=plugin_path,
         )
 
 
@@ -85,6 +93,7 @@ class FpvToolConfig:
 
 
 _VALID_MODES = ("bmc", "prove", "cover", "live")
+_VALID_FRONTENDS = ("verilog", "slang")
 
 
 @serde
@@ -120,6 +129,14 @@ class FpvConfigFile:
     # from at least one assertion. A direct "what's still unverified"
     # signal; complements the proof verdict.
     coi: bool | None = None
+    # SystemVerilog frontend for sby + yosys. "verilog" (default) uses
+    # yosys's native Verilog frontend — fast, no plugin, limited SVA
+    # subset (no `|->` / `|=>` / sequences). "slang" uses the
+    # yosys-slang plugin path; required for concurrent SVA implications
+    # and for `bind` directives to elaborate. When set to slang, the
+    # `cfg-fpv-tools[].opts.plugin-path` must point at the built
+    # slang.so.
+    frontend: str = "verilog"
 
     def initialise(self, config_dir: str) -> "FpvConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -133,6 +150,11 @@ class FpvConfigFile:
             raise FatalRtlBuddyError(
                 f"{self.name}: fpv mode '{self.mode}' is not one of "
                 f"{', '.join(_VALID_MODES)}"
+            )
+        if self.frontend not in _VALID_FRONTENDS:
+            raise FatalRtlBuddyError(
+                f"{self.name}: fpv frontend '{self.frontend}' is not one of "
+                f"{', '.join(_VALID_FRONTENDS)}"
             )
         return FpvConfig(
             name=self.name,
@@ -149,6 +171,7 @@ class FpvConfigFile:
             tool_overrides=self.tool_overrides,
             vacuity=self.vacuity,
             coi=self.coi,
+            frontend=self.frontend,
         )
 
 
@@ -168,6 +191,10 @@ class FpvConfig:
     tool_overrides: dict | None = dc_field(default=None)
     vacuity: bool | None = dc_field(default=None)
     coi: bool | None = dc_field(default=None)
+    frontend: str = dc_field(default="verilog")
+
+    def get_frontend(self) -> str:
+        return self.frontend
 
     def vacuity_enabled(self) -> bool:
         """Whether to run the vacuity cover pass for this verification.
