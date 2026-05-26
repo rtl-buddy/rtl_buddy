@@ -299,8 +299,17 @@ class RtlBuddy:
         # to exit cleanly with code 0.
         return rv if isinstance(rv, int) else 0
 
-    def _is_test_list_invocation(self, ctx: typer.Context) -> bool:
-        return ctx.invoked_subcommand == "test" and "--list" in sys.argv[1:]
+    # Subcommands that expose a `--list` flag whose only job is to emit
+    # configured names from the primary config file. The `--list` paths
+    # do not need RootConfig, the selected builder, or CoverageReporter,
+    # so list-only invocations short-circuit those setup steps.
+    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "cdc", "fpv"}
+
+    def _is_list_invocation(self, ctx: typer.Context) -> bool:
+        return (
+            ctx.invoked_subcommand in self._LIST_FLAG_COMMANDS
+            and "--list" in sys.argv[1:]
+        )
 
     def root_options(
         self,
@@ -379,7 +388,7 @@ class RtlBuddy:
 
         if (
             ctx.invoked_subcommand in self._GIT_COMMANDS
-            and not self._is_test_list_invocation(ctx)
+            and not self._is_list_invocation(ctx)
         ):
             self.show_git_rev()
 
@@ -396,6 +405,7 @@ class RtlBuddy:
         *,
         primary_config: str | Path | None = None,
         command_root: str | Path | None = None,
+        list_only: bool = False,
     ) -> ExecutionContext:
         """Build the command's ExecutionContext and attach the file log.
 
@@ -411,6 +421,12 @@ class RtlBuddy:
         within the same process re-anchor the file log handler so a
         long-running session (e.g. ``rb regression`` iterating suites)
         keeps each suite's log under its own root.
+
+        ``list_only=True`` skips ``RootConfig``, builder, and
+        ``CoverageReporter`` setup. The metadata-only ``--list`` paths
+        only need to read the suite config; skipping the root-config
+        load keeps them usable when the surrounding project config is
+        invalid or unrelated to the listed suite.
         """
         if (primary_config is None) == (command_root is None):
             raise FatalRtlBuddyError(
@@ -432,6 +448,9 @@ class RtlBuddy:
         ctx.command_root.mkdir(parents=True, exist_ok=True)
         attach_file_log(ctx.log_path)
         self.exec_ctx = ctx
+
+        if list_only:
+            return ctx
 
         # Build root_cfg on first entry; on later entries, only rebuild if
         # the new command root walks up to a different root_config.yaml —
@@ -690,7 +709,9 @@ class RtlBuddy:
         self.rtl_builder_mode = (
             "debug" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
-        ctx = self._enter_command_context(primary_config=test_config)
+        ctx = self._enter_command_context(
+            primary_config=test_config, list_only=list_tests
+        )
         self.suite_cfg = SuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
@@ -2298,7 +2319,9 @@ class RtlBuddy:
         """
         run synthesis
         """
-        ctx = self._enter_command_context(primary_config=synth_config)
+        ctx = self._enter_command_context(
+            primary_config=synth_config, list_only=list_synths
+        )
         suite_cfg = SynthSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
@@ -2377,7 +2400,9 @@ class RtlBuddy:
         ] = False,
     ):
         """run place-and-route"""
-        ctx = self._enter_command_context(primary_config=pnr_config)
+        ctx = self._enter_command_context(
+            primary_config=pnr_config, list_only=list_runs
+        )
         suite_cfg = PnrSuiteConfig(path=str(ctx.primary_config))
         if emit_png:
             emit_gds = True
@@ -2569,7 +2594,9 @@ class RtlBuddy:
         ] = 0,
     ):
         """run power analysis"""
-        ctx = self._enter_command_context(primary_config=power_config)
+        ctx = self._enter_command_context(
+            primary_config=power_config, list_only=list_runs
+        )
         suite_cfg = PowerSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
@@ -3018,7 +3045,9 @@ class RtlBuddy:
         """
         run CDC lint
         """
-        ctx = self._enter_command_context(primary_config=cdc_config)
+        ctx = self._enter_command_context(
+            primary_config=cdc_config, list_only=list_cdcs
+        )
         suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
@@ -3321,7 +3350,9 @@ class RtlBuddy:
         """
         run formal property verification
         """
-        ctx = self._enter_command_context(primary_config=fpv_config)
+        ctx = self._enter_command_context(
+            primary_config=fpv_config, list_only=list_fpvs
+        )
         suite_cfg = FpvSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
