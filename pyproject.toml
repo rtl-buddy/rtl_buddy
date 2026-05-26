@@ -59,6 +59,23 @@ Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
 [tool.hatch.version]
 source = "vcs"
 
+# Source distribution only needs the inputs a downstream installer
+# (pip, uv) actually requires: pyproject.toml, README.md, LICENSE, the
+# package source under src/, and docs/ (because the bundled skill
+# materializes them from the wheel). Dev/CI scaffolding (tests/,
+# scripts/, .github/, .agents/, .claude/, mkdocs.yml, uv.lock,
+# AGENTS.md, CLAUDE.md, .pre-commit-config.yaml, pytest.ini,
+# CONTRIBUTORS) is not needed at install time and only inflates the
+# release tarball.
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/rtl_buddy",
+  "docs",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/rtl_buddy"]
 exclude = ["src/rtl_buddy/docs"]
