@@ -12,7 +12,9 @@ dependencies = [
   "click >= 8.3.0",
   "pyserde[yaml] >= 0.27.0",
   "rich >= 14.0.0",
-  "pywellen >= 0.20.0"
+  "pywellen >= 0.20.0",
+  "jsonschema >= 4.21.0",
+  "websockets >= 12.0",
 ]
 
 authors = [
@@ -75,6 +77,8 @@ lint = [
 ]
 test = [
   "pytest>=9.0.3",
+  "pytest-cov>=6.0.0",
+  "pytest-asyncio>=0.24.0",
 ]
 dev = [
   { include-group = "docs" },
@@ -97,3 +101,22 @@ select = ["F", "E7", "E9"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/rtl_buddy/runner/test_runner.py" = ["F403", "F405"]
+
+[tool.coverage.run]
+branch = true
+source = ["src/rtl_buddy"]
+omit = [
+  "src/rtl_buddy/skill/*",
+  "src/rtl_buddy/docs/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 48
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]

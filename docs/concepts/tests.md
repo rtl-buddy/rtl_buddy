@@ -116,6 +116,16 @@ The transcript parser is not the only source of failures. `rtl_buddy` also marks
 - compilation fails
 - simulation times out
 
+### Exit codes
+
+`rtl_buddy` returns one of three exit codes from test commands:
+
+| Code | Meaning |
+|------|---------|
+| 0 | All tests passed |
+| 1 | One or more tests failed |
+| 2 | Fatal configuration or environment error |
+
 ## Running tests
 
 Run a named test:

@@ -16,8 +16,10 @@ import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
-from .config.model import ModelConfigLoader
+from .config.fpv import FpvRegConfig, FpvSuiteConfig
+from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
+from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
@@ -30,16 +32,28 @@ from .logging_utils import (
 )
 from .runner.cdc_runner import CdcRunner
 from .runner.cdc_results import CdcSkipResults
+from .runner.fpv_runner import FpvRunner
+from .runner.fpv_results import FpvSkipResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.pnr_runner import PnrRunner
 from .runner.pnr_results import PnrSkipResults
+from .runner.power_runner import PowerRunner
+from .runner.power_results import PowerSkipResults
 from .runner.synth_runner import SynthRunner
 from .runner.synth_results import SynthSkipResults
 from .seed_mode import SeedMode
+from .hub.cli import app as hub_app
 from .skill_install import app as skill_app
+from .tools.axi_profile_rtl_buddy import (
+    RtlBuddyAxiProfileDiscover,
+    RtlBuddyAxiProfileGenMonitor,
+    RtlBuddyAxiProfileNotebook,
+    RtlBuddyAxiProfileRun,
+)
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
+from .tools.hier_rtl_buddy_view import RtlBuddyView
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
@@ -67,10 +81,16 @@ class RtlBuddy:
         "regression",
         "filelist",
         "wave",
+        "wave-fpv",
         "synth",
         "synth-regression",
+        "power",
+        "power-regression",
         "cdc",
         "cdc-regression",
+        "fpv",
+        "fpv-regression",
+        "hier",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -90,7 +110,25 @@ class RtlBuddy:
 
     def cb_version(value: bool):
         if value:
-            print(f"rtl_buddy v{version('rtl-buddy')}")
+            if "--machine" in sys.argv:
+                print(
+                    json.dumps(
+                        {
+                            "command": "version",
+                            "exit_code": 0,
+                            "meta": {
+                                "rtl_buddy_version": version("rtl-buddy"),
+                                "argv": sys.argv[:],
+                                "cwd": os.getcwd(),
+                                "git": None,
+                            },
+                            "payload": {},
+                        },
+                        ensure_ascii=True,
+                    )
+                )
+            else:
+                print(f"rtl_buddy v{version('rtl-buddy')}")
             raise typer.Exit()
 
     def __init__(self, name):
@@ -100,6 +138,10 @@ class RtlBuddy:
         )
         self.spec_app = typer.Typer(
             help="spec traceability commands", no_args_is_help=True
+        )
+        self.axi_profile_app = typer.Typer(
+            help=("profile AXI interconnect performance via rtl-buddy-axi-profiler"),
+            no_args_is_help=True,
         )
         self.app.callback()(self.root_options)
         self.app.command("test", help="run a simple test")(self.do_cmd_test)
@@ -112,10 +154,58 @@ class RtlBuddy:
         self.app.command("filelist", help="generate filelists using models.yaml")(
             self.do_gen_model_filelist
         )
-        self.app.command("verible", help="run verible cmd")(self.do_verible)
+        self.app.command("hier", help="render module hierarchy via rtl-buddy-view")(
+            self.do_cmd_hier
+        )
+        self.axi_profile_app.command(
+            "run",
+            help="ingest a test's FST and emit per-test axi-perf.json",
+        )(self.do_cmd_axi_profile_run)
+        self.axi_profile_app.command(
+            "discover",
+            help="parse RTL to (re)generate the model's axi-bundles.yaml manifest",
+        )(self.do_cmd_axi_profile_discover)
+        self.axi_profile_app.command(
+            "gen-monitor",
+            help="emit the SV bind-style AXI monitor for the model's testbench",
+        )(self.do_cmd_axi_profile_gen_monitor)
+        self.axi_profile_app.command(
+            "notebook",
+            help="launch the packaged marimo notebook against a test's per-txn parquet",
+        )(self.do_cmd_axi_profile_notebook)
+        self.app.add_typer(
+            self.axi_profile_app,
+            name="axi-profile",
+            help=("profile AXI interconnect performance via rtl-buddy-axi-profiler"),
+        )
+        self.verible_app = typer.Typer(
+            help="verible tooling and filelist generation", no_args_is_help=True
+        )
+        self.verible_app.command("lint", help="run verible-verilog-lint")(
+            self.do_verible_lint
+        )
+        self.verible_app.command("syntax", help="run verible-verilog-syntax")(
+            self.do_verible_syntax
+        )
+        self.verible_app.command("format", help="run verible-verilog-format")(
+            self.do_verible_format
+        )
+        self.verible_app.command(
+            "preprocessor", help="run verible-verilog-preprocessor"
+        )(self.do_verible_preprocessor)
+        self.verible_app.command(
+            "filelist",
+            help="generate verible.filelist from models.yaml so verible-verilog-ls "
+            "can resolve cross-file symbols",
+        )(self.do_verible_filelist)
+        self.app.add_typer(self.verible_app, name="verible", help="verible commands")
         self.app.command("wave", help="open waveform viewer for a test")(
             self.do_cmd_wave
         )
+        self.app.command(
+            "wave-fpv",
+            help="open SymbiYosys counterexample VCD for a failed FPV verification",
+        )(self.do_cmd_wave_fpv)
         self.app.command(
             "wave-install-nvim", help="install nvim plugin for rb wave annotation"
         )(self.do_wave_install_nvim)
@@ -124,10 +214,24 @@ class RtlBuddy:
             self.do_synth_regression
         )
         self.app.command("pnr", help="run place-and-route")(self.do_cmd_pnr)
+        self.app.command("power", help="run power analysis")(self.do_cmd_power)
+        self.app.command("power-regression", help="run power analysis regression")(
+            self.do_power_regression
+        )
+        self.app.command("saif", help="convert FST/VCD trace to SAIF v2.0")(
+            self.do_cmd_saif
+        )
         self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
         self.app.command("cdc-regression", help="run CDC lint regression")(
             self.do_cdc_regression
         )
+        self.app.command("fpv", help="run formal property verification")(
+            self.do_cmd_fpv
+        )
+        self.app.command("fpv-regression", help="run FPV regression")(
+            self.do_fpv_regression
+        )
+        self.app.add_typer(hub_app, name="hub", help="manage the rtl-buddy-hub daemon")
         self.app.add_typer(
             skill_app, name="skill", help="manage the rtl_buddy agent skill"
         )
@@ -154,6 +258,10 @@ class RtlBuddy:
         self.app.add_typer(
             self.spec_app, name="spec", help="spec traceability commands"
         )
+        self.app.command(
+            "tool-check",
+            help="check installed tool dependencies and subcommand readiness",
+        )(self.do_cmd_tool_check)
 
         if "." not in os.environ["PATH"].split(os.pathsep):
             os.environ["PATH"] = "." + os.pathsep + os.environ["PATH"]
@@ -168,7 +276,7 @@ class RtlBuddy:
 
     def run(self):
         try:
-            self.app(standalone_mode=False)
+            rv = self.app(standalone_mode=False)
         except click.exceptions.Exit as exc:
             return exc.exit_code
         except click.exceptions.Abort:
@@ -179,7 +287,11 @@ class RtlBuddy:
         except (FatalRtlBuddyError, FilelistError) as exc:
             emit_console_text(str(exc), style="red")
             return 2
-        return 0
+        # standalone_mode=False makes click *return* the exit code from
+        # `typer.Exit(code=N)` rather than re-raise it, so we have to
+        # surface it here. Existing commands that return None continue
+        # to exit cleanly with code 0.
+        return rv if isinstance(rv, int) else 0
 
     def _is_test_list_invocation(self, ctx: typer.Context) -> bool:
         return ctx.invoked_subcommand == "test" and "--list" in sys.argv[1:]
@@ -247,7 +359,7 @@ class RtlBuddy:
 
         self.machine = machine
 
-        if ctx.invoked_subcommand in {"skill", "docs", "spec"}:
+        if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
             return
 
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
@@ -496,9 +608,14 @@ class RtlBuddy:
         )
 
         if list_tests:
-            emit_console_text(
-                "  ".join(self.suite_cfg.get_test_names()), stream="stdout"
-            )
+            if self.machine:
+                self._emit_machine_result(
+                    "test --list", 0, names=list(self.suite_cfg.get_test_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(self.suite_cfg.get_test_names()), stream="stdout"
+                )
             raise typer.Exit(0)
 
         seed_mode: SeedMode = SeedMode.DEFAULT
@@ -534,10 +651,25 @@ class RtlBuddy:
                 dir_summary_paths=dir_summary_paths,
             )
         )
-        self._render_test_summary(
-            "Test Results Summary", suite_results, metadata=metadata
-        )
-        raise typer.Exit(self._exit_code_from_results(suite_results))
+        exit_code = self._exit_code_from_results(suite_results)
+        if self.machine:
+            self._emit_machine_result(
+                "test",
+                exit_code,
+                results=[
+                    {
+                        "name": r["test_name"],
+                        "result": r["results"].results["result"],
+                        "desc": r["results"].results["desc"],
+                    }
+                    for r in suite_results
+                ],
+            )
+        else:
+            self._render_test_summary(
+                "Test Results Summary", suite_results, metadata=metadata
+            )
+        raise typer.Exit(exit_code)
 
     def do_rand_test(
         self,
@@ -589,12 +721,13 @@ class RtlBuddy:
                 seed_mode=SeedMode.REPLAY,
                 replay_run_id=rpt_i,
             )
-            self._render_test_summary(
-                "RandTest Replay Summary",
-                suite_results,
-                include_run_id=True,
-                metadata=[f"Builder: {self.builder}"],
-            )
+            if not self.machine:
+                self._render_test_summary(
+                    "RandTest Replay Summary",
+                    suite_results,
+                    include_run_id=True,
+                    metadata=[f"Builder: {self.builder}"],
+                )
         else:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
@@ -603,14 +736,30 @@ class RtlBuddy:
                 seed_mode=SeedMode.NEW,
                 replay_run_id=None,
             )
-            self._render_test_summary(
-                "RandTest Results Summary",
-                suite_results,
-                include_run_id=True,
-                metadata=[f"Builder: {self.builder}"],
-            )
+            if not self.machine:
+                self._render_test_summary(
+                    "RandTest Results Summary",
+                    suite_results,
+                    include_run_id=True,
+                    metadata=[f"Builder: {self.builder}"],
+                )
 
-        raise typer.Exit(self._exit_code_from_results(suite_results))
+        exit_code = self._exit_code_from_results(suite_results)
+        if self.machine:
+            self._emit_machine_result(
+                "randtest",
+                exit_code,
+                results=[
+                    {
+                        "name": r["test_name"],
+                        "run_id": r["randmode_i"],
+                        "result": r["results"].results["result"],
+                        "desc": r["results"].results["desc"],
+                    }
+                    for r in suite_results
+                ],
+            )
+        raise typer.Exit(exit_code)
 
     def _append_skip_results(self, test_name, desc, run_ids, suite_results):
         test_results = SkipResults(name=test_name + "/results", desc=desc)
@@ -1016,7 +1165,23 @@ class RtlBuddy:
                 )
             )
 
-        self._render_regression_summary(reg_results, metadata=metadata)
+        if self.machine:
+            self._emit_machine_result(
+                "regression",
+                exit_code,
+                results=[
+                    {
+                        "suite": reg_result["test_suite"],
+                        "name": suite_result["test_name"],
+                        "result": suite_result["results"].results["result"],
+                        "desc": suite_result["results"].results["desc"],
+                    }
+                    for reg_result in reg_results
+                    for suite_result in reg_result["results"]
+                ],
+            )
+        else:
+            self._render_regression_summary(reg_results, metadata=metadata)
         raise typer.Exit(exit_code)
 
     def do_gen_model_filelist(
@@ -1071,14 +1236,467 @@ class RtlBuddy:
         )
         return
 
+    def do_cmd_hier(
+        self,
+        name: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "with --view dut (default): model name from models.yaml; "
+                    "with --view tb: test name from tests.yaml (the test "
+                    "pins both the model + the testbench top)"
+                )
+            ),
+        ],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        test_config: Annotated[
+            str, typer.Option("--test-config", help="tests.yaml to use (--view tb)")
+        ] = "tests.yaml",
+        view: Annotated[
+            str,
+            typer.Option(
+                "--view",
+                help=(
+                    "what to render: 'dut' (default) renders the model "
+                    "hierarchy rooted at --top; 'tb' renders the testbench "
+                    "hierarchy with the DUT called out as a subtree. With "
+                    "--view tb the positional argument is a test name."
+                ),
+            ),
+        ] = "dut",
+        fmt: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                help="output format: tree, dot, mermaid, json",
+            ),
+        ] = "tree",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help="write renderer output to file instead of stdout",
+            ),
+        ] = None,
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="parser frontend (verible|slang)"),
+        ] = None,
+        cdc_annotations: Annotated[
+            str | None,
+            typer.Option(
+                "--cdc-annotations",
+                help="clock-domain map JSON from `rtl-buddy-cdc --emit-domain-map`",
+            ),
+        ] = None,
+        rdc_annotations: Annotated[
+            str | None,
+            typer.Option(
+                "--rdc-annotations",
+                help="reset-domain map JSON from `rtl-buddy-cdc --emit-reset-domain-map`",
+            ),
+        ] = None,
+        clock_legend: Annotated[
+            bool,
+            typer.Option(
+                "--clock-legend",
+                help="dot format only: emit a side legend of clock colors",
+            ),
+        ] = False,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+    ):
+        """
+        render module hierarchy via rtl-buddy-view
+        """
+        if view not in ("dut", "tb"):
+            raise FatalRtlBuddyError(
+                f"hier: --view must be 'dut' or 'tb', got {view!r}"
+            )
+
+        if view == "tb":
+            # The test pins both a model and a TB top — resolve via
+            # the existing SuiteConfig loader so the same parse path
+            # the simulator uses runs here too.
+            from .config.suite import SuiteConfig
+
+            suite = SuiteConfig(test_config)
+            tests = suite.get_tests(name)
+            test_cfg = list(tests)[0]
+            model_cfg = test_cfg.get_model()
+            log_event(
+                logger,
+                logging.INFO,
+                "command.hier",
+                command="hier",
+                test=name,
+                model=model_cfg.name,
+                tb=test_cfg.tb.name,
+                format=fmt,
+                output=output,
+                view="tb",
+            )
+            runner = RtlBuddyView(
+                name=self.name + "/hier",
+                model_cfg=model_cfg,
+                suite_dir=os.getcwd(),
+                format=fmt,
+                output=output,
+                frontend=frontend,
+                cdc_annotations=cdc_annotations,
+                rdc_annotations=rdc_annotations,
+                clock_legend=clock_legend,
+                executable=tool,
+                test_cfg=test_cfg,
+            )
+            raise typer.Exit(runner.run())
+
+        # --view dut (default): unchanged behaviour.
+        model_cfg = ModelConfigLoader(model_config).get_model(name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.hier",
+            command="hier",
+            model=name,
+            format=fmt,
+            output=output,
+            view="dut",
+        )
+        runner = RtlBuddyView(
+            name=self.name + "/hier",
+            model_cfg=model_cfg,
+            suite_dir=os.getcwd(),
+            format=fmt,
+            output=output,
+            frontend=frontend,
+            cdc_annotations=cdc_annotations,
+            rdc_annotations=rdc_annotations,
+            clock_legend=clock_legend,
+            executable=tool,
+        )
+        raise typer.Exit(runner.run())
+
+    def do_cmd_axi_profile_discover(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "output path for axi-bundles.yaml (default: the model's "
+                    "`axi_bundles:` from models.yaml when set, else "
+                    "artefacts/axi/<model>/axi-bundles.yaml)"
+                ),
+            ),
+        ] = None,
+        amend: Annotated[
+            str | None,
+            typer.Option(
+                "--amend",
+                help=(
+                    "existing axi-bundles.yaml to merge user edits from "
+                    "(deferred to a follow-up; warns if passed)"
+                ),
+            ),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the axi-profiler binary"),
+        ] = "axi-profiler",
+    ):
+        """
+        parse RTL to (re)generate the model's axi-bundles.yaml manifest
+        """
+        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_discover",
+            command="axi-profile",
+            subcommand="discover",
+            model=model_name,
+            output=output,
+        )
+        profiler = RtlBuddyAxiProfileDiscover(
+            name=self.name + "/axi-profile/discover",
+            model_cfg=model_cfg,
+            suite_dir=os.getcwd(),
+            output=output,
+            amend=amend,
+            executable=tool,
+        )
+        raise typer.Exit(profiler.run())
+
+    def do_cmd_axi_profile_run(
+        self,
+        test_name: Annotated[str, typer.Argument(help="test from tests.yaml")],
+        test_config: Annotated[
+            str, typer.Option("-c", "--test-config", help="tests.yaml to use")
+        ] = "tests.yaml",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "output path for axi-perf.json "
+                    "(default: artefacts/axi/<test>/axi-perf.json)"
+                ),
+            ),
+        ] = None,
+        tb_prefix: Annotated[
+            str | None,
+            typer.Option(
+                "--tb-prefix",
+                help=(
+                    "Override the testbench top scope name used as the "
+                    "hierarchical prefix in the FST. Default is the test's "
+                    "tb name from tests.yaml. Pass empty string to disable."
+                ),
+            ),
+        ] = None,
+        emit_txns_parquet: Annotated[
+            bool,
+            typer.Option(
+                "--emit-txns-parquet",
+                help=(
+                    "Also emit a per-transaction parquet artifact at "
+                    "artefacts/axi/<test>/axi-txns.parquet — the canonical "
+                    "location `rb axi-profile notebook` reads. Requires "
+                    "the axi-profiler [parquet] extra (pyarrow)."
+                ),
+            ),
+        ] = False,
+        emit_txns_parquet_path: Annotated[
+            str | None,
+            typer.Option(
+                "--emit-txns-parquet-path",
+                help=(
+                    "Explicit path for the per-transaction parquet "
+                    "artefact. Implies --emit-txns-parquet."
+                ),
+            ),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the axi-profiler binary"),
+        ] = "axi-profiler",
+    ):
+        """
+        ingest a test's FST and emit per-test axi-perf.json
+
+        Looks up `<test>` in tests.yaml, resolves the model, the
+        checked-in axi-bundles.yaml manifest (model.axi_bundles in
+        models.yaml), and the FST at artefacts/<test>/dump.fst, then
+        invokes axi-profiler run. Pass --emit-txns-parquet to also
+        produce the per-transaction parquet artefact that
+        `rb axi-profile notebook` consumes.
+        """
+        suite_cfg = SuiteConfig(test_config)
+        test_cfg = suite_cfg.get_tests(test_name)[0]
+        # Resolve parquet emit:
+        #   explicit path → use it
+        #   bare --emit-txns-parquet → empty-string sentinel → wrapper picks default
+        #   neither → None → no emit (legacy behaviour)
+        parquet_arg: str | None
+        if emit_txns_parquet_path is not None:
+            parquet_arg = emit_txns_parquet_path
+        elif emit_txns_parquet:
+            parquet_arg = ""
+        else:
+            parquet_arg = None
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_run",
+            command="axi-profile",
+            subcommand="run",
+            test=test_name,
+            model=test_cfg.get_model().name,
+            output=output,
+            tb_prefix=tb_prefix,
+            emit_txns_parquet=parquet_arg,
+        )
+        profiler = RtlBuddyAxiProfileRun(
+            name=self.name + "/axi-profile/run",
+            test_cfg=test_cfg,
+            suite_dir=os.path.dirname(os.path.abspath(test_config)),
+            output=output,
+            tb_prefix_override=tb_prefix,
+            emit_txns_parquet=parquet_arg,
+            executable=tool,
+        )
+        raise typer.Exit(profiler.run())
+
+    def do_cmd_axi_profile_gen_monitor(
+        self,
+        model_name: Annotated[str, typer.Argument(help="model from models.yaml")],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "output path for the generated SV monitor "
+                    "(default: the model's `axi_monitor_out:` "
+                    "from models.yaml)"
+                ),
+            ),
+        ] = None,
+        time_precision: Annotated[
+            str | None,
+            typer.Option(
+                "--time-precision",
+                help=(
+                    "IEEE-1800 timeprecision atom (1ns / 100ps / 1ps / ...). "
+                    "Must match the testbench's `timeprecision."
+                ),
+            ),
+        ] = None,
+        buffer_cap: Annotated[
+            int | None,
+            typer.Option(
+                "--buffer-cap",
+                help="Per-bundle FIFO depth cap. Drained only at $finish.",
+            ),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the axi-profiler binary"),
+        ] = "axi-profiler",
+    ):
+        """
+        emit the SV bind-style AXI monitor for the model's testbench
+
+        Reads the manifest path from `model.axi_bundles` and the
+        output path from `model.axi_monitor_out` (both in
+        models.yaml). The generated SV must be added to the
+        testbench's filelist; pointing `axi_monitor_out:` at the
+        verif tree (e.g. `../verif/<tb>/gen/axi_perf_mon.sv`) makes
+        that a one-time step.
+        """
+        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_gen_monitor",
+            command="axi-profile",
+            subcommand="gen-monitor",
+            model=model_name,
+            output=output,
+        )
+        profiler = RtlBuddyAxiProfileGenMonitor(
+            name=self.name + "/axi-profile/gen-monitor",
+            model_cfg=model_cfg,
+            suite_dir=os.getcwd(),
+            output=output,
+            time_precision=time_precision,
+            buffer_cap=buffer_cap,
+            executable=tool,
+        )
+        raise typer.Exit(profiler.run())
+
+    def do_cmd_axi_profile_notebook(
+        self,
+        test_name: Annotated[str, typer.Argument(help="test from tests.yaml")],
+        test_config: Annotated[
+            str, typer.Option("-c", "--test-config", help="tests.yaml to use")
+        ] = "tests.yaml",
+        port: Annotated[
+            int | None,
+            typer.Option(
+                "--port",
+                help="TCP port for marimo's edit server (default: OS-assigned)",
+            ),
+        ] = None,
+        foreground: Annotated[
+            bool,
+            typer.Option(
+                "--foreground/--daemon",
+                help=(
+                    "Run marimo in the foreground (default). --daemon is "
+                    "accepted but currently falls back to foreground; "
+                    "background detach is a follow-up."
+                ),
+            ),
+        ] = True,
+        headless: Annotated[
+            bool,
+            typer.Option(
+                "--headless",
+                help=(
+                    "Forward `--headless --no-token` to marimo. Used by the "
+                    "hub-initiated 'Open in marimo' flow (Phase 2 of the "
+                    "marimo umbrella) — the SPA opens the URL itself, so "
+                    "marimo shouldn't auto-pop a browser and the auth "
+                    "token is disabled for the loopback-only handoff."
+                ),
+            ),
+        ] = False,
+        marimo: Annotated[
+            str,
+            typer.Option(
+                "--marimo",
+                help="path to the marimo binary (default: 'marimo' on PATH)",
+            ),
+        ] = "marimo",
+    ):
+        """
+        launch the packaged marimo notebook against a test's per-txn parquet
+
+        Resolves the per-test parquet at
+        artefacts/axi/<test>/axi-txns.parquet (produced by
+        `rb axi-profile run <test> --emit-txns-parquet`), locates the
+        notebook template shipped with the axi-profiler wheel, and
+        spawns `marimo edit <template>` with $AXI_TXNS_PARQUET set so
+        the template's first cell loads the parquet automatically.
+        """
+        suite_cfg = SuiteConfig(test_config)
+        test_cfg = suite_cfg.get_tests(test_name)[0]
+        log_event(
+            logger,
+            logging.INFO,
+            "command.axi_profile_notebook",
+            command="axi-profile",
+            subcommand="notebook",
+            test=test_name,
+            port=port,
+            foreground=foreground,
+            headless=headless,
+        )
+        notebook = RtlBuddyAxiProfileNotebook(
+            name=self.name + "/axi-profile/notebook",
+            test_cfg=test_cfg,
+            suite_dir=os.path.dirname(os.path.abspath(test_config)),
+            port=port,
+            foreground=foreground,
+            headless=headless,
+            marimo_executable=marimo,
+        )
+        raise typer.Exit(notebook.run())
+
     def do_docs_list(self):
         pages = [page.to_list_item() for page in list_pages()]
         if self.machine:
-            print(json.dumps({"pages": pages}, ensure_ascii=True))
+            self._emit_machine_result("docs list", 0, pages=pages)
             return
 
         for page in pages:
-            print(f"{page['slug']} - {page['title']}: {page['summary']}")
+            print(f"{page['slug']} - {page['title']}: {page['description']}")
 
     def do_docs_show(
         self,
@@ -1140,30 +1758,33 @@ class RtlBuddy:
 
         if not os.path.isdir(search_dir):
             emit_console_text(f"Spec directory not found: {search_dir}", style="yellow")
+            if self.machine:
+                self._emit_machine_result(
+                    "spec list", 1, error="Spec directory not found"
+                )
             raise typer.Exit(1)
 
         specs = discover_spec_configs(search_dir)
         blocks = all_spec_blocks(specs)
         if not blocks:
             emit_console_text("No spec blocks found.", style="yellow")
+            if self.machine:
+                self._emit_machine_result("spec list", 0, blocks=[])
             raise typer.Exit(0)
 
         if self.machine:
-            print(
-                json.dumps(
+            self._emit_machine_result(
+                "spec list",
+                0,
+                blocks=[
                     {
-                        "blocks": [
-                            {
-                                "block": b.name,
-                                "desc": b.desc,
-                                "path": cfg.get_path(),
-                                "coverage_items": len(b.coverage_items),
-                            }
-                            for cfg, b in blocks
-                        ]
-                    },
-                    ensure_ascii=True,
-                )
+                        "block": b.name,
+                        "desc": b.desc,
+                        "path": cfg.get_path(),
+                        "coverage_items": len(b.coverage_items),
+                    }
+                    for cfg, b in blocks
+                ],
             )
             raise typer.Exit(0)
 
@@ -1227,27 +1848,24 @@ class RtlBuddy:
         spec_to_models = build_spec_to_models_map(specs, models)
 
         if self.machine:
-            print(
-                json.dumps(
+            self._emit_machine_result(
+                "spec check-testplan",
+                0,
+                blocks=[
                     {
-                        "blocks": [
-                            {
-                                "block": b.name,
-                                "has_model": bool(
-                                    spec_to_models.get(f"{cfg.get_path()}::{b.name}")
-                                ),
-                                "models": [
-                                    {"path": p, "model": m}
-                                    for p, m in spec_to_models.get(
-                                        f"{cfg.get_path()}::{b.name}", []
-                                    )
-                                ],
-                            }
-                            for cfg, b in blocks
-                        ]
-                    },
-                    ensure_ascii=True,
-                )
+                        "block": b.name,
+                        "has_model": bool(
+                            spec_to_models.get(f"{cfg.get_path()}::{b.name}")
+                        ),
+                        "models": [
+                            {"path": p, "model": m}
+                            for p, m in spec_to_models.get(
+                                f"{cfg.get_path()}::{b.name}", []
+                            )
+                        ],
+                    }
+                    for cfg, b in blocks
+                ],
             )
             raise typer.Exit(0)
 
@@ -1316,20 +1934,20 @@ class RtlBuddy:
         cov_map = build_coverage_map(suite_tests)
 
         if self.machine:
-            items_out = []
-            for cfg, b in blocks:
-                for item in b.coverage_items:
-                    tests = cov_map.get(item.id, [])
-                    items_out.append(
-                        {
-                            "block": b.name,
-                            "id": item.id,
-                            "desc": item.desc,
-                            "covered": bool(tests),
-                            "tests": [{"path": p, "test": t} for p, t in tests],
-                        }
-                    )
-            print(json.dumps({"items": items_out}, ensure_ascii=True))
+            items_out = [
+                {
+                    "block": b.name,
+                    "id": item.id,
+                    "desc": item.desc,
+                    "covered": bool(cov_map.get(item.id)),
+                    "tests": [
+                        {"path": p, "test": t} for p, t in cov_map.get(item.id, [])
+                    ],
+                }
+                for cfg, b in blocks
+                for item in b.coverage_items
+            ]
+            self._emit_machine_result("spec check-coverage", 0, items=items_out)
             raise typer.Exit(0)
 
         rows = []
@@ -1364,6 +1982,56 @@ class RtlBuddy:
                 f"Uncovered items: {', '.join(uncovered)}", style="yellow"
             )
         raise typer.Exit(0)
+
+    def _synth_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["synth_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("gate_count", "area_um2", "wns_ps", "tns_ps"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _pnr_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["pnr_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("cell_count", "area_um2", "wns_setup_ps", "wns_hold_ps", "drc_count"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _power_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["power_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("mode", "total_w", "internal_w", "switching_w", "leakage_w"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _cdc_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["cdc_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("violations", "suppressed", "crossings"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _fpv_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["fpv_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("mode", "depth", "engines", "runtime_s"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
 
     def _render_synth_summary(self, title, synth_results, *, metadata=None):
         has_gates = any("gate_count" in r["results"].results for r in synth_results)
@@ -1502,14 +2170,29 @@ class RtlBuddy:
         )
 
         if list_synths:
-            emit_console_text("  ".join(suite_cfg.get_synth_names()), stream="stdout")
+            if self.machine:
+                self._emit_machine_result(
+                    "synth --list", 0, names=list(suite_cfg.get_synth_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_synth_names()), stream="stdout"
+                )
             raise typer.Exit(0)
 
         synth_results = self._do_synth_suite(
             suite_cfg, synth_name=synth_name, effort_override=effort
         )
-        self._render_synth_summary("Synthesis Results Summary", synth_results)
-        raise typer.Exit(self._exit_code_from_synth_results(synth_results))
+        exit_code = self._exit_code_from_synth_results(synth_results)
+        if self.machine:
+            self._emit_machine_result(
+                "synth",
+                exit_code,
+                results=[self._synth_result_row(r) for r in synth_results],
+            )
+        else:
+            self._render_synth_summary("Synthesis Results Summary", synth_results)
+        raise typer.Exit(exit_code)
 
     def do_cmd_pnr(
         self,
@@ -1566,7 +2249,12 @@ class RtlBuddy:
         )
 
         if list_runs:
-            emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            if self.machine:
+                self._emit_machine_result(
+                    "pnr --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
             raise typer.Exit(0)
 
         results = self._do_pnr_suite(
@@ -1576,8 +2264,16 @@ class RtlBuddy:
             emit_gds=emit_gds,
             emit_png=emit_png,
         )
-        self._render_pnr_summary("P&R Results Summary", results)
-        raise typer.Exit(0 if all(r["results"].is_pass() for r in results) else 1)
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "pnr",
+                exit_code,
+                results=[self._pnr_result_row(r) for r in results],
+            )
+        else:
+            self._render_pnr_summary("P&R Results Summary", results)
+        raise typer.Exit(exit_code)
 
     def _do_pnr_suite(
         self,
@@ -1702,6 +2398,274 @@ class RtlBuddy:
             metadata=metadata,
         )
 
+    def do_cmd_power(
+        self,
+        power_config: Annotated[
+            str,
+            typer.Option("-c", "--power-config", help="power.yaml to use"),
+        ] = "power.yaml",
+        power_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of power run",
+                show_default="run all entries in the suite",
+            ),
+        ] = None,
+        list_runs: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list power runs in the selected config and exit"
+            ),
+        ] = False,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l",
+                "--reg-level",
+                help="run only entries with reglvl at or below this value",
+            ),
+        ] = 0,
+    ):
+        """run power analysis"""
+        suite_cfg = PowerSuiteConfig(path=power_config)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.power",
+            command="power",
+            power=power_name or "all",
+            power_config=power_config,
+        )
+
+        if list_runs:
+            if self.machine:
+                self._emit_machine_result(
+                    "power --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        results = self._do_power_suite(
+            suite_cfg,
+            power_name=power_name,
+            reg_level=reg_level,
+        )
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "power",
+                exit_code,
+                results=[self._power_result_row(r) for r in results],
+            )
+        else:
+            self._render_power_summary("Power Results Summary", results)
+        raise typer.Exit(exit_code)
+
+    def _do_power_suite(
+        self,
+        suite_cfg,
+        *,
+        power_name=None,
+        reg_level=0,
+    ):
+        root_cfg = RootConfig(name="power")
+        runs = suite_cfg.get_runs(power_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for run in runs:
+            power_level = run.get_reglvl(run.get_tool_name())
+            if reg_level is not None and power_level > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "power_suite.skip",
+                    power=run.get_name(),
+                    reason="above_regression_level",
+                    power_level=power_level,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "power_name": run.get_name(),
+                        "results": PowerSkipResults(
+                            name=f"{run.get_name()}/results",
+                            desc=f"reglvl {power_level} above {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = PowerRunner(
+                name=run.get_name(),
+                root_cfg=root_cfg,
+                power_cfg=run,
+                suite_dir=suite_dir,
+                reglvl_filter=reg_level if reg_level else None,
+            )
+            results.append({"power_name": run.get_name(), "results": runner.run()})
+        return results
+
+    def _render_power_summary(self, title, power_results, *, metadata=None):
+        def _fmt_w(v):
+            if v is None:
+                return "-"
+            if v == 0:
+                return "0 W"
+            mag = abs(v)
+            if mag >= 1e-3:
+                return f"{v * 1e3:.3f} mW"
+            if mag >= 1e-6:
+                return f"{v * 1e6:.3f} µW"
+            return f"{v * 1e9:.3f} nW"
+
+        has_mode = any("mode" in r["results"].results for r in power_results)
+        has_source = any(
+            "netlist_source" in r["results"].results for r in power_results
+        )
+        has_activity = any(
+            "activity_source" in r["results"].results for r in power_results
+        )
+        has_total = any("total_w" in r["results"].results for r in power_results)
+        has_breakdown = any(
+            "internal_w" in r["results"].results
+            or "switching_w" in r["results"].results
+            or "leakage_w" in r["results"].results
+            for r in power_results
+        )
+
+        rows = []
+        for r in power_results:
+            res = r["results"].results
+            row = {
+                "power_name": r["power_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+            }
+            if has_mode:
+                row["mode"] = res.get("mode", "-")
+            if has_source:
+                row["source"] = res.get("netlist_source", "-")
+            if has_activity:
+                row["activity"] = res.get("activity_source", "-")
+            if has_total:
+                row["total"] = _fmt_w(res.get("total_w"))
+            if has_breakdown:
+                row["internal"] = _fmt_w(res.get("internal_w"))
+                row["switching"] = _fmt_w(res.get("switching_w"))
+                row["leakage"] = _fmt_w(res.get("leakage_w"))
+            rows.append(row)
+
+        columns = [
+            ("power_name", "Power Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+        ]
+        if has_mode:
+            columns.append(("mode", "Mode"))
+        if has_source:
+            columns.append(("source", "Source"))
+        if has_activity:
+            columns.append(("activity", "Activity"))
+        if has_total:
+            columns.append(("total", "Total"))
+        if has_breakdown:
+            columns.append(("internal", "Internal"))
+            columns.append(("switching", "Switching"))
+            columns.append(("leakage", "Leakage"))
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _exit_code_from_power_results(self, power_results):
+        return 0 if all(r["results"].is_pass() for r in power_results) else 1
+
+    def do_power_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to power_regression.yaml",
+                show_default="Use ./power_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="power regression level to stop at"),
+        ] = 0,
+    ):
+        """
+        run power analysis regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.power_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        start_dir = os.getcwd()
+        if reg_config is not None:
+            reg_cfg_path = os.path.join(start_dir, reg_config)
+        else:
+            local = os.path.join(start_dir, "power_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "power_regression.yaml not found; pass -c to specify a path"
+                )
+
+        power_reg = PowerRegConfig(
+            name=self.name + "/power_reg_config", path=reg_cfg_path
+        )
+        emit_console_text(
+            f"Running power regression from {os.path.dirname(reg_cfg_path)}",
+            style="cyan",
+        )
+
+        all_results = []
+        machine_rows = []
+        try:
+            for suite_cfg in power_reg.get_suite_configs():
+                suite_dir = os.path.dirname(suite_cfg.get_path())
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "power_regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                )
+                os.chdir(suite_dir)
+                suite_results = self._do_power_suite(
+                    suite_cfg, power_name=None, reg_level=reg_level
+                )
+                all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._power_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
+        finally:
+            os.chdir(start_dir)
+
+        exit_code = self._exit_code_from_power_results(all_results)
+        if self.machine:
+            self._emit_machine_result(
+                "power-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_power_summary(
+                "Power Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
+
     def do_synth_regression(
         self,
         reg_config: Annotated[
@@ -1759,6 +2723,7 @@ class RtlBuddy:
         )
 
         all_results = []
+        machine_rows = []
         try:
             for suite_cfg in synth_reg.get_suite_configs():
                 suite_dir = os.path.dirname(suite_cfg.get_path())
@@ -1776,15 +2741,26 @@ class RtlBuddy:
                     effort_override=effort,
                 )
                 all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._synth_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
         finally:
             os.chdir(start_dir)
 
-        self._render_synth_summary(
-            "Synthesis Regression Summary",
-            all_results,
-            metadata=[f"Reg Level: {reg_level}"],
-        )
-        raise typer.Exit(self._exit_code_from_synth_results(all_results))
+        exit_code = self._exit_code_from_synth_results(all_results)
+        if self.machine:
+            self._emit_machine_result(
+                "synth-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_synth_summary(
+                "Synthesis Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     # --- CDC subcommands ----------------------------------------------------
 
@@ -1858,6 +2834,24 @@ class RtlBuddy:
             results.append({"cdc_name": a.get_name(), "results": runner.run()})
         return results
 
+    def do_cmd_saif(
+        self,
+        trace: Annotated[
+            str,
+            typer.Argument(help="path to input FST or VCD trace"),
+        ],
+        output: Annotated[
+            str,
+            typer.Argument(help="path to write SAIF v2.0 file"),
+        ],
+    ):
+        """convert FST/VCD trace to SAIF v2.0"""
+        from pathlib import Path
+
+        from .tools.saif_from_trace import convert
+
+        convert(Path(trace), Path(output))
+
     def do_cmd_cdc(
         self,
         cdc_config: Annotated[
@@ -1891,14 +2885,27 @@ class RtlBuddy:
         )
 
         if list_cdcs:
-            emit_console_text(
-                "  ".join(suite_cfg.get_analysis_names()), stream="stdout"
-            )
+            if self.machine:
+                self._emit_machine_result(
+                    "cdc --list", 0, names=list(suite_cfg.get_analysis_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_analysis_names()), stream="stdout"
+                )
             raise typer.Exit(0)
 
         cdc_results = self._do_cdc_suite(suite_cfg, cdc_name=cdc_name)
-        self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
-        raise typer.Exit(self._exit_code_from_cdc_results(cdc_results))
+        exit_code = self._exit_code_from_cdc_results(cdc_results)
+        if self.machine:
+            self._emit_machine_result(
+                "cdc",
+                exit_code,
+                results=[self._cdc_result_row(r) for r in cdc_results],
+            )
+        else:
+            self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
+        raise typer.Exit(exit_code)
 
     def do_cdc_regression(
         self,
@@ -1945,6 +2952,7 @@ class RtlBuddy:
         )
 
         all_results = []
+        machine_rows = []
         try:
             for suite_cfg in cdc_reg.get_suite_configs():
                 suite_dir = os.path.dirname(suite_cfg.get_path())
@@ -1959,15 +2967,240 @@ class RtlBuddy:
                     suite_cfg, cdc_name=None, reg_level=reg_level
                 )
                 all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._cdc_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
         finally:
             os.chdir(start_dir)
 
-        self._render_cdc_summary(
-            "CDC Regression Summary",
-            all_results,
-            metadata=[f"Reg Level: {reg_level}"],
+        exit_code = self._exit_code_from_cdc_results(all_results)
+        if self.machine:
+            self._emit_machine_result("cdc-regression", exit_code, results=machine_rows)
+        else:
+            self._render_cdc_summary(
+                "CDC Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
+
+    # --- FPV subcommands ----------------------------------------------------
+
+    def _render_fpv_summary(self, title, fpv_results, *, metadata=None):
+        from .tools.fpv_log_parse import summarize_engines
+
+        rows = []
+        for r in fpv_results:
+            res = r["results"].results
+            engines = res.get("engines") or []
+            runtime = res.get("runtime_s")
+            per_engine = res.get("per_engine") or []
+            row = {
+                "fpv_name": r["fpv_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+                "mode": str(res.get("mode", "-")),
+                "depth": str(res.get("depth", "-")),
+                "engines": ", ".join(engines) if engines else "-",
+                "engine_results": summarize_engines(per_engine) if per_engine else "-",
+                "runtime": f"{runtime:.1f}s" if runtime is not None else "-",
+            }
+            rows.append(row)
+
+        columns = [
+            ("fpv_name", "FPV Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+            ("mode", "Mode"),
+            ("depth", "Depth"),
+            ("engines", "Engines"),
+            ("engine_results", "Engine Results"),
+            ("runtime", "Runtime"),
+        ]
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
         )
-        raise typer.Exit(self._exit_code_from_cdc_results(all_results))
+
+    def _exit_code_from_fpv_results(self, fpv_results):
+        return 0 if all(r["results"].is_pass() for r in fpv_results) else 1
+
+    def _do_fpv_suite(self, suite_cfg, fpv_name=None, reg_level=None):
+        verifications = suite_cfg.get_verifications(fpv_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for v in verifications:
+            tool_name = v.get_tool_name()
+            t_lvl = v.get_reglvl(tool_name)
+            if reg_level is not None and t_lvl > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpv_suite.skip",
+                    fpv=v.get_name(),
+                    reason="above_regression_level",
+                    fpv_level=t_lvl,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "fpv_name": v.get_name(),
+                        "results": FpvSkipResults(
+                            name=v.get_name() + "/results",
+                            desc=f"lvl {t_lvl} > cmd reg_level {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = FpvRunner(
+                name=self.name + "/fpv_runner",
+                root_cfg=self.root_cfg,
+                fpv_cfg=v,
+                suite_dir=suite_dir,
+            )
+            results.append({"fpv_name": v.get_name(), "results": runner.run()})
+        return results
+
+    def do_cmd_fpv(
+        self,
+        fpv_config: Annotated[
+            str,
+            typer.Option("-c", "--fpv-config", help="fpv.yaml to use"),
+        ] = "fpv.yaml",
+        fpv_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of FPV verification to run",
+                show_default="run all verifications",
+            ),
+        ] = None,
+        list_fpvs: Annotated[
+            bool,
+            typer.Option(
+                "--list",
+                help="list verifications in the selected config and exit",
+            ),
+        ] = False,
+    ):
+        """
+        run formal property verification
+        """
+        suite_cfg = FpvSuiteConfig(path=fpv_config)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpv",
+            command="fpv",
+            fpv=fpv_name or "all",
+            fpv_config=fpv_config,
+        )
+
+        if list_fpvs:
+            if self.machine:
+                self._emit_machine_result(
+                    "fpv --list", 0, names=list(suite_cfg.get_verification_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_verification_names()), stream="stdout"
+                )
+            raise typer.Exit(0)
+
+        fpv_results = self._do_fpv_suite(suite_cfg, fpv_name=fpv_name)
+        exit_code = self._exit_code_from_fpv_results(fpv_results)
+        if self.machine:
+            self._emit_machine_result(
+                "fpv",
+                exit_code,
+                results=[self._fpv_result_row(r) for r in fpv_results],
+            )
+        else:
+            self._render_fpv_summary("FPV Results Summary", fpv_results)
+        raise typer.Exit(exit_code)
+
+    def do_fpv_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to fpv_regression.yaml",
+                show_default="Use ./fpv_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="FPV regression level to stop at"),
+        ] = 0,
+    ):
+        """
+        run FPV regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpv_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        start_dir = os.getcwd()
+        if reg_config is not None:
+            reg_cfg_path = os.path.join(start_dir, reg_config)
+        else:
+            local = os.path.join(start_dir, "fpv_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "fpv_regression.yaml not found; pass -c to specify a path"
+                )
+
+        fpv_reg = FpvRegConfig(name=self.name + "/fpv_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running FPV regression from {os.path.dirname(reg_cfg_path)}",
+            style="cyan",
+        )
+
+        all_results = []
+        machine_rows = []
+        try:
+            for suite_cfg in fpv_reg.get_suite_configs():
+                suite_dir = os.path.dirname(suite_cfg.get_path())
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpv_regression.suite_start",
+                    suite=suite_cfg.get_path(),
+                )
+                os.chdir(suite_dir)
+                suite_results = self._do_fpv_suite(
+                    suite_cfg, fpv_name=None, reg_level=reg_level
+                )
+                all_results.extend(suite_results)
+                if self.machine:
+                    machine_rows.extend(
+                        self._fpv_result_row(r, suite=suite_cfg.get_path())
+                        for r in suite_results
+                    )
+        finally:
+            os.chdir(start_dir)
+
+        exit_code = self._exit_code_from_fpv_results(all_results)
+        if self.machine:
+            self._emit_machine_result("fpv-regression", exit_code, results=machine_rows)
+        else:
+            self._render_fpv_summary(
+                "FPV Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     def do_cmd_wave(
         self,
@@ -2055,6 +3288,85 @@ class RtlBuddy:
             scope_annotation=not focused_signal,
         ).launch()
 
+    def do_cmd_wave_fpv(
+        self,
+        verif_name: Annotated[
+            str,
+            typer.Argument(help="name of FPV verification to open CEX for"),
+        ],
+        fpv_config: Annotated[
+            str,
+            typer.Option("-c", "--fpv-config", help="fpv.yaml to use"),
+        ] = "fpv.yaml",
+        surfer_name: Annotated[
+            str, typer.Option("--surfer", help="cfg-surfer entry name")
+        ] = "surfer-default",
+    ):
+        """
+        open SymbiYosys counterexample VCD for a failed FPV verification
+
+        Resolves the CEX VCD by convention at
+        ``fpv/<suite>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd`` and
+        opens it in the configured surfer. Raises if the verification has
+        not been run, the proof passed (no CEX produced), or no engine
+        emitted a trace.
+        """
+        from .tools.fpv_cex_finder import find_cex_vcd
+
+        surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
+        if surfer_cfg is None:
+            raise FatalRtlBuddyError(
+                f'No cfg-surfer entry named "{surfer_name}" in root_config.yaml. '
+                f"Add a cfg-surfer section to enable waveform viewing."
+            )
+        if not surfer_cfg.available:
+            raise FatalRtlBuddyError(
+                f'Surfer not found at "{surfer_cfg.path}". '
+                f"Check cfg-surfer.path in root_config.yaml or install surfer on PATH."
+            )
+
+        suite_cfg = FpvSuiteConfig(path=fpv_config)
+        suite_dir = os.path.dirname(os.path.abspath(fpv_config))
+        # Validate the verification name resolves; raises FatalRtlBuddyError otherwise.
+        suite_cfg.get_verifications(verif_name)
+
+        cex_path = find_cex_vcd(suite_dir, verif_name)
+        if cex_path is None:
+            raise FatalRtlBuddyError(
+                f'No counterexample VCD found for FPV verification "{verif_name}". '
+                f"Either the proof passed (no CEX produced), or `rb fpv {verif_name}` "
+                f"has not been run yet."
+            )
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.wave_fpv",
+            command="wave-fpv",
+            verification=verif_name,
+            cex=cex_path,
+        )
+
+        cmd = [surfer_cfg.get_surfer_exe(), cex_path]
+        emit_console_text(
+            f"Opening CEX for {verif_name} in surfer (Ctrl-C to exit).",
+        )
+        proc = subprocess.Popen(cmd)
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        log_event(
+            logger,
+            logging.INFO,
+            "wave_fpv.done",
+            verification=verif_name,
+        )
+
     def do_wave_install_nvim(
         self,
         force: Annotated[
@@ -2095,13 +3407,12 @@ class RtlBuddy:
     def do_gen_vlog_run_script(self):
         assert False, "not yet impl"
 
-    def do_verible(
-        self,
-        cmd: Annotated[str, typer.Argument(help="Verible cmd")],
-        verible_args: Annotated[list[str], typer.Argument(...)] = [],
-    ):
-        """
-        run verible cmd
+    def _run_verible_passthrough(self, cmd: str, verible_args: list[str]):
+        """Shared dispatch for the verible passthrough subcommands.
+
+        Resolves the configured verible executable via root_config and
+        invokes it with the trailing ``verible_args``. Always exits via
+        ``typer.Exit`` so the binary's return code propagates.
         """
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
         if not verible_cfg.available:
@@ -2116,10 +3427,247 @@ class RtlBuddy:
             command=cmd,
             argv=" ".join(verible_args),
         )
-        exit_code = ver.do_cmd(cmd=cmd, verible_args=verible_args)
-        raise typer.Exit(exit_code)
+        raise typer.Exit(ver.do_cmd(cmd=cmd, verible_args=verible_args))
 
-    def show_git_rev(self):
+    def do_verible_lint(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-lint"""
+        self._run_verible_passthrough("lint", verible_args)
+
+    def do_verible_syntax(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-syntax"""
+        self._run_verible_passthrough("syntax", verible_args)
+
+    def do_verible_format(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-format"""
+        self._run_verible_passthrough("format", verible_args)
+
+    def do_verible_preprocessor(
+        self,
+        verible_args: Annotated[list[str], typer.Argument(...)] = [],
+    ):
+        """run verible-verilog-preprocessor"""
+        self._run_verible_passthrough("preprocessor", verible_args)
+
+    def do_verible_filelist(
+        self,
+        models: Annotated[
+            list[str],
+            typer.Option(
+                "--model",
+                help=(
+                    "Model name(s) to include. May be repeated. Default: "
+                    "union of every model declared in any models.yaml under "
+                    "the project root."
+                ),
+            ),
+        ] = [],
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help=(
+                    "Output path. Defaults to <project_root>/verible.filelist "
+                    "so verible-verilog-ls auto-discovers it."
+                ),
+            ),
+        ] = None,
+    ):
+        """
+        generate verible.filelist from models.yaml so verible-verilog-ls can
+        resolve cross-file symbols (go-to-definition, hover, references)
+        """
+        project_root = self.root_cfg.get_project_rootdir()
+        if output is None:
+            output = os.path.join(project_root, "verible.filelist")
+
+        all_entries = discover_model_configs(project_root)
+        if not all_entries:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible_filelist.no_models_discovered",
+                project_root=project_root,
+            )
+            raise FatalRtlBuddyError(f"no models.yaml files found under {project_root}")
+
+        if models:
+            by_name: dict[str, ModelConfig] = {}
+            for _, model in all_entries:
+                # First-found wins on duplicate names across files. Within a
+                # single models.yaml, ModelConfigLoader already rejects dupes.
+                by_name.setdefault(model.name, model)
+            missing = [name for name in models if name not in by_name]
+            if missing:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "verible_filelist.unknown_models",
+                    models=missing,
+                    available=sorted(by_name),
+                )
+                raise FatalRtlBuddyError(f"unknown model(s): {', '.join(missing)}")
+            selected = [by_name[name] for name in models]
+        else:
+            selected = [model for _, model in all_entries]
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.verible_filelist",
+            models=[m.name for m in selected],
+            output=output,
+        )
+        vlog_fl = VlogFilelist(
+            name=self.name + "/verible_filelist",
+            model_cfg=None,
+            output_path=output,
+        )
+        vlog_fl.write_verible_filelist(selected, output_filepath=output)
+
+    def do_cmd_tool_check(
+        self,
+        fmt: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                help="text | json",
+                case_sensitive=False,
+            ),
+        ] = "text",
+        required_for: Annotated[
+            str | None,
+            typer.Option(
+                "--required-for",
+                help="check only what `rb <subcommand>` needs",
+            ),
+        ] = None,
+        explain_tool: Annotated[
+            str | None,
+            typer.Option(
+                "--explain",
+                help="show install instructions for a single tool and exit",
+            ),
+        ] = None,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help="exit non-zero if any required tool is missing/outdated",
+            ),
+        ] = False,
+        include_optional: Annotated[
+            bool,
+            typer.Option(
+                "--include-optional/--no-include-optional",
+                help="include optional tools (default: yes)",
+            ),
+        ] = True,
+        probe_versions: Annotated[
+            bool,
+            typer.Option(
+                "--probe-versions/--no-probe-versions",
+                help="run `<tool> --version` to capture installed version "
+                "(default: yes)",
+            ),
+        ] = True,
+    ):
+        """
+        Detect installed tool dependencies and report subcommand readiness.
+        """
+        from . import tool_manifest as tm
+        from .config.root import _discover_root_cfg
+
+        setup_logging(debug=False, verbose=False, color=True, machine=self.machine)
+
+        # Opportunistic root_config discovery. tool-check must work outside a
+        # project, so we suppress the "not found" error log entirely.
+        root_cfg = None
+        root_logger = logging.getLogger("rtl_buddy.config.root")
+        prev_level = root_logger.level
+        root_logger.setLevel(logging.CRITICAL)
+        try:
+            if _discover_root_cfg() is not None:
+                root_cfg = RootConfig(name=self.name + "/tool-check/root_config")
+        except FatalRtlBuddyError:
+            root_cfg = None
+        finally:
+            root_logger.setLevel(prev_level)
+
+        specs = tm.get_manifest(root_cfg)
+        project_root = (
+            Path(root_cfg.get_project_rootdir()) if root_cfg is not None else None
+        )
+
+        if explain_tool is not None:
+            spec = next((s for s in specs if s.name == explain_tool), None)
+            if spec is None:
+                emit_console_text(
+                    f"tool-check: unknown tool '{explain_tool}'. "
+                    f"Known: {', '.join(s.name for s in specs)}",
+                    style="red",
+                    stream="stderr",
+                )
+                raise typer.Exit(1)
+            status = tm.check_tool(
+                spec, project_root=project_root, probe_versions=probe_versions
+            )
+            # Plain stdout — Rich's word-wrap would mangle paths.
+            print(tm.explain(spec, status))
+            raise typer.Exit(0)
+
+        statuses = tm.check_all(
+            specs,
+            project_root=project_root,
+            probe_versions=probe_versions,
+            include_optional=include_optional,
+        )
+        subcommands = tm.subcommand_readiness(statuses, specs)
+
+        if required_for is not None:
+            if required_for not in subcommands:
+                emit_console_text(
+                    f"tool-check: subcommand '{required_for}' has no "
+                    f"declared tool dependencies",
+                    style="yellow",
+                )
+                raise typer.Exit(0)
+            subcommands = {required_for: subcommands[required_for]}
+            wanted = set(subcommands[required_for]["tools"])
+            statuses = [s for s in statuses if s.name in wanted]
+
+        reported_exit_code = tm.compute_exit_code(
+            statuses,
+            required_for=required_for,
+            subcommands=tm.subcommand_readiness(statuses, specs),
+        )
+
+        # Use raw stdout — Rich's word-wrap would mangle JSON and break the
+        # alignment of the tool table.
+        if fmt.lower() == "json":
+            print(tm.render_json(statuses, subcommands, exit_code=reported_exit_code))
+        else:
+            print(
+                tm.render_text(statuses, subcommands, include_optional=include_optional)
+            )
+
+        # --required-for always enforces (exit 2 on miss); --strict enforces
+        # the global "any required tool missing" check (exit 1). Without
+        # either flag the command is purely informational.
+        if required_for is not None or strict:
+            raise typer.Exit(reported_exit_code)
+        raise typer.Exit(0)
+
+    def _collect_git_status(self) -> dict | None:
         status_result = subprocess.run(
             ["git", "status", "-sb"],
             stdout=subprocess.PIPE,
@@ -2134,32 +3682,61 @@ class RtlBuddy:
             text=True,
             check=False,
         )
-
         if status_result.returncode != 0 or commit_result.returncode != 0:
-            logger.debug("git metadata unavailable for banner")
-            return
-
+            return None
         status_lines = status_result.stdout.splitlines()
-        git_branch = status_lines[0][3:].split("...")[0] if status_lines else "unknown"
+        branch = status_lines[0][3:].split("...")[0] if status_lines else "unknown"
         file_lines = status_lines[1:]
         mod = sum(1 for ln in file_lines if len(ln) > 1 and ln[1] not in (" ", "?"))
         staged = sum(1 for ln in file_lines if len(ln) > 0 and ln[0] not in (" ", "?"))
-        git_commit = commit_result.stdout.strip()
+        return {
+            "branch": branch,
+            "commit": commit_result.stdout.strip(),
+            "modified": mod,
+            "staged": staged,
+        }
 
-        if mod > 0 or staged > 0:
-            git_str = (
-                f"git: {git_branch} | commit {git_commit} | mod {mod} | staged {staged}"
+    def _emit_machine_result(self, command: str, exit_code: int, **payload) -> None:
+        git = self._collect_git_status()
+        print(
+            json.dumps(
+                {
+                    "command": command,
+                    "exit_code": exit_code,
+                    "meta": {
+                        "rtl_buddy_version": version("rtl-buddy"),
+                        "argv": sys.argv[:],
+                        "cwd": os.getcwd(),
+                        "git": git,
+                    },
+                    "payload": payload,
+                },
+                ensure_ascii=True,
             )
-        else:
-            git_str = f"git: {git_branch} | commit {git_commit} | clean"
+        )
 
+    def show_git_rev(self):
+        git = self._collect_git_status()
+        if git is None:
+            logger.debug("git metadata unavailable for banner")
+            return
+        branch, commit, mod, staged = (
+            git["branch"],
+            git["commit"],
+            git["modified"],
+            git["staged"],
+        )
+        if mod > 0 or staged > 0:
+            git_str = f"git: {branch} | commit {commit} | mod {mod} | staged {staged}"
+        else:
+            git_str = f"git: {branch} | commit {commit} | clean"
         emit_console_text(git_str, style=None if is_machine_mode() else "dim")
         log_event(
             logger,
             logging.INFO,
             "git.status",
-            branch=git_branch,
-            commit=git_commit,
+            branch=branch,
+            commit=commit,
             modified=mod,
             staged=staged,
         )

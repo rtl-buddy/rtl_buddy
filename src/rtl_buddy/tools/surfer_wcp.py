@@ -23,7 +23,7 @@ import socket
 import socket as _socket_mod
 import subprocess
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ..config.surfer import SurferConfig
@@ -667,6 +667,17 @@ class SurferWcpListener:
         self._wcp_conn: socket.socket | None = (
             None  # live connection to Surfer for sending commands
         )
+        self.event_observer: "Callable[[str, dict], None] | None" = None
+        """Optional callback invoked for relevant WCP events. The hub-bridge
+        adapter sets this; the listener stays free of hub awareness."""
+
+        # Per-command-type FIFO of pending response slots. WCP has no request
+        # IDs, so the only correlation guarantee is "responses arrive in
+        # send order for a given command". The bridge calls await_response()
+        # right after sending a command; the reader thread fills the next
+        # slot for that command name when a response frame arrives.
+        self._response_waiters: dict[str, list[tuple[threading.Event, dict]]] = {}
+        self._waiters_lock = threading.Lock()
 
     def send_to_surfer(self, obj: dict) -> None:
         """Send a WCP command frame to Surfer if connected."""
@@ -675,6 +686,41 @@ class SurferWcpListener:
                 _send_frame(self._wcp_conn, obj)
             except OSError:
                 self._wcp_conn = None
+
+    def await_response(self, command: str, timeout: float = 2.0) -> dict | None:
+        """Wait for the next response frame whose ``command`` matches.
+
+        The caller is responsible for calling this *immediately after*
+        sending the matching WCP command so the FIFO ordering across
+        callers stays consistent. Returns the response dict (with
+        ``command`` and any payload fields), or ``None`` on timeout.
+        """
+        slot: dict = {}
+        event = threading.Event()
+        with self._waiters_lock:
+            self._response_waiters.setdefault(command, []).append((event, slot))
+        if not event.wait(timeout):
+            # Reclaim the slot so a late response doesn't fill a stale waiter.
+            with self._waiters_lock:
+                waiters = self._response_waiters.get(command, [])
+                try:
+                    waiters.remove((event, slot))
+                except ValueError:
+                    pass
+            return None
+        return slot.get("response")
+
+    def _dispatch_response(self, msg: dict) -> None:
+        command = msg.get("command")
+        if not isinstance(command, str):
+            return
+        with self._waiters_lock:
+            waiters = self._response_waiters.get(command, [])
+            if not waiters:
+                return
+            event, slot = waiters.pop(0)
+        slot["response"] = msg
+        event.set()
 
     def add_variable_to_surfer(self, name: str) -> None:
         """Resolve *name* against the active scope cache, add to Surfer, and annotate nvim."""
@@ -773,15 +819,29 @@ class SurferWcpListener:
                     self._editor.open(filepath, lineno, value)
                     if self._scope_annotation and self._value_reader is not None:
                         self._build_scope_cache(variable, timestamp)
+                self._notify_observer("goto_declaration", msg)
             elif msg.get("type") == "event" and msg.get("event") == "cursor_moved":
                 timestamp = msg.get("timestamp")
                 if timestamp is not None:
                     self._last_timestamp = timestamp
                 self._on_cursor_moved(timestamp)
+                self._notify_observer("cursor_moved", msg)
             elif msg.get("type") == "event" and msg.get("event") == "scope_changed":
                 scope = msg.get("scope", "")
                 if scope:
                     self._on_scope_changed(scope)
+                self._notify_observer("scope_changed", msg)
+            elif msg.get("type") == "response":
+                self._dispatch_response(msg)
+
+    def _notify_observer(self, event_name: str, msg: dict) -> None:
+        observer = self.event_observer
+        if observer is None:
+            return
+        try:
+            observer(event_name, msg)
+        except Exception:
+            logger.exception("wave.event_observer.unhandled_error event=%s", event_name)
 
     def _emit_value(self, variable: str, timestamp: int | None) -> str | None:
         """Log the signal value at *timestamp* to the console. Returns the display string or None."""

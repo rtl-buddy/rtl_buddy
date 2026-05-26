@@ -46,14 +46,24 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ randtest           repeat a test with multiple random seeds                          │
 │ regression         run rtl regression                                                │
 │ filelist           generate filelists using models.yaml                              │
-│ verible            run verible cmd                                                   │
+│ hier               render module hierarchy via rtl-buddy-view                        │
 │ wave               open waveform viewer for a test                                   │
+│ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ wave-install-nvim  install nvim plugin for rb wave annotation                        │
 │ synth              run synthesis                                                     │
 │ synth-regression   run synthesis regression                                          │
 │ pnr                run place-and-route                                               │
+│ power              run power analysis                                                │
+│ power-regression   run power analysis regression                                     │
+│ saif               convert FST/VCD trace to SAIF v2.0                                │
 │ cdc                run CDC lint                                                      │
 │ cdc-regression     run CDC lint regression                                           │
+│ fpv                run formal property verification                                  │
+│ fpv-regression     run FPV regression                                                │
+│ tool-check         check installed tool dependencies and subcommand readiness        │
+│ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
+│ verible            verible commands                                                  │
+│ hub                manage the rtl-buddy-hub daemon                                   │
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
 │ spec               spec traceability commands                                        │
@@ -178,19 +188,78 @@ Usage: rtl-buddy filelist [OPTIONS] MODEL_NAME [OUTPUT_PATH]
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## hier
+
+```text
+Usage: rtl-buddy hier [OPTIONS] NAME                                                   
+                                                                                        
+ render module hierarchy via rtl-buddy-view                                             
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  with --view dut (default): model name from models.yaml; with    │
+│                      --view tb: test name from tests.yaml (the test pins both the    │
+│                      model + the testbench top)                                      │
+│                      [required]                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --model-config     -c      TEXT  models.yaml to use [default: models.yaml]           │
+│ --test-config              TEXT  tests.yaml to use (--view tb) [default: tests.yaml] │
+│ --view                     TEXT  what to render: 'dut' (default) renders the model   │
+│                                  hierarchy rooted at --top; 'tb' renders the         │
+│                                  testbench hierarchy with the DUT called out as a    │
+│                                  subtree. With --view tb the positional argument is  │
+│                                  a test name.                                        │
+│                                  [default: dut]                                      │
+│ --format                   TEXT  output format: tree, dot, mermaid, json             │
+│                                  [default: tree]                                     │
+│ --output           -o      TEXT  write renderer output to file instead of stdout     │
+│ --frontend                 TEXT  parser frontend (verible|slang)                     │
+│ --cdc-annotations          TEXT  clock-domain map JSON from `rtl-buddy-cdc           │
+│                                  --emit-domain-map`                                  │
+│ --rdc-annotations          TEXT  reset-domain map JSON from `rtl-buddy-cdc           │
+│                                  --emit-reset-domain-map`                            │
+│ --clock-legend                   dot format only: emit a side legend of clock colors │
+│ --tool                     TEXT  path to the rtl-buddy-view binary                   │
+│                                  [default: rtl-buddy-view]                           │
+│ --help                           Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## axi-profile
+
+```text
+Usage: rtl-buddy axi-profile [OPTIONS] COMMAND [ARGS]...                               
+                                                                                        
+ profile AXI interconnect performance via rtl-buddy-axi-profiler                        
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ run          ingest a test's FST and emit per-test axi-perf.json                     │
+│ discover     parse RTL to (re)generate the model's axi-bundles.yaml manifest         │
+│ gen-monitor  emit the SV bind-style AXI monitor for the model's testbench            │
+│ notebook     launch the packaged marimo notebook against a test's per-txn parquet    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## verible
 
 ```text
-Usage: rtl-buddy verible [OPTIONS] CMD [VERIBLE_ARGS]...                               
+Usage: rtl-buddy verible [OPTIONS] COMMAND [ARGS]...                                   
                                                                                         
- run verible cmd                                                                        
+ verible commands                                                                       
                                                                                         
-╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│ *    cmd               TEXT               Verible cmd [required]                     │
-│      verible_args      [VERIBLE_ARGS]...                                             │
-╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ lint          run verible-verilog-lint                                               │
+│ syntax        run verible-verilog-syntax                                             │
+│ format        run verible-verilog-format                                             │
+│ preprocessor  run verible-verilog-preprocessor                                       │
+│ filelist      generate verible.filelist from models.yaml so verible-verilog-ls can   │
+│               resolve cross-file symbols                                             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -369,5 +438,64 @@ Usage: rtl-buddy cdc-regression [OPTIONS]
 │                                [default: (Use ./cdc_regression.yaml if present)]     │
 │ --reg-level   -l      INTEGER  CDC regression level to stop at [default: 0]          │
 │ --help                         Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## fpv
+
+```text
+Usage: rtl-buddy fpv [OPTIONS] [FPV_NAME]                                              
+                                                                                        
+ run formal property verification                                                       
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│   fpv_name      [FPV_NAME]  name of FPV verification to run                          │
+│                             [default: (run all verifications)]                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --fpv-config  -c      TEXT  fpv.yaml to use [default: fpv.yaml]                      │
+│ --list                      list verifications in the selected config and exit       │
+│ --help                      Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## fpv-regression
+
+```text
+Usage: rtl-buddy fpv-regression [OPTIONS]                                              
+                                                                                        
+ run FPV regression                                                                     
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --reg-config  -c      TEXT     path to fpv_regression.yaml                           │
+│                                [default: (Use ./fpv_regression.yaml if present)]     │
+│ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
+│ --help                         Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## tool-check
+
+```text
+Usage: rtl-buddy tool-check [OPTIONS]                                                  
+                                                                                        
+ check installed tool dependencies and subcommand readiness                             
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --format                                       TEXT  text | json [default: text]     │
+│ --required-for                                 TEXT  check only what `rb             │
+│                                                      <subcommand>` needs             │
+│ --explain                                      TEXT  show install instructions for a │
+│                                                      single tool and exit            │
+│ --strict                                             exit non-zero if any required   │
+│                                                      tool is missing/outdated        │
+│ --include-optional    --no-include-optional          include optional tools          │
+│                                                      (default: yes)                  │
+│                                                      [default: include-optional]     │
+│ --probe-versions      --no-probe-versions            run `<tool> --version` to       │
+│                                                      capture installed version       │
+│                                                      (default: yes)                  │
+│                                                      [default: probe-versions]       │
+│ --help                                               Show this message and exit.     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

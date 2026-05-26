@@ -412,6 +412,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"project path is not a directory: {fields.get('path')}"
         case "cocotb.results_missing":
             return f"cocotb results file not found for {target} at {fields.get('path')} — sim may have crashed before writing results"
+        case "systemc.cfg_missing":
+            return f"SystemC testbench '{target}' requires cfg-systemc block in root_config.yaml"
+        case "systemc.home_unresolved":
+            return f"SystemC testbench '{target}' could not resolve home (set cfg-systemc.home or $SYSTEMC_HOME)"
         case "builder.mode_missing":
             return f'builder "{fields.get("builder")}": mode "{fields.get("mode")}" not in config (stage={fields.get("stage")})'
         case "builder.stage_missing":

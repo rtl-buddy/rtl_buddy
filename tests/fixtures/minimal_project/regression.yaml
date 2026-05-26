@@ -1,0 +1,3 @@
+rtl-buddy-filetype: reg_config
+test-configs:
+  - tests.yaml

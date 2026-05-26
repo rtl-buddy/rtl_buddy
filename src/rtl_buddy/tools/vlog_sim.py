@@ -151,6 +151,15 @@ class VlogSim:
     def _get_extra_compile_flags(self) -> list:
         return []
 
+    def _get_extra_compile_env(self) -> dict:
+        """Hook for subclasses to inject env vars into the compile subprocess.
+
+        Base VlogSim has no extra env. SystemCSim overrides to pin CXX and
+        export SYSTEMC_HOME / SYSTEMC_INCLUDE / SYSTEMC_LIBDIR so Verilator's
+        --build step picks them up when invoking the generated Makefile.
+        """
+        return {}
+
     def _get_extra_sim_env(self, run_id=None) -> dict:
         return {}
 
@@ -322,10 +331,16 @@ class VlogSim:
             builder=rtl_builder_cfg.get_name(),
         )
         s_time = time.time()
+        extra_compile_env = self._get_extra_compile_env()
+        compile_env = {**os.environ, **extra_compile_env} if extra_compile_env else None
         with task_status(f"Compiling {self.test_name}", spinner="dots12"):
             try:
                 result = run_managed_process(
-                    run_cmd, capture_output=True, text=True, cwd=compile_work_dir
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=compile_work_dir,
+                    env=compile_env,
                 )
             except FileNotFoundError:
                 log_event(

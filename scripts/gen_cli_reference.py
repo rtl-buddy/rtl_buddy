@@ -16,6 +16,8 @@ SUBCOMMANDS = [
     "randtest",
     "regression",
     "filelist",
+    "hier",
+    "axi-profile",
     "verible",
     "wave",
     "wave-install-nvim",
@@ -27,6 +29,9 @@ SUBCOMMANDS = [
     "pnr",
     "cdc",
     "cdc-regression",
+    "fpv",
+    "fpv-regression",
+    "tool-check",
 ]
 
 HEADER = """\

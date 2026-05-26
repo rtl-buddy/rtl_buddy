@@ -29,7 +29,11 @@ from .synth import (
 from .pdk import PdkConfig, PdkConfigFile
 from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
+from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
+from .fpv import FpvToolConfig, FpvToolConfigFile
+from .systemc import SystemCConfig, SystemCConfigFile
+from .tools import ToolVersionConfig, ToolVersionConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -120,12 +124,20 @@ class RootConfigFile:
     pnr_tools: list[PnrToolConfigFile] = field(
         rename="cfg-pnr-tools", default_factory=list
     )
+    power_tools: list[PowerToolConfigFile] = field(
+        rename="cfg-power-tools", default_factory=list
+    )
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
+    )
+    fpv_tools: list[FpvToolConfigFile] = field(
+        rename="cfg-fpv-tools", default_factory=list
     )
     synth_efforts: list[SynthEffortConfigFile] = field(
         rename="cfg-synth-efforts", default_factory=list
     )
+    systemc: SystemCConfigFile | None = field(rename="cfg-systemc", default=None)
+    tools: list[ToolVersionConfigFile] = field(rename="cfg-tools", default_factory=list)
 
 
 class RootConfig:
@@ -173,8 +185,12 @@ class RootConfig:
         self.synth_platform_cfgs: dict = {}
         self.pnr_platform_cfgs: dict = {}
         self.pnr_tool_cfgs: dict = {}
+        self.power_tool_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
+        self.fpv_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
+        self.systemc_cfg: SystemCConfig | None = None
+        self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -250,14 +266,33 @@ class RootConfig:
                 cfg.name: PnrToolConfig(cfg) for cfg in data.pnr_tools
             }
 
+            # Populate power tool configs
+            self.power_tool_cfgs = {
+                cfg.name: PowerToolConfig(cfg) for cfg in data.power_tools
+            }
+
             # Populate CDC tool configs
             self.cdc_tool_cfgs = {
                 cfg.name: CdcToolConfig(cfg) for cfg in data.cdc_tools
             }
 
+            # Populate FPV tool configs
+            self.fpv_tool_cfgs = {
+                cfg.name: FpvToolConfig(cfg) for cfg in data.fpv_tools
+            }
+
             # Populate synth effort configs
             self.synth_effort_cfgs = {
                 cfg.name: SynthEffortConfig(cfg) for cfg in data.synth_efforts
+            }
+
+            # SystemC config (optional, single block)
+            if data.systemc is not None:
+                self.systemc_cfg = data.systemc.initialise()
+
+            # cfg-tools min-version overrides (optional)
+            self.tool_version_cfgs = {
+                cfg.name: ToolVersionConfig.from_file(cfg) for cfg in data.tools
             }
 
             # Initialise regression config
@@ -471,6 +506,24 @@ class RootConfig:
         """
         return self.pnr_tool_cfgs.get(name)
 
+    def get_power_tool_cfg(self, name: str):
+        """
+        Get power analysis tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-power-tools.
+        Returns:
+          cfg (PowerToolConfig): Matching power tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.power_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"power tool '{name}' not found in cfg-power-tools"
+            )
+        return cfg
+
     def get_cdc_tool_cfg(self, name: str):
         """
         Get CDC tool configuration by name.
@@ -485,6 +538,22 @@ class RootConfig:
         cfg = self.cdc_tool_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(f"CDC tool '{name}' not found in cfg-cdc-tools")
+        return cfg
+
+    def get_fpv_tool_cfg(self, name: str):
+        """
+        Get FPV tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-fpv-tools.
+        Returns:
+          cfg (FpvToolConfig): Matching FPV tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.fpv_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(f"FPV tool '{name}' not found in cfg-fpv-tools")
         return cfg
 
     def get_pdk_cfg(self, name: str) -> PdkConfig:
@@ -547,6 +616,21 @@ class RootConfig:
                 f"synthesis effort '{name}' not found in cfg-synth-efforts"
             )
         return cfg
+
+    def get_tool_version_cfg(self, name: str) -> ToolVersionConfig | None:
+        """Get optional ``cfg-tools`` min-version pin for the given tool name."""
+        return self.tool_version_cfgs.get(name)
+
+    def get_systemc_cfg(self) -> SystemCConfig | None:
+        """
+        Get the SystemC root configuration, if cfg-systemc is present.
+
+        Returns:
+          cfg (SystemCConfig | None): SystemC config, or None when cfg-systemc
+            is absent. Callers (e.g. SystemCSim) decide whether absence is
+            fatal — a project with no SystemC testbenches does not require it.
+        """
+        return self.systemc_cfg
 
     def get_project_rootdir(self):
         """

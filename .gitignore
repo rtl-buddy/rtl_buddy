@@ -12,3 +12,10 @@ _build/
 .DS_Store
 # MkDocs build output
 site/
+rtl_buddy.log
+
+# Coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/

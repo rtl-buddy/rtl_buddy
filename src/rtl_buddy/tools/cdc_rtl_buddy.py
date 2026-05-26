@@ -69,7 +69,7 @@ class RtlBuddyCdc:
             output_path=fl_path,
         )
         vlog_fl.write_output(
-            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+            output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
         )
         return fl_path
 
@@ -142,6 +142,8 @@ class RtlBuddyCdc:
             cmd_text += ["--waivers", waivers_path]
         if opts.sync_depth is not None:
             cmd_text += ["--sync-depth", str(opts.sync_depth)]
+        if self.cdc_cfg.frontend is not None:
+            cmd_text += ["--frontend", self.cdc_cfg.frontend]
         if opts.extra_args:
             cmd_text += opts.extra_args.split()
         cmd_text += sources
@@ -162,6 +164,8 @@ class RtlBuddyCdc:
             cmd_json += ["--waivers", waivers_path]
         if opts.sync_depth is not None:
             cmd_json += ["--sync-depth", str(opts.sync_depth)]
+        if self.cdc_cfg.frontend is not None:
+            cmd_json += ["--frontend", self.cdc_cfg.frontend]
         if opts.extra_args:
             cmd_json += opts.extra_args.split()
         cmd_json += sources
@@ -217,6 +221,22 @@ class RtlBuddyCdc:
         suppressed = int(summary.get("suppressed", 0))
         crossings = summary.get("crossings")
         crossings = int(crossings) if crossings is not None else None
+
+        # Best-effort hub publish. When a hub is running for this
+        # project, push the violations as a `diagnostics_set` event so
+        # the SPA's badge layer + nvim diagnostics namespace light up
+        # immediately. Silently no-ops when no hub is reachable, and
+        # is wrapped in a broad except so a sidecar UI bug can never
+        # fail the CDC analysis itself.
+        try:
+            from .cdc_publisher import publish_cdc_report
+
+            publish_cdc_report(
+                analysis_name=self.cdc_cfg.get_name(),
+                json_report_path=json_report,
+            )
+        except Exception:  # noqa: BLE001 — best-effort side effect
+            logger.debug("cdc.publish.unexpected_error", exc_info=True)
 
         if violations == 0:
             return CdcPassResults(

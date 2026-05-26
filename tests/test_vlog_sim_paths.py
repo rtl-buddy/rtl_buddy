@@ -185,9 +185,10 @@ def test_vlog_sim_compile_uses_explicit_filelist_path_and_suite_cwd(
     captured = {}
     sim = _make_sim(tmp_path, monkeypatch)
 
-    def _fake_run(cmd, capture_output, text, cwd):
+    def _fake_run(cmd, capture_output, text, cwd, env=None):
         captured["cmd"] = list(cmd)
         captured["cwd"] = cwd
+        captured["env"] = env
         return ManagedProcessResult(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(

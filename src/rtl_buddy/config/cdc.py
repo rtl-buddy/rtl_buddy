@@ -80,6 +80,12 @@ class CdcConfigFile:
     waivers: str | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # Forwarded as-is via ``--frontend <value>`` to the analyzer
+    # subprocess. Intentionally not validated here — keeps rtl_buddy
+    # decoupled from the analyzer's accepted-value set so the analyzer
+    # can add frontends without an rtl_buddy release. Unknown values
+    # are rejected by the analyzer's own arg parser.
+    frontend: str | None = None
 
     def initialise(self, config_dir: str) -> "CdcConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -98,6 +104,7 @@ class CdcConfigFile:
             waivers=waivers,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            frontend=self.frontend,
         )
 
 
@@ -111,6 +118,7 @@ class CdcConfig:
     waivers: str | None
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    frontend: str | None = None
 
     def get_name(self) -> str:
         return self.name
@@ -189,6 +197,27 @@ class CdcSuiteConfig:
                 error=e,
             )
             raise FatalRtlBuddyError(f'failed to load "{path}"') from e
+
+        # Fail loud on duplicate ``name:`` — the dict-comprehension
+        # below would silently overwrite the first analysis with the
+        # second, hiding the user's typo until they hit "analysis X
+        # not found" at lookup time.
+        seen: dict[str, int] = {}
+        for idx, analysis in enumerate(data.analyses):
+            if analysis.name in seen:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "cdc_suite_config.duplicate_analysis",
+                    path=path,
+                    name=analysis.name,
+                    first_index=seen[analysis.name],
+                    second_index=idx,
+                )
+                raise FatalRtlBuddyError(
+                    f"{path}: duplicate analysis name {analysis.name!r}"
+                )
+            seen[analysis.name] = idx
 
         config_dir = os.path.dirname(os.path.abspath(path))
         try:

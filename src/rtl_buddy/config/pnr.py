@@ -1,7 +1,7 @@
 import logging
 import os
 import pprint
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 from typing import Literal
 
 from serde import field, serde
@@ -55,6 +55,8 @@ class PnrConfigFile:
     constraints: str | None = None
     platform: str = ""
     floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
+    lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
+    lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
 
@@ -80,6 +82,12 @@ class PnrConfigFile:
             if self.constraints is not None
             else None
         )
+        lef_paths = [
+            os.path.normpath(os.path.join(config_dir, p)) for p in self.lef_paths
+        ]
+        lib_paths = [
+            os.path.normpath(os.path.join(config_dir, p)) for p in self.lib_paths
+        ]
         return PnrConfig(
             name=self.name,
             desc=self.desc,
@@ -93,6 +101,8 @@ class PnrConfigFile:
                 aspect=self.floorplan.aspect,
                 core_margin=self.floorplan.core_margin,
             ),
+            lef_paths=lef_paths,
+            lib_paths=lib_paths,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
         )
@@ -110,6 +120,8 @@ class PnrConfig:
     floorplan: PnrFloorplan
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    lef_paths: list[str] = dc_field(default_factory=list)
+    lib_paths: list[str] = dc_field(default_factory=list)
 
     def get_name(self) -> str:
         return self.name
@@ -134,6 +146,12 @@ class PnrConfig:
 
     def get_floorplan(self) -> PnrFloorplan:
         return self.floorplan
+
+    def get_lef_paths(self) -> list[str]:
+        return list(self.lef_paths)
+
+    def get_lib_paths(self) -> list[str]:
+        return list(self.lib_paths)
 
     def get_reglvl(self, tool_name: str) -> int:
         match self._reglvl:
