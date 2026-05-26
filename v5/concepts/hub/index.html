@@ -1,0 +1,1969 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="rtl-buddy-hub is the broker that mediates between the rtl-buddy-view SPA, surfer (via rb wave), and editor adapters. Invocation, config, troubleshooting.">
+      
+      
+        <meta name="author" content="RTL Buddy contributors">
+      
+      
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/hub/">
+      
+      
+        <link rel="prev" href="../hier/">
+      
+      
+        <link rel="next" href="../synthesis/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Hub - RTL Buddy</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#hub-rb-hub" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            RTL Buddy
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Hub
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    RTL Buddy
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../execution-context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../root-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Root Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coverage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coverage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cocotb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cocotb
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec-traceability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wave/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchy Rendering
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hub
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI surface
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CLI surface">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#picking-a-model-at-start-time-model-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Picking a model at start time (--model NAME)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clock-domain-overlay-cdc-back-pointer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clock-domain overlay (cdc: back-pointer)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#switching-models-at-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Switching models at runtime
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery-rtl-buddyhubjson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discovery (.rtl-buddy/hub.json)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-rtl-buddyhubtoml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration (.rtl-buddy/hub.toml)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#peers-who-connects-to-the-hub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Peers (who connects to the hub)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-new-adapter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a new adapter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pnr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Place-and-Route
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cdc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CDC Lint
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fpv/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formal Property Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../abv-simulation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../axi-profile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AXI Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-check/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Check
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    YAML Formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/guidelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/docs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Documentation Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Migrations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Submodule to uv
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../known-issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI surface
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CLI surface">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#picking-a-model-at-start-time-model-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Picking a model at start time (--model NAME)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clock-domain-overlay-cdc-back-pointer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clock-domain overlay (cdc: back-pointer)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#switching-models-at-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Switching models at runtime
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery-rtl-buddyhubjson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discovery (.rtl-buddy/hub.json)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-rtl-buddyhubtoml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration (.rtl-buddy/hub.toml)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#peers-who-connects-to-the-hub" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Peers (who connects to the hub)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-new-adapter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a new adapter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reference
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="hub-rb-hub">Hub (<code>rb hub</code>)</h1>
+<blockquote>
+<p><strong>Integration type:</strong> Integrated tool. Ships in-tree at <code>src/rtl_buddy/hub/</code>; invoked via <code>rb hub start|stop|status|log|config validate</code>.</p>
+<p><strong>External binary required:</strong> None for the hub itself. The wave adapter still needs the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork for live WCP integration; see <a href="../wave/">Waveform Viewer</a>.</p>
+<p><strong>Default install carries it:</strong> No external dependency; the hub is pure Python.</p>
+</blockquote>
+<p>The <strong>rtl-buddy-hub</strong> is the broker between the <a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a> schematic viewer, the surfer waveform viewer (via the <code>rb wave</code> bridge), and editor adapters (nvim today, VS Code later). It owns the live coordinate-system translation (view ↔ wave ↔ source) and routes selection / cursor / scope events between every connected peer.</p>
+<p>The hub is <strong>server-only</strong>: every external speaker connects <em>into</em> the hub. The hub itself never initiates an outbound connection. This keeps reconnection logic to a single "tolerate any peer reattaching at any time" rule and makes the dispatch surface transport-agnostic — TCP and WebSocket clients hit the same envelope router.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>        ┌──────────────────────────────────┐
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>        │   rtl-buddy-view (browser SPA)   │
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>        └─────────────┬────────────────────┘
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>                      │ WebSocket /ws
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>                      ▼
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        ┌──────────────────────────────────┐         ┌──────────────────────┐
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        │       rtl-buddy-hub              │◀──TCP──▶│  rb wave bridge     │
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        │       .rtl-buddy/hub.json        │         │  (surfer WCP)        │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        │       .rtl-buddy/hub.toml        │         └──────────────────────┘
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        │                                  │         ┌──────────────────────┐
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        │                                  │◀──TCP──▶│  nvim Lua plugin     │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        │                                  │         │  rtl_buddy_wave.lua  │
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        └──────────────────────────────────┘         └──────────────────────┘
+</code></pre></div>
+<h2 id="quick-start">Quick start</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>&lt;project_root&gt;
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w">                   </span><span class="c1"># foreground TCP server only</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w">    </span><span class="c1"># also expose the viewer HTTP+WS endpoint</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>status<span class="w">                  </span><span class="c1"># in another shell: who&#39;s connected</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>stop<span class="w">                    </span><span class="c1"># graceful shutdown via SIGTERM</span>
+</code></pre></div>
+<p><code>rb hub start</code> runs in the foreground by default; backgrounding is the caller's job (<code>nohup rb hub start &amp;</code>, a process manager, or — on macOS, planned — a LaunchAgent). The server binds the OS-assigned port (TCP, and HTTP if <code>--serve-viewer</code> is set) unless <code>hub.toml</code> pins them; the resolved port is written to <code>.rtl-buddy/hub.json</code> so peers can discover it.</p>
+<h2 id="cli-surface">CLI surface</h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH] [--listen-port N] [--http-port N]</code></td>
+<td>Bind the TCP server (and optionally the viewer HTTP+WS layer), write <code>.rtl-buddy/hub.json</code>, run the asyncio loop. <code>--listen-port</code> / <code>--http-port</code> override <code>[hub].listen_port</code> / <code>[hub].http_port</code> from <code>hub.toml</code> (default 0 = OS-assigned). When a pinned port is already in use, the command prints a one-line error and exits 1 without a traceback. Exits cleanly on <code>SIGINT</code> / <code>SIGTERM</code> / <code>rb hub stop</code> and removes its discovery file.</td>
+</tr>
+<tr>
+<td><code>rb hub stop</code></td>
+<td>Send <code>SIGTERM</code> to the PID in <code>.rtl-buddy/hub.json</code>.</td>
+</tr>
+<tr>
+<td><code>rb hub status</code></td>
+<td>Print the current discovery record + liveness. Reports stale records (PID gone) so users know to clear them.</td>
+</tr>
+<tr>
+<td><code>rb hub log [--lines N] [--follow]</code></td>
+<td>Tail <code>.rtl-buddy/hub.log</code>.</td>
+</tr>
+<tr>
+<td><code>rb hub config validate [--path PATH]</code></td>
+<td>Schema-check <code>hub.toml</code> and exit non-zero on the first error.</td>
+</tr>
+</tbody>
+</table>
+<p><code>--daemon</code> is reserved; today it warns and runs in the foreground. Treat the explicit <code>--foreground</code> as load-bearing; future versions may detach when <code>--daemon</code> is given.</p>
+<p><code>--serve-viewer</code> enables the HTTP + WebSocket layer (<code>/</code>, <code>/ws</code>) used by the browser SPA. When you omit <code>--viewer-bundle</code>, the hub auto-discovers the SPA shipped by <a href="https://github.com/rtl-buddy/rtl-buddy-view"><code>rtl-buddy-view</code></a> via <code>importlib.resources</code> — install it alongside rtl-buddy and <code>rb hub start --serve-viewer</code> is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass <code>--viewer-bundle PATH</code> to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (<code>viewer/dist/</code>) and you don't want the in-wheel copy from the installed package.</p>
+<p>When the hub knows where to find a <code>view.json</code> (via <code>[mapping].view_json</code> in <code>hub.toml</code>, default <code>.rtl-buddy/view.json</code>), the viewer HTTP layer also serves it at <code>GET /view.json</code>. Open the SPA with <code>?view=/view.json</code> to auto-load the design — e.g. <code>http://127.0.0.1:&lt;http_port&gt;/?view=/view.json</code> — instead of drag-and-dropping the file. The index page also gets a <code>window.__RTL_BUDDY_VIEW_URL__ = "/view.json"</code> injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing, <code>/view.json</code> returns 404 and the SPA falls back to the empty state.</p>
+<h3 id="picking-a-model-at-start-time-model-name">Picking a model at start time (<code>--model NAME</code>)</h3>
+<p><code>--model NAME</code> tells the hub to generate <code>view.json</code> on the fly from a model entry in <code>models.yaml</code>, instead of relying on a pre-staged file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w"> </span>--model<span class="w"> </span>ip_demo_tiny_npu
+</code></pre></div>
+<p>Resolution rules:</p>
+<ul>
+<li>The hub walks the project tree for every <code>models.yaml</code> it can find (skipping common build/VCS directories) and looks for an entry named <code>NAME</code>.</li>
+<li>Exactly one match → load it, generate <code>view.json</code> into <code>.rtl-buddy/cache/view-&lt;model&gt;.json</code>, serve it.</li>
+<li>Zero matches → error with the list of model names per discovered <code>models.yaml</code> so a typo is easy to spot.</li>
+<li>Two or more matches → error naming all the conflicting <code>models.yaml</code> paths. Pass <code>--models-file PATH</code> to disambiguate.</li>
+</ul>
+<p><code>--models-file PATH</code> skips the discovery walk entirely and loads the model from the named file. Use it when you have multiple <code>models.yaml</code> files in the tree with overlapping names.</p>
+<p><code>--model</code> requires <code>--serve-viewer</code> (the generated <code>view.json</code> is only useful as something the SPA HTTP layer can serve). Without <code>--serve-viewer</code> the hub errors at startup rather than silently discarding the generated file.</p>
+<p>The view.json regenerates on every <code>rb hub start --model</code> invocation. Cache invalidation isn't modelled yet — restart the hub to pick up source-tree changes.</p>
+<h3 id="clock-domain-overlay-cdc-back-pointer">Clock-domain overlay (<code>cdc:</code> back-pointer)</h3>
+<p>When the chosen model's <code>models.yaml</code> entry has a <code>cdc:</code> field, the hub also generates a clock-domain map and feeds it to the view-builder as <code>--cdc-annotations</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># models.yaml</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">model_config</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nt">models</span><span class="p">:</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ip_demo_tiny_npu</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">...</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">cdc</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc.yaml</span><span class="w">          </span><span class="c1"># or cdc.yaml#analysis_name to pin one analysis</span>
+</code></pre></div>
+<p>The hub:</p>
+<ol>
+<li>Resolves the <code>cdc:</code> back-pointer to a <code>cdc.yaml</code> file.</li>
+<li>Picks the analysis — either the one named by the optional <code>#fragment</code>, or the one whose <code>model:</code> field matches the model name. Ambiguity is a hard error (the message tells you to add a <code>#fragment</code>).</li>
+<li>Invokes <code>rtl-buddy-cdc lint --emit-domain-map .rtl-buddy/cache/domain-&lt;model&gt;.json ...</code> with the analysis's SDC + waivers.</li>
+<li>Passes the resulting domain map to <code>rtl-buddy-view --cdc-annotations</code>. The clock overlay toggle in the SPA then has data to render.</li>
+</ol>
+<p>Models without a <code>cdc:</code> field skip this step entirely — view.json is generated without overlays and the toggle stays dark. <code>rtl-buddy-cdc</code> must be on <code>PATH</code> when the <code>cdc:</code> field is present; absence is a hub-start error (no silent dark toggle).</p>
+<h3 id="switching-models-at-runtime">Switching models at runtime</h3>
+<p>Once the hub is up, the SPA can change models without restarting:</p>
+<ul>
+<li><code>GET /models</code> — list every model the hub can serve. JSON shape:
+  <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;models&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;has_cdc&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">},</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_dtnpu_dma&quot;</span><span class="p">,</span><span class="w">     </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;has_cdc&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">}</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">&quot;active&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="p">}</span>
+</code></pre></div>
+  <code>has_cdc</code> is end-to-end: <code>true</code> only when the model has a <code>cdc:</code> field AND the referenced cdc.yaml exists AND at least one analysis resolves cleanly for the model. The endpoint walks for <code>models.yaml</code> per request, so newly-edited files appear without a restart. When <code>--models-file PATH</code> was passed at start time, only that file is enumerated.</li>
+<li><code>GET /view.json?model=NAME</code> — build (or reuse) the per-model view.json at <code>.rtl-buddy/cache/view-&lt;NAME&gt;.json</code>, serve it, and promote <code>NAME</code> to the active model. <code>--models-file</code> constraints apply: <code>?model=</code> only honours entries in the pinned file. Per-model <code>asyncio.Lock</code> serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.</li>
+<li><code>GET /tests</code> — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as <code>/models</code>; entries carry the resolved <code>(model, tb)</code> pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
+  <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;tests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tb&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tb_top&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tests_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/tests.yaml&quot;</span><span class="p">}</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="nt">&quot;active&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">}</span>
+</code></pre></div></li>
+<li><code>GET /view.json?test=NAME</code> — build (or reuse) the per-<code>(model, tb)</code> view.json at <code>.rtl-buddy/cache/view-&lt;MODEL&gt;-tb-&lt;TB&gt;.json</code>, serve it, and promote the test (and its underlying model) to active. Per-test <code>asyncio.Lock</code> mirrors the per-model lock. The renderer runs in TB-rooted mode: rtl-buddy-view is invoked with <code>--top &lt;model&gt;</code> + <code>--tb-top &lt;tb.toplevel&gt;</code> so the rendered tree is rooted at the testbench top with the DUT recorded for the SPA's dashed-boundary overlay.</li>
+<li><code>view_changed</code> event — broadcast on every active-view change. Envelope:
+  <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span><span class="nt">&quot;v&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="s2">&quot;…&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;origin&quot;</span><span class="p">:</span><span class="s2">&quot;cli&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="s2">&quot;view_changed&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w"> </span><span class="nt">&quot;payload&quot;</span><span class="p">:{</span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="s2">&quot;ip_dtnpu_dma&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">            </span><span class="nt">&quot;view_url&quot;</span><span class="p">:</span><span class="s2">&quot;/view.json?model=ip_dtnpu_dma&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">            </span><span class="nt">&quot;view_mode&quot;</span><span class="p">:</span><span class="s2">&quot;dut&quot;</span><span class="p">}}</span>
+</code></pre></div>
+  In TB-view mode (<code>?test=</code> switch) the payload carries <code>view_mode: "tb"</code> plus <code>test</code> + <code>tb</code> + <code>tests_file</code> fields (the <code>view_url</code> points at <code>/view.json?test=&lt;NAME&gt;</code>). v1.0 SPAs that don't know about <code>view_mode</code> ignore it and fall through to the legacy <code>model</code>-driven <code>switchModel</code> path — that's why the DUT-side envelope still carries the full set of legacy fields. Sent to every connected client (SPA tabs, nvim, <code>rb wave</code> bridge) so they can refresh view-scoped state.</li>
+</ul>
+<p>The active model is also recorded in <code>.rtl-buddy/hub.json</code> under <code>active_model</code> (optional field) and surfaced in <code>rb hub status</code> output.</p>
+<h2 id="discovery-rtl-buddyhubjson">Discovery (<code>.rtl-buddy/hub.json</code>)</h2>
+<p>When the hub binds, it writes a small JSON record under the project root's <code>.rtl-buddy/</code> directory:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41231</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;listen_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53201</span><span class="p">,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">&quot;http_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53202</span><span class="p">,</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">&quot;started_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-19T12:34:56Z&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="nt">&quot;project_root&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span><span class="nt">&quot;active_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="p">}</span>
+</code></pre></div>
+<p><code>active_model</code> is optional — present when the hub started with <code>--model NAME</code> or after a <code>GET /view.json?model=</code> switch.</p>
+<p>Peers (the viewer SPA, the <code>rb wave</code> bridge, the nvim plugin) read this file to find the hub. The hub deletes the record on clean shutdown; a stale record after a crash is detected by <code>rb hub status</code> (PID not live) and the next <code>rb hub start</code> overwrites it.</p>
+<p>Override discovery resolution with the <code>RTL_BUDDY_HUB</code> environment variable when running outside a project tree — it should point at a <code>hub.json</code> directly.</p>
+<h2 id="configuration-rtl-buddyhubtoml">Configuration (<code>.rtl-buddy/hub.toml</code>)</h2>
+<p>Optional; sensible defaults apply when the file is absent. Two top-level sections:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">[hub]</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">listen_port</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># 0 = OS-assigned (default). Pin to a specific port to survive across restarts.</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">http_port</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># Same, for the viewer HTTP+WS layer (only used with --serve-viewer).</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">log_path</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/hub.log&quot;</span><span class="w">   </span><span class="c1"># Relative paths resolve from the project root.</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="k">[mapping]</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="n">tb_prefix</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.&quot;</span><span class="w">  </span><span class="c1"># Fallback for DUT-rooted views. When the loaded view.json carries tb_top (rtl-buddy-view v1.1, #99 / 6b), the resolver short-circuits to identity wave↔view mapping and tb_prefix is bypassed — the rendered TB tree already speaks the wave-side coordinate system.</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="n">view_json</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/view.json&quot;</span><span class="w">  </span><span class="c1"># Snapshot the resolver consumes. Defaults shown.</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="c1"># Optional pre-strip aliases — applied before tb_prefix is stripped.</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="k">[[mapping.signal_aliases]]</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="n">wave</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.legacy_dut.clk&quot;</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="n">view</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.clk&quot;</span>
+</code></pre></div>
+<p>Unknown top-level sections fail validation (typo guard). Unknown keys <em>inside</em> known sections are tolerated for forward-compat. <code>rb hub config validate</code> runs the same loader and reports errors with file:line context.</p>
+<h2 id="peers-who-connects-to-the-hub">Peers (who connects to the hub)</h2>
+<table>
+<thead>
+<tr>
+<th>Peer</th>
+<th>Transport</th>
+<th>How it connects</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>rtl-buddy-view SPA</strong> (browser)</td>
+<td>WebSocket <code>/ws</code> on the hub's <code>http_port</code></td>
+<td>Loaded from the bundle when <code>rb hub start --serve-viewer</code> is in use. The bundle is injected with <code>window.__RTL_BUDDY_HUB__</code> at serve time.</td>
+</tr>
+<tr>
+<td><strong><code>rb wave</code> bridge</strong> (<code>tools/wave_hub_bridge.py</code>)</td>
+<td>Line-delimited JSON over TCP on <code>listen_port</code></td>
+<td>Started by <code>rb wave</code>; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff.</td>
+</tr>
+<tr>
+<td><strong>nvim plugin</strong> (<code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code>)</td>
+<td>Line-delimited JSON over TCP on <code>listen_port</code></td>
+<td>Connects when the user opens a file rtl-buddy knows how to resolve.</td>
+</tr>
+</tbody>
+</table>
+<p>Each peer has a closed <code>Origin</code> enum value (<code>view</code>, <code>wave</code>, <code>nvim</code>, …); the hub allows at most one client per origin in v1.</p>
+<h2 id="protocol">Protocol</h2>
+<p>Wire envelope is line-delimited JSON, one record per line, UTF-8. The full spec lives in <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy/rtl-buddy-view#19</a>; the JSON Schema enforcing it ships at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code>. Encoded and decoded by <code>rtl_buddy.hub.protocol</code>, which validates on both sides — unknown fields are caller bugs, not forward-compat points.</p>
+<p>State events (selection_changed, signal_selected, cursor_moved, …) are broadcast to every connected peer <strong>except</strong> the origin. Requests (<code>resolve_*</code>, <code>goto_declaration</code>, …) are routed to the peer whose origin owns the target coordinate system; if no peer is registered for that origin, the hub replies with <code>error{code: "not_connected"}</code>. The <code>view ↔ wave ↔ src</code> resolver lives in <code>rtl_buddy.hub.resolver</code> and consumes the <code>view.json</code> snapshot pointed at by <code>mapping.view_json</code>.</p>
+<p>Lifecycle events (<code>hello</code> / <code>welcome</code> / <code>peer_joined</code> / <code>bye</code>) keep each peer's view of the registry live without re-fetching: <code>welcome</code> carries the snapshot at handshake time, and <code>peer_joined</code> / <code>bye</code> are deltas the hub broadcasts when later peers connect or disconnect. The joining or leaving peer's origin is in the envelope's <code>origin</code> field (payload is empty). Consumers should react to all three to maintain a current peer list — relying on <code>welcome</code> alone leaves the list frozen at handshake time.</p>
+<p>The hub also <strong>augments <code>source_focused</code></strong>: when a <code>src</code> peer (e.g. nvim's <code>:RtlBuddyShow</code>) broadcasts <code>{file, line, col}</code>, the resolver looks up the instance(s) whose <code>source</code> range in <code>view.json</code> contains the point and the hub emits a derived <code>selection_changed { instance_path: [...] }</code> with <code>origin: "cli"</code>. The schematic SPA already handles <code>selection_changed</code> — pan/highlight the matching instance — so this bridge makes editor cursor movement light up the schematic without a SPA-side protocol change. Multiple matches (nested instances) come back smallest-range first; consumers picking element <code>[0]</code> get the most-specific instance. Line-only matching is used for multi-line ranges (cursor at column 1 still finds an instantiation whose keyword sits further right); single-line ranges still use columns so two instantiations on the same line resolve distinctly.</p>
+<h2 id="troubleshooting">Troubleshooting</h2>
+<p><strong><code>rb hub start</code> exits with "already running"</strong> — <code>.rtl-buddy/hub.json</code> exists and its PID is live. If the prior daemon really is gone, the file is stale (clean shutdown didn't run); delete it and retry. <code>rb hub status</code> distinguishes the two cases.</p>
+<p><strong>Port already in use</strong> — pin <code>listen_port</code> (and <code>http_port</code> if using <code>--serve-viewer</code>) to a free port in <code>hub.toml</code>, or leave them at <code>0</code> to let the OS pick. The chosen port lands in <code>hub.json</code> either way.</p>
+<p><strong>Peer can't find the hub from outside the project tree</strong> — set <code>RTL_BUDDY_HUB=/path/to/.rtl-buddy/hub.json</code> in the peer's environment. The default discovery walks up from <code>cwd</code> looking for <code>.rtl-buddy/hub.json</code>, which doesn't work for processes launched from elsewhere.</p>
+<p><strong><code>rb wave</code> bridge reports surfer disconnected</strong> — the bridge owns the WCP TCP connection, not the hub. Check the surfer fork is on PATH and built with WCP support; see <a href="../wave/">Waveform Viewer</a>. The hub stays up regardless; reconnect is automatic.</p>
+<p><strong><code>rb hub config validate</code> reports "unknown section"</strong> — typo. The schema accepts exactly <code>[hub]</code> and <code>[mapping]</code>; everything else (surfer flags, nvim keymaps, …) belongs in the adapters' own config.</p>
+<p><strong>Hub log empty or absent</strong> — <code>rb hub log</code> tails <code>.rtl-buddy/hub.log</code> by default. The <code>[hub].log_path</code> setting controls the location; logs route through <code>log_event()</code> like the rest of <code>rtl_buddy</code>, so <code>--machine</code> mode produces JSON Lines.</p>
+<h2 id="writing-a-new-adapter">Writing a new adapter</h2>
+<p>Bring up a TCP client against the hub's <code>listen_port</code>, send the <code>hello</code> envelope claiming an origin, accept the <code>welcome</code> reply, then send / receive state events and requests per <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy-view#19</a>. The JSON Schema at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code> is the contract — validate against it on both sides and unknown <code>type</code> strings should be silently dropped (forward-compat rule from §11 of the spec).</p>
+<p>The existing peers — <code>tools/wave_hub_bridge.py</code> and <code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code> — are the reference adapters. Both stay narrow on purpose: parse the envelope, translate to the peer's native API, route, repeat.</p>
+<h2 id="reference">Reference</h2>
+<ul>
+<li>Wire protocol spec: <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy-view#19</a></li>
+<li>JSON Schema: <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code></li>
+<li>Implementation: <code>src/rtl_buddy/hub/</code></li>
+<li>Wave bridge: <code>src/rtl_buddy/tools/wave_hub_bridge.py</code>, <code>src/rtl_buddy/tools/wave_launcher.py</code></li>
+<li>nvim plugin: <code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code></li>
+</ul>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2129 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Engineering guidelines for rtl_buddy maintainers, covering execution contexts, paths, artifacts, subprocesses, logging, errors, validation, and release-sensitive files.">
+      
+      
+        <meta name="author" content="RTL Buddy contributors">
+      
+      
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/development/guidelines/">
+      
+      
+        <link rel="prev" href="../../agents/">
+      
+      
+        <link rel="next" href="../docs/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Engineering Guidelines - RTL Buddy</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#engineering-guidelines" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            RTL Buddy
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Engineering Guidelines
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    RTL Buddy
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/execution-context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/root-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Root Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/tests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/regressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/coverage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coverage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/cocotb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cocotb
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/wave/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/hier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchy Rendering
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/hub/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/pnr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Place-and-Route
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/power/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/cdc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CDC Lint
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/fpv/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formal Property Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/abv-simulation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/axi-profile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AXI Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/tool-check/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Check
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    YAML Formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Guidelines
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#public-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Public Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-contexts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution Contexts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command-roots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command Roots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#path-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artifact-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#subprocesses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subprocesses
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error Handling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-follow-through" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required Follow-Through
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bundled-skill" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bundled Skill
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#issue-triage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Issue Triage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#milestones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Milestones
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#releases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Releases
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Documentation Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Migrations
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Submodule to uv
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v2 to v3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../known-issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#public-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Public Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-contexts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution Contexts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#command-roots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command Roots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#path-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path Ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artifact-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artifact Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#subprocesses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subprocesses
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependencies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logging
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error Handling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#required-follow-through" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required Follow-Through
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bundled-skill" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bundled Skill
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#issue-triage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Issue Triage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#milestones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Milestones
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#releases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Releases
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="engineering-guidelines">Engineering Guidelines</h1>
+<p>These are maintainer rules for code and docs changes in <code>rtl_buddy</code>.
+They describe the contracts new work should preserve and existing code should converge toward.
+When implementation and guideline disagree, treat the mismatch as a bug or documented exception.</p>
+<h2 id="public-contracts">Public Contracts</h2>
+<p>Treat CLI behavior, YAML config loading, generated artifact layout, machine-mode output, event names, and bundled skill behavior as public interfaces.
+Downstream RTL projects and automation depend on them.</p>
+<p>Prefer targeted changes over broad refactors.
+When a change intentionally alters a contract, update docs, tests, generated references, and downstream validation assets in the same PR.</p>
+<h2 id="execution-contexts">Execution Contexts</h2>
+<p>Keep command execution rooted in explicit contexts rather than ambient <code>os.getcwd()</code>:</p>
+<ul>
+<li><code>invocation_cwd</code>: the directory where the user ran <code>rb</code>. Use it to resolve relative CLI arguments before they become absolute.</li>
+<li><code>command_root</code>: the directory containing the command's primary config file.</li>
+<li><code>suite_dir</code>: the command root for per-suite flows such as <code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code>.</li>
+<li><code>artifact_dir</code>: the generated workspace for one command item, normally <code>suite_dir/artefacts/&lt;name&gt;</code>.</li>
+</ul>
+<p>Config-driven commands should be rooted at their primary config file.
+Generated artifacts should go under the command root.
+External tools should run from their artifact directory.
+Explicit CLI input and output paths should remain relative to <code>invocation_cwd</code>, matching normal shell behavior.</p>
+<h2 id="command-roots">Command Roots</h2>
+<p>Use these roots unless a command documents a narrower exception:</p>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th style="text-align: right;">Command root</th>
+<th style="text-align: right;">Artifact root</th>
+<th style="text-align: right;">External tool CWD</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test</code></td>
+<td style="text-align: right;"><code>dirname(tests.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;test&gt;</code></td>
+<td style="text-align: right;">compile: <code>&lt;artifact&gt;</code>; sim: <code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>randtest</code></td>
+<td style="text-align: right;"><code>dirname(tests.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;test&gt;</code></td>
+<td style="text-align: right;">compile: <code>&lt;artifact&gt;</code>; sim: <code>&lt;artifact&gt;/run-NNNN</code></td>
+</tr>
+<tr>
+<td><code>regression</code></td>
+<td style="text-align: right;"><code>dirname(regression.yaml)</code></td>
+<td style="text-align: right;">each suite's <code>&lt;suite&gt;/artefacts/&lt;test&gt;</code></td>
+<td style="text-align: right;">same as <code>test</code> per suite</td>
+</tr>
+<tr>
+<td><code>wave --resim</code></td>
+<td style="text-align: right;"><code>dirname(tests.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;test&gt;</code></td>
+<td style="text-align: right;">same as <code>test</code></td>
+</tr>
+<tr>
+<td><code>synth</code></td>
+<td style="text-align: right;"><code>dirname(synth.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;synth&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>cdc</code></td>
+<td style="text-align: right;"><code>dirname(cdc.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;cdc&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>fpv</code></td>
+<td style="text-align: right;"><code>dirname(fpv.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;fpv&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>pnr</code></td>
+<td style="text-align: right;"><code>dirname(pnr.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;pnr&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>power</code></td>
+<td style="text-align: right;"><code>dirname(power.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;power&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>hier --view dut</code></td>
+<td style="text-align: right;"><code>dirname(models.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;model_root&gt;/artefacts/hier/&lt;model&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>hier --view tb</code></td>
+<td style="text-align: right;"><code>dirname(tests.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/hier/&lt;test-or-model&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>axi-profile run</code></td>
+<td style="text-align: right;"><code>dirname(tests.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/axi/&lt;test&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>axi-profile notebook</code></td>
+<td style="text-align: right;"><code>dirname(tests.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/axi/&lt;test&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>axi-profile discover</code></td>
+<td style="text-align: right;"><code>dirname(models.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;model_root&gt;/artefacts/axi/&lt;model&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>axi-profile gen-monitor</code></td>
+<td style="text-align: right;"><code>dirname(models.yaml)</code></td>
+<td style="text-align: right;">configured or explicit output; fallback artifact dir</td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>filelist</code></td>
+<td style="text-align: right;"><code>dirname(models.yaml)</code> for config reads</td>
+<td style="text-align: right;">explicit output path</td>
+<td style="text-align: right;">no hidden tool CWD</td>
+</tr>
+<tr>
+<td><code>saif</code></td>
+<td style="text-align: right;">invocation CWD for explicit paths</td>
+<td style="text-align: right;">explicit output path</td>
+<td style="text-align: right;">no hidden tool CWD</td>
+</tr>
+<tr>
+<td><code>hub</code></td>
+<td style="text-align: right;">project root</td>
+<td style="text-align: right;"><code>.rtl-buddy/...</code></td>
+<td style="text-align: right;">project root or <code>.rtl-buddy</code>, depending subcommand</td>
+</tr>
+<tr>
+<td><code>docs</code>, <code>skill</code></td>
+<td style="text-align: right;">no project execution context</td>
+<td style="text-align: right;">none</td>
+<td style="text-align: right;">none</td>
+</tr>
+</tbody>
+</table>
+<h2 id="path-ownership">Path Ownership</h2>
+<p>Resolve config-owned paths from the config file that owns them:</p>
+<ul>
+<li><code>root_config.yaml</code> is discovered from the command root for config-driven commands.</li>
+<li><code>regression.yaml</code> resolves listed suite configs relative to itself.</li>
+<li><code>tests.yaml</code> resolves testbench filelists, hook script paths, and suite-local runtime assets relative to the suite directory.</li>
+<li><code>models.yaml</code> resolves model filelist entries relative to the <code>models.yaml</code> file that defined them.</li>
+<li><code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code> resolve their own fields relative to their config directory.</li>
+</ul>
+<p>Do not let relative paths silently depend on where the user happened to invoke the command.
+If a path is passed to an external tool, prefer an absolute path unless the value is intentionally artifact-relative.</p>
+<h2 id="artifact-layout">Artifact Layout</h2>
+<p>Generated outputs should live under <code>artefacts/&lt;name&gt;/</code> below the command root.
+Repeated or randomized runs should use stable run directories such as <code>run-0001</code>, <code>run-0002</code>, and so on.
+Convenience symlinks may point at the latest run, but they must not be the only durable location.</p>
+<p>Compile-side generated files such as <code>run.f</code>, <code>compile.log</code>, builder outputs, and relative <code>builder-simv</code> paths belong in the per-test artifact root.
+Simulation outputs for <code>randtest</code> belong in the per-run artifact directory to avoid side-file clobbering across iterations.</p>
+<h2 id="subprocesses">Subprocesses</h2>
+<p>Every external tool invocation should pass an explicit <code>cwd</code>.
+Use the command's artifact directory unless the command has a documented reason to run elsewhere.</p>
+<p>Use <code>run_managed_process()</code> for long-running or tool-managed subprocesses so cleanup, timeout handling, and signal behavior stay consistent.
+Plain <code>subprocess.run()</code> is acceptable only for short probes or helpers where lifecycle management is not needed; document that choice when it is not obvious.</p>
+<h2 id="dependencies">Dependencies</h2>
+<p>Classify every dependency using the buckets in <a href="../../install/#dependency-types">Installation</a>: required dependency, integrated tool, pluggable, or pluggable curated.
+Use the classification to decide whether the dependency belongs in <code>pyproject.toml</code>, user install instructions, tool manifests, root-config schema, or command-specific docs.</p>
+<p>Every new feature or dependency must update <code>docs/install.md</code> in the same PR.
+The install page is the source of truth for feature-to-dependency mapping, required external tools, optional sub-dependencies, curated tools, and fork requirements.</p>
+<p>Every external tool dependency must also be represented in <code>src/rtl_buddy/tool_manifest.py</code> unless there is a documented reason it cannot be checked.
+The manifest is the source used by <code>rb tool-check</code>, <code>rb tool-check --required-for</code>, <code>rb tool-check --explain</code>, and runtime <code>tool_manifest.require()</code> errors.
+Keep the manifest's <code>used_by</code>, <code>optional</code>, <code>minimum_version</code>, detector, install hint, and notes fields aligned with <code>docs/install.md</code>.</p>
+<p>When a new feature adds or changes tool requirements, update <code>tests/test_tool_manifest.py</code> so <code>rb tool-check</code> reports the right readiness and install guidance.
+Update <a href="../../concepts/tool-check/">Tool Dependency Check</a> when manifest semantics, detector behavior, exit-code behavior, or command coverage changes.</p>
+<p>Required Python dependencies should be kept minimal because they are installed for every user.
+Prefer optional external tools for feature-specific functionality unless the dependency is needed by the core CLI, config loading, local docs access, or a command that cannot operate without it.</p>
+<p>When adding an external tool integration, document:</p>
+<ul>
+<li>the command or feature that needs it;</li>
+<li>whether it is integrated, pluggable, or pluggable curated;</li>
+<li>any required version or fork;</li>
+<li>optional sub-dependencies such as coverage, rendering, or notebook extras;</li>
+<li>the concept page that explains build or setup details.</li>
+<li>the <code>rb tool-check --explain &lt;tool&gt;</code> hint users should see when it is missing.</li>
+</ul>
+<h2 id="logging">Logging</h2>
+<p>All runtime logging goes through <code>log_event()</code> in <code>src/rtl_buddy/logging_utils.py</code>.
+Do not use direct <code>logger.info(f"...")</code> calls for runtime events.</p>
+<p>Human mode converts events into readable text for <code>rtl_buddy.log</code> and console output.
+Machine mode writes JSON Lines with the event name, fields, and human message.</p>
+<p>When adding events:</p>
+<ul>
+<li>Use dotted names such as <code>compile.start</code>, <code>sim.timeout</code>, or <code>suite_config.load_failed</code>.</li>
+<li>Include structured fields that are stable and useful for agents.</li>
+<li>Add a dedicated human-message case for WARNING or ERROR events.</li>
+<li>Keep DEBUG and INFO events concise enough for machine logs.</li>
+</ul>
+<h2 id="error-handling">Error Handling</h2>
+<p>Fatal config and environment errors should log at ERROR and raise <code>FatalRtlBuddyError</code>.
+The top-level command exits with code 2.</p>
+<p>Per-test setup and filelist failures should become structured test results when the broader command can continue.
+Use <code>FilelistError</code> for filelist failures caught by <code>TestRunner</code>.
+Sweep and preproc failures should return a setup-failure string so the suite records <code>SetupFailResults</code>.</p>
+<p>Do not use process-wide abort patterns for recoverable per-item failures.</p>
+<h2 id="validation">Validation</h2>
+<p>Let validation scale with risk:</p>
+<ul>
+<li>Docs-only edits: run frontmatter and MkDocs strict checks.</li>
+<li>CLI help changes: regenerate <code>docs/reference/cli.md</code> and run the generated-reference check.</li>
+<li>Path, artifact, or subprocess changes: add focused tests proving roots, generated paths, and subprocess <code>cwd</code>.</li>
+<li>Shared command-dispatch or config-loader changes: run the affected test module subset, then broaden if the change crosses command families.</li>
+</ul>
+<p>Report skipped checks in the PR with the reason.</p>
+<h2 id="required-follow-through">Required Follow-Through</h2>
+<p>After meaningful <code>rtl_buddy</code> changes:</p>
+<ol>
+<li>If CLI command names, flags, help text, or output behavior changed, regenerate <code>docs/reference/cli.md</code> with <code>uv run python scripts/gen_cli_reference.py</code>.</li>
+<li>If a feature, command, optional extra, or external tool dependency changed, update <code>docs/install.md</code>.</li>
+<li>If an external tool dependency changed, update <code>src/rtl_buddy/tool_manifest.py</code>, <code>tests/test_tool_manifest.py</code>, and <code>docs/concepts/tool-check.md</code> when tool-check behavior or coverage changes.</li>
+<li>If docs changed, keep frontmatter valid and run the docs build. See <a href="../docs/">Documentation Guidelines</a>.</li>
+<li>If behavior, YAML schema, version expectations, or validation workflows changed, update user docs and the bundled skill if agents rely on the behavior.</li>
+<li>If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.</li>
+</ol>
+<h2 id="bundled-skill">Bundled Skill</h2>
+<p>The <code>rtl_buddy</code> agent skill ships inside the wheel at <code>src/rtl_buddy/skill/</code> and is installed by <code>rtl-buddy skill install</code>.
+There is no separate source-of-truth skill repo.</p>
+<p>Keep <code>src/rtl_buddy/skill/SKILL.md</code> short and agent-specific.
+Prefer links to local docs commands over duplicating reference content.
+Project-level installs are an override mechanism; the default install scope should remain user-level unless the policy is deliberately revisited.</p>
+<h2 id="issue-triage">Issue Triage</h2>
+<p>Issues are classified along three axes that live on GitHub itself, not in this repo:</p>
+<ul>
+<li><strong>Type</strong> — the org-level Issue Type: <code>Bug</code>, <code>Feature</code>, or <code>Docs</code>. Set once on every issue.</li>
+<li><strong>Priority</strong> — the org-level Issue Field: <code>Urgent</code>, <code>High</code>, <code>Medium</code>, or <code>Low</code>. Reflects how soon the work should land, not how big it is.</li>
+<li><strong>Effort</strong> — the org-level Issue Field: <code>High</code>, <code>Medium</code>, or <code>Low</code>. Optional; fill it in when the answer is non-obvious.</li>
+</ul>
+<p>Type, Priority, and Effort are not labels.
+They are GitHub Issue Fields configured at the <code>rtl-buddy</code> organization level and are queryable via the REST and GraphQL APIs.</p>
+<p>Area is captured with repo-level labels.
+Pick one or more from the table below; an issue with no area label is fine for cross-cutting work but a single area is preferred when one fits.</p>
+<table>
+<thead>
+<tr>
+<th>Label</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>area/test</code></td>
+<td><code>test</code>, <code>randtest</code>, <code>regression</code>, <code>wave</code>, and the compile/sim runner pipeline</td>
+</tr>
+<tr>
+<td><code>area/abv</code></td>
+<td><code>cdc</code>, <code>fpv</code>, assertion-based verification in sim</td>
+</tr>
+<tr>
+<td><code>area/impl</code></td>
+<td><code>synth</code>, <code>pnr</code>, <code>power</code>, and other implementation flows</td>
+</tr>
+<tr>
+<td><code>area/hier</code></td>
+<td><code>hier</code> viewer and <code>rtl-buddy-view</code> integration</td>
+</tr>
+<tr>
+<td><code>area/axi-profile</code></td>
+<td><code>axi-profile</code> discover, run, notebook, and monitor generation</td>
+</tr>
+<tr>
+<td><code>area/hub</code></td>
+<td>the hub server, marimo integration, hub event plumbing</td>
+</tr>
+<tr>
+<td><code>area/skill</code></td>
+<td>the bundled agent skill and <code>skill install</code></td>
+</tr>
+<tr>
+<td><code>area/config</code></td>
+<td><code>root_config.yaml</code>, suite YAML loading, <code>filelist</code>, and model resolution</td>
+</tr>
+<tr>
+<td><code>area/tooling</code></td>
+<td><code>tool-check</code>, <code>tool_manifest.py</code>, and external-tool integration</td>
+</tr>
+<tr>
+<td><code>area/infra</code></td>
+<td>CI workflows, packaging, release mechanics, dependencies, and machine-mode logging</td>
+</tr>
+</tbody>
+</table>
+<p>One extra label exists outside the area set:</p>
+<ul>
+<li><code>discussion</code> — for issues that are scope or design conversations rather than tracked work.</li>
+</ul>
+<p>The <code>version/patch</code>, <code>version/minor</code>, and <code>version/major</code> labels are reserved for PRs and drive the release workflow.
+Do not apply them to issues.</p>
+<h2 id="milestones">Milestones</h2>
+<p>Use milestones to group issues and PRs that share a long-running, multi-issue effort.
+Single-issue work does not need a milestone.</p>
+<p>Name milestones by theme, not by version — for example <code>Hub Phase 3</code> or <code>ABV in sim</code>.
+Release impact already lives on the <code>version/*</code> labels and PyPI tags, so milestones should carry orthogonal information.</p>
+<p>Open a milestone when the effort is scoped enough to enumerate its first few issues, and close it when the last constituent issue is closed.
+Roll over remaining work into a follow-up milestone rather than leaving the original open indefinitely.</p>
+<h2 id="releases">Releases</h2>
+<p>Stable releases are produced by merging to <code>main</code> with one of the <code>version/patch</code>, <code>version/minor</code>, or <code>version/major</code> labels.
+Pre-releases are cut from feature branches by workflow dispatch and should not be produced by merging pre-release branches into <code>main</code>.</p>
+<p>Docs publishing, PyPI publishing, and downstream template updates depend on that sequence.
+Do not push a template pin for an unreleased <code>rtl_buddy</code> version.</p>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
