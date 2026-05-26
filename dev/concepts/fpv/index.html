@@ -907,6 +907,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#choosing-a-frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a frontend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#solver-version-pinning" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1549,6 +1560,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#choosing-a-frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a frontend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#solver-version-pinning" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1798,6 +1820,10 @@
 <td><code>coi</code></td>
 <td>Optional bool. When true (default), run a yosys cone-of-influence pass and report the fraction of design cells reachable from at least one assertion. See <a href="#cone-of-influence-coverage">Cone-of-influence coverage</a>.</td>
 </tr>
+<tr>
+<td><code>frontend</code></td>
+<td>SystemVerilog frontend: <code>"verilog"</code> (default — fast, no plugin, immediate-assert + simple-concurrent SVA only) or <code>"slang"</code> (yosys-slang plugin — required for concurrent SVA <code>\|-&gt;</code> / <code>\|=&gt;</code> / sequence operators and for <code>bind</code> to elaborate). <code>slang</code> requires <code>cfg-fpv-tools[].opts.plugin-path</code> in root_config.yaml. See <a href="#choosing-a-frontend">Choosing a frontend</a>.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="where-inputs-come-from">Where inputs come from</h3>
@@ -1844,6 +1870,13 @@
 </tr>
 </tbody>
 </table>
+<h3 id="choosing-a-frontend">Choosing a frontend</h3>
+<p>Two SystemVerilog frontends are supported under <code>rb fpv</code>:</p>
+<ul>
+<li><strong><code>frontend: verilog</code></strong> (default) — yosys's native verilog reader. No plugin needed. Handles immediate <code>assert (expr);</code> inside <code>always</code> blocks plus simple concurrent assertions (<code>assert property (@clk expr);</code>). Rejects <code>|-&gt;</code> / <code>|=&gt;</code>, <code>##N</code>, sequence operators, and SV <code>bind</code>.</li>
+<li><strong><code>frontend: slang</code></strong> — yosys-slang plugin (built from <a href="https://github.com/povik/yosys-slang">povik/yosys-slang</a> or the rtl-buddy <a href="https://github.com/rtl-buddy/yosys-slang">fork</a>). Required for concurrent SVA implications (<code>a |-&gt; b</code>, <code>a |=&gt; b</code>), sequence operators, and <code>bind</code> directives to elaborate. Requires <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>.</li>
+</ul>
+<p>When in doubt, <strong>start with <code>verilog</code></strong> — it's the path most rtl_buddy demos use. Move to <code>slang</code> only when you need <code>|-&gt;</code> / <code>|=&gt;</code> for vacuity covers or a richer SVA dialect.</p>
 <h3 id="solver-version-pinning">Solver version pinning</h3>
 <p><code>sby</code> happily picks whatever solver binary it finds on PATH. On CI, different runners can resolve to different versions and silently change proof outcomes — a proof that passes at depth 32 on one machine can time out on another. Set <code>opts.solver-versions</code> to lock the resolution: before each run, each pinned solver is probed (<code>yices-smt2 --version</code> etc.) and the run hard-fails with a one-shot summary of every mismatch if any pin doesn't match exactly. Resolved versions are logged as <code>fpv.solver_pins_resolved</code> so the run artefacts capture exactly what was used.</p>
 <h2 id="running-fpv">Running FPV</h2>
