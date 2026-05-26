@@ -122,9 +122,21 @@ cfg-fpv-tools:
 Two SystemVerilog frontends are supported under `rb fpv`:
 
 - **`frontend: verilog`** (default) — yosys's native verilog reader. No plugin needed. Handles immediate `assert (expr);` inside `always` blocks plus simple concurrent assertions (`assert property (@clk expr);`). Rejects `|->` / `|=>`, `##N`, sequence operators, and SV `bind`.
-- **`frontend: slang`** — yosys-slang plugin (built from [povik/yosys-slang](https://github.com/povik/yosys-slang) or the rtl-buddy [fork](https://github.com/rtl-buddy/yosys-slang)). Required for concurrent SVA implications (`a |-> b`, `a |=> b`), sequence operators, and `bind` directives to elaborate. Requires `cfg-fpv-tools[].opts.plugin-path` in `root_config.yaml`.
+- **`frontend: slang`** — yosys-slang plugin. Required for concurrent SVA implications (`a |-> b`, `a |=> b`), sequence operators, and SV `bind` directives to elaborate. Requires `cfg-fpv-tools[].opts.plugin-path` in `root_config.yaml`.
 
 When in doubt, **start with `verilog`** — it's the path most rtl_buddy demos use. Move to `slang` only when you need `|->` / `|=>` for vacuity covers or a richer SVA dialect.
+
+#### Which yosys-slang build to use
+
+povik's [upstream `master`](https://github.com/povik/yosys-slang) does not yet lower concurrent SVA implications (`|->` / `|=>`) to `$check` cells — the in-flight implementation lives in [povik/yosys-slang#317](https://github.com/povik/yosys-slang/pull/317), still in draft as of 2026-05-26. Using upstream master with `rb fpv` `frontend: slang` on a `|->` property surfaces as:
+
+```
+error: encountered unsupported SVA feature
+```
+
+Until #317 merges upstream, build from the **[rtl-buddy/yosys-slang `rtl-buddy` branch](https://github.com/rtl-buddy/yosys-slang/tree/rtl-buddy)** — three commits ahead of povik master (the SVA-rebase work + a stale-test count fix + a `disable iff` regression fix; ctest 46/46). The rtl-buddy fork tracks [rtl-buddy/yosys-slang#1](https://github.com/rtl-buddy/yosys-slang/issues/1) as its vendoring status; this doc switches back to recommending upstream once the fork's `master` fast-forwards to a povik release that includes the SVA work.
+
+povik upstream master is still fine for `rb synth` and `rb cdc` with `frontend: slang` — those paths don't need the SVA implication lowering. The [rtl-buddy-project-template SETUP_OSX.md](https://github.com/rtl-buddy/rtl-buddy-project-template/blob/main/tools/yosys-slang/SETUP_OSX.md) has the per-use-case build matrix.
 
 ### Solver version pinning
 
