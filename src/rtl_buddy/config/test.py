@@ -427,6 +427,14 @@ class TestConfigFile:
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
+        # Hook script paths are declared relative to the suite config
+        # (tests.yaml), the same as model_path. Resolve them at load
+        # time so VlogSim.pre() / _expand_tests_with_sweep can open()
+        # them regardless of the process cwd — required since #216,
+        # which stopped changing cwd into the suite dir.
+        preproc_path = _resolve_hook_path(self.preproc_path, config_dir)
+        postproc_path = _resolve_hook_path(self.postproc_path, config_dir)
+        sweep_path = _resolve_hook_path(self.sweep_path, config_dir)
         return TestConfig(
             self.name,
             self.desc,
@@ -435,11 +443,25 @@ class TestConfigFile:
             self.pa,
             self.pd,
             self.uvm,
-            self.preproc_path,
-            self.postproc_path,
-            self.sweep_path,
+            preproc_path,
+            postproc_path,
+            sweep_path,
             tb,
             self.timeout,
             covers=self.covers,
             assertions=self.assertions,
         )
+
+
+def _resolve_hook_path(path: str | None, config_dir: str) -> str | None:
+    """Resolve a hook-script path declared in tests.yaml.
+
+    Absolute paths pass through; relative paths anchor on the suite
+    config's directory. Returns None unchanged so commands without a
+    hook stay None.
+    """
+    if path is None:
+        return None
+    if os.path.isabs(path):
+        return path
+    return os.path.normpath(os.path.join(config_dir, path))

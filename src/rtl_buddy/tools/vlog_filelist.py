@@ -190,6 +190,7 @@ class VlogFilelist:
         strip=False,
         deduplicate=False,
         test_filelist=None,
+        suite_dir=None,
     ):
         if output_filepath is None:
             output_filepath = self.output_path
@@ -201,13 +202,19 @@ class VlogFilelist:
             model_filelist, unroll, os.path.abspath(self.model_cfg.get_model_path())
         )
 
-        # Get filelist from tests. assume tests.yaml is in the same dir
+        # Get filelist from tests. Entries are declared relative to the
+        # suite config's directory (tests.yaml). Use suite_dir when the
+        # caller supplies it; fall back to cwd for callers that still
+        # assume the legacy "process cwd is the suite dir" model.
         if test_filelist:
+            suite_anchor = (
+                os.path.abspath(suite_dir) if suite_dir else os.path.abspath(".")
+            )
             entries.extend(
                 self._extract(
                     test_filelist,
                     unroll,
-                    os.path.join(os.path.abspath("."), "tests.yaml"),
+                    os.path.join(suite_anchor, "tests.yaml"),
                 )
             )
 

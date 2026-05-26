@@ -336,6 +336,52 @@ tests: []
         SuiteConfig(str(path))
 
 
+def test_suite_config_resolves_hook_paths_against_suite_dir(tmp_path):
+    """preproc/postproc/sweep paths declared in tests.yaml are
+    relative to the suite config's directory. They must be absolute
+    after load so VlogSim.pre() and _expand_tests_with_sweep can
+    open() them regardless of the process cwd (#223)."""
+    import os
+
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    (suite_dir / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n  - name: m\n    filelist: [top.sv]\n"
+    )
+    (suite_dir / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        "  - name: tb1\n"
+        "    filelist: [tb.sv]\n"
+        "tests:\n"
+        "  - name: basic\n"
+        "    desc: example\n"
+        "    model: m\n"
+        "    model_path: models.yaml\n"
+        "    reglvl: 0\n"
+        "    plusargs:\n"
+        "    plusdefines:\n"
+        "    uvm:\n"
+        "    preproc:\n"
+        "      path: scripts/pre.py\n"
+        "    postproc:\n"
+        "      path: /abs/path/post.py\n"
+        "    sweep:\n"
+        "      path: scripts/sweep.py\n"
+        "    testbench: tb1\n"
+        "    sim_timeout:\n"
+    )
+
+    cfg = SuiteConfig(str(suite_dir / "tests.yaml"))
+    test = cfg.tests["basic"]
+    # Relative paths resolve against the suite dir.
+    assert test.preproc_path == os.path.normpath(str(suite_dir / "scripts" / "pre.py"))
+    assert test.sweep_path == os.path.normpath(str(suite_dir / "scripts" / "sweep.py"))
+    # Absolute paths pass through unchanged.
+    assert test.postproc_path == "/abs/path/post.py"
+
+
 def test_suite_config_duplicate_test_raises(tmp_path):
     body = """\
 rtl-buddy-filetype: test_config

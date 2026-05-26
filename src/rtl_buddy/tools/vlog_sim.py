@@ -249,6 +249,7 @@ class VlogSim:
             strip=False,
             deduplicate=True,
             test_filelist=self.testbench.get_filelist(),
+            suite_dir=self.suite_work_dir,
         )
 
     def _get_plusargs(self):

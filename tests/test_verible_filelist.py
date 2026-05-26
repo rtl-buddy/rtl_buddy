@@ -136,6 +136,60 @@ def test_verible_filelist_empty_model_list_errors(tmp_path: Path):
         fl.write_verible_filelist([])
 
 
+def test_write_output_anchors_test_filelist_on_explicit_suite_dir(
+    tmp_path: Path, monkeypatch
+):
+    """``write_output(suite_dir=...)`` resolves testbench filelist entries
+    against the supplied suite dir, not the process cwd. Required since
+    #216 stopped anchoring cwd on the suite (#223 follow-up)."""
+    # Layout:
+    #   <tmp>/suite/tests.yaml
+    #   <tmp>/suite/tb.sv
+    #   <tmp>/suite/inc/  (the +incdir+ target)
+    #   <tmp>/design/m.sv (model source)
+    suite_dir = tmp_path / "suite"
+    suite_dir.mkdir()
+    (suite_dir / "tb.sv").write_text("module tb; endmodule\n")
+    (suite_dir / "inc").mkdir()
+    design_dir = tmp_path / "design"
+    design_dir.mkdir()
+    (design_dir / "m.sv").write_text("module m; endmodule\n")
+
+    model = ModelConfig(
+        name="m",
+        filelist=["m.sv"],
+        path=str(design_dir / "models.yaml"),
+    )
+    artefact_dir = suite_dir / "artefacts" / "basic"
+    artefact_dir.mkdir(parents=True)
+    out = artefact_dir / "run.f"
+
+    # Run from an unrelated cwd to prove the suite_dir argument — not
+    # the cwd — is what anchors testbench entries.
+    monkeypatch.chdir(tmp_path)
+
+    fl = VlogFilelist(name="t", model_cfg=model, output_path=str(out))
+    fl.write_output(
+        unroll=True,
+        test_filelist=["tb.sv", "+incdir+inc"],
+        suite_dir=str(suite_dir),
+    )
+
+    text = out.read_text()
+    assert "tb.sv" in text
+    assert "+incdir+" in text
+    # Sanity-check: the resolved tb.sv path should walk back up to the
+    # suite, not be missing or over-deep.
+    tb_lines = [
+        ln for ln in text.splitlines() if ln and "tb.sv" in ln and "+incdir+" not in ln
+    ]
+    assert tb_lines, f"tb.sv not found in {text!r}"
+    import os
+
+    resolved = os.path.normpath(os.path.join(str(artefact_dir), tb_lines[0]))
+    assert resolved == str((suite_dir / "tb.sv").resolve())
+
+
 # --- rb verible filelist (integration through Typer) ---------------------
 
 
