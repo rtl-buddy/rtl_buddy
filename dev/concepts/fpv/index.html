@@ -915,6 +915,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Choosing a frontend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#which-yosys-slang-build-to-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which yosys-slang build to use
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1568,6 +1585,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Choosing a frontend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#which-yosys-slang-build-to-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Which yosys-slang build to use
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1874,32 +1908,38 @@
 <p>Two SystemVerilog frontends are supported under <code>rb fpv</code>:</p>
 <ul>
 <li><strong><code>frontend: verilog</code></strong> (default) — yosys's native verilog reader. No plugin needed. Handles immediate <code>assert (expr);</code> inside <code>always</code> blocks plus simple concurrent assertions (<code>assert property (@clk expr);</code>). Rejects <code>|-&gt;</code> / <code>|=&gt;</code>, <code>##N</code>, sequence operators, and SV <code>bind</code>.</li>
-<li><strong><code>frontend: slang</code></strong> — yosys-slang plugin (built from <a href="https://github.com/povik/yosys-slang">povik/yosys-slang</a> or the rtl-buddy <a href="https://github.com/rtl-buddy/yosys-slang">fork</a>). Required for concurrent SVA implications (<code>a |-&gt; b</code>, <code>a |=&gt; b</code>), sequence operators, and <code>bind</code> directives to elaborate. Requires <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>.</li>
+<li><strong><code>frontend: slang</code></strong> — yosys-slang plugin. Required for concurrent SVA implications (<code>a |-&gt; b</code>, <code>a |=&gt; b</code>), sequence operators, and SV <code>bind</code> directives to elaborate. Requires <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>.</li>
 </ul>
 <p>When in doubt, <strong>start with <code>verilog</code></strong> — it's the path most rtl_buddy demos use. Move to <code>slang</code> only when you need <code>|-&gt;</code> / <code>|=&gt;</code> for vacuity covers or a richer SVA dialect.</p>
+<h4 id="which-yosys-slang-build-to-use">Which yosys-slang build to use</h4>
+<p>povik's <a href="https://github.com/povik/yosys-slang">upstream <code>master</code></a> does not yet lower concurrent SVA implications (<code>|-&gt;</code> / <code>|=&gt;</code>) to <code>$check</code> cells — the in-flight implementation lives in <a href="https://github.com/povik/yosys-slang/pull/317">povik/yosys-slang#317</a>, still in draft as of 2026-05-26. Using upstream master with <code>rb fpv</code> <code>frontend: slang</code> on a <code>|-&gt;</code> property surfaces as:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>error: encountered unsupported SVA feature
+</code></pre></div>
+<p>Until #317 merges upstream, build from the <strong><a href="https://github.com/rtl-buddy/yosys-slang/tree/rtl-buddy">rtl-buddy/yosys-slang <code>rtl-buddy</code> branch</a></strong> — three commits ahead of povik master (the SVA-rebase work + a stale-test count fix + a <code>disable iff</code> regression fix; ctest 46/46). The rtl-buddy fork tracks <a href="https://github.com/rtl-buddy/yosys-slang/issues/1">rtl-buddy/yosys-slang#1</a> as its vendoring status; this doc switches back to recommending upstream once the fork's <code>master</code> fast-forwards to a povik release that includes the SVA work.</p>
+<p>povik upstream master is still fine for <code>rb synth</code> and <code>rb cdc</code> with <code>frontend: slang</code> — those paths don't need the SVA implication lowering. The <a href="https://github.com/rtl-buddy/rtl-buddy-project-template/blob/main/tools/yosys-slang/SETUP_OSX.md">rtl-buddy-project-template SETUP_OSX.md</a> has the per-use-case build matrix.</p>
 <h3 id="solver-version-pinning">Solver version pinning</h3>
 <p><code>sby</code> happily picks whatever solver binary it finds on PATH. On CI, different runners can resolve to different versions and silently change proof outcomes — a proof that passes at depth 32 on one machine can time out on another. Set <code>opts.solver-versions</code> to lock the resolution: before each run, each pinned solver is probed (<code>yices-smt2 --version</code> etc.) and the run hard-fails with a one-shot summary of every mismatch if any pin doesn't match exactly. Resolved versions are logged as <code>fpv.solver_pins_resolved</code> so the run artefacts capture exactly what was used.</p>
 <h2 id="running-fpv">Running FPV</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># All verifications in the default ./fpv.yaml</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>fpv
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># A single verification from a specific config</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>rb<span class="w"> </span>fpv<span class="w"> </span>demo_fpv_fifo<span class="w"> </span>-c<span class="w"> </span>fpv/demo_fifo/fpv.yaml
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># List verifications without executing</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>rb<span class="w"> </span>fpv<span class="w"> </span>-c<span class="w"> </span>fpv/demo_fifo/fpv.yaml<span class="w"> </span>--list
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># Regression across multiple fpv.yaml suites, filtered by reglvl</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>rb<span class="w"> </span>fpv-regression<span class="w"> </span>-c<span class="w"> </span>fpv_regression.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># All verifications in the default ./fpv.yaml</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rb<span class="w"> </span>fpv
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># A single verification from a specific config</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>rb<span class="w"> </span>fpv<span class="w"> </span>demo_fpv_fifo<span class="w"> </span>-c<span class="w"> </span>fpv/demo_fifo/fpv.yaml
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># List verifications without executing</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>rb<span class="w"> </span>fpv<span class="w"> </span>-c<span class="w"> </span>fpv/demo_fifo/fpv.yaml<span class="w"> </span>--list
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="c1"># Regression across multiple fpv.yaml suites, filtered by reglvl</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>rb<span class="w"> </span>fpv-regression<span class="w"> </span>-c<span class="w"> </span>fpv_regression.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
 </code></pre></div>
 <h2 id="results-table">Results table</h2>
 <p>A summary table prints after each run:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>                                  FPV Results Summary
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>┃ FPV Run         ┃ Result ┃ Description               ┃ Mode ┃ Depth ┃ Engines      ┃ Runtime ┃
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>┡━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>│ demo_fpv_fifo   │ PASS   │ property proved (bmc, 32) │ bmc  │ 32    │ smtbmc yices │ 0.4s    │
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>└─────────────────┴────────┴───────────────────────────┴──────┴───────┴──────────────┴─────────┘
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>                                  FPV Results Summary
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>┃ FPV Run         ┃ Result ┃ Description               ┃ Mode ┃ Depth ┃ Engines      ┃ Runtime ┃
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>┡━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│ demo_fpv_fifo   │ PASS   │ property proved (bmc, 32) │ bmc  │ 32    │ smtbmc yices │ 0.4s    │
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>└─────────────────┴────────┴───────────────────────────┴──────┴───────┴──────────────┴─────────┘
 </code></pre></div>
 <ul>
 <li><strong>Mode / Depth / Engines</strong> — what was actually run, surfaced for quick triage.</li>
@@ -1919,8 +1959,8 @@
 <li>Reports the fraction of design cells reached by at least one assertion.</li>
 </ol>
 <p>Logic <em>outside</em> every property's COI is provably unverified by the property set — a direct, actionable "what's still uncovered" signal that simulation coverage doesn't give you. When the COI pass produces data, the results table grows a <strong>COI</strong> column:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>FPV Run     Result   Description                ...   COI
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>counter_inv PASS     property proved (bmc, 32)        73% (38/52)
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>FPV Run     Result   Description                ...   COI
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>counter_inv PASS     property proved (bmc, 32)        73% (38/52)
 </code></pre></div>
 <ul>
 <li>Per-module rollup lives in <code>FpvResults.results["coi"]["per_module"]</code> so machine consumers can find under-verified blocks.</li>
@@ -1935,8 +1975,8 @@
 <h2 id="dead-assume-detection">Dead-assume detection</h2>
 <p>The same yosys pass that computes COI coverage also rolls up <code>$assume</code> cells, splitting them into those whose logic intersects with the assertion COI versus those that don't. The latter are <em>structurally dead</em> — they constrain signals no assertion ever observes, usually a sign the environment spec drifted from the property set.</p>
 <p>When the design has any <code>$assume</code> cells, the results table grows an <strong>Assumes</strong> column:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>FPV Run     Result   Description                ...   Assumes
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>counter_inv PASS     property proved (bmc, 32)        3 used, 2 dead
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>FPV Run     Result   Description                ...   Assumes
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>counter_inv PASS     property proved (bmc, 32)        3 used, 2 dead
 </code></pre></div>
 <ul>
 <li><code>N used</code> (all assumes are inside the assertion COI) — silent, just a sanity confirmation.</li>
@@ -1947,8 +1987,8 @@
 <p>A property <code>a |-&gt; b</code> is <em>vacuously true</em> whenever the antecedent <code>a</code> never holds — the assertion passes but tells us nothing about <code>b</code>. <code>rb fpv</code> auto-derives a <code>cover property</code> for each <code>|-&gt;</code> / <code>|=&gt;</code> antecedent in your property set and runs a secondary sby cover-mode pass to check whether each one is reachable.</p>
 <p>The vacuity pass is enabled by default for <code>mode: bmc</code> and <code>mode: prove</code> and disabled for <code>mode: cover</code> / <code>mode: live</code> (where the user is already exploring reachability). Override with <code>vacuity: true</code> / <code>vacuity: false</code> per verification in <code>fpv.yaml</code>.</p>
 <p>When vacuity reports any unreachable antecedent, the results table grows a <strong>Vacuity</strong> column:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>FPV Run     Result   Description                ...   Vacuity
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>counter_inv PASS     property proved (bmc, 32)        1/3 vacuous
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>FPV Run     Result   Description                ...   Vacuity
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>counter_inv PASS     property proved (bmc, 32)        1/3 vacuous
 </code></pre></div>
 <ul>
 <li><code>N ok</code> — every antecedent reached</li>
@@ -2021,8 +2061,8 @@
 <p>A run is FAIL when sby writes <code>FAIL</code>, <code>UNKNOWN</code>, or <code>ERROR</code>, or when it exits non-zero. The failure description points at the counterexample trace inside <code>sby_workdir/engine_&lt;N&gt;/</code> so the user can open it in <code>gtkwave</code>, <code>surfer</code>, or via <code>rb wave-fpv</code> (below).</p>
 <p>SKIP is returned when the run's <code>reglvl</code> is above the <code>-l</code> filter passed to <code>rb fpv-regression</code>.</p>
 <h2 id="opening-counterexamples">Opening counterexamples</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Open the CEX VCD for a failed verification in the configured surfer.</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Open the CEX VCD for a failed verification in the configured surfer.</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
 </code></pre></div>
 <p><code>rb wave-fpv</code> resolves the trace at <code>fpv/&lt;suite&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine wins when more than one produced a trace). The configured surfer comes from the same <code>cfg-surfer</code> entry that <code>rb wave</code> uses; override with <code>--surfer &lt;name&gt;</code>. Raises if the verification has not been run yet or the proof passed (no CEX was produced).</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
