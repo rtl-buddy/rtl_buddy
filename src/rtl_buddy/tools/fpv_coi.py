@@ -90,19 +90,38 @@ def build_yosys_script(
     properties: list[str],
     constraints: str | None,
     top: str,
+    frontend: str = "verilog",
+    plugin_path: str | None = None,
 ) -> str:
     """Render the yosys script that runs the COI analysis.
 
     Order mirrors the sby script (sources → constraints → properties)
     so the assertion cells exist in the same context they're proved
-    in.
+    in. The `frontend` arg picks the same SystemVerilog parser the
+    sby pass used — using a different frontend here would risk
+    `$check` cells disappearing under `t:$check` selection because
+    slang's `bind` resolution and verilog-frontend's diverge.
     """
     lines: list[str] = []
+    if frontend == "slang":
+        if not plugin_path:
+            raise ValueError(
+                "fpv_coi: frontend='slang' requires a non-empty plugin_path"
+            )
+        lines.append(f"plugin -i {plugin_path}")
     for inc in incdirs:
         lines.append(f"verilog_defaults -add -I {inc}")
     constraint_files = [constraints] if constraints else []
-    for src in list(sources) + constraint_files + list(properties):
-        lines.append(f"read -sv -formal {src}")
+    all_files = list(sources) + constraint_files + list(properties)
+    if frontend == "slang":
+        # Single `read_slang --top <name> <files...>` so `bind`
+        # directives at compilation-unit scope see every declared
+        # module — matches the SbyFpv slang renderer.
+        src_args = " ".join(all_files)
+        lines.append(f"read_slang --top {top} {src_args}")
+    else:
+        for src in all_files:
+            lines.append(f"read -sv -formal {src}")
     # `prep -flatten -top` mirrors what sby itself runs for proof:
     # hierarchy + proc + opt while preserving formal cells, then
     # collapses everything into the top module. Flattening matters
@@ -252,6 +271,8 @@ def run_coi_analysis(
     top: str,
     script_path: str,
     log_path: str,
+    frontend: str = "verilog",
+    plugin_path: str | None = None,
 ) -> dict | None:
     """Run yosys and return the parsed coverage summary, or None on error.
 
@@ -265,6 +286,8 @@ def run_coi_analysis(
         properties=properties,
         constraints=constraints,
         top=top,
+        frontend=frontend,
+        plugin_path=plugin_path,
     )
     Path(script_path).write_text(script)
     cmd = [yosys_exe, "-s", script_path]

@@ -31,6 +31,26 @@ from ..process_utils import run_managed_process
 logger = logging.getLogger(__name__)
 
 
+def _is_non_source_filelist_line(line: str) -> bool:
+    """Return True when ``line`` is a filelist directive that doesn't
+    name a source file (include dirs, lib dirs, lib files). These
+    must not survive into rtl-buddy-view's filelist because the
+    renderer expects bare source paths and ``strip=True`` would emit
+    the trailing argument as one — turning ``+incdir+../../common``
+    into the bare directory ``../../common`` and crashing the
+    parser with IsADirectoryError on the conventional testbench
+    layout.
+    """
+    s = line.strip()
+    if s.startswith("+incdir+") or s.startswith("+libext+"):
+        return True
+    # ``-y <dir>`` / ``-v <file>`` use a space (or tab) separator.
+    for prefix in ("-y", "-v"):
+        if s.startswith(prefix) and len(s) > len(prefix) and s[len(prefix)].isspace():
+            return True
+    return False
+
+
 class RtlBuddyView:
     """Generates a filelist + invokes ``rtl-buddy-view``.
 
@@ -112,9 +132,23 @@ class RtlBuddyView:
         # TB second — the TB modules instantiate the DUT, not the
         # other way around, and Verible elaborates from the
         # ``--tb-top`` regardless of file order.
-        test_filelist = (
-            self.test_cfg.tb.get_filelist() if self.test_cfg is not None else None
-        )
+        #
+        # Drop non-source entries (``+incdir+...``, ``-y .../``,
+        # ``+libext+...``) from the TB filelist before merging. With
+        # ``strip=True`` VlogFilelist would emit them as bare paths
+        # which rtl-buddy-view then tries to open as source files,
+        # producing ``IsADirectoryError`` on the typical
+        # ``+incdir+../../common`` testbench convention. rtl-buddy-view
+        # works on absolute source paths and does not need include
+        # directories — the TB's compile-time options are not relevant
+        # to its CST walk.
+        test_filelist = None
+        if self.test_cfg is not None:
+            test_filelist = [
+                line
+                for line in self.test_cfg.tb.get_filelist()
+                if not _is_non_source_filelist_line(line)
+            ]
         vlog_fl.write_output(
             output_filepath=fl_path,
             unroll=True,
