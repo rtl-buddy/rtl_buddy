@@ -1,0 +1,16 @@
+name: Docs
+description: Report a docs problem or request a docs improvement.
+type: Docs
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page or section
+      description: URL on the docs site, or path under `docs/`.
+      placeholder: e.g. https://rtl-buddy.github.io/rtl_buddy/concepts/tests/ or docs/concepts/tests.md
+  - type: textarea
+    id: issue
+    attributes:
+      label: What is wrong or missing?
+    validations:
+      required: true
