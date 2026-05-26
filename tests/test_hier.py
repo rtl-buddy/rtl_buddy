@@ -414,6 +414,83 @@ def test_wrapper_emits_tb_top_and_caches_under_tb_subdir(tmp_path: Path):
     assert argv[argv.index("--filelist") + 1] == str(expected_fl)
 
 
+def test_wrapper_drops_non_source_tb_filelist_entries(tmp_path: Path):
+    """``+incdir+``, ``-y``, ``-v``, ``+libext+`` entries in the TB
+    filelist must not survive into rtl-buddy-view's hier.f. With
+    ``strip=True`` they'd otherwise be emitted as bare paths — rtl-
+    buddy-view then tries to open ``../../common`` as a source file
+    and crashes with IsADirectoryError (caught live against the DMA
+    fixture in rtl-buddy-ai-project after the toplevel: backfill)."""
+    from rtl_buddy.config.test import TestbenchConfig, TestConfig
+    from rtl_buddy.tools.hier_rtl_buddy_view import _is_non_source_filelist_line
+
+    # Unit-test the helper directly — the wrapper-level smoke test
+    # below covers the integration but only assertively when the test
+    # filelist parses cleanly.
+    assert _is_non_source_filelist_line("+incdir+../../common")
+    assert _is_non_source_filelist_line("+libext+.sv+.v")
+    assert _is_non_source_filelist_line("-y rtl/lib")
+    assert _is_non_source_filelist_line("-v rtl/some.sv")
+    assert not _is_non_source_filelist_line("tb_top.sv")
+    assert not _is_non_source_filelist_line("rtl/example.sv")
+    # Leading whitespace tolerated (matches the YAML loader's output).
+    assert _is_non_source_filelist_line("  +incdir+.")
+
+    # Wrapper integration: a TB filelist with mixed entries produces
+    # a hier.f containing only source paths.
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    incdir = tmp_path / "incdir"
+    incdir.mkdir()
+    (incdir / "shared.svh").write_text("// header\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    tb_src = tmp_path / "src" / "tb.sv"
+    tb_src.write_text("module tb_top; example u_dut(); endmodule\n")
+    tb = TestbenchConfig(
+        name="tb_basic",
+        filelist=[f"+incdir+{incdir}", str(tb_src)],
+        toplevel="tb_top",
+    )
+    test_cfg = TestConfig(
+        name="basic",
+        desc="",
+        model=model,
+        _reglvl=0,
+        pa=None,
+        pd=None,
+        uvm=None,
+        preproc_path=None,
+        postproc_path=None,
+        sweep_path=None,
+        tb=tb,
+        timeout=None,
+    )
+    script, _ = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        format="json",
+        executable=str(script),
+        test_cfg=test_cfg,
+    )
+    assert view.run() == 0
+    fl = (
+        tmp_path / "artefacts" / "hier" / "example" / "tb" / "tb_basic" / "hier.f"
+    ).read_text()
+    # +incdir+ entries are filtered before the merge — no bare incdir
+    # path leaks into the rtl-buddy-view filelist.
+    assert str(incdir) not in fl
+    assert "+incdir+" not in fl
+    # The TB source file survives the filter.
+    assert "tb.sv" in fl
+
+
 def test_wrapper_dut_only_does_not_emit_tb_top(tmp_path: Path):
     """Sanity: when ``test_cfg`` is None (today's ``rb hier <model>``
     path), the wrapper invokes the renderer with no ``--tb-top``
