@@ -366,6 +366,7 @@ class YosysSynth:
                     cmd,
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
+                    cwd=self.artefact_dir,
                 )
 
         if result.returncode != 0:

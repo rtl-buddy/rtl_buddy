@@ -548,4 +548,5 @@ class SbyFpv:
                 cmd,
                 stdout=logf,
                 stderr=subprocess.STDOUT,
+                cwd=self.artefact_dir,
             )

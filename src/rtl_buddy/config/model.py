@@ -101,9 +101,9 @@ class ModelConfig:
     def _resolve_relative(self, rel: str) -> str:
         """Resolve ``rel`` against the directory containing models.yaml.
 
-        Absolute paths pass through unchanged. Relative paths are
-        anchored at ``dirname(self.path)`` when ``self.path`` is set
-        (the loader normally sets it); otherwise the cwd is used.
+        Absolute paths pass through unchanged. The loader always sets
+        ``self.path``; an unset path falls back to cwd (only reachable
+        from tests that construct ``ModelConfig`` directly).
         """
         if os.path.isabs(rel):
             return rel

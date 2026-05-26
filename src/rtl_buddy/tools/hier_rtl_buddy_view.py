@@ -219,6 +219,7 @@ class RtlBuddyView:
                     cmd,
                     stdout=stdout,
                     stderr=logf,
+                    cwd=self.artefact_dir,
                 )
 
         log_event(

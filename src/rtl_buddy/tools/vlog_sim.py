@@ -70,6 +70,11 @@ class VlogSim:
         self.replay_run_id = replay_run_id
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
+        # CLI commands always pass suite_dir resolved from the test
+        # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
+        # is tests-only — `tests/test_setup_failures.py`,
+        # `tests/test_cocotb_post.py`, etc. construct VlogSim directly
+        # with a monkeypatched cwd. New code paths must pass suite_dir.
         self.suite_work_dir = (
             os.path.abspath(suite_dir)
             if suite_dir is not None

@@ -23,7 +23,9 @@ from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .errors import FatalRtlBuddyError, FilelistError
+from .exec_context import ExecutionContext
 from .logging_utils import (
+    attach_file_log,
     emit_console_text,
     is_machine_mode,
     log_event,
@@ -273,6 +275,9 @@ class RtlBuddy:
         self.coverage = None
         self.run_depth = RunDepth.POST
         self.machine = False
+        self.invocation_cwd: Path = Path.cwd()
+        self.exec_ctx: ExecutionContext | None = None
+        self._builder_override: str | None = None
 
     def run(self):
         try:
@@ -358,10 +363,15 @@ class RtlBuddy:
             return
 
         self.machine = machine
+        self.invocation_cwd = Path.cwd().resolve()
 
         if ctx.invoked_subcommand in {"skill", "docs", "spec", "hub", "tool-check"}:
             return
 
+        # Phase 1: console logging only. The file handler is attached in
+        # phase 2 once the command's ExecutionContext is known so
+        # rtl_buddy.log lands under the command root rather than the
+        # invocation directory.
         setup_logging(debug=debug, verbose=verbose, color=color, machine=machine)
 
         log_event(logger, logging.INFO, "cli.start", version=version("rtl-buddy"))
@@ -372,23 +382,76 @@ class RtlBuddy:
         ):
             self.show_git_rev()
 
+        # RootConfig + CoverageReporter construction is deferred to
+        # _enter_command_context() so root_config.yaml is discovered by
+        # walking up from the command root, not the invocation cwd.
         self.rtl_builder_mode = rtl_builder_mode
-        self.root_cfg = RootConfig(
-            name=self.name + "/root_config", builder_override=builder_override
-        )
-        self.builder = self.root_cfg.get_builder_name()
-        self.coverage = CoverageReporter(self.root_cfg)
+        self._builder_override = builder_override
         self.run_depth = run_depth
+        self._pending_invoked_subcommand = ctx.invoked_subcommand
 
-        log_event(
-            logger,
-            logging.DEBUG,
-            "cli.context_ready",
-            command=ctx.invoked_subcommand,
-            builder=self.builder,
-            builder_mode=self.rtl_builder_mode,
-            run_depth=self.run_depth.value,
-        )
+    def _enter_command_context(
+        self,
+        *,
+        primary_config: str | Path | None = None,
+        command_root: str | Path | None = None,
+    ) -> ExecutionContext:
+        """Build the command's ExecutionContext and attach the file log.
+
+        Pass exactly one of:
+        - ``primary_config``: the command's ``-c`` argument (e.g.
+          ``tests.yaml``); the command root is its parent directory.
+        - ``command_root``: an explicit directory anchor for commands that
+          don't have a single primary config file.
+
+        Constructs :attr:`root_cfg` and :attr:`coverage` once the command
+        root is known so ``root_config.yaml`` is discovered relative to
+        the command rather than the invocation cwd. Subsequent calls
+        within the same process re-anchor the file log handler so a
+        long-running session (e.g. ``rb regression`` iterating suites)
+        keeps each suite's log under its own root.
+        """
+        if (primary_config is None) == (command_root is None):
+            raise FatalRtlBuddyError(
+                "_enter_command_context requires exactly one of "
+                "primary_config or command_root"
+            )
+
+        if primary_config is not None:
+            ctx = ExecutionContext.for_command(
+                invocation_cwd=self.invocation_cwd,
+                primary_config=primary_config,
+            )
+        else:
+            ctx = ExecutionContext.for_dir(
+                invocation_cwd=self.invocation_cwd,
+                command_root=command_root,
+            )
+
+        ctx.command_root.mkdir(parents=True, exist_ok=True)
+        attach_file_log(ctx.log_path)
+        self.exec_ctx = ctx
+
+        if self.root_cfg is None:
+            self.root_cfg = RootConfig(
+                name=self.name + "/root_config",
+                builder_override=self._builder_override,
+                start_dir=ctx.command_root,
+            )
+            self.builder = self.root_cfg.get_builder_name()
+            self.coverage = CoverageReporter(self.root_cfg)
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cli.context_ready",
+                command=getattr(self, "_pending_invoked_subcommand", None),
+                command_root=str(ctx.command_root),
+                builder=self.builder,
+                builder_mode=self.rtl_builder_mode,
+                run_depth=self.run_depth.value,
+            )
+
+        return ctx
 
     def _exit_code_from_results(self, suite_results):
         exit_code = 0
@@ -612,7 +675,8 @@ class RtlBuddy:
         self.rtl_builder_mode = (
             "debug" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
-        self.suite_cfg = SuiteConfig(path=test_config)
+        ctx = self._enter_command_context(primary_config=test_config)
+        self.suite_cfg = SuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
             logging.INFO,
@@ -655,14 +719,14 @@ class RtlBuddy:
         metadata.extend(
             self.coverage.build_metadata(
                 suite_results,
-                outdir=os.getcwd(),
+                outdir=str(ctx.command_root),
                 suite_name=self.suite_cfg.get_path(),
                 coverage_merge=coverage_merge,
                 coverage_merge_raw=coverage_merge_raw,
                 coverage_html=coverage_html,
                 coverage_coverview=coverage_coverview,
                 coverage_merge_info_process=coverage_merge_info_process,
-                source_roots=[os.getcwd()],
+                source_roots=[str(ctx.command_root)],
                 dir_summary_paths=dir_summary_paths,
             )
         )
@@ -716,7 +780,8 @@ class RtlBuddy:
         self.rtl_builder_mode = (
             "debug" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
-        self.suite_cfg = SuiteConfig(path=test_config)
+        ctx = self._enter_command_context(primary_config=test_config)
+        self.suite_cfg = SuiteConfig(path=str(ctx.primary_config))
 
         log_event(
             logger,
@@ -1065,17 +1130,26 @@ class RtlBuddy:
             start_level=start_level,
         )
 
-        start_dir = os.getcwd()
+        start_dir = str(self.invocation_cwd)
         if reg_config is not None:
+            resolved_reg_config = str(
+                (self.invocation_cwd / reg_config).resolve()
+                if not os.path.isabs(reg_config)
+                else Path(reg_config).resolve()
+            )
+            # Anchor the orchestration to dirname(regression.yaml). Each
+            # suite below will re-anchor to its own tests.yaml directory.
+            ctx = self._enter_command_context(primary_config=resolved_reg_config)
             self.reg_cfg = RegConfig(
-                name=self.name + "/reg_config", path=os.path.join(start_dir, reg_config)
+                name=self.name + "/reg_config", path=resolved_reg_config
             )
             log_event(
                 logger, logging.INFO, "regression.config_override", path=reg_config
             )
         else:
-            local_reg_config = os.path.join(start_dir, "regression.yaml")
+            local_reg_config = str(self.invocation_cwd / "regression.yaml")
             if os.path.isfile(local_reg_config):
+                ctx = self._enter_command_context(primary_config=local_reg_config)
                 self.reg_cfg = RegConfig(
                     name=self.name + "/reg_config", path=local_reg_config
                 )
@@ -1086,7 +1160,13 @@ class RtlBuddy:
                     path=local_reg_config,
                 )
             else:
+                # Defer to root_config.yaml — its reg-cfg-path is anchored
+                # to the root config directory; use that as the command root.
+                ctx = self._enter_command_context(command_root=self.invocation_cwd)
                 self.reg_cfg = self.root_cfg.get_rtl_reg_cfg()
+                ctx = self._enter_command_context(
+                    primary_config=self.reg_cfg.get_path()
+                )
                 log_event(
                     logger,
                     logging.INFO,
@@ -1099,38 +1179,45 @@ class RtlBuddy:
 
         exit_code = 0
         reg_results = []
-        try:
-            for suite_cfg in self.reg_cfg.get_suite_configs():
-                suite_cfg_dir = os.path.dirname(suite_cfg.get_path())
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "regression.suite_start",
-                    suite=suite_cfg.get_path(),
-                    cwd=suite_cfg_dir,
-                )
-                os.chdir(suite_cfg_dir)
-                suite_results = self._do_test_suite(
-                    suite_cfg=suite_cfg,
-                    test_name=None,
-                    test_runner_mode={"sim_to_stdout": False},
-                    reg_level=reg_level,
-                    start_level=start_level,
-                    run_ids=[None],
-                    seed_mode=SeedMode.DEFAULT,
-                    replay_run_id=None,
-                )
-                reg_results.append(
-                    {
-                        "test_suite": self._display_path(
-                            suite_cfg.get_path(), base_dir=start_dir
-                        ),
-                        "results": suite_results,
-                    }
-                )
-                exit_code |= self._exit_code_from_results(suite_results)
-        finally:
-            os.chdir(start_dir)
+        # Per-suite ExecutionContext re-anchors the file log under each
+        # tests.yaml directory. The process CWD is intentionally not
+        # changed; the test runner already passes suite_dir explicitly to
+        # every consumer.
+        orchestration_ctx = ctx
+        for suite_cfg in self.reg_cfg.get_suite_configs():
+            suite_cfg_dir = os.path.dirname(suite_cfg.get_path())
+            log_event(
+                logger,
+                logging.INFO,
+                "regression.suite_start",
+                suite=suite_cfg.get_path(),
+                cwd=suite_cfg_dir,
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_test_suite(
+                suite_cfg=suite_cfg,
+                test_name=None,
+                test_runner_mode={"sim_to_stdout": False},
+                reg_level=reg_level,
+                start_level=start_level,
+                run_ids=[None],
+                seed_mode=SeedMode.DEFAULT,
+                replay_run_id=None,
+            )
+            reg_results.append(
+                {
+                    "test_suite": self._display_path(
+                        suite_cfg.get_path(), base_dir=start_dir
+                    ),
+                    "results": suite_results,
+                }
+            )
+            exit_code |= self._exit_code_from_results(suite_results)
+        # Re-anchor the orchestration log to the regression root for the
+        # summary phase so coverage merge artifacts and final summary land
+        # next to regression.yaml.
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+        ctx = orchestration_ctx
 
         all_suite_results = []
         for reg_result in reg_results:
@@ -1150,11 +1237,12 @@ class RtlBuddy:
             and not coverage_merge_raw
             and not coverage_merge_info_process
         ):
+            reg_outdir = str(ctx.command_root)
             for reg_result in reg_results:
                 metadata.extend(
                     self.coverage.build_metadata(
                         reg_result["results"],
-                        outdir=start_dir,
+                        outdir=reg_outdir,
                         suite_name=reg_result["test_suite"],
                         coverage_merge=False,
                         coverage_merge_raw=False,
@@ -1165,21 +1253,22 @@ class RtlBuddy:
                         coverage_merge_info_process=coverage_merge_info_process,
                         source_roots=[
                             os.path.dirname(
-                                os.path.join(start_dir, reg_result["test_suite"])
+                                os.path.join(reg_outdir, reg_result["test_suite"])
                             )
                         ],
                         dir_summary_paths=dir_summary_paths,
                     )
                 )
         else:
+            reg_outdir = str(ctx.command_root)
             regression_source_roots = [
-                os.path.dirname(os.path.join(start_dir, reg_result["test_suite"]))
+                os.path.dirname(os.path.join(reg_outdir, reg_result["test_suite"]))
                 for reg_result in reg_results
             ]
             metadata.extend(
                 self.coverage.build_metadata(
                     all_suite_results,
-                    outdir=start_dir,
+                    outdir=reg_outdir,
                     suite_name=self.reg_cfg.get_path(),
                     coverage_merge=coverage_merge,
                     coverage_merge_raw=coverage_merge_raw,
@@ -1241,11 +1330,13 @@ class RtlBuddy:
         """
         generate filelists using models.yaml
         """
-        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        ctx = self._enter_command_context(primary_config=model_config)
+        model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
+        resolved_output = str(ctx.resolve_input(output_path))
         vlog_fl = VlogFilelist(
             name=self.name + "/vlog_filelist",
             model_cfg=model_cfg,
-            output_path=output_path,
+            output_path=resolved_output,
         )
 
         log_event(
@@ -1253,10 +1344,10 @@ class RtlBuddy:
             logging.INFO,
             "command.filelist",
             model=model_name,
-            output=output_path,
+            output=resolved_output,
         )
         vlog_fl.write_output(
-            output_filepath=output_path,
+            output_filepath=resolved_output,
             unroll=unroll,
             flatten=flatten,
             strip=strip_options,
@@ -1353,7 +1444,8 @@ class RtlBuddy:
             # the simulator uses runs here too.
             from .config.suite import SuiteConfig
 
-            suite = SuiteConfig(test_config)
+            ctx = self._enter_command_context(primary_config=test_config)
+            suite = SuiteConfig(str(ctx.primary_config))
             tests = suite.get_tests(name)
             test_cfg = list(tests)[0]
             model_cfg = test_cfg.get_model()
@@ -1372,9 +1464,9 @@ class RtlBuddy:
             runner = RtlBuddyView(
                 name=self.name + "/hier",
                 model_cfg=model_cfg,
-                suite_dir=os.getcwd(),
+                suite_dir=str(ctx.command_root),
                 format=fmt,
-                output=output,
+                output=str(ctx.resolve_input(output)) if output else None,
                 frontend=frontend,
                 cdc_annotations=cdc_annotations,
                 rdc_annotations=rdc_annotations,
@@ -1384,8 +1476,9 @@ class RtlBuddy:
             )
             raise typer.Exit(runner.run())
 
-        # --view dut (default): unchanged behaviour.
-        model_cfg = ModelConfigLoader(model_config).get_model(name)
+        # --view dut (default): anchor on models.yaml.
+        ctx = self._enter_command_context(primary_config=model_config)
+        model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(name)
         log_event(
             logger,
             logging.INFO,
@@ -1399,9 +1492,9 @@ class RtlBuddy:
         runner = RtlBuddyView(
             name=self.name + "/hier",
             model_cfg=model_cfg,
-            suite_dir=os.getcwd(),
+            suite_dir=str(ctx.command_root),
             format=fmt,
-            output=output,
+            output=str(ctx.resolve_input(output)) if output else None,
             frontend=frontend,
             cdc_annotations=cdc_annotations,
             rdc_annotations=rdc_annotations,
@@ -1446,7 +1539,8 @@ class RtlBuddy:
         """
         parse RTL to (re)generate the model's axi-bundles.yaml manifest
         """
-        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        ctx = self._enter_command_context(primary_config=model_config)
+        model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
         log_event(
             logger,
             logging.INFO,
@@ -1459,9 +1553,9 @@ class RtlBuddy:
         profiler = RtlBuddyAxiProfileDiscover(
             name=self.name + "/axi-profile/discover",
             model_cfg=model_cfg,
-            suite_dir=os.getcwd(),
-            output=output,
-            amend=amend,
+            suite_dir=str(ctx.command_root),
+            output=str(ctx.resolve_input(output)) if output else None,
+            amend=str(ctx.resolve_input(amend)) if amend else None,
             executable=tool,
         )
         raise typer.Exit(profiler.run())
@@ -1531,7 +1625,8 @@ class RtlBuddy:
         produce the per-transaction parquet artefact that
         `rb axi-profile notebook` consumes.
         """
-        suite_cfg = SuiteConfig(test_config)
+        ctx = self._enter_command_context(primary_config=test_config)
+        suite_cfg = SuiteConfig(str(ctx.primary_config))
         test_cfg = suite_cfg.get_tests(test_name)[0]
         # Resolve parquet emit:
         #   explicit path → use it
@@ -1539,7 +1634,7 @@ class RtlBuddy:
         #   neither → None → no emit (legacy behaviour)
         parquet_arg: str | None
         if emit_txns_parquet_path is not None:
-            parquet_arg = emit_txns_parquet_path
+            parquet_arg = str(ctx.resolve_input(emit_txns_parquet_path))
         elif emit_txns_parquet:
             parquet_arg = ""
         else:
@@ -1559,8 +1654,8 @@ class RtlBuddy:
         profiler = RtlBuddyAxiProfileRun(
             name=self.name + "/axi-profile/run",
             test_cfg=test_cfg,
-            suite_dir=os.path.dirname(os.path.abspath(test_config)),
-            output=output,
+            suite_dir=str(ctx.command_root),
+            output=str(ctx.resolve_input(output)) if output else None,
             tb_prefix_override=tb_prefix,
             emit_txns_parquet=parquet_arg,
             executable=tool,
@@ -1617,7 +1712,8 @@ class RtlBuddy:
         verif tree (e.g. `../verif/<tb>/gen/axi_perf_mon.sv`) makes
         that a one-time step.
         """
-        model_cfg = ModelConfigLoader(model_config).get_model(model_name)
+        ctx = self._enter_command_context(primary_config=model_config)
+        model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(model_name)
         log_event(
             logger,
             logging.INFO,
@@ -1630,8 +1726,8 @@ class RtlBuddy:
         profiler = RtlBuddyAxiProfileGenMonitor(
             name=self.name + "/axi-profile/gen-monitor",
             model_cfg=model_cfg,
-            suite_dir=os.getcwd(),
-            output=output,
+            suite_dir=str(ctx.command_root),
+            output=str(ctx.resolve_input(output)) if output else None,
             time_precision=time_precision,
             buffer_cap=buffer_cap,
             executable=tool,
@@ -1693,7 +1789,8 @@ class RtlBuddy:
         spawns `marimo edit <template>` with $AXI_TXNS_PARQUET set so
         the template's first cell loads the parquet automatically.
         """
-        suite_cfg = SuiteConfig(test_config)
+        ctx = self._enter_command_context(primary_config=test_config)
+        suite_cfg = SuiteConfig(str(ctx.primary_config))
         test_cfg = suite_cfg.get_tests(test_name)[0]
         log_event(
             logger,
@@ -1709,7 +1806,7 @@ class RtlBuddy:
         notebook = RtlBuddyAxiProfileNotebook(
             name=self.name + "/axi-profile/notebook",
             test_cfg=test_cfg,
-            suite_dir=os.path.dirname(os.path.abspath(test_config)),
+            suite_dir=str(ctx.command_root),
             port=port,
             foreground=foreground,
             headless=headless,
@@ -2186,7 +2283,8 @@ class RtlBuddy:
         """
         run synthesis
         """
-        suite_cfg = SynthSuiteConfig(path=synth_config)
+        ctx = self._enter_command_context(primary_config=synth_config)
+        suite_cfg = SynthSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
             logging.INFO,
@@ -2264,7 +2362,8 @@ class RtlBuddy:
         ] = False,
     ):
         """run place-and-route"""
-        suite_cfg = PnrSuiteConfig(path=pnr_config)
+        ctx = self._enter_command_context(primary_config=pnr_config)
+        suite_cfg = PnrSuiteConfig(path=str(ctx.primary_config))
         if emit_png:
             emit_gds = True
         log_event(
@@ -2312,7 +2411,7 @@ class RtlBuddy:
         emit_gds: bool = False,
         emit_png: bool = False,
     ):
-        root_cfg = RootConfig(name="pnr")
+        root_cfg = self.root_cfg
         runs = suite_cfg.get_runs(pnr_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         results = []
@@ -2455,7 +2554,8 @@ class RtlBuddy:
         ] = 0,
     ):
         """run power analysis"""
-        suite_cfg = PowerSuiteConfig(path=power_config)
+        ctx = self._enter_command_context(primary_config=power_config)
+        suite_cfg = PowerSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
             logging.INFO,
@@ -2497,7 +2597,7 @@ class RtlBuddy:
         power_name=None,
         reg_level=0,
     ):
-        root_cfg = RootConfig(name="power")
+        root_cfg = self.root_cfg
         runs = suite_cfg.get_runs(power_name)
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         results = []
@@ -2638,48 +2738,49 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        start_dir = os.getcwd()
         if reg_config is not None:
-            reg_cfg_path = os.path.join(start_dir, reg_config)
+            reg_cfg_path = (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
         else:
-            local = os.path.join(start_dir, "power_regression.yaml")
+            local = str(self.invocation_cwd / "power_regression.yaml")
             reg_cfg_path = local if os.path.isfile(local) else None
             if reg_cfg_path is None:
                 raise FatalRtlBuddyError(
                     "power_regression.yaml not found; pass -c to specify a path"
                 )
 
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         power_reg = PowerRegConfig(
             name=self.name + "/power_reg_config", path=reg_cfg_path
         )
         emit_console_text(
-            f"Running power regression from {os.path.dirname(reg_cfg_path)}",
+            f"Running power regression from {orchestration_ctx.command_root}",
             style="cyan",
         )
 
         all_results = []
         machine_rows = []
-        try:
-            for suite_cfg in power_reg.get_suite_configs():
-                suite_dir = os.path.dirname(suite_cfg.get_path())
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "power_regression.suite_start",
-                    suite=suite_cfg.get_path(),
+        for suite_cfg in power_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "power_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_power_suite(
+                suite_cfg, power_name=None, reg_level=reg_level
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._power_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
                 )
-                os.chdir(suite_dir)
-                suite_results = self._do_power_suite(
-                    suite_cfg, power_name=None, reg_level=reg_level
-                )
-                all_results.extend(suite_results)
-                if self.machine:
-                    machine_rows.extend(
-                        self._power_result_row(r, suite=suite_cfg.get_path())
-                        for r in suite_results
-                    )
-        finally:
-            os.chdir(start_dir)
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
 
         exit_code = self._exit_code_from_power_results(all_results)
         if self.machine:
@@ -2731,51 +2832,52 @@ class RtlBuddy:
             effort=effort,
         )
 
-        start_dir = os.getcwd()
         if reg_config is not None:
-            reg_cfg_path = os.path.join(start_dir, reg_config)
+            reg_cfg_path = (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
         else:
-            local = os.path.join(start_dir, "synth_regression.yaml")
+            local = str(self.invocation_cwd / "synth_regression.yaml")
             reg_cfg_path = local if os.path.isfile(local) else None
             if reg_cfg_path is None:
                 raise FatalRtlBuddyError(
                     "synth_regression.yaml not found; pass -c to specify a path"
                 )
 
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         synth_reg = SynthRegConfig(
             name=self.name + "/synth_reg_config", path=reg_cfg_path
         )
         emit_console_text(
-            f"Running synthesis regression from {os.path.dirname(reg_cfg_path)}",
+            f"Running synthesis regression from {orchestration_ctx.command_root}",
             style="cyan",
         )
 
         all_results = []
         machine_rows = []
-        try:
-            for suite_cfg in synth_reg.get_suite_configs():
-                suite_dir = os.path.dirname(suite_cfg.get_path())
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "synth_regression.suite_start",
-                    suite=suite_cfg.get_path(),
+        for suite_cfg in synth_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "synth_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_synth_suite(
+                suite_cfg,
+                synth_name=None,
+                reg_level=reg_level,
+                effort_override=effort,
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._synth_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
                 )
-                os.chdir(suite_dir)
-                suite_results = self._do_synth_suite(
-                    suite_cfg,
-                    synth_name=None,
-                    reg_level=reg_level,
-                    effort_override=effort,
-                )
-                all_results.extend(suite_results)
-                if self.machine:
-                    machine_rows.extend(
-                        self._synth_result_row(r, suite=suite_cfg.get_path())
-                        for r in suite_results
-                    )
-        finally:
-            os.chdir(start_dir)
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
 
         exit_code = self._exit_code_from_synth_results(all_results)
         if self.machine:
@@ -2874,11 +2976,10 @@ class RtlBuddy:
         ],
     ):
         """convert FST/VCD trace to SAIF v2.0"""
-        from pathlib import Path
-
         from .tools.saif_from_trace import convert
 
-        convert(Path(trace), Path(output))
+        ctx = self._enter_command_context(command_root=self.invocation_cwd)
+        convert(ctx.resolve_input(trace), ctx.resolve_input(output))
 
     def do_cmd_cdc(
         self,
@@ -2902,7 +3003,8 @@ class RtlBuddy:
         """
         run CDC lint
         """
-        suite_cfg = CdcSuiteConfig(path=cdc_config)
+        ctx = self._enter_command_context(primary_config=cdc_config)
+        suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
             logging.INFO,
@@ -2962,46 +3064,47 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        start_dir = os.getcwd()
         if reg_config is not None:
-            reg_cfg_path = os.path.join(start_dir, reg_config)
+            reg_cfg_path = (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
         else:
-            local = os.path.join(start_dir, "cdc_regression.yaml")
+            local = str(self.invocation_cwd / "cdc_regression.yaml")
             reg_cfg_path = local if os.path.isfile(local) else None
             if reg_cfg_path is None:
                 raise FatalRtlBuddyError(
                     "cdc_regression.yaml not found; pass -c to specify a path"
                 )
 
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         cdc_reg = CdcRegConfig(name=self.name + "/cdc_reg_config", path=reg_cfg_path)
         emit_console_text(
-            f"Running CDC regression from {os.path.dirname(reg_cfg_path)}",
+            f"Running CDC regression from {orchestration_ctx.command_root}",
             style="cyan",
         )
 
         all_results = []
         machine_rows = []
-        try:
-            for suite_cfg in cdc_reg.get_suite_configs():
-                suite_dir = os.path.dirname(suite_cfg.get_path())
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "cdc_regression.suite_start",
-                    suite=suite_cfg.get_path(),
+        for suite_cfg in cdc_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "cdc_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_cdc_suite(
+                suite_cfg, cdc_name=None, reg_level=reg_level
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._cdc_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
                 )
-                os.chdir(suite_dir)
-                suite_results = self._do_cdc_suite(
-                    suite_cfg, cdc_name=None, reg_level=reg_level
-                )
-                all_results.extend(suite_results)
-                if self.machine:
-                    machine_rows.extend(
-                        self._cdc_result_row(r, suite=suite_cfg.get_path())
-                        for r in suite_results
-                    )
-        finally:
-            os.chdir(start_dir)
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
 
         exit_code = self._exit_code_from_cdc_results(all_results)
         if self.machine:
@@ -3203,7 +3306,8 @@ class RtlBuddy:
         """
         run formal property verification
         """
-        suite_cfg = FpvSuiteConfig(path=fpv_config)
+        ctx = self._enter_command_context(primary_config=fpv_config)
+        suite_cfg = FpvSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
             logging.INFO,
@@ -3263,46 +3367,47 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        start_dir = os.getcwd()
         if reg_config is not None:
-            reg_cfg_path = os.path.join(start_dir, reg_config)
+            reg_cfg_path = (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
         else:
-            local = os.path.join(start_dir, "fpv_regression.yaml")
+            local = str(self.invocation_cwd / "fpv_regression.yaml")
             reg_cfg_path = local if os.path.isfile(local) else None
             if reg_cfg_path is None:
                 raise FatalRtlBuddyError(
                     "fpv_regression.yaml not found; pass -c to specify a path"
                 )
 
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         fpv_reg = FpvRegConfig(name=self.name + "/fpv_reg_config", path=reg_cfg_path)
         emit_console_text(
-            f"Running FPV regression from {os.path.dirname(reg_cfg_path)}",
+            f"Running FPV regression from {orchestration_ctx.command_root}",
             style="cyan",
         )
 
         all_results = []
         machine_rows = []
-        try:
-            for suite_cfg in fpv_reg.get_suite_configs():
-                suite_dir = os.path.dirname(suite_cfg.get_path())
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "fpv_regression.suite_start",
-                    suite=suite_cfg.get_path(),
+        for suite_cfg in fpv_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "fpv_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_fpv_suite(
+                suite_cfg, fpv_name=None, reg_level=reg_level
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._fpv_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
                 )
-                os.chdir(suite_dir)
-                suite_results = self._do_fpv_suite(
-                    suite_cfg, fpv_name=None, reg_level=reg_level
-                )
-                all_results.extend(suite_results)
-                if self.machine:
-                    machine_rows.extend(
-                        self._fpv_result_row(r, suite=suite_cfg.get_path())
-                        for r in suite_results
-                    )
-        finally:
-            os.chdir(start_dir)
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
 
         exit_code = self._exit_code_from_fpv_results(all_results)
         if self.machine:
@@ -3347,6 +3452,8 @@ class RtlBuddy:
 
         self.rtl_builder_mode = "debug"
 
+        ctx = self._enter_command_context(primary_config=test_config)
+
         surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
         if surfer_cfg is None:
             raise FatalRtlBuddyError(
@@ -3359,8 +3466,8 @@ class RtlBuddy:
                 f"Check cfg-surfer.path in root_config.yaml or install surfer on PATH."
             )
 
-        suite_cfg = SuiteConfig(path=test_config)
-        suite_dir = os.path.dirname(os.path.abspath(test_config))
+        suite_cfg = SuiteConfig(path=str(ctx.primary_config))
+        suite_dir = str(ctx.command_root)
         test_cfg = suite_cfg.get_tests(test_name)[0]
 
         fst_path = os.path.join(suite_dir, "artefacts", test_name, "dump.fst")
@@ -3426,6 +3533,8 @@ class RtlBuddy:
         """
         from .tools.fpv_cex_finder import find_cex_vcd
 
+        ctx = self._enter_command_context(primary_config=fpv_config)
+
         surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
         if surfer_cfg is None:
             raise FatalRtlBuddyError(
@@ -3438,8 +3547,8 @@ class RtlBuddy:
                 f"Check cfg-surfer.path in root_config.yaml or install surfer on PATH."
             )
 
-        suite_cfg = FpvSuiteConfig(path=fpv_config)
-        suite_dir = os.path.dirname(os.path.abspath(fpv_config))
+        suite_cfg = FpvSuiteConfig(path=str(ctx.primary_config))
+        suite_dir = str(ctx.command_root)
         # Validate the verification name resolves; raises FatalRtlBuddyError otherwise.
         suite_cfg.get_verifications(verif_name)
 
@@ -3527,6 +3636,7 @@ class RtlBuddy:
         invokes it with the trailing ``verible_args``. Always exits via
         ``typer.Exit`` so the binary's return code propagates.
         """
+        self._enter_command_context(command_root=self.invocation_cwd)
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
         if not verible_cfg.available:
             log_event(logger, logging.ERROR, "verible.unavailable")
@@ -3599,6 +3709,7 @@ class RtlBuddy:
         generate verible.filelist from models.yaml so verible-verilog-ls can
         resolve cross-file symbols (go-to-definition, hover, references)
         """
+        self._enter_command_context(command_root=self.invocation_cwd)
         project_root = self.root_cfg.get_project_rootdir()
         if output is None:
             output = os.path.join(project_root, "verible.filelist")

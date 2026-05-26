@@ -165,7 +165,9 @@ class RtlBuddyAxiProfileDiscover:
             with open(log_path, "w") as log_f:
                 log_f.write("$ " + " ".join(cmd) + "\n")
                 log_f.flush()
-                proc = run_managed_process(cmd, stdout=None, stderr=log_f)
+                proc = run_managed_process(
+                    cmd, stdout=None, stderr=log_f, cwd=self.artefact_dir
+                )
 
         log_event(
             logger,
@@ -347,7 +349,9 @@ class RtlBuddyAxiProfileRun:
             with open(log_path, "w") as log_f:
                 log_f.write("$ " + " ".join(cmd) + "\n")
                 log_f.flush()
-                proc = run_managed_process(cmd, stdout=None, stderr=log_f)
+                proc = run_managed_process(
+                    cmd, stdout=None, stderr=log_f, cwd=self.artefact_dir
+                )
 
         log_event(
             logger,
@@ -468,7 +472,9 @@ class RtlBuddyAxiProfileGenMonitor:
             with open(log_path, "w") as log_f:
                 log_f.write("$ " + " ".join(cmd) + "\n")
                 log_f.flush()
-                proc = run_managed_process(cmd, stdout=None, stderr=log_f)
+                proc = run_managed_process(
+                    cmd, stdout=None, stderr=log_f, cwd=self.artefact_dir
+                )
 
         log_event(
             logger,
@@ -646,7 +652,9 @@ class RtlBuddyAxiProfileNotebook:
             with open(log_path, "w") as log_f:
                 log_f.write(f"$ AXI_TXNS_PARQUET={parquet} " + " ".join(cmd) + "\n")
                 log_f.flush()
-                proc = run_managed_process(cmd, stdout=None, stderr=log_f, env=env)
+                proc = run_managed_process(
+                    cmd, stdout=None, stderr=log_f, env=env, cwd=self.artefact_dir
+                )
 
         log_event(
             logger,

@@ -174,7 +174,7 @@ For machine-readable logs (JSON Lines), use `--machine`. See [For Agents](../age
 
 ## Path and working directory
 
-`test` and `randtest` do **not** automatically change directory to the suite directory. Run them from the directory containing `tests.yaml`, or pass an explicit `--test-config` path.
+`test` and `randtest` anchor outputs on the directory containing `tests.yaml`. You can run them from anywhere — invoke `rb test -c path/to/tests.yaml` and the artifact tree, `rtl_buddy.log`, and builder scratch all land under `dirname(tests.yaml)`, not your shell's cwd. See [Execution Context](execution-context.md) for the full picture and the worked example for invoking from a sibling directory.
 
 Paths in `tests.yaml` (such as `model_path`) are resolved relative to the suite file's directory, not the invocation directory.
 

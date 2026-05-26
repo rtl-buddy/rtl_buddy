@@ -43,6 +43,8 @@ When `--reg-config` is not given, `rtl_buddy` resolves the regression config in 
 
 This means you can drop a `regression.yaml` at the repo root and run `rtl-buddy regression` without any flags, even if `root_config.yaml` points elsewhere.
 
+Each suite's outputs land under that suite's own `tests.yaml` directory; the orchestration log and any merged coverage artifacts land under `dirname(regression.yaml)`. See [Execution Context](execution-context.md) for how the per-suite re-anchoring works.
+
 ### Regression levels
 
 `rtl_buddy` filters tests by the `reglvl` value set in each `tests.yaml`. Use `--reg-level` and `--start-level` to select a range:

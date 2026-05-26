@@ -268,6 +268,7 @@ def run_coi_analysis(
     )
     Path(script_path).write_text(script)
     cmd = [yosys_exe, "-s", script_path]
+    work_dir = os.path.dirname(os.path.abspath(script_path))
     try:
         with open(log_path, "w") as logf:
             logf.write("$ " + " ".join(cmd) + "\n")
@@ -276,6 +277,7 @@ def run_coi_analysis(
                 cmd,
                 stdout=logf,
                 stderr=subprocess.STDOUT,
+                cwd=work_dir,
             )
     except FileNotFoundError:
         log_event(

@@ -4,6 +4,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from rich.console import Console
@@ -14,6 +15,16 @@ from rich.table import Table
 RESULT_LEVEL = 25
 RESULT_LEVEL_NAME = "RESULT"
 DEFAULT_FILE_LOG = "rtl_buddy.log"
+
+# Tracks file log state across setup_logging / attach_file_log so callers
+# can attach the file handler once the command root is known.
+_FILE_LOG_LEVEL: int | None = None
+_FILE_LOG_MACHINE: bool = False
+# Paths the current process has already opened. The first open of a
+# given path truncates (clearing stale state from a previous run); a
+# subsequent re-anchor to the same path appends so re-anchoring the log
+# (e.g. during regression's suite-by-suite loop) doesn't lose content.
+_OPENED_LOG_PATHS: set[str] = set()
 
 
 def _result(self, message, *args, **kwargs):
@@ -88,9 +99,23 @@ def setup_logging(
     verbose: bool = False,
     color: bool = True,
     machine: bool = False,
-    log_path: str = DEFAULT_FILE_LOG,
+    log_path: str | None = None,
 ) -> None:
+    """Initialize console logging (and optionally a file log).
+
+    The file handler is attached only when ``log_path`` is provided. The
+    normal command path constructs the console handler here, then calls
+    :func:`attach_file_log` after the command's :class:`ExecutionContext`
+    is known so the log file lands under the command root, not the
+    invocation directory. Tests and ad-hoc callers may still pass
+    ``log_path`` directly.
+    """
     register_logging_levels()
+
+    # A fresh setup_logging() starts a new invocation; clear the
+    # per-path truncate-vs-append memory so the first attach in this
+    # invocation truncates as expected.
+    _OPENED_LOG_PATHS.clear()
 
     root_logger = logging.getLogger()
     for handler in list(root_logger.handlers):
@@ -122,9 +147,51 @@ def setup_logging(
     )
     console_handler.addFilter(_ExcludeResultFilter())
 
-    file_handler = logging.FileHandler(log_path, mode="w")
-    file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    if machine:
+    root_logger.addHandler(console_handler)
+
+    global _STATE, _FILE_LOG_LEVEL, _FILE_LOG_MACHINE
+    _STATE = LoggingState(
+        stderr_console=stderr_console,
+        stdout_console=stdout_console,
+        color=color_enabled,
+        machine=machine,
+    )
+    _FILE_LOG_LEVEL = logging.DEBUG if debug else logging.INFO
+    _FILE_LOG_MACHINE = machine
+
+    if log_path is not None:
+        attach_file_log(log_path)
+
+
+def attach_file_log(log_path: str | Path) -> None:
+    """Attach (or re-anchor) the rotating file handler at ``log_path``.
+
+    Idempotent: calling twice replaces the previous file handler so the
+    log file follows the command's resolved :class:`ExecutionContext`
+    even if an earlier code path opened one in a different location.
+    """
+    if _FILE_LOG_LEVEL is None:
+        raise RuntimeError(
+            "attach_file_log() called before setup_logging(); "
+            "console handlers must be initialized first"
+        )
+
+    resolved = str(Path(log_path).resolve())
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            root_logger.removeHandler(handler)
+            handler.close()
+
+    # First open of a path truncates (clears stale state from a prior
+    # invocation); subsequent re-anchors to the same path append so the
+    # regression orchestrator can re-anchor to dirname(regression.yaml)
+    # after iterating suites without losing earlier events.
+    mode = "a" if resolved in _OPENED_LOG_PATHS else "w"
+    _OPENED_LOG_PATHS.add(resolved)
+    file_handler = logging.FileHandler(resolved, mode=mode)
+    file_handler.setLevel(_FILE_LOG_LEVEL)
+    if _FILE_LOG_MACHINE:
         file_handler.setFormatter(JsonLinesFormatter())
     else:
         file_handler.setFormatter(
@@ -132,17 +199,7 @@ def setup_logging(
                 "%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
             )
         )
-
     root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-
-    global _STATE
-    _STATE = LoggingState(
-        stderr_console=stderr_console,
-        stdout_console=stdout_console,
-        color=color_enabled,
-        machine=machine,
-    )
 
 
 def get_stderr_console() -> Console:

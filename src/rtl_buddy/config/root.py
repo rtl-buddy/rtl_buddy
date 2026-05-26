@@ -38,14 +38,16 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
 
-def _discover_root_cfg(max_levels=8) -> str:
-    """
-    Discover the project root config file
+def _discover_root_cfg(max_levels=8, start_dir: str | Path | None = None) -> str:
+    """Discover the project root config file by walking up from ``start_dir``.
 
-    Args:
-      max_levels (int) [8]: The maximum directory depth to search for 'root_config.yaml'.
+    ``start_dir`` defaults to the current working directory. Command code
+    should pass the command's resolved root (``dirname`` of its primary
+    config file) so discovery does not depend on the directory the user
+    happened to invoke ``rb`` from.
     """
-    path = os.getcwd()
+    start = os.path.abspath(str(start_dir)) if start_dir is not None else os.getcwd()
+    path = start
 
     level = 0
     while level < max_levels and not os.path.isfile(path + "/root_config.yaml"):
@@ -61,32 +63,36 @@ def _discover_root_cfg(max_levels=8) -> str:
             logger,
             logging.ERROR,
             "root_config.not_found",
-            cwd=os.getcwd(),
+            cwd=start,
             max_levels=max_levels,
         )
         return None
 
 
-def discover_project_root(*, fallback_cwd: bool = False) -> Path:
+def discover_project_root(
+    *, fallback_cwd: bool = False, start_dir: str | Path | None = None
+) -> Path:
     """Return the project root directory.
 
-    Resolution order:
-      1. Directory containing root_config.yaml (walked up from cwd).
-      2. Directory containing .git (walked up from cwd).
-      3. cwd — only when fallback_cwd=True; otherwise raises FatalRtlBuddyError.
+    Resolution order, walking up from ``start_dir`` (defaults to cwd):
+      1. Directory containing root_config.yaml.
+      2. Directory containing .git.
+      3. ``start_dir`` itself — only when ``fallback_cwd=True``; otherwise
+         raises :class:`FatalRtlBuddyError`.
     """
-    cfg_path = _discover_root_cfg()
+    start = Path(start_dir).resolve() if start_dir is not None else Path.cwd()
+    cfg_path = _discover_root_cfg(start_dir=start)
     if cfg_path is not None:
         return Path(cfg_path).parent
-    for candidate in [Path.cwd(), *Path.cwd().parents]:
+    for candidate in [start, *start.parents]:
         if (candidate / ".git").exists():
             return candidate
     if fallback_cwd:
-        return Path.cwd()
+        return start
     raise FatalRtlBuddyError(
         "cannot locate project root "
-        "(no root_config.yaml or .git found above cwd). "
-        "Run from inside a project or pass an explicit path."
+        "(no root_config.yaml or .git found above "
+        f"{start}). Run from inside a project or pass an explicit path."
     )
 
 
@@ -154,17 +160,21 @@ class RootConfig:
       reg_cfg (RegConfig | None): RegConfig.
     """
 
-    def __init__(self, name, builder_override=None):
+    def __init__(self, name, builder_override=None, start_dir=None):
         """
         Constructor.
 
         Args:
           name (str): Unique root identifier.
           builder_override (str | None): Optional name of the builder to override test-specific builders.
+          start_dir (str | Path | None): Directory to start the upward walk
+            for ``root_config.yaml``. Defaults to the current working
+            directory; command code should pass the command root so
+            discovery doesn't depend on invocation cwd.
         """
 
         self.name = name
-        self.root_cfg_path = _discover_root_cfg()
+        self.root_cfg_path = _discover_root_cfg(start_dir=start_dir)
         if self.root_cfg_path is None:
             raise FatalRtlBuddyError(
                 "unable to discover root_config.yaml from current working directory"

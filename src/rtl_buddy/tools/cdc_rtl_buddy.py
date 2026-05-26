@@ -261,4 +261,5 @@ class RtlBuddyCdc:
                 cmd,
                 stdout=logf,
                 stderr=subprocess.STDOUT,
+                cwd=self.artefact_dir,
             )
