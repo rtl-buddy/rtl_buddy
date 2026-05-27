@@ -269,9 +269,11 @@ def _runner(tmp_path, mut_path):
     )
 
 
-def test_missing_xeno_raises_with_install_hint(tmp_path):
-    # No stub_xeno fixture here, and xeno is not installed in CI.
-    assert "rtl_buddy_xeno" not in sys.modules
+def test_missing_xeno_raises_with_install_hint(tmp_path, monkeypatch):
+    # Force the import to fail regardless of whether rtl-buddy-xeno is
+    # actually installed in this environment: a None entry in sys.modules
+    # makes `import rtl_buddy_xeno` raise ImportError.
+    monkeypatch.setitem(sys.modules, "rtl_buddy_xeno", None)
     mut_path = _write_project(tmp_path)
     runner = _runner(tmp_path, mut_path)
     with pytest.raises(FatalRtlBuddyError, match="rtl-buddy-xeno"):
