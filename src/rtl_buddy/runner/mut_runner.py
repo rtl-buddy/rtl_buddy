@@ -1,14 +1,19 @@
 """Mutation-campaign runner for ``rb mut``.
 
-Orchestrates the external ``rtl-buddy-xeno`` mutation engine against the
-existing ``rb fpv`` proof harness:
+Orchestrates the external ``rtl-buddy-xeno`` mutation engine against one
+or more kill oracles:
 
 1. enumerate / generate mutants of a single design file (xeno),
 2. materialise each mutant into an isolated copy of the model source
    tree (the original design file is never touched),
-3. re-run the named FPV verification against the mutated tree,
-4. score ``killed`` (verdict flipped vs the unmutated baseline) vs
-   ``survived`` vs ``errored`` (mutant broke elaboration).
+3. re-evaluate each configured oracle against the mutated tree:
+   - **FPV** — re-prove a named ``fpv.yaml`` verification (killed when
+     the verdict flips vs the unmutated baseline),
+   - **sim** — re-run a ``tests.yaml`` suite with SVA assertions
+     compiled in (killed when a test FAILs or an assertion fires),
+4. score ``killed`` (any oracle caught it) / ``survived`` (every oracle
+   passed) / ``errored`` (the mutant broke the build under every oracle,
+   so it can't be scored — dropped from the denominator).
 
 xeno is an optional dependency — it pulls in the Verible / pyslang
 toolchain via its ``[verible]`` / ``[slang]`` extras — so it is
@@ -25,7 +30,6 @@ import shutil
 import time
 from pathlib import Path
 
-from ..config.fpv import FpvSuiteConfig
 from ..config.mut import MutConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -45,11 +49,21 @@ _XENO_INSTALL_HINT = (
 
 
 class MutRunner:
-    def __init__(self, name: str, root_cfg, mut_cfg: MutConfig, work_dir: str):
+    def __init__(
+        self,
+        name: str,
+        root_cfg,
+        mut_cfg: MutConfig,
+        work_dir: str,
+        rtl_builder_mode: str = "debug",
+    ):
         self.name = name
         self.root_cfg = root_cfg
         self.mut_cfg = mut_cfg
         self.work_dir = work_dir
+        # Builder mode handed to TestRunner for the sim oracle; unused by
+        # the FPV oracle. "debug" matches the rb-test default.
+        self.rtl_builder_mode = rtl_builder_mode
 
     # --- xeno bridge --------------------------------------------------------
 
@@ -117,20 +131,31 @@ class MutRunner:
         mutator = self._mutator(xeno)
         kinds = self._kinds(xeno)
 
-        baseline_fpv_cfg = self._load_oracle_cfg()
         self._validate_design_in_model()
-
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
 
-        baseline_verdict = self._run_baseline(baseline_fpv_cfg)
-        if baseline_verdict != "PASS":
-            log_event(
-                logger,
-                logging.WARNING,
-                "mut_runner.baseline_not_pass",
-                campaign=self.mut_cfg.get_name(),
-                verdict=baseline_verdict,
-            )
+        # Load + baseline each configured oracle. Baselines are expected to
+        # PASS on the unmutated design; a non-passing baseline means the
+        # oracle is broken (warn, but keep going — every mutant will then
+        # look "killed" and the user can see why).
+        fpv_cfg = self._load_fpv_cfg() if self.mut_cfg.has_fpv_oracle() else None
+        fpv_baseline = self._baseline_fpv(fpv_cfg) if fpv_cfg is not None else None
+        sim_baseline = self._baseline_sim() if self.mut_cfg.has_sim_oracle() else None
+        for label, verdict in (("fpv", fpv_baseline), ("sim", sim_baseline)):
+            if verdict is not None and verdict != "PASS":
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "mut_runner.baseline_not_pass",
+                    campaign=self.mut_cfg.get_name(),
+                    oracle=label,
+                    verdict=verdict,
+                )
+        baseline_verdict = " ".join(
+            f"{label}={v}"
+            for label, v in (("fpv", fpv_baseline), ("sim", sim_baseline))
+            if v is not None
+        )
 
         outcomes: list[MutantOutcome] = []
         deadline = self._deadline()
@@ -151,22 +176,15 @@ class MutRunner:
                     generated=idx,
                 )
                 break
-            outcomes.append(
-                self._score_mutant(idx, mutant, baseline_fpv_cfg, baseline_verdict)
-            )
+            outcomes.append(self._score_mutant(idx, mutant, fpv_cfg, fpv_baseline))
 
         return MutResults(
             name=self.mut_cfg.get_name(),
             outcomes=outcomes,
-            baseline_verdict=baseline_verdict,
+            baseline_verdict=baseline_verdict or "NA",
         )
 
-    # --- internals ----------------------------------------------------------
-
-    def _load_oracle_cfg(self):
-        suite = FpvSuiteConfig(path=self.mut_cfg.fpv_config)
-        # Raises FatalRtlBuddyError if the named verification is absent.
-        return suite.get_verifications(self.mut_cfg.verification)[0]
+    # --- mutant materialisation ---------------------------------------------
 
     def _model_dir(self) -> str:
         model = self.mut_cfg.get_model()
@@ -188,20 +206,9 @@ class MutRunner:
                 "isolation can copy the source tree."
             )
 
-    def _run_baseline(self, baseline_fpv_cfg) -> str:
-        suite_dir = os.path.join(self.work_dir, "baseline")
-        Path(suite_dir).mkdir(parents=True, exist_ok=True)
-        results = FpvRunner(
-            name=self.name + "/baseline",
-            root_cfg=self.root_cfg,
-            fpv_cfg=baseline_fpv_cfg,
-            suite_dir=suite_dir,
-        ).run()
-        return results.results.get("result", "NA")
-
     def _materialise_mutant(self, mutant_id: str, mutant_sv: str):
         """Copy the model tree, splice in the mutant, return a per-mutant
-        ModelConfig pointing at the copy."""
+        ModelConfig pointing at the copy plus the mutant's work root."""
         mutant_root = os.path.join(self.work_dir, mutant_id)
         model_src = os.path.join(mutant_root, "model_src")
         if os.path.exists(model_src):
@@ -218,34 +225,144 @@ class MutRunner:
         )
         return dataclasses.replace(orig_model, path=copied_models_yaml), mutant_root
 
-    def _score_mutant(
-        self, idx: int, mutant, baseline_fpv_cfg, baseline_verdict: str
-    ) -> MutantOutcome:
+    # --- FPV oracle ---------------------------------------------------------
+
+    def _load_fpv_cfg(self):
+        from ..config.fpv import FpvSuiteConfig
+
+        suite = FpvSuiteConfig(path=self.mut_cfg.fpv_config)
+        # Raises FatalRtlBuddyError if the named verification is absent.
+        return suite.get_verifications(self.mut_cfg.verification)[0]
+
+    def _baseline_fpv(self, fpv_cfg) -> str:
+        suite_dir = os.path.join(self.work_dir, "baseline_fpv")
+        Path(suite_dir).mkdir(parents=True, exist_ok=True)
+        results = FpvRunner(
+            name=self.name + "/baseline_fpv",
+            root_cfg=self.root_cfg,
+            fpv_cfg=fpv_cfg,
+            suite_dir=suite_dir,
+        ).run()
+        return results.results.get("result", "NA")
+
+    def _eval_fpv(self, fpv_cfg, mutant_model, mutant_root, mutant_id, baseline):
+        """Return (outcome, "fpv=<verdict>") for the FPV oracle."""
+        try:
+            mutant_fpv_cfg = dataclasses.replace(
+                fpv_cfg,
+                model=mutant_model,
+                name=f"{fpv_cfg.get_name()}__{mutant_id}",
+            )
+            results = FpvRunner(
+                name=self.name + "/" + mutant_id + "/fpv",
+                root_cfg=self.root_cfg,
+                fpv_cfg=mutant_fpv_cfg,
+                suite_dir=os.path.join(mutant_root, "fpv"),
+            ).run()
+            verdict = results.results.get("result", "NA")
+        except FatalRtlBuddyError:
+            return ERRORED, "fpv=ERROR"
+        if verdict in ("NA", "ERROR"):
+            return ERRORED, "fpv=ERROR"
+        outcome = KILLED if verdict != baseline else SURVIVED
+        return outcome, f"fpv={verdict}"
+
+    # --- sim oracle ---------------------------------------------------------
+
+    def _sim_suite_dir(self) -> str:
+        return os.path.dirname(os.path.abspath(self.mut_cfg.test_config))
+
+    def _sim_tests(self, suite):
+        names = self.mut_cfg.tests or [None]
+        tests = []
+        for name in names:
+            tests.extend(suite.get_tests(name))
+        return tests
+
+    def _run_one_test(self, test_cfg, suite_dir, name_suffix):
+        from .test_runner import TestRunner
+
+        return TestRunner(
+            name=self.name + "/" + name_suffix,
+            root_cfg=self.root_cfg,
+            test_cfg=test_cfg,
+            rtl_builder_mode=self.rtl_builder_mode,
+            test_runner_mode={"sim_to_stdout": False},
+            suite_dir=suite_dir,
+        ).run()
+
+    @staticmethod
+    def _is_build_error(results) -> bool:
+        # A mutant that won't compile is "errored", not killed. These
+        # result classes all signal a failure *before* the design's
+        # behaviour was actually exercised.
+        return type(results).__name__ in (
+            "CompileFailResults",
+            "FilelistFailResults",
+            "SetupFailResults",
+        )
+
+    @staticmethod
+    def _assertion_fired(results) -> bool:
+        return (results.results.get("assertions") or {}).get("fired", 0) > 0
+
+    def _baseline_sim(self) -> str:
+        from ..config.suite import SuiteConfig
+
+        suite = SuiteConfig(path=self.mut_cfg.test_config)
+        suite_dir = self._sim_suite_dir()
+        all_pass = True
+        scored = False
+        for tcfg in self._sim_tests(suite):
+            mt = dataclasses.replace(tcfg, assertions=self.mut_cfg.assertions)
+            res = self._run_one_test(mt, suite_dir, "baseline_sim")
+            scored = True
+            if (not res.is_pass()) or self._assertion_fired(res):
+                all_pass = False
+        if not scored:
+            return "NA"
+        return "PASS" if all_pass else "FAIL"
+
+    def _eval_sim(self, mutant_model, mutant_id):
+        """Return (outcome, "sim=<verdict>") for the sim oracle.
+
+        Killed when any selected test FAILs or fires an assertion;
+        build failures are errored (dropped), not killed.
+        """
+        from ..config.suite import SuiteConfig
+
+        suite = SuiteConfig(path=self.mut_cfg.test_config)
+        suite_dir = self._sim_suite_dir()
+        killed = False
+        scored = False
+        for tcfg in self._sim_tests(suite):
+            mt = dataclasses.replace(
+                tcfg, model=mutant_model, assertions=self.mut_cfg.assertions
+            )
+            res = self._run_one_test(mt, suite_dir, mutant_id + "/sim")
+            if self._is_build_error(res):
+                continue
+            scored = True
+            if (not res.is_pass()) or self._assertion_fired(res):
+                killed = True
+        if not scored:
+            return ERRORED, "sim=ERROR"
+        return (KILLED if killed else SURVIVED), ("sim=FAIL" if killed else "sim=PASS")
+
+    # --- scoring ------------------------------------------------------------
+
+    def _score_mutant(self, idx: int, mutant, fpv_cfg, fpv_baseline) -> MutantOutcome:
         operator = mutant.kind.value
         mutant_id = f"m{idx:04d}_{operator}"
         predicted = sorted(getattr(mutant.prediction, "perturbs_signals", []) or [])
 
         try:
             mutant_model, mutant_root = self._materialise_mutant(mutant_id, mutant.sv)
-            mutant_fpv_cfg = dataclasses.replace(
-                baseline_fpv_cfg,
-                model=mutant_model,
-                name=f"{baseline_fpv_cfg.get_name()}__{mutant_id}",
-            )
-            results = FpvRunner(
-                name=self.name + "/" + mutant_id,
-                root_cfg=self.root_cfg,
-                fpv_cfg=mutant_fpv_cfg,
-                suite_dir=mutant_root,
-            ).run()
-            verdict = results.results.get("result", "NA")
-        except FatalRtlBuddyError as e:
-            # A mutant that breaks elaboration / the build is errored, not
-            # scored — dropped from the denominator.
+        except OSError as e:
             log_event(
                 logger,
-                logging.INFO,
-                "mut_runner.mutant_errored",
+                logging.WARNING,
+                "mut_runner.materialise_failed",
                 campaign=self.mut_cfg.get_name(),
                 mutant=mutant_id,
                 error=str(e),
@@ -259,12 +376,28 @@ class MutRunner:
                 predicted_signals=predicted,
             )
 
-        if verdict in ("NA", "ERROR"):
-            outcome = ERRORED
-        elif verdict != baseline_verdict:
-            outcome = KILLED
+        per_outcomes: list[str] = []
+        verdicts: list[str] = []
+        if fpv_cfg is not None:
+            o, v = self._eval_fpv(
+                fpv_cfg, mutant_model, mutant_root, mutant_id, fpv_baseline
+            )
+            per_outcomes.append(o)
+            verdicts.append(v)
+        if self.mut_cfg.has_sim_oracle():
+            o, v = self._eval_sim(mutant_model, mutant_id)
+            per_outcomes.append(o)
+            verdicts.append(v)
+
+        # Union semantics: killed if any oracle caught it; else survived if
+        # any oracle actually scored it; else errored (every oracle failed
+        # to build/evaluate the mutant).
+        if KILLED in per_outcomes:
+            overall = KILLED
+        elif SURVIVED in per_outcomes:
+            overall = SURVIVED
         else:
-            outcome = SURVIVED
+            overall = ERRORED
 
         log_event(
             logger,
@@ -273,15 +406,15 @@ class MutRunner:
             campaign=self.mut_cfg.get_name(),
             mutant=mutant_id,
             operator=operator,
-            verdict=verdict,
-            outcome=outcome,
+            verdict=" ".join(verdicts),
+            outcome=overall,
         )
         return MutantOutcome(
             mutant_id=mutant_id,
             operator=operator,
-            outcome=outcome,
+            outcome=overall,
             diff_summary=mutant.diff_summary,
-            verdict=verdict,
+            verdict=" ".join(verdicts) or "NA",
             predicted_signals=predicted,
         )
 

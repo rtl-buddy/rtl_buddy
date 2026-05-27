@@ -269,9 +269,10 @@ def _runner(tmp_path, mut_path):
     )
 
 
-def test_missing_xeno_raises_with_install_hint(tmp_path):
-    # No stub_xeno fixture here, and xeno is not installed in CI.
-    assert "rtl_buddy_xeno" not in sys.modules
+def test_missing_xeno_raises_with_install_hint(tmp_path, monkeypatch):
+    # Force the import to fail regardless of whether rtl-buddy-xeno is
+    # installed: a None entry in sys.modules makes the import raise.
+    monkeypatch.setitem(sys.modules, "rtl_buddy_xeno", None)
     mut_path = _write_project(tmp_path)
     runner = _runner(tmp_path, mut_path)
     with pytest.raises(FatalRtlBuddyError, match="rtl-buddy-xeno"):
@@ -301,7 +302,7 @@ def test_run_scores_mutants(tmp_path, stub_xeno):
         results = runner.run()
 
     assert isinstance(results, MutResults)
-    assert results.baseline_verdict == "PASS"
+    assert results.baseline_verdict == "fpv=PASS"
     assert results.killed() == 1
     assert results.survived() == 1
     assert results.errored() == 1
@@ -367,3 +368,253 @@ def test_report_round_trip(tmp_path, stub_xeno):
     assert restored.survived() == results.survived()
     assert restored.errored() == results.errored()
     assert restored.score() == results.score()
+
+
+# ---------------------------------------------------------------------------
+# Sim oracle
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dataclass  # noqa: E402
+from rtl_buddy.config.model import ModelConfig as _ModelConfig  # noqa: E402
+from rtl_buddy.runner.test_results import (  # noqa: E402
+    CompileFailResults as _CompileFailResults,
+    TestPassResults as _TestPassResults,
+    TestResults as _TestResults,
+)
+
+_MUT_YAML_SIM = dedent(
+    """\
+    rtl-buddy-filetype: mut_config
+    model: "leaf"
+    model_path: "../../design/leaf/models.yaml"
+    design_file: "../../design/leaf/leaf.sv"
+    operators: [arith_flip, cond_const]
+    verify:
+      test_config: "tests.yaml"
+    budget:
+      max_mutants: 10
+      schedule: round_robin
+    """
+)
+
+
+def _write_sim_mut(root, body):
+    """Write a mut.yaml (given body) plus a placeholder tests.yaml."""
+    fpv_dir = root / "fpv" / "leaf"
+    (fpv_dir / "tests.yaml").write_text("rtl-buddy-filetype: test_config\n")
+    mut_path = fpv_dir / "mut.yaml"
+    mut_path.write_text(body)
+    return mut_path
+
+
+@_dataclass
+class _FakeTestConfig:
+    name: str
+    model: object
+    assertions: bool
+
+
+def _fake_suite_factory(model_yaml):
+    class _FakeSuiteConfig:
+        def __init__(self, path):
+            self.path = path
+
+        def get_tests(self, name=None):
+            model = (
+                _ModelConfig(name="leaf", filelist=["-v leaf.sv"], path=model_yaml)
+                if model_yaml
+                else None
+            )
+            return [_FakeTestConfig(name="basic", model=model, assertions=False)]
+
+    return _FakeSuiteConfig
+
+
+# Marker-driven fake TestRunner, mirroring _FakeFpvRunner's convention:
+#   ERR -> compile failure (errored), KILL -> test FAIL (killed),
+#   ASSERT -> passes but an assertion fired (killed), else PASS (survived).
+class _FakeTestRunner:
+    def __init__(
+        self, name, root_cfg, test_cfg, rtl_builder_mode, test_runner_mode, suite_dir
+    ):
+        self.test_cfg = test_cfg
+
+    def run(self):
+        model = self.test_cfg.model
+        sv = next(Path(os.path.dirname(model.path)).glob("*.sv")).read_text()
+        if "ERR" in sv:
+            return _CompileFailResults(name="t")
+        if "KILL" in sv:
+            return _TestResults(name="t", results={"result": "FAIL", "desc": "x"})
+        if "ASSERT" in sv:
+            r = _TestPassResults(name="t")
+            r.results["assertions"] = {"enabled": True, "fired": 1}
+            return r
+        return _TestPassResults(name="t")
+
+
+def _install_sim_fakes(monkeypatch, model_yaml=None):
+    monkeypatch.setattr(
+        "rtl_buddy.config.suite.SuiteConfig", _fake_suite_factory(model_yaml)
+    )
+    monkeypatch.setattr("rtl_buddy.runner.test_runner.TestRunner", _FakeTestRunner)
+
+
+def _install_stub_xeno(monkeypatch, mutants):
+    class _SingleMutator:
+        @classmethod
+        def from_sv(cls, path):
+            return cls()
+
+        def generate(self, kinds, count, seed=0, schedule=None):
+            yield from mutants[:count]
+
+        def candidates(self, kinds):
+            return iter(())
+
+    mod = types.ModuleType("rtl_buddy_xeno")
+    mod.Mutator = _SingleMutator
+    mod.MutationKind = _MutationKind
+    mod.Schedule = _Schedule
+    mod.Mutant = _Mutant
+    mod.Prediction = _Prediction
+    monkeypatch.setitem(sys.modules, "rtl_buddy_xeno", mod)
+
+
+# ---- config ----
+
+
+def test_mut_config_sim_only(tmp_path):
+    _write_project(tmp_path)
+    mut_path = _write_sim_mut(tmp_path, _MUT_YAML_SIM)
+    cfg = MutSuiteConfig(path=str(mut_path)).get_config()
+    assert cfg.has_sim_oracle()
+    assert not cfg.has_fpv_oracle()
+    assert cfg.test_config.endswith("tests.yaml")
+    assert cfg.assertions is True
+
+
+def test_mut_config_both_oracles(tmp_path):
+    _write_project(tmp_path)
+    body = _MUT_YAML_SIM.replace(
+        'verify:\n  test_config: "tests.yaml"\n',
+        'verify:\n  fpv_config: "fpv.yaml"\n  verification: "leaf_safety"\n'
+        '  test_config: "tests.yaml"\n',
+    )
+    mut_path = _write_sim_mut(tmp_path, body)
+    cfg = MutSuiteConfig(path=str(mut_path)).get_config()
+    assert cfg.has_fpv_oracle() and cfg.has_sim_oracle()
+
+
+def test_mut_config_no_oracle_errors(tmp_path):
+    _write_project(tmp_path)
+    # Valid verify mapping but no oracle fields -> validation must fire.
+    body = _MUT_YAML_SIM.replace(
+        '  test_config: "tests.yaml"\n', "  assertions: true\n"
+    )
+    mut_path = _write_sim_mut(tmp_path, body)
+    with pytest.raises(FatalRtlBuddyError, match="at least one kill oracle"):
+        MutSuiteConfig(path=str(mut_path))
+
+
+# ---- sim scoring ----
+
+
+def _sim_runner(tmp_path):
+    from rtl_buddy.runner.mut_runner import MutRunner
+
+    mut_path = _write_sim_mut(tmp_path, _MUT_YAML_SIM)
+    cfg = MutSuiteConfig(path=str(mut_path)).get_config()
+    return MutRunner(
+        name="test", root_cfg=None, mut_cfg=cfg, work_dir=str(tmp_path / "work")
+    )
+
+
+@pytest.mark.parametrize(
+    "marker,expected",
+    [("KILL", KILLED), ("ASSERT", KILLED), ("survive", SURVIVED), ("ERR", ERRORED)],
+)
+def test_eval_sim_classification(tmp_path, monkeypatch, marker, expected):
+    _write_project(tmp_path)
+    _install_sim_fakes(monkeypatch, model_yaml=None)
+    runner = _sim_runner(tmp_path)
+    mutant_model, _root = runner._materialise_mutant(
+        "m0", f"// {marker}\n" + _DESIGN_SV
+    )
+    outcome, verdict = runner._eval_sim(mutant_model, "m0")
+    assert outcome == expected
+    assert verdict.startswith("sim=")
+
+
+def test_run_sim_oracle_scores(tmp_path, monkeypatch):
+    _write_project(tmp_path)
+    model_yaml = str(tmp_path / "design" / "leaf" / "models.yaml")
+    _install_sim_fakes(monkeypatch, model_yaml=model_yaml)
+    _install_stub_xeno(
+        monkeypatch,
+        [
+            _Mutant(
+                "// KILL\n" + _DESIGN_SV,
+                "k",
+                1,
+                _Prediction(),
+                _MutationKind.ARITH_FLIP,
+            ),
+            _Mutant(
+                "// survive\n" + _DESIGN_SV,
+                "s",
+                2,
+                _Prediction(),
+                _MutationKind.COND_CONST,
+            ),
+            _Mutant(
+                "// ERR\n" + _DESIGN_SV, "e", 3, _Prediction(), _MutationKind.ARITH_FLIP
+            ),
+        ],
+    )
+    runner = _sim_runner(tmp_path)
+    results = runner.run()
+    assert results.baseline_verdict == "sim=PASS"
+    assert results.killed() == 1
+    assert results.survived() == 1
+    assert results.errored() == 1
+
+
+def test_both_oracles_union_kill(tmp_path, monkeypatch):
+    # A mutant that the FPV proof misses but the sim assertion catches:
+    # "// ASSERT" has no KILL marker (fpv -> PASS/survived) but fires an
+    # assertion in sim -> the union verdict must be killed.
+    _write_project(tmp_path)
+    model_yaml = str(tmp_path / "design" / "leaf" / "models.yaml")
+    _install_sim_fakes(monkeypatch, model_yaml=model_yaml)
+    _install_stub_xeno(
+        monkeypatch,
+        [
+            _Mutant(
+                "// ASSERT\n" + _DESIGN_SV,
+                "a",
+                1,
+                _Prediction(),
+                _MutationKind.ARITH_FLIP,
+            )
+        ],
+    )
+    body = _MUT_YAML_SIM.replace(
+        'verify:\n  test_config: "tests.yaml"\n',
+        'verify:\n  fpv_config: "fpv.yaml"\n  verification: "leaf_safety"\n'
+        '  test_config: "tests.yaml"\n',
+    )
+    from rtl_buddy.runner.mut_runner import MutRunner
+
+    mut_path = _write_sim_mut(tmp_path, body)
+    cfg = MutSuiteConfig(path=str(mut_path)).get_config()
+    runner = MutRunner(
+        name="test", root_cfg=None, mut_cfg=cfg, work_dir=str(tmp_path / "work")
+    )
+    with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
+        results = runner.run()
+    assert results.killed() == 1
+    assert results.survived() == 0
+    o = results.outcomes[0]
+    assert o.outcome == KILLED
+    assert "fpv=PASS" in o.verdict and "sim=FAIL" in o.verdict

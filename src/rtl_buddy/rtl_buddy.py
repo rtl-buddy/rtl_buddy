@@ -3615,6 +3615,7 @@ class RtlBuddy:
             root_cfg=self.root_cfg,
             mut_cfg=suite_cfg.get_config(),
             work_dir=work_dir,
+            rtl_builder_mode=self.rtl_builder_mode or "debug",
         )
         results = runner.run()
 

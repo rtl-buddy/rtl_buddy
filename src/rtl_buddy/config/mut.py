@@ -70,10 +70,18 @@ class MutBudget:
 
 @serde
 class MutVerifyFile:
-    # Path (relative to mut.yaml) to the fpv.yaml that owns the proof.
-    fpv_config: str = field(rename="fpv_config")
-    # Name of the verification inside that fpv.yaml to use as the oracle.
-    verification: str
+    # FPV oracle: a verification inside an fpv.yaml. A mutant is killed
+    # when the proof flips from PASS to FAIL.
+    fpv_config: str | None = field(rename="fpv_config", default=None)
+    verification: str | None = None
+    # Simulation oracle: a tests.yaml run with SVA assertions compiled in.
+    # A mutant is killed when a test FAILs or an assertion fires.
+    test_config: str | None = field(rename="test_config", default=None)
+    # Optional subset of test names to run; empty = every test in the suite.
+    tests: list[str] = field(default_factory=list)
+    # Compile SVA in (Verilator --assert). Defaults on — the sim oracle is
+    # far weaker without assertions firing.
+    assertions: bool = True
 
 
 # ---- scope (optional; no-op for single-file leaf blocks) -------------------
@@ -120,11 +128,34 @@ class MutConfigFile:
                 f"{', '.join(_VALID_SCHEDULES)}"
             )
 
+        # At least one kill oracle must be configured.
+        has_fpv = bool(self.verify.fpv_config)
+        has_sim = bool(self.verify.test_config)
+        if not has_fpv and not has_sim:
+            raise FatalRtlBuddyError(
+                "mut.yaml: verify must configure at least one kill oracle "
+                "(fpv_config + verification, and/or test_config)"
+            )
+        if has_fpv and not self.verify.verification:
+            raise FatalRtlBuddyError(
+                "mut.yaml: verify.fpv_config requires verify.verification "
+                "(the verification name to use as the oracle)"
+            )
+
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
         design_file = os.path.normpath(os.path.join(config_dir, self.design_file))
-        fpv_config = os.path.normpath(os.path.join(config_dir, self.verify.fpv_config))
+        fpv_config = (
+            os.path.normpath(os.path.join(config_dir, self.verify.fpv_config))
+            if self.verify.fpv_config
+            else None
+        )
+        test_config = (
+            os.path.normpath(os.path.join(config_dir, self.verify.test_config))
+            if self.verify.test_config
+            else None
+        )
 
         return MutConfig(
             name=self.name or self.model,
@@ -134,6 +165,9 @@ class MutConfigFile:
             operators=list(self.operators),
             fpv_config=fpv_config,
             verification=self.verify.verification,
+            test_config=test_config,
+            tests=list(self.verify.tests),
+            assertions=self.verify.assertions,
             budget=MutBudget(
                 max_mutants=self.budget.max_mutants,
                 per_module_cap=self.budget.per_module_cap,
@@ -152,9 +186,14 @@ class MutConfig:
     top: str
     design_file: str
     operators: list[str]
-    fpv_config: str
-    verification: str
     budget: MutBudget
+    # FPV oracle (optional)
+    fpv_config: str | None = None
+    verification: str | None = None
+    # Sim oracle (optional)
+    test_config: str | None = None
+    tests: list[str] = dc_field(default_factory=list)
+    assertions: bool = True
     scope_include: list[str] = dc_field(default_factory=list)
     scope_exclude: list[str] = dc_field(default_factory=list)
 
@@ -169,6 +208,12 @@ class MutConfig:
 
     def get_operators(self) -> list[str]:
         return self.operators
+
+    def has_fpv_oracle(self) -> bool:
+        return self.fpv_config is not None
+
+    def has_sim_oracle(self) -> bool:
+        return self.test_config is not None
 
     def __str__(self):
         return pprint.pformat(self)
