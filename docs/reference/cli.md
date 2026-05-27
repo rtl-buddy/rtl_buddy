@@ -63,6 +63,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ tool-check         check installed tool dependencies and subcommand readiness        │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
+│ mut                mutation testing                                                  │
 │ hub                manage the rtl-buddy-hub daemon                                   │
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
