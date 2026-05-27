@@ -215,13 +215,20 @@ def get_stdout_console() -> Console:
 
 
 def emit_console_text(
-    text: str, *, style: str | None = None, stream: str = "stderr"
+    text: str,
+    *,
+    style: str | None = None,
+    stream: str = "stderr",
+    markup: bool = True,
 ) -> None:
     console = get_stdout_console() if stream == "stdout" else get_stderr_console()
+    # Pass markup=False for text that may contain literal square brackets
+    # (e.g. exception messages with `pkg[extra]` install hints) so Rich
+    # doesn't swallow them as style tags.
     if is_machine_mode():
-        console.print(text, highlight=False)
+        console.print(text, highlight=False, markup=markup)
     else:
-        console.print(text, style=style, highlight=False)
+        console.print(text, style=style, highlight=False, markup=markup)
 
 
 @contextmanager

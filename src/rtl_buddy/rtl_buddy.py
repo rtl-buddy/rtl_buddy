@@ -18,6 +18,7 @@ from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.root import _discover_root_cfg
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
+from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
@@ -37,6 +38,8 @@ from .runner.cdc_runner import CdcRunner
 from .runner.cdc_results import CdcSkipResults
 from .runner.fpv_runner import FpvRunner
 from .runner.fpv_results import FpvSkipResults
+from .runner.mut_runner import MutRunner
+from .runner.mut_results import MutResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.pnr_runner import PnrRunner
@@ -142,6 +145,9 @@ class RtlBuddy:
         self.spec_app = typer.Typer(
             help="spec traceability commands", no_args_is_help=True
         )
+        self.mut_app = typer.Typer(
+            help="mutation testing (rb mut)", no_args_is_help=True
+        )
         self.axi_profile_app = typer.Typer(
             help=("profile AXI interconnect performance via rtl-buddy-axi-profiler"),
             no_args_is_help=True,
@@ -234,6 +240,16 @@ class RtlBuddy:
         self.app.command("fpv-regression", help="run FPV regression")(
             self.do_fpv_regression
         )
+        self.mut_app.command(
+            "list", help="enumerate mutation candidate sites without mutating"
+        )(self.do_mut_list)
+        self.mut_app.command(
+            "run", help="generate mutants, score against an FPV proof, report"
+        )(self.do_mut_run)
+        self.mut_app.command(
+            "score", help="recompute mutation score from a saved report"
+        )(self.do_mut_score)
+        self.app.add_typer(self.mut_app, name="mut", help="mutation testing")
         self.app.add_typer(hub_app, name="hub", help="manage the rtl-buddy-hub daemon")
         self.app.add_typer(
             skill_app, name="skill", help="manage the rtl_buddy agent skill"
@@ -291,7 +307,7 @@ class RtlBuddy:
             exc.show(file=sys.stderr)
             return exc.exit_code
         except (FatalRtlBuddyError, FilelistError) as exc:
-            emit_console_text(str(exc), style="red")
+            emit_console_text(str(exc), style="red", markup=False)
             if self.machine:
                 # Machine consumers parse stdout JSON; a silent stdout
                 # forces them to scrape stderr for an ad-hoc message.
@@ -3474,6 +3490,176 @@ class RtlBuddy:
                 metadata=[f"Reg Level: {reg_level}"],
             )
         raise typer.Exit(exit_code)
+
+    # --- mutation testing (rb mut) -----------------------------------------
+
+    def _mut_work_dir(self, suite_cfg: MutSuiteConfig) -> str:
+        campaign = suite_cfg.get_config().get_name()
+        base = Path(suite_cfg.get_path()).resolve().parent
+        return str(base / "artefacts" / "mut" / campaign)
+
+    def _render_mut_summary(self, title, results: MutResults):
+        rows = []
+        for o in results.outcomes:
+            rows.append(
+                {
+                    "mutant": o.mutant_id,
+                    "operator": o.operator,
+                    "outcome": o.outcome.upper(),
+                    "verdict": o.verdict,
+                    "predicted": ", ".join(o.predicted_signals) or "-",
+                    "diff": o.diff_summary,
+                }
+            )
+        columns = [
+            ("mutant", "Mutant"),
+            ("operator", "Operator"),
+            ("outcome", "Outcome"),
+            ("verdict", "Verdict"),
+            ("predicted", "Predicted Signals"),
+            ("diff", "Mutation"),
+        ]
+        score = results.score()
+        score_str = f"{score * 100:.1f}%" if score is not None else "n/a"
+        metadata = [
+            f"Mutation score: {score_str} "
+            f"(killed {results.killed()} / scored {results.scored_total()})",
+            f"Survived: {results.survived()}   Errored: {results.errored()}   "
+            f"Baseline: {results.baseline_verdict}",
+        ]
+        misses = results.predicted_observable_misses()
+        if misses:
+            metadata.append(
+                f"Predicted-observable misses (weak properties): "
+                f"{', '.join(m.mutant_id for m in misses)}"
+            )
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def do_mut_list(
+        self,
+        mut_config: Annotated[
+            str,
+            typer.Option("-c", "--mut-config", help="mut.yaml to use"),
+        ] = "mut.yaml",
+    ):
+        """
+        enumerate mutation candidate sites without mutating
+        """
+        ctx = self._enter_command_context(primary_config=mut_config)
+        suite_cfg = MutSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.mut_list",
+            command="mut list",
+            mut_config=mut_config,
+        )
+        runner = MutRunner(
+            name=self.name + "/mut_runner",
+            root_cfg=self.root_cfg,
+            mut_cfg=suite_cfg.get_config(),
+            work_dir=self._mut_work_dir(suite_cfg),
+        )
+        sites = runner.list_candidates()
+        if self.machine:
+            self._emit_machine_result("mut list", 0, sites=sites)
+        else:
+            rows = [
+                {
+                    "operator": s["operator"],
+                    "loc": f"{s['line']}:{s['column']}",
+                    "snippet": s["snippet"],
+                }
+                for s in sites
+            ]
+            render_summary(
+                title=f"Mutation Candidates ({len(sites)})",
+                columns=[
+                    ("operator", "Operator"),
+                    ("loc", "Line:Col"),
+                    ("snippet", "Snippet"),
+                ],
+                rows=rows,
+                logger=logger,
+            )
+        raise typer.Exit(0)
+
+    def do_mut_run(
+        self,
+        mut_config: Annotated[
+            str,
+            typer.Option("-c", "--mut-config", help="mut.yaml to use"),
+        ] = "mut.yaml",
+    ):
+        """
+        generate mutants, score them against an FPV proof, and report
+        """
+        ctx = self._enter_command_context(primary_config=mut_config)
+        suite_cfg = MutSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.mut_run",
+            command="mut run",
+            mut_config=mut_config,
+        )
+        work_dir = self._mut_work_dir(suite_cfg)
+        runner = MutRunner(
+            name=self.name + "/mut_runner",
+            root_cfg=self.root_cfg,
+            mut_cfg=suite_cfg.get_config(),
+            work_dir=work_dir,
+        )
+        results = runner.run()
+
+        report_path = os.path.join(work_dir, "mut_report.json")
+        with open(report_path, "w") as f:
+            json.dump(results.as_report(), f, indent=2)
+
+        exit_code = 0 if results.is_pass() else 1
+        if self.machine:
+            self._emit_machine_result("mut run", exit_code, report=results.as_report())
+        else:
+            self._render_mut_summary("Mutation Testing Results", results)
+            emit_console_text(f"Report written to {report_path}", style="cyan")
+        raise typer.Exit(exit_code)
+
+    def do_mut_score(
+        self,
+        report: Annotated[
+            str,
+            typer.Argument(help="path to a mut_report.json from a previous run"),
+        ],
+    ):
+        """
+        recompute mutation score from a saved report
+        """
+        report_path = (
+            report if os.path.isabs(report) else str(self.invocation_cwd / report)
+        )
+        if not os.path.isfile(report_path):
+            raise FatalRtlBuddyError(f"mut report not found: {report_path}")
+        with open(report_path, "r") as f:
+            data = json.load(f)
+        results = MutResults.from_report(data)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.mut_score",
+            command="mut score",
+            report=report_path,
+        )
+        if self.machine:
+            self._emit_machine_result("mut score", 0, report=results.as_report())
+        else:
+            self._render_mut_summary("Mutation Score", results)
+        raise typer.Exit(0)
 
     def do_cmd_wave(
         self,
