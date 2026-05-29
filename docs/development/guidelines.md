@@ -188,21 +188,27 @@ Issues are classified along three axes that live on GitHub itself, not in this r
 Type, Priority, and Effort are not labels.
 They are GitHub Issue Fields configured at the `rtl-buddy` organization level and are queryable via the REST and GraphQL APIs.
 
-Area is captured with repo-level labels.
+Area is captured with `area/*` labels, kept consistent across all rtl-buddy repos.
+The taxonomy is defined once in `.github/labels.json` and propagated to every repo with `.github/sync-labels.sh` — edit the JSON and re-run the script rather than creating labels by hand.
 Pick one or more from the table below; an issue with no area label is fine for cross-cutting work but a single area is preferred when one fits.
 
 | Label | Covers |
 |---|---|
-| `area/test` | `test`, `randtest`, `regression`, `wave`, and the compile/sim runner pipeline |
-| `area/abv` | `cdc`, `fpv`, assertion-based verification in sim |
-| `area/impl` | `synth`, `pnr`, `power`, and other implementation flows |
+| `area/test` | `test`, `randtest`, `regression`, and the compile/sim runner pipeline |
+| `area/wave` | waveform viewing and integration (surfer, WCP) |
+| `area/cdc` | clock-domain crossing analysis (`rb cdc`) |
+| `area/fpv` | formal property verification (`rb fpv`, sby plus commercial backends) |
+| `area/abv` | assertion-based verification (SVA, properties) in sim |
+| `area/mut` | mutation testing (`rb mut`) |
+| `area/pd` | physical design: `synth`, `pnr`, `power`, and other implementation flows |
 | `area/hier` | `hier` viewer and `rtl-buddy-view` integration |
 | `area/axi-profile` | `axi-profile` discover, run, notebook, and monitor generation |
 | `area/hub` | the hub server, marimo integration, hub event plumbing |
 | `area/skill` | the bundled agent skill and `skill install` |
+| `area/workflow` | spec-driven / end-to-end workflow orchestration |
 | `area/config` | `root_config.yaml`, suite YAML loading, `filelist`, and model resolution |
 | `area/tooling` | `tool-check`, `tool_manifest.py`, and external-tool integration |
-| `area/infra` | CI workflows, packaging, release mechanics, dependencies, and machine-mode logging |
+| `area/infra` | CI workflows, packaging, release mechanics, dependencies, machine-mode logging, and the rtl-buddy CLI |
 
 One extra label exists outside the area set:
 
