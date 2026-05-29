@@ -2045,7 +2045,8 @@ Project-level installs are an override mechanism; the default install scope shou
 </ul>
 <p>Type, Priority, and Effort are not labels.
 They are GitHub Issue Fields configured at the <code>rtl-buddy</code> organization level and are queryable via the REST and GraphQL APIs.</p>
-<p>Area is captured with repo-level labels.
+<p>Area is captured with <code>area/*</code> labels, kept consistent across all rtl-buddy repos.
+The taxonomy is defined once in <code>.github/labels.json</code> and propagated to every repo with <code>.github/sync-labels.sh</code> — edit the JSON and re-run the script rather than creating labels by hand.
 Pick one or more from the table below; an issue with no area label is fine for cross-cutting work but a single area is preferred when one fits.</p>
 <table>
 <thead>
@@ -2057,15 +2058,31 @@ Pick one or more from the table below; an issue with no area label is fine for c
 <tbody>
 <tr>
 <td><code>area/test</code></td>
-<td><code>test</code>, <code>randtest</code>, <code>regression</code>, <code>wave</code>, and the compile/sim runner pipeline</td>
+<td><code>test</code>, <code>randtest</code>, <code>regression</code>, and the compile/sim runner pipeline</td>
+</tr>
+<tr>
+<td><code>area/wave</code></td>
+<td>waveform viewing and integration (surfer, WCP)</td>
+</tr>
+<tr>
+<td><code>area/cdc</code></td>
+<td>clock-domain crossing analysis (<code>rb cdc</code>)</td>
+</tr>
+<tr>
+<td><code>area/fpv</code></td>
+<td>formal property verification (<code>rb fpv</code>, sby plus commercial backends)</td>
 </tr>
 <tr>
 <td><code>area/abv</code></td>
-<td><code>cdc</code>, <code>fpv</code>, assertion-based verification in sim</td>
+<td>assertion-based verification (SVA, properties) in sim</td>
 </tr>
 <tr>
-<td><code>area/impl</code></td>
-<td><code>synth</code>, <code>pnr</code>, <code>power</code>, and other implementation flows</td>
+<td><code>area/mut</code></td>
+<td>mutation testing (<code>rb mut</code>)</td>
+</tr>
+<tr>
+<td><code>area/pd</code></td>
+<td>physical design: <code>synth</code>, <code>pnr</code>, <code>power</code>, and other implementation flows</td>
 </tr>
 <tr>
 <td><code>area/hier</code></td>
@@ -2084,6 +2101,10 @@ Pick one or more from the table below; an issue with no area label is fine for c
 <td>the bundled agent skill and <code>skill install</code></td>
 </tr>
 <tr>
+<td><code>area/workflow</code></td>
+<td>spec-driven / end-to-end workflow orchestration</td>
+</tr>
+<tr>
 <td><code>area/config</code></td>
 <td><code>root_config.yaml</code>, suite YAML loading, <code>filelist</code>, and model resolution</td>
 </tr>
@@ -2093,7 +2114,7 @@ Pick one or more from the table below; an issue with no area label is fine for c
 </tr>
 <tr>
 <td><code>area/infra</code></td>
-<td>CI workflows, packaging, release mechanics, dependencies, and machine-mode logging</td>
+<td>CI workflows, packaging, release mechanics, dependencies, machine-mode logging, and the rtl-buddy CLI</td>
 </tr>
 </tbody>
 </table>
