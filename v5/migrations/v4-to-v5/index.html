@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.">
+        <meta name="description" content="How to migrate an rtl_buddy project from v4 to v5, covering the ExecutionContext change that anchors all outputs on the primary config file.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/plugins/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/migrations/v4-to-v5/">
       
       
-        <link rel="prev" href="../coverage/">
+        <link rel="prev" href="../v2-to-v3/">
       
       
-        <link rel="next" href="../cocotb/">
+        <link rel="next" href="../../known-issues/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Plugins - RTL Buddy</title>
+        <title>v4 to v5 - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#plugins" class="md-skip">
+        <a href="#migrating-from-v4-to-v5" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Plugins
+              v4 to v5
             
           </span>
         </div>
@@ -308,8 +308,6 @@
       
   
   
-    
-  
   
   
     
@@ -322,11 +320,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
           <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
@@ -347,7 +345,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -365,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../execution-context/" class="md-nav__link">
+      <a href="../../concepts/execution-context/" class="md-nav__link">
         
   
   
@@ -393,7 +391,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../root-config/" class="md-nav__link">
+      <a href="../../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -421,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tests/" class="md-nav__link">
+      <a href="../../concepts/tests/" class="md-nav__link">
         
   
   
@@ -449,7 +447,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../regressions/" class="md-nav__link">
+      <a href="../../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -477,7 +475,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../coverage/" class="md-nav__link">
+      <a href="../../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -502,37 +500,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plugins
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -548,70 +519,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#sweep-expanding-one-test-into-many" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Sweep: expanding one test into many
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pre-processing-mutate-test-params-before-compile" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pre-processing: mutate test params before compile
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#hook-working-directory" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Hook working directory
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#post-processing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Post-processing
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -624,7 +531,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cocotb/" class="md-nav__link">
+      <a href="../../concepts/cocotb/" class="md-nav__link">
         
   
   
@@ -652,7 +559,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../spec-traceability/" class="md-nav__link">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
         
   
   
@@ -680,7 +587,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../wave/" class="md-nav__link">
+      <a href="../../concepts/wave/" class="md-nav__link">
         
   
   
@@ -708,7 +615,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../hier/" class="md-nav__link">
+      <a href="../../concepts/hier/" class="md-nav__link">
         
   
   
@@ -736,7 +643,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../hub/" class="md-nav__link">
+      <a href="../../concepts/hub/" class="md-nav__link">
         
   
   
@@ -764,7 +671,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../synthesis/" class="md-nav__link">
+      <a href="../../concepts/synthesis/" class="md-nav__link">
         
   
   
@@ -792,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../pnr/" class="md-nav__link">
+      <a href="../../concepts/pnr/" class="md-nav__link">
         
   
   
@@ -820,7 +727,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../power/" class="md-nav__link">
+      <a href="../../concepts/power/" class="md-nav__link">
         
   
   
@@ -848,7 +755,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
+      <a href="../../concepts/cdc/" class="md-nav__link">
         
   
   
@@ -876,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../fpv/" class="md-nav__link">
+      <a href="../../concepts/fpv/" class="md-nav__link">
         
   
   
@@ -904,7 +811,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../abv-simulation/" class="md-nav__link">
+      <a href="../../concepts/abv-simulation/" class="md-nav__link">
         
   
   
@@ -932,7 +839,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../axi-profile/" class="md-nav__link">
+      <a href="../../concepts/axi-profile/" class="md-nav__link">
         
   
   
@@ -960,7 +867,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tool-check/" class="md-nav__link">
+      <a href="../../concepts/tool-check/" class="md-nav__link">
         
   
   
@@ -1277,8 +1184,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -1289,11 +1198,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
           <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
@@ -1314,7 +1223,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1332,7 +1241,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
+      <a href="../submodule-to-uv/" class="md-nav__link">
         
   
   
@@ -1360,7 +1269,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
+      <a href="../v2-to-v3/" class="md-nav__link">
         
   
   
@@ -1385,10 +1294,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../migrations/v4-to-v5/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v4 to v5
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1404,6 +1340,104 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#outputs-anchor-on-the-config-file-not-your-shell" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Outputs anchor on the config file, not your shell
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hook-scripts-run-at-the-invocation-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts run at the invocation directory
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hook scripts run at the invocation directory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#third-party-generators-that-write-relative-to-cwd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Third-party generators that write relative to cwd
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-to-update" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI scripts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hook-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1497,10 +1531,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#sweep-expanding-one-test-into-many" class="md-nav__link">
+  <a href="#outputs-anchor-on-the-config-file-not-your-shell" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sweep: expanding one test into many
+        Outputs anchor on the config file, not your shell
       
     </span>
   </a>
@@ -1508,35 +1542,69 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pre-processing-mutate-test-params-before-compile" class="md-nav__link">
+  <a href="#hook-scripts-run-at-the-invocation-directory" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-processing: mutate test params before compile
+        Hook scripts run at the invocation directory
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hook scripts run at the invocation directory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#third-party-generators-that-write-relative-to-cwd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Third-party generators that write relative to cwd
       
     </span>
   </a>
   
 </li>
+        
+      </ul>
+    </nav>
+  
+</li>
       
         <li class="md-nav__item">
-  <a href="#hook-working-directory" class="md-nav__link">
+  <a href="#what-to-update" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook working directory
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI scripts
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#post-processing" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#hook-scripts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Post-processing
+        Hook scripts
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1560,159 +1628,74 @@
   
 
 
-<h1 id="plugins">Plugins</h1>
-<p><code>rtl_buddy</code> supports three Python plugin hooks that let you extend test behavior without modifying the tool itself. All hooks are specified per-test in <code>tests.yaml</code> and are executed by the tool at the appropriate point in the test flow.</p>
-<p>Hook scripts receive their input through named variables injected into the script's namespace. They do not use <code>import</code> or function arguments — instead they read from and write to these predefined variables.</p>
-<h2 id="sweep-expanding-one-test-into-many">Sweep: expanding one test into many</h2>
-<p>The sweep hook runs before the test flow and expands a single test entry into multiple <code>TestConfig</code> objects, each with different parameters. Use it to cover a combinatorial space of plusargs, seeds, or configurations without manually listing every variant.</p>
-<p><strong><code>tests.yaml</code> entry:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sweep_case&quot;</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">sweep</span><span class="p">:</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;example_sweep.py&quot;</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
-</code></pre></div>
-<p><strong>Available variables in the script:</strong></p>
+<h1 id="migrating-from-v4-to-v5">Migrating from v4 to v5</h1>
+<h2 id="outputs-anchor-on-the-config-file-not-your-shell">Outputs anchor on the config file, not your shell</h2>
+<p>v5 introduces <a href="../../concepts/execution-context/"><code>ExecutionContext</code></a>: every config-driven command anchors its outputs on the directory containing its primary config (the <strong>command root</strong>), regardless of where you invoke <code>rb</code> from. Previously some flows wrote relative to the invocation directory, which scattered scratch files into whatever tree you happened to be standing in.</p>
 <table>
 <thead>
 <tr>
-<th>Variable</th>
-<th>Type</th>
-<th>Description</th>
+<th>Behavior</th>
+<th>v4</th>
+<th>v5</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>logger</code></td>
-<td>Logger</td>
-<td>Use this for all logging so output goes through <code>rtl_buddy</code>'s log system</td>
+<td><code>rtl_buddy.log</code> location</td>
+<td>invocation cwd</td>
+<td>command root (<code>dirname(&lt;primary config&gt;)</code>)</td>
 </tr>
 <tr>
-<td><code>test_cfg</code></td>
-<td>TestConfig (immutable)</td>
-<td>The original test entry from <code>tests.yaml</code></td>
+<td><code>regression</code> per-suite cwd</td>
+<td><code>os.chdir()</code> into each suite</td>
+<td>no chdir; each suite re-anchors its own file log</td>
 </tr>
 <tr>
-<td><code>root_cfg</code></td>
-<td>RootConfig (mutable)</td>
-<td>The loaded root config</td>
+<td><code>root_config.yaml</code> discovery</td>
+<td>walks up from invocation cwd</td>
+<td>walks up from command root</td>
 </tr>
 <tr>
-<td><code>suite_dir</code></td>
-<td>string</td>
-<td>Absolute path to the directory containing <code>tests.yaml</code></td>
+<td><code>hier</code>, <code>axi-profile</code> <em>default</em> outputs / artefacts</td>
+<td>invocation cwd</td>
+<td>resolved config's command root</td>
 </tr>
 <tr>
-<td><code>artifact_dir</code></td>
-<td>string</td>
-<td>Artifact root for the incoming test name under <code>suite_dir/artefacts/</code></td>
-</tr>
-<tr>
-<td><code>out_test_cfgs</code></td>
-<td>list</td>
-<td><strong>Assign</strong> the expanded list of <code>TestConfig</code> objects here</td>
-</tr>
-<tr>
-<td><code>__file__</code></td>
-<td>string</td>
-<td>Absolute path to the current sweep script</td>
+<td>Coverage <code>outdir</code> / <code>source_roots</code></td>
+<td>invocation cwd</td>
+<td>command root</td>
 </tr>
 </tbody>
 </table>
-<p>Everything in <code>TestConfig</code> except <code>reglvl</code> can be mutated in the generated tests (e.g. change <code>name</code>, <code>plusargs</code>, <code>plusdefines</code>).</p>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># example_sweep.py</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">out_test_cfgs</span> <span class="o">=</span> <span class="p">[]</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">cfg</span> <span class="o">=</span> <span class="n">test_cfg</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">test_cfg</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;SCENARIO&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">out_test_cfgs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
+<p>For most projects this is transparent — artefacts simply land in the predictable place (under the suite's <code>artefacts/</code>) whether you run from the suite directory or the repo root.</p>
+<p><strong>Explicit output paths are unchanged.</strong> A value you pass on the command line — <code>hier -o diagram.svg</code>, <code>axi-profile ... -o report.html</code>, <code>filelist &lt;model&gt; out.f</code> — still resolves relative to your shell's cwd (<code>invocation_cwd</code>), matching normal shell behavior. Only the command-managed artefacts and default output locations moved to the command root. If your CI passes <code>-o</code>, keep looking where you told it to write; do not redirect those to <code>dirname(models.yaml)</code>/<code>dirname(tests.yaml)</code>.</p>
+<h2 id="hook-scripts-run-at-the-invocation-directory">Hook scripts run at the invocation directory</h2>
+<p>This is the one change most likely to break existing projects.</p>
+<p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory. <strong>The change is specific to <code>regression</code>:</strong> in v4 it did <code>os.chdir()</code> into each suite, so hooks ran from the suite directory; v5 removes that chdir, so hooks now run at <code>invocation_cwd</code> — your shell's directory — like every other command.</p>
+<p>Single-suite <code>test</code> and <code>randtest</code> are unaffected here: their hook working directory was already <code>invocation_cwd</code> in v4, so nothing changes for them. (Their <em>artefact</em> locations do move under the suite in v5 — see the table above — but that is anchored independently of the hook's cwd.)</p>
+<p>In all cases, hooks receive <code>suite_dir</code> and <code>artifact_dir</code> as namespace variables. Build paths from those:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># inside a sweep / preproc script</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>          <span class="c1"># correct</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">stim</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">,</span> <span class="s2">&quot;vectors&quot;</span><span class="p">,</span> <span class="s2">&quot;in.txt&quot;</span><span class="p">)</span>  <span class="c1"># correct</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>            <span class="c1"># wrong — invocation cwd</span>
 </code></pre></div>
-<p>If the sweep script raises an exception, <code>rtl_buddy</code> records that test as a setup failure and continues with the remaining tests.</p>
-<p>See the template repo for a working example.</p>
-<h2 id="pre-processing-mutate-test-params-before-compile">Pre-processing: mutate test params before compile</h2>
-<p>The pre-processing hook runs after sweep expansion but before the compilation step. Use it to dynamically adjust plusargs, plusdefines, or other test parameters based on runtime state.</p>
-<p><strong><code>tests.yaml</code> entry:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;basic&quot;</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">preproc</span><span class="p">:</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_preproc.py&quot;</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
+<p>Any hook that called <code>os.getcwd()</code> (directly or indirectly) to find the suite will break.</p>
+<h3 id="third-party-generators-that-write-relative-to-cwd">Third-party generators that write relative to cwd</h3>
+<p>If a hook delegates to a generator you don't control — one that writes its outputs relative to <code>os.getcwd()</code> and exposes no output-directory parameter — <code>suite_dir</code>/<code>artifact_dir</code> can't help, because you can't tell the generator where to write. Wrap the call in a <code>chdir</code> to the suite (restore afterwards):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">try</span><span class="p">:</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">finally</span><span class="p">:</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
 </code></pre></div>
-<p><strong>Available variables:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Variable</th>
-<th>Type</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>logger</code></td>
-<td>Logger</td>
-<td>Use for all logging</td>
-</tr>
-<tr>
-<td><code>test_cfg</code></td>
-<td>TestConfig (mutable)</td>
-<td>Modify this to change compile/sim parameters</td>
-</tr>
-<tr>
-<td><code>root_cfg</code></td>
-<td>RootConfig (mutable)</td>
-<td>The loaded root config</td>
-</tr>
-<tr>
-<td><code>suite_dir</code></td>
-<td>string</td>
-<td>Absolute path to the directory containing <code>tests.yaml</code></td>
-</tr>
-<tr>
-<td><code>artifact_dir</code></td>
-<td>string</td>
-<td>Artifact root for this test under <code>suite_dir/artefacts/</code></td>
-</tr>
-<tr>
-<td><code>__file__</code></td>
-<td>string</td>
-<td>Absolute path to the current pre-processing script</td>
-</tr>
-</tbody>
-</table>
-<p>Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against <code>suite_dir</code> in preproc. Output filenames that should land in the per-test artefact tree can remain relative to <code>artifact_dir</code>.</p>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># my_preproc.py</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;BUILD_ID&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;CI_BUILD_ID&quot;</span><span class="p">,</span> <span class="s2">&quot;local&quot;</span><span class="p">)</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;stimulus&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;vectors&quot;</span> <span class="o">/</span> <span class="s2">&quot;streaming_contract.txt&quot;</span><span class="p">)</span>
-</code></pre></div>
-<p>If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.</p>
-<p>See the template repo for a working example.</p>
-<h2 id="hook-working-directory">Hook working directory</h2>
-<p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which stays at <code>invocation_cwd</code> — the directory you ran <code>rb</code> from. It is <strong>not</strong> the suite directory. Always build paths from the injected <code>suite_dir</code> and <code>artifact_dir</code> variables; never call <code>os.getcwd()</code> to locate the suite.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>     <span class="c1"># wrong — invocation cwd</span>
-</code></pre></div>
-<p>If a hook delegates to a third-party generator that writes relative to <code>os.getcwd()</code> and exposes no output-directory argument, wrap the call in a <code>chdir</code> to the suite and restore it afterwards:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">finally</span><span class="p">:</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
-</code></pre></div>
-<p>This anchoring behavior changed in v5; see <a href="../../migrations/v4-to-v5/">Migrating from v4 to v5</a> and the <a href="../execution-context/">execution context</a> reference.</p>
-<h2 id="post-processing">Post-processing</h2>
-<p>The <code>postproc</code> hook is parsed from config but the runtime flow currently relies on built-in post-processing. Custom post-processing support is planned for a future release.</p>
+<p>See <a href="../../known-issues/">Quirks &amp; Known Issues</a> for the failure signature when this is missed.</p>
+<h2 id="what-to-update">What to update</h2>
+<h3 id="ci-scripts">CI scripts</h3>
+<p>Scripts that looked for <code>rtl_buddy.log</code> in the invocation directory should look under the command root (<code>dirname(&lt;primary config&gt;)</code>) instead.</p>
+<h3 id="hook-scripts">Hook scripts</h3>
+<p>Replace any <code>os.getcwd()</code> usage with <code>suite_dir</code> or <code>artifact_dir</code>. For uncontrollable generators, use the <code>chdir(suite_dir)</code> pattern above.</p>
 
 
 
