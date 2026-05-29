@@ -33,6 +33,8 @@ Compile outputs (`compile.log`, `run.f`) remain at `artefacts/{test_name}/` — 
 
 Hook scripts that previously relied on suite-relative file paths resolving from the simulator working directory must now resolve those paths explicitly. Use the preproc hook's `suite_dir` variable for suite-local inputs; keep output filenames artifact-relative when they should land under `artefacts/{test_name}/`.
 
+> v5 went further: hooks no longer run from the suite directory at all. See [Migrating from v4 to v5](v4-to-v5.md#hook-scripts-run-at-the-invocation-directory).
+
 ### Symlinks
 
 The convenience symlinks `test.log`, `test.err`, and `test.randseed` at the suite root still exist and still point to the latest run.

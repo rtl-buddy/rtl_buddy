@@ -167,6 +167,7 @@ After meaningful `rtl_buddy` changes:
 5. If behavior, YAML schema, version expectations, or validation workflows changed, update user docs and the bundled skill if agents rely on the behavior.
 6. If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.
 7. If you discovered or introduced a quirk or non-conventional behavior, add an entry to `docs/known-issues.md`. Treat this as a default step, not an afterthought.
+8. If the change is a `version/major` bump, add or update the `docs/migrations/vN-to-vM.md` page (and its `mkdocs.yml` nav entry) covering every breaking behavior change. See [Releases](#releases).
 
 ## Bundled Skill
 
@@ -235,3 +236,7 @@ Pre-releases are cut from feature branches by workflow dispatch and should not b
 
 Docs publishing, PyPI publishing, and downstream template updates depend on that sequence.
 Do not push a template pin for an unreleased `rtl_buddy` version.
+
+Every `version/major` bump must ship a migration page at `docs/migrations/vN-to-vM.md`, added to the `mkdocs.yml` nav, before merge.
+The page documents every breaking behavior change — moved outputs, changed defaults, removed or renamed config fields, and any contract that downstream projects or hook scripts depend on — and tells readers what to update.
+A recurring failure mode is a silent contract change buried in a PR description; the migration page is where it must live so users and agents find it.
