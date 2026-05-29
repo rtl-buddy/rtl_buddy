@@ -1,9 +1,12 @@
 ---
-description: Known issues with rtl_buddy and workarounds for simulator-specific behaviors.
+description: Quirks, non-conventional behaviors, and known issues with rtl_buddy, including workarounds for simulator-specific behaviors.
 ---
 
-# Known Issues
-List of known issues with rtl_buddy and how it uses VCS, Verilator, etc.
+# Quirks & Known Issues
+
+The home for rtl_buddy behavior that does not follow convention: quirks, surprising defaults, simulator-specific workarounds, and known limitations. If something tripped you up because it works differently than you'd expect, add it here so the next person — or agent — finds it first.
+
+Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one `##` section per quirk, name it after the behavior, and say what to do about it.
 
 ## Instance pRNG seeding with Verilator
 

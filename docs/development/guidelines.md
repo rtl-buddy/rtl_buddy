@@ -16,6 +16,12 @@ Downstream RTL projects and automation depend on them.
 Prefer targeted changes over broad refactors.
 When a change intentionally alters a contract, update docs, tests, generated references, and downstream validation assets in the same PR.
 
+## Quirks and Known Issues
+
+When behavior does not follow convention — a surprising default, a simulator-specific workaround, a non-obvious gotcha, or anything that works differently than a reader would reasonably expect — record it on the [Quirks & Known Issues](../known-issues.md) page.
+
+That page is the canonical home for non-conventional behavior. Keep it alive: write the quirk down as you hit or introduce it, rather than leaving it in commit history or tribal memory. Use one `##` section per quirk, name it after the behavior, and say what a user or agent should do about it.
+
 ## Execution Contexts
 
 Keep command execution rooted in explicit contexts rather than ambient `os.getcwd()`:
@@ -160,6 +166,7 @@ After meaningful `rtl_buddy` changes:
 4. If docs changed, keep frontmatter valid and run the docs build. See [Documentation Guidelines](docs.md).
 5. If behavior, YAML schema, version expectations, or validation workflows changed, update user docs and the bundled skill if agents rely on the behavior.
 6. If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.
+7. If you discovered or introduced a quirk or non-conventional behavior, add an entry to `docs/known-issues.md`. Treat this as a default step, not an afterthought.
 
 ## Bundled Skill
 

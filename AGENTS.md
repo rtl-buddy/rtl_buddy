@@ -8,7 +8,7 @@ This repo is the source-of-truth implementation of the `rtl_buddy` CLI.
 
 Read these before opening issues or PRs, or before changing runtime behavior:
 
-- [docs/development/guidelines.md](docs/development/guidelines.md) — engineering rules: execution contexts, path ownership, artifact layout, subprocesses, dependencies, logging, errors, validation, releases, **issue triage**, and **milestones**.
+- [docs/development/guidelines.md](docs/development/guidelines.md) — engineering rules: execution contexts, path ownership, artifact layout, subprocesses, dependencies, logging, errors, validation, releases, **quirks & known issues**, **issue triage**, and **milestones**.
 - [docs/development/docs.md](docs/development/docs.md) — documentation authoring rules.
 - [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — contributor entry point that links to both.
 
