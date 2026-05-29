@@ -29,6 +29,10 @@ class MutantOutcome:
     # prediction is the highest-signal "your property set is too weak"
     # finding, so we keep it for the summary.
     predicted_signals: list[str] = field(default_factory=list)
+    # Model-relative origin file this mutant was spliced into. Populated
+    # only for scoped (multi-file) campaigns; empty for the single-file
+    # default path.
+    file: str = ""
 
     def is_predicted_observable_miss(self) -> bool:
         return self.outcome == SURVIVED and bool(self.predicted_signals)
@@ -40,10 +44,14 @@ class MutResults:
         name: str,
         outcomes: list[MutantOutcome],
         baseline_verdict: str,
+        per_file: dict[str, dict[str, int]] | None = None,
     ):
         self.name = name
         self.outcomes = outcomes
         self.baseline_verdict = baseline_verdict
+        # Per-file (per-module) killed/survived/errored breakdown, recorded
+        # only for scoped multi-file campaigns. None for single-file runs.
+        self.per_file = per_file
 
     def killed(self) -> int:
         return sum(1 for o in self.outcomes if o.outcome == KILLED)
@@ -76,7 +84,7 @@ class MutResults:
 
     def as_report(self) -> dict:
         """JSON-serialisable report consumed by ``rb mut score``."""
-        return {
+        report = {
             "name": self.name,
             "baseline_verdict": self.baseline_verdict,
             "killed": self.killed(),
@@ -91,10 +99,16 @@ class MutResults:
                     "verdict": o.verdict,
                     "diff_summary": o.diff_summary,
                     "predicted_signals": o.predicted_signals,
+                    "file": o.file,
                 }
                 for o in self.outcomes
             ],
         }
+        # Per-file breakdown is emitted only when a scope was active, so a
+        # single-file report stays shaped exactly as before.
+        if self.per_file:
+            report["per_file"] = self.per_file
+        return report
 
     @classmethod
     def from_report(cls, report: dict) -> "MutResults":
@@ -106,6 +120,8 @@ class MutResults:
                 diff_summary=m.get("diff_summary", ""),
                 verdict=m.get("verdict", "NA"),
                 predicted_signals=m.get("predicted_signals", []),
+                # Tolerant of pre-scope reports that have no "file" key.
+                file=m.get("file", ""),
             )
             for m in report.get("mutants", [])
         ]
@@ -113,6 +129,8 @@ class MutResults:
             name=report.get("name", "mut"),
             outcomes=outcomes,
             baseline_verdict=report.get("baseline_verdict", "NA"),
+            # Optional; absent in single-file / pre-scope reports.
+            per_file=report.get("per_file"),
         )
 
     def __str__(self):

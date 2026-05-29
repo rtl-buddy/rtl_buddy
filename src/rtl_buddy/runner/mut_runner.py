@@ -24,6 +24,8 @@ the rest of rtl_buddy (and its test suite) runs without it installed.
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
+import json
 import logging
 import os
 import shutil
@@ -106,11 +108,108 @@ class MutRunner:
             return xeno.Schedule.ROUND_ROBIN
         return xeno.Schedule.SEQUENTIAL
 
+    # --- scope graph ingestion ----------------------------------------------
+
+    def _scope_graph_json(self) -> dict:
+        """Run rtl-buddy-view (via the existing RtlBuddyView wrapper) to a
+        JSON file under the work dir and load it.
+
+        Only called when ``self.mut_cfg.has_scope()``. ``RtlBuddyView.run()``
+        streams JSON to the ``--output`` file and returns a returncode (it
+        does NOT return stdout), so we read the file back. The wrapper raises
+        ``FatalRtlBuddyError`` if the binary is missing — let that propagate.
+        """
+        from ..tools.hier_rtl_buddy_view import RtlBuddyView
+
+        out = os.path.join(self.work_dir, "scope", "hier.json")
+        Path(os.path.dirname(out)).mkdir(parents=True, exist_ok=True)
+        rc = RtlBuddyView(
+            name=self.name + "/mut-scope",
+            model_cfg=self.mut_cfg.get_model(),
+            suite_dir=self.work_dir,
+            format="json",
+            output=out,
+        ).run()
+        if rc != 0 or not os.path.isfile(out):
+            raise FatalRtlBuddyError(
+                "rb mut: scope requires a hierarchy graph but rtl-buddy-view "
+                f"failed (rc={rc}); run `rb hier {self.mut_cfg.get_model().name} "
+                "--format json` to diagnose"
+            )
+        with open(out) as f:
+            data = json.load(f)
+        major = str(data.get("schema_version", "")).split(".")[0]
+        if major != "1":
+            raise FatalRtlBuddyError(
+                "rb mut: unexpected hier schema_version "
+                f"{data.get('schema_version')!r} (expected 1.x)"
+            )
+        return data
+
+    def _scoped_source_files(self) -> list[str]:
+        """Resolve scope.include/exclude against the hier graph.
+
+        Glob-matches each include/exclude pattern (stdlib shell glob via
+        ``fnmatch``) against THREE targets per node: the dotted instance
+        path (``node["id"]``), the node's absolute source file, and that
+        file relative to the model dir. A node is in scope when include is
+        empty OR any include matches, and no exclude matches.
+
+        Returns the sorted, de-duplicated set of in-scope source files
+        (absolute paths). Raises ``FatalRtlBuddyError`` when the resolved
+        set is empty or any file escapes the model dir.
+        """
+        inc = self.mut_cfg.get_scope_include()
+        exc = self.mut_cfg.get_scope_exclude()
+        data = self._scope_graph_json()
+        model_dir = self._model_dir()
+
+        kept: set[str] = set()
+        for node in data.get("nodes", []):
+            src = (node.get("source") or {}).get("file")
+            if not src:
+                continue
+            abspath = os.path.normpath(os.path.abspath(src))
+            rel = os.path.relpath(abspath, model_dir)
+            targets = (node.get("id", ""), abspath, rel)
+            included = (not inc) or any(
+                fnmatch.fnmatch(t, p) for p in inc for t in targets
+            )
+            excluded = any(fnmatch.fnmatch(t, p) for p in exc for t in targets)
+            if included and not excluded:
+                kept.add(abspath)
+
+        if not kept:
+            raise FatalRtlBuddyError(
+                "rb mut: scope.include/exclude selected no source files from "
+                f"the hierarchy of model '{self.mut_cfg.get_model().name}' "
+                f"(include={inc!r}, exclude={exc!r})"
+            )
+        for f in kept:
+            rel = os.path.relpath(f, model_dir)
+            if rel.startswith(".."):
+                raise FatalRtlBuddyError(
+                    f"rb mut: scoped source file ({f}) must live within the "
+                    f"model directory ({model_dir}) so per-mutant isolation "
+                    "can copy the source tree."
+                )
+        files = sorted(kept)
+        log_event(
+            logger,
+            logging.INFO,
+            "mut_runner.scope_resolved",
+            campaign=self.mut_cfg.get_name(),
+            files=len(files),
+        )
+        return files
+
     # --- list ---------------------------------------------------------------
 
     def list_candidates(self) -> list[dict]:
         """Enumerate candidate sites without mutating (``rb mut list``)."""
         xeno = self._load_xeno()
+        if self.mut_cfg.has_scope():
+            return self._list_candidates_scoped(xeno)
         mutator = self._mutator(xeno)
         sites = []
         for site in mutator.candidates(kinds=self._kinds(xeno)):
@@ -124,10 +223,43 @@ class MutRunner:
             )
         return sites
 
+    def _list_candidates_scoped(self, xeno) -> list[dict]:
+        """Enumerate candidate sites across every scoped source file.
+
+        Each candidate carries a model-relative ``file`` key so multi-file
+        output disambiguates which scoped file the site belongs to. The
+        per-file ``per_module_cap`` (one scoped file == one module for this
+        slice) caps how many sites are reported per file.
+        """
+        kinds = self._kinds(xeno)
+        model_dir = self._model_dir()
+        cap = self.mut_cfg.budget.per_module_cap
+        sites: list[dict] = []
+        for source_file in self._scoped_source_files():
+            mutator = xeno.Mutator.from_sv(Path(source_file))
+            rel = os.path.relpath(source_file, model_dir)
+            n = 0
+            for site in mutator.candidates(kinds=kinds):
+                if cap is not None and n >= cap:
+                    break
+                sites.append(
+                    {
+                        "operator": site.kind.value,
+                        "line": site.line,
+                        "column": site.column,
+                        "snippet": site.snippet,
+                        "file": rel,
+                    }
+                )
+                n += 1
+        return sites
+
     # --- run ----------------------------------------------------------------
 
     def run(self) -> MutResults:
         xeno = self._load_xeno()
+        if self.mut_cfg.has_scope():
+            return self._run_scoped(xeno)
         mutator = self._mutator(xeno)
         kinds = self._kinds(xeno)
 
@@ -184,6 +316,97 @@ class MutRunner:
             baseline_verdict=baseline_verdict or "NA",
         )
 
+    def _run_scoped(self, xeno) -> MutResults:
+        """Multi-file campaign: resolve the scoped source files from the
+        hier graph, then mutate each one in turn, splicing every mutant back
+        into ITS origin file.
+
+        Budget semantics for the scoped slice (one scoped file == one
+        "module"):
+          - ``per_module_cap`` caps mutants generated PER scoped file;
+          - ``max_mutants`` is a GLOBAL ceiling across all scoped files —
+            once it is reached the campaign stops, even mid-file;
+          - the time budget applies across the whole campaign;
+          - the schedule is applied independently per file.
+        """
+        kinds = self._kinds(xeno)
+        Path(self.work_dir).mkdir(parents=True, exist_ok=True)
+
+        # Baseline each configured oracle on the unmutated design (same
+        # semantics as the single-file path).
+        fpv_cfg = self._load_fpv_cfg() if self.mut_cfg.has_fpv_oracle() else None
+        fpv_baseline = self._baseline_fpv(fpv_cfg) if fpv_cfg is not None else None
+        sim_baseline = self._baseline_sim() if self.mut_cfg.has_sim_oracle() else None
+        for label, verdict in (("fpv", fpv_baseline), ("sim", sim_baseline)):
+            if verdict is not None and verdict != "PASS":
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "mut_runner.baseline_not_pass",
+                    campaign=self.mut_cfg.get_name(),
+                    oracle=label,
+                    verdict=verdict,
+                )
+        baseline_verdict = " ".join(
+            f"{label}={v}"
+            for label, v in (("fpv", fpv_baseline), ("sim", sim_baseline))
+            if v is not None
+        )
+
+        source_files = self._scoped_source_files()
+        model_dir = self._model_dir()
+        per_file_cap = self.mut_cfg.budget.per_module_cap
+        global_cap = self.mut_cfg.budget.max_mutants
+
+        outcomes: list[MutantOutcome] = []
+        per_file: dict[str, dict[str, int]] = {}
+        deadline = self._deadline()
+        idx = 0
+        stop = False
+        for source_file in source_files:
+            if stop:
+                break
+            rel = os.path.relpath(source_file, model_dir)
+            count = global_cap - len(outcomes)
+            if per_file_cap is not None:
+                count = min(count, per_file_cap)
+            if count <= 0:
+                break
+            mutator = xeno.Mutator.from_sv(Path(source_file))
+            for mutant in mutator.generate(
+                kinds=kinds,
+                count=count,
+                seed=0,
+                schedule=self._schedule(xeno),
+            ):
+                if deadline is not None and time.monotonic() > deadline:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "mut_runner.time_budget_reached",
+                        campaign=self.mut_cfg.get_name(),
+                        generated=idx,
+                    )
+                    stop = True
+                    break
+                outcome = self._score_mutant(
+                    idx, mutant, fpv_cfg, fpv_baseline, target_file=source_file
+                )
+                outcomes.append(outcome)
+                bucket = per_file.setdefault(rel, {KILLED: 0, SURVIVED: 0, ERRORED: 0})
+                bucket[outcome.outcome] += 1
+                idx += 1
+                if len(outcomes) >= global_cap:
+                    stop = True
+                    break
+
+        return MutResults(
+            name=self.mut_cfg.get_name(),
+            outcomes=outcomes,
+            baseline_verdict=baseline_verdict or "NA",
+            per_file=per_file,
+        )
+
     # --- mutant materialisation ---------------------------------------------
 
     def _model_dir(self) -> str:
@@ -194,8 +417,9 @@ class MutRunner:
             )
         return os.path.dirname(os.path.abspath(model.path))
 
-    def _design_relpath(self) -> str:
-        return os.path.relpath(self.mut_cfg.get_design_file(), self._model_dir())
+    def _design_relpath(self, target_file: str | None = None) -> str:
+        target = target_file or self.mut_cfg.get_design_file()
+        return os.path.relpath(target, self._model_dir())
 
     def _validate_design_in_model(self) -> None:
         rel = self._design_relpath()
@@ -206,16 +430,24 @@ class MutRunner:
                 "isolation can copy the source tree."
             )
 
-    def _materialise_mutant(self, mutant_id: str, mutant_sv: str):
+    def _materialise_mutant(
+        self, mutant_id: str, mutant_sv: str, target_file: str | None = None
+    ):
         """Copy the model tree, splice in the mutant, return a per-mutant
-        ModelConfig pointing at the copy plus the mutant's work root."""
+        ModelConfig pointing at the copy plus the mutant's work root.
+
+        ``target_file`` names the source file the mutant should be spliced
+        into (its origin file in a multi-file scoped campaign). When None
+        (the single-file / empty-scope path), it is the configured
+        ``design_file`` — keeping the no-scope behaviour byte-for-byte.
+        """
         mutant_root = os.path.join(self.work_dir, mutant_id)
         model_src = os.path.join(mutant_root, "model_src")
         if os.path.exists(model_src):
             shutil.rmtree(model_src)
         shutil.copytree(self._model_dir(), model_src)
 
-        spliced = os.path.join(model_src, self._design_relpath())
+        spliced = os.path.join(model_src, self._design_relpath(target_file))
         with open(spliced, "w") as f:
             f.write(mutant_sv)
 
@@ -351,13 +583,20 @@ class MutRunner:
 
     # --- scoring ------------------------------------------------------------
 
-    def _score_mutant(self, idx: int, mutant, fpv_cfg, fpv_baseline) -> MutantOutcome:
+    def _score_mutant(
+        self, idx: int, mutant, fpv_cfg, fpv_baseline, target_file: str | None = None
+    ) -> MutantOutcome:
         operator = mutant.kind.value
         mutant_id = f"m{idx:04d}_{operator}"
         predicted = sorted(getattr(mutant.prediction, "perturbs_signals", []) or [])
+        # Model-relative origin file, recorded only for scoped (multi-file)
+        # campaigns; empty for the single-file path (back-compat).
+        file_rel = self._design_relpath(target_file) if target_file else ""
 
         try:
-            mutant_model, mutant_root = self._materialise_mutant(mutant_id, mutant.sv)
+            mutant_model, mutant_root = self._materialise_mutant(
+                mutant_id, mutant.sv, target_file=target_file
+            )
         except OSError as e:
             log_event(
                 logger,
@@ -374,6 +613,7 @@ class MutRunner:
                 diff_summary=mutant.diff_summary,
                 verdict="ERROR",
                 predicted_signals=predicted,
+                file=file_rel,
             )
 
         per_outcomes: list[str] = []
@@ -416,6 +656,7 @@ class MutRunner:
             diff_summary=mutant.diff_summary,
             verdict=" ".join(verdicts) or "NA",
             predicted_signals=predicted,
+            file=file_rel,
         )
 
     def _deadline(self) -> float | None:

@@ -215,6 +215,15 @@ class MutConfig:
     def has_sim_oracle(self) -> bool:
         return self.test_config is not None
 
+    def get_scope_include(self) -> list[str]:
+        return self.scope_include
+
+    def get_scope_exclude(self) -> list[str]:
+        return self.scope_exclude
+
+    def has_scope(self) -> bool:
+        return bool(self.scope_include or self.scope_exclude)
+
     def __str__(self):
         return pprint.pformat(self)
 

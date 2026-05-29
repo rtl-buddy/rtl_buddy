@@ -618,3 +618,349 @@ def test_both_oracles_union_kill(tmp_path, monkeypatch):
     o = results.outcomes[0]
     assert o.outcome == KILLED
     assert "fpv=PASS" in o.verdict and "sim=FAIL" in o.verdict
+
+
+# ---------------------------------------------------------------------------
+# Scope graph-ingestion: a 2-module hierarchy (hier_top -> two leaf insts)
+# ---------------------------------------------------------------------------
+
+_HIER_TOP_SV = dedent(
+    """\
+    module hier_top (input logic clk, input logic en,
+                     output logic [2:0] a, output logic [2:0] b);
+      leaf u_alu_a (.clk(clk), .en(en), .cnt(a));
+      leaf u_alu_b (.clk(clk), .en(en), .cnt(b));
+    endmodule
+    """
+)
+
+
+def _write_hier_project(root: Path, scope_block: str) -> Path:
+    """A two-file hierarchy: hier_top.sv instantiates two leaf instances
+    from leaf.sv. Returns the mut.yaml path. ``scope_block`` is spliced
+    into mut.yaml verbatim (already indented as a top-level YAML key)."""
+    design_dir = root / "design" / "hier"
+    design_dir.mkdir(parents=True)
+    (design_dir / "leaf.sv").write_text(_DESIGN_SV)
+    (design_dir / "hier_top.sv").write_text(_HIER_TOP_SV)
+    (design_dir / "models.yaml").write_text(
+        dedent(
+            """\
+            rtl-buddy-filetype: model_config
+            models:
+              - name: "hier_top"
+                filelist: ["-v hier_top.sv", "-v leaf.sv"]
+            """
+        )
+    )
+
+    fpv_dir = root / "fpv" / "hier"
+    fpv_dir.mkdir(parents=True)
+    (fpv_dir / "fpv.yaml").write_text(
+        dedent(
+            """\
+            rtl-buddy-filetype: fpv_config
+            verifications:
+              - name: "hier_safety"
+                desc: "safety"
+                tool: "sby"
+                model: "hier_top"
+                model_path: "../../design/hier/models.yaml"
+                top: "hier_top"
+                properties: []
+                mode: "bmc"
+                depth: 16
+            """
+        )
+    )
+
+    mut_path = fpv_dir / "mut.yaml"
+    mut_path.write_text(
+        dedent(
+            """\
+            rtl-buddy-filetype: mut_config
+            model: "hier_top"
+            model_path: "../../design/hier/models.yaml"
+            design_file: "../../design/hier/leaf.sv"
+            operators: [arith_flip, cond_const]
+            verify:
+              fpv_config: "fpv.yaml"
+              verification: "hier_safety"
+            budget:
+              max_mutants: 10
+              schedule: sequential
+            """
+        )
+        + scope_block
+    )
+    return mut_path
+
+
+def _hier_runner(tmp_path, mut_path):
+    from rtl_buddy.runner.mut_runner import MutRunner
+
+    cfg = MutSuiteConfig(path=str(mut_path)).get_config()
+    return MutRunner(
+        name="test", root_cfg=None, mut_cfg=cfg, work_dir=str(tmp_path / "work")
+    )
+
+
+@pytest.fixture
+def stub_hier(monkeypatch):
+    """Patch MutRunner._scope_graph_json with a canned 2-module graph so
+    no real rtl-buddy-view subprocess is needed. Source files are derived
+    from the configured design_file's directory (design/hier/)."""
+
+    def _graph(self):
+        d = os.path.dirname(os.path.abspath(self.mut_cfg.get_design_file()))
+        return {
+            "schema_version": "1.1",
+            "top": "hier_top",
+            "edges": [],
+            "overlays_present": [],
+            "nodes": [
+                {
+                    "id": "hier_top",
+                    "module": "hier_top",
+                    "source": {"file": os.path.join(d, "hier_top.sv")},
+                },
+                {
+                    "id": "hier_top.u_alu_a",
+                    "module": "leaf",
+                    "source": {"file": os.path.join(d, "leaf.sv")},
+                },
+                {
+                    "id": "hier_top.u_alu_b",
+                    "module": "leaf",
+                    "source": {"file": os.path.join(d, "leaf.sv")},
+                },
+            ],
+        }
+
+    monkeypatch.setattr(
+        "rtl_buddy.runner.mut_runner.MutRunner._scope_graph_json", _graph
+    )
+
+
+# A scope-aware fake FpvRunner: scans every .sv in the spliced model tree
+# for a KILL / ERR marker (the multi-file tree has more than one .sv, so we
+# can't rely on the single-glob convention _FakeFpvRunner uses).
+class _ScopeFakeFpvRunner:
+    def __init__(self, name, root_cfg, fpv_cfg, suite_dir):
+        self.fpv_cfg = fpv_cfg
+
+    def run(self):
+        model = self.fpv_cfg.get_model()
+        design_dir = Path(os.path.dirname(model.path))
+        text = "".join(p.read_text() for p in sorted(design_dir.glob("*.sv")))
+        if "ERR" in text:
+            raise FatalRtlBuddyError("elaboration failed")
+        if "KILL" in text:
+            return FpvFailResults(name="x", mode="bmc", depth=16)
+        return FpvPassResults(name="x", mode="bmc", depth=16)
+
+
+def _install_scope_xeno(monkeypatch):
+    """A xeno stub whose Mutator is keyed by the file it was built from, so
+    every scoped file yields a mutant carrying a marker derived from that
+    file's basename. Lets a test prove each mutant was spliced into ITS
+    origin file."""
+
+    class _ScopeMutator:
+        def __init__(self, basename, text):
+            self.basename = basename
+            self.text = text
+
+        @classmethod
+        def from_sv(cls, path):
+            p = Path(path)
+            return cls(p.name, p.read_text())
+
+        def generate(self, kinds, count, seed=0, schedule=None):
+            # One mutant per file. Its sv prepends a per-file marker so the
+            # materialised file is identifiable.
+            yield _Mutant(
+                sv=f"// MUT {self.basename}\n" + self.text,
+                diff_summary=f"mutate {self.basename}",
+                seed=1,
+                prediction=_Prediction(),
+                kind=_MutationKind.ARITH_FLIP,
+            )
+
+        def candidates(self, kinds):
+            yield _Site(_MutationKind.ARITH_FLIP, 2, 1, "+", _Prediction())
+
+    mod = types.ModuleType("rtl_buddy_xeno")
+    mod.Mutator = _ScopeMutator
+    mod.MutationKind = _MutationKind
+    mod.Schedule = _Schedule
+    mod.Mutant = _Mutant
+    mod.Site = _Site
+    mod.Prediction = _Prediction
+    monkeypatch.setitem(sys.modules, "rtl_buddy_xeno", mod)
+    return mod
+
+
+def test_scope_empty_skips_graph(tmp_path, stub_xeno, monkeypatch):
+    # Default (no scope) project: the graph resolver must never be called.
+    mut_path = _write_project(tmp_path)
+    runner = _runner(tmp_path, mut_path)
+
+    def _boom(self):
+        raise AssertionError("_scope_graph_json must not run for empty scope")
+
+    monkeypatch.setattr(
+        "rtl_buddy.runner.mut_runner.MutRunner._scope_graph_json", _boom
+    )
+    # list works, run scores, neither touches the graph.
+    assert len(runner.list_candidates()) == 2
+    with patch("rtl_buddy.runner.mut_runner.FpvRunner", _FakeFpvRunner):
+        results = runner.run()
+    assert results.killed() == 1
+    assert results.survived() == 1
+    # No per-file breakdown for the single-file path.
+    assert results.per_file is None
+    assert "per_file" not in results.as_report()
+
+
+def test_scope_include_selects_files(tmp_path, stub_xeno, stub_hier):
+    mut_path = _write_hier_project(
+        tmp_path,
+        dedent(
+            """\
+            scope:
+              include: ["*/leaf.sv"]
+            """
+        ),
+    )
+    runner = _hier_runner(tmp_path, mut_path)
+    files = runner._scoped_source_files()
+    assert len(files) == 1
+    assert files[0].endswith("leaf.sv")
+    # list_candidates tags each site with the model-relative origin file.
+    sites = runner.list_candidates()
+    assert sites and all(s["file"] == "leaf.sv" for s in sites)
+
+
+def test_scope_exclude_drops_files(tmp_path, stub_xeno, stub_hier):
+    mut_path = _write_hier_project(
+        tmp_path,
+        dedent(
+            """\
+            scope:
+              exclude: ["*/leaf.sv"]
+            """
+        ),
+    )
+    runner = _hier_runner(tmp_path, mut_path)
+    files = runner._scoped_source_files()
+    # Excluding leaf.sv leaves only hier_top.sv.
+    assert len(files) == 1
+    assert files[0].endswith("hier_top.sv")
+
+
+def test_scope_instance_path_glob(tmp_path, stub_xeno, stub_hier):
+    # Match by dotted instance path, not by file glob.
+    mut_path = _write_hier_project(
+        tmp_path,
+        dedent(
+            """\
+            scope:
+              include: ["hier_top.u_alu_a"]
+            """
+        ),
+    )
+    runner = _hier_runner(tmp_path, mut_path)
+    files = runner._scoped_source_files()
+    # The instance maps to leaf.sv; only that file is in scope.
+    assert len(files) == 1
+    assert files[0].endswith("leaf.sv")
+
+
+def test_scope_empty_selection_errors(tmp_path, stub_xeno, stub_hier):
+    mut_path = _write_hier_project(
+        tmp_path,
+        dedent(
+            """\
+            scope:
+              include: ["*/nonexistent.sv"]
+            """
+        ),
+    )
+    runner = _hier_runner(tmp_path, mut_path)
+    with pytest.raises(FatalRtlBuddyError, match="selected no source files"):
+        runner._scoped_source_files()
+
+
+def test_scope_missing_view_binary(tmp_path, stub_xeno, monkeypatch):
+    # Do NOT stub _scope_graph_json; instead make RtlBuddyView.run raise as
+    # the real wrapper does when the binary is absent, and assert run()
+    # propagates it.
+    mut_path = _write_hier_project(
+        tmp_path,
+        dedent(
+            """\
+            scope:
+              include: ["*/leaf.sv"]
+            """
+        ),
+    )
+
+    def _no_binary(self):
+        raise FatalRtlBuddyError(
+            "hier: 'rtl-buddy-view' not found on PATH; install rtl-buddy-view"
+        )
+
+    monkeypatch.setattr(
+        "rtl_buddy.tools.hier_rtl_buddy_view.RtlBuddyView.run", _no_binary
+    )
+    runner = _hier_runner(tmp_path, mut_path)
+    with pytest.raises(FatalRtlBuddyError, match="rtl-buddy-view"):
+        with patch("rtl_buddy.runner.mut_runner.FpvRunner", _ScopeFakeFpvRunner):
+            runner.run()
+
+
+def test_scope_multifile_run(tmp_path, monkeypatch, stub_hier):
+    # Scope selects BOTH files; the stub yields one mutant per file, each
+    # spliced into ITS origin file. Both are scored, with a per-file
+    # breakdown in the report.
+    mut_path = _write_hier_project(
+        tmp_path,
+        dedent(
+            """\
+            scope:
+              include: ["*/hier_top.sv", "*/leaf.sv"]
+            """
+        ),
+    )
+    _install_scope_xeno(monkeypatch)
+    runner = _hier_runner(tmp_path, mut_path)
+    with patch("rtl_buddy.runner.mut_runner.FpvRunner", _ScopeFakeFpvRunner):
+        results = runner.run()
+
+    # One mutant per scoped file = two outcomes, both survived (no KILL/ERR
+    # marker -> the fake oracle PASSes == baseline).
+    assert len(results.outcomes) == 2
+    origin_files = sorted(o.file for o in results.outcomes)
+    assert origin_files == ["hier_top.sv", "leaf.sv"]
+
+    # Each mutant must have been spliced into its OWN origin file: the
+    # materialised model_src must carry the per-file marker in the matching
+    # file and leave the other file's marker absent.
+    for o in results.outcomes:
+        # The model dir is design/hier (it holds models.yaml), so the copied
+        # tree's root IS that dir and the model-relative file sits directly
+        # under model_src.
+        model_src = tmp_path / "work" / o.mutant_id / "model_src"
+        spliced = (model_src / o.file).read_text()
+        assert f"// MUT {o.file}" in spliced
+        other = "leaf.sv" if o.file == "hier_top.sv" else "hier_top.sv"
+        assert "// MUT" not in (model_src / other).read_text()
+
+    # Per-file breakdown present and summing to the scored totals.
+    report = results.as_report()
+    assert set(report["per_file"]) == {"hier_top.sv", "leaf.sv"}
+    total = sum(
+        v[SURVIVED] + v[KILLED] + v[ERRORED] for v in report["per_file"].values()
+    )
+    assert total == 2
