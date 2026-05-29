@@ -18,7 +18,7 @@
         <link rel="prev" href="../submodule-to-uv/">
       
       
-        <link rel="next" href="../../known-issues/">
+        <link rel="next" href="../v4-to-v5/">
       
       
         
@@ -1437,6 +1437,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../v4-to-v5/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v4 to v5
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1687,6 +1715,9 @@
 </code></pre></div>
 <p>Compile outputs (<code>compile.log</code>, <code>run.f</code>) remain at <code>artefacts/{test_name}/</code> — they are shared across all iterations of the same test.</p>
 <p>Hook scripts that previously relied on suite-relative file paths resolving from the simulator working directory must now resolve those paths explicitly. Use the preproc hook's <code>suite_dir</code> variable for suite-local inputs; keep output filenames artifact-relative when they should land under <code>artefacts/{test_name}/</code>.</p>
+<blockquote>
+<p>v5 went further: hooks no longer run from the suite directory at all. See <a href="../v4-to-v5/#hook-scripts-run-at-the-invocation-directory">Migrating from v4 to v5</a>.</p>
+</blockquote>
 <h3 id="symlinks">Symlinks</h3>
 <p>The convenience symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root still exist and still point to the latest run.</p>
 <h2 id="what-to-update">What to update</h2>

@@ -587,6 +587,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hook-working-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook working directory
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#post-processing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1370,6 +1381,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/v4-to-v5/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v4 to v5
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1473,6 +1512,17 @@
     <span class="md-ellipsis">
       
         Pre-processing: mutate test params before compile
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hook-working-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook working directory
       
     </span>
   </a>
@@ -1646,6 +1696,21 @@
 </code></pre></div>
 <p>If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.</p>
 <p>See the template repo for a working example.</p>
+<h2 id="hook-working-directory">Hook working directory</h2>
+<p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which stays at <code>invocation_cwd</code> — the directory you ran <code>rb</code> from. It is <strong>not</strong> the suite directory. Always build paths from the injected <code>suite_dir</code> and <code>artifact_dir</code> variables; never call <code>os.getcwd()</code> to locate the suite.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>     <span class="c1"># wrong — invocation cwd</span>
+</code></pre></div>
+<p>If a hook delegates to a third-party generator that writes relative to <code>os.getcwd()</code> and exposes no output-directory argument, wrap the call in a <code>chdir</code> to the suite and restore it afterwards:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">try</span><span class="p">:</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">finally</span><span class="p">:</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
+</code></pre></div>
+<p>This anchoring behavior changed in v5; see <a href="../../migrations/v4-to-v5/">Migrating from v4 to v5</a> and the <a href="../execution-context/">execution context</a> reference.</p>
 <h2 id="post-processing">Post-processing</h2>
 <p>The <code>postproc</code> hook is parsed from config but the runtime flow currently relies on built-in post-processing. Custom post-processing support is planned for a future release.</p>
 

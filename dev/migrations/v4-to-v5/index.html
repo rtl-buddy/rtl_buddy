@@ -6,32 +6,34 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Entry point for contributing to rtl_buddy, with links to the detailed development and documentation guidelines maintainers follow.">
+        <meta name="description" content="How to migrate an rtl_buddy project from v4 to v5, covering the ExecutionContext change that anchors all outputs on the primary config file.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/CONTRIBUTING/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/migrations/v4-to-v5/">
       
       
-        <link rel="prev" href="../known-issues/">
+        <link rel="prev" href="../v2-to-v3/">
       
+      
+        <link rel="next" href="../../known-issues/">
       
       
         
       
       
-      <link rel="icon" href="../assets/images/favicon.png">
+      <link rel="icon" href="../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>Contributing - RTL Buddy</title>
+        <title>v4 to v5 - RTL Buddy</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
       
       
 
@@ -50,7 +52,7 @@
       
     
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -68,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#contributing" class="md-skip">
+        <a href="#migrating-from-v4-to-v5" class="md-skip">
           Skip to content
         </a>
       
@@ -88,7 +90,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -108,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Contributing
+              v4 to v5
             
           </span>
         </div>
@@ -198,7 +200,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -228,7 +230,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -255,7 +257,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../install/" class="md-nav__link">
+      <a href="../../install/" class="md-nav__link">
         
   
   
@@ -282,7 +284,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../quickstart/" class="md-nav__link">
+      <a href="../../quickstart/" class="md-nav__link">
         
   
   
@@ -361,7 +363,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/execution-context/" class="md-nav__link">
+      <a href="../../concepts/execution-context/" class="md-nav__link">
         
   
   
@@ -389,7 +391,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/root-config/" class="md-nav__link">
+      <a href="../../concepts/root-config/" class="md-nav__link">
         
   
   
@@ -417,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/tests/" class="md-nav__link">
+      <a href="../../concepts/tests/" class="md-nav__link">
         
   
   
@@ -445,7 +447,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/regressions/" class="md-nav__link">
+      <a href="../../concepts/regressions/" class="md-nav__link">
         
   
   
@@ -473,7 +475,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/coverage/" class="md-nav__link">
+      <a href="../../concepts/coverage/" class="md-nav__link">
         
   
   
@@ -501,7 +503,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/plugins/" class="md-nav__link">
+      <a href="../../concepts/plugins/" class="md-nav__link">
         
   
   
@@ -529,7 +531,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/cocotb/" class="md-nav__link">
+      <a href="../../concepts/cocotb/" class="md-nav__link">
         
   
   
@@ -557,7 +559,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/spec-traceability/" class="md-nav__link">
+      <a href="../../concepts/spec-traceability/" class="md-nav__link">
         
   
   
@@ -585,7 +587,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/wave/" class="md-nav__link">
+      <a href="../../concepts/wave/" class="md-nav__link">
         
   
   
@@ -613,7 +615,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/hier/" class="md-nav__link">
+      <a href="../../concepts/hier/" class="md-nav__link">
         
   
   
@@ -641,7 +643,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/hub/" class="md-nav__link">
+      <a href="../../concepts/hub/" class="md-nav__link">
         
   
   
@@ -669,7 +671,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/synthesis/" class="md-nav__link">
+      <a href="../../concepts/synthesis/" class="md-nav__link">
         
   
   
@@ -697,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/pnr/" class="md-nav__link">
+      <a href="../../concepts/pnr/" class="md-nav__link">
         
   
   
@@ -725,7 +727,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/power/" class="md-nav__link">
+      <a href="../../concepts/power/" class="md-nav__link">
         
   
   
@@ -753,7 +755,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/cdc/" class="md-nav__link">
+      <a href="../../concepts/cdc/" class="md-nav__link">
         
   
   
@@ -781,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/fpv/" class="md-nav__link">
+      <a href="../../concepts/fpv/" class="md-nav__link">
         
   
   
@@ -809,7 +811,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/abv-simulation/" class="md-nav__link">
+      <a href="../../concepts/abv-simulation/" class="md-nav__link">
         
   
   
@@ -837,7 +839,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/axi-profile/" class="md-nav__link">
+      <a href="../../concepts/axi-profile/" class="md-nav__link">
         
   
   
@@ -865,7 +867,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/tool-check/" class="md-nav__link">
+      <a href="../../concepts/tool-check/" class="md-nav__link">
         
   
   
@@ -952,7 +954,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/cli/" class="md-nav__link">
+      <a href="../../reference/cli/" class="md-nav__link">
         
   
   
@@ -980,7 +982,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../reference/yaml/" class="md-nav__link">
+      <a href="../../reference/yaml/" class="md-nav__link">
         
   
   
@@ -1015,7 +1017,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../agents/" class="md-nav__link">
+      <a href="../../agents/" class="md-nav__link">
         
   
   
@@ -1094,7 +1096,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../development/setup/" class="md-nav__link">
+      <a href="../../development/setup/" class="md-nav__link">
         
   
   
@@ -1122,7 +1124,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../development/guidelines/" class="md-nav__link">
+      <a href="../../development/guidelines/" class="md-nav__link">
         
   
   
@@ -1150,7 +1152,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../development/docs/" class="md-nav__link">
+      <a href="../../development/docs/" class="md-nav__link">
         
   
   
@@ -1182,8 +1184,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -1194,11 +1198,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
           <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
@@ -1219,7 +1223,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1237,7 +1241,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../migrations/submodule-to-uv/" class="md-nav__link">
+      <a href="../submodule-to-uv/" class="md-nav__link">
         
   
   
@@ -1265,7 +1269,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../migrations/v2-to-v3/" class="md-nav__link">
+      <a href="../v2-to-v3/" class="md-nav__link">
         
   
   
@@ -1290,68 +1294,6 @@
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../migrations/v4-to-v5/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    v4 to v5
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../known-issues/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Quirks & Known Issues
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
     
   
   
@@ -1371,7 +1313,7 @@
   <span class="md-ellipsis">
     
   
-    Contributing
+    v4 to v5
   
 
     
@@ -1389,7 +1331,7 @@
   <span class="md-ellipsis">
     
   
-    Contributing
+    v4 to v5
   
 
     
@@ -1415,10 +1357,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#environment-setup" class="md-nav__link">
+  <a href="#outputs-anchor-on-the-config-file-not-your-shell" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Environment Setup
+        Outputs anchor on the config file, not your shell
       
     </span>
   </a>
@@ -1426,35 +1368,69 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#development-guidelines" class="md-nav__link">
+  <a href="#hook-scripts-run-at-the-invocation-directory" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Development Guidelines
+        Hook scripts run at the invocation directory
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hook scripts run at the invocation directory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#third-party-generators-that-write-relative-to-cwd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Third-party generators that write relative to cwd
       
     </span>
   </a>
   
 </li>
+        
+      </ul>
+    </nav>
+  
+</li>
       
         <li class="md-nav__item">
-  <a href="#documentation-guidelines" class="md-nav__link">
+  <a href="#what-to-update" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Documentation Guidelines
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI scripts
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#validation" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#hook-scripts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Validation
+        Hook scripts
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1462,6 +1438,68 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../known-issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quirks & Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1493,10 +1531,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#environment-setup" class="md-nav__link">
+  <a href="#outputs-anchor-on-the-config-file-not-your-shell" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Environment Setup
+        Outputs anchor on the config file, not your shell
       
     </span>
   </a>
@@ -1504,35 +1542,69 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#development-guidelines" class="md-nav__link">
+  <a href="#hook-scripts-run-at-the-invocation-directory" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Development Guidelines
+        Hook scripts run at the invocation directory
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Hook scripts run at the invocation directory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#third-party-generators-that-write-relative-to-cwd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Third-party generators that write relative to cwd
       
     </span>
   </a>
   
 </li>
+        
+      </ul>
+    </nav>
+  
+</li>
       
         <li class="md-nav__item">
-  <a href="#documentation-guidelines" class="md-nav__link">
+  <a href="#what-to-update" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Documentation Guidelines
+        What to update
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What to update">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ci-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI scripts
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#validation" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#hook-scripts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Validation
+        Hook scripts
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1556,26 +1628,74 @@
   
 
 
-<h1 id="contributing">Contributing</h1>
-<p>This page is the entry point for contributors and maintainers.
-Detailed rules live under the Development section so they are visible in the docs site, available through <code>rb docs show</code>, and not duplicated across agent-only files.</p>
-<h2 id="environment-setup">Environment Setup</h2>
-<p>Start with <a href="../development/setup/">Environment Setup</a> for cloning, <code>uv sync</code>, pre-commit hooks, running the test suite, and building the wheel/sdist locally.</p>
-<h2 id="development-guidelines">Development Guidelines</h2>
-<p>Read <a href="../development/guidelines/">Engineering Guidelines</a> before changing runtime behavior, command execution, YAML loading, subprocess wrappers, logging, errors, release mechanics, or the bundled agent skill.</p>
-<p>Those rules define the public contracts maintainers should preserve.
-When the current implementation differs from a guideline, treat the mismatch as behavior debt: fix it in the same change when it is in scope, or document the exception and add a follow-up issue.</p>
-<h2 id="documentation-guidelines">Documentation Guidelines</h2>
-<p>Read <a href="../development/docs/">Documentation Guidelines</a> before adding or editing files under <code>docs/</code>.</p>
-<p>Documentation changes must keep frontmatter valid, keep generated pages in sync, and avoid duplicating reference material that is already generated from the CLI or schemas.</p>
-<h2 id="validation">Validation</h2>
-<p>Use the narrowest validation that proves the change:</p>
-<ul>
-<li>Docs-only edits: run <code>uv run python scripts/check_docs_frontmatter.py --check</code> and <code>uv run --group docs mkdocs build --strict</code>.</li>
-<li>CLI help changes: regenerate <code>docs/reference/cli.md</code> with <code>uv run python scripts/gen_cli_reference.py</code> and check the docs build.</li>
-<li>Runtime behavior changes: add or update focused tests, then run the affected test subset. Broaden to the full suite when shared contracts or command dispatch are touched.</li>
-</ul>
-<p>If validation cannot be run locally, say which check was skipped and why in the PR.</p>
+<h1 id="migrating-from-v4-to-v5">Migrating from v4 to v5</h1>
+<h2 id="outputs-anchor-on-the-config-file-not-your-shell">Outputs anchor on the config file, not your shell</h2>
+<p>v5 introduces <a href="../../concepts/execution-context/"><code>ExecutionContext</code></a>: every config-driven command anchors its outputs on the directory containing its primary config (the <strong>command root</strong>), regardless of where you invoke <code>rb</code> from. Previously some flows wrote relative to the invocation directory, which scattered scratch files into whatever tree you happened to be standing in.</p>
+<table>
+<thead>
+<tr>
+<th>Behavior</th>
+<th>v4</th>
+<th>v5</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rtl_buddy.log</code> location</td>
+<td>invocation cwd</td>
+<td>command root (<code>dirname(&lt;primary config&gt;)</code>)</td>
+</tr>
+<tr>
+<td><code>regression</code> per-suite cwd</td>
+<td><code>os.chdir()</code> into each suite</td>
+<td>no chdir; each suite re-anchors its own file log</td>
+</tr>
+<tr>
+<td><code>root_config.yaml</code> discovery</td>
+<td>walks up from invocation cwd</td>
+<td>walks up from command root</td>
+</tr>
+<tr>
+<td><code>hier</code>, <code>axi-profile</code> <em>default</em> outputs / artefacts</td>
+<td>invocation cwd</td>
+<td>resolved config's command root</td>
+</tr>
+<tr>
+<td>Coverage <code>outdir</code> / <code>source_roots</code></td>
+<td>invocation cwd</td>
+<td>command root</td>
+</tr>
+</tbody>
+</table>
+<p>For most projects this is transparent — artefacts simply land in the predictable place (under the suite's <code>artefacts/</code>) whether you run from the suite directory or the repo root.</p>
+<p><strong>Explicit output paths are unchanged.</strong> A value you pass on the command line — <code>hier -o diagram.svg</code>, <code>axi-profile ... -o report.html</code>, <code>filelist &lt;model&gt; out.f</code> — still resolves relative to your shell's cwd (<code>invocation_cwd</code>), matching normal shell behavior. Only the command-managed artefacts and default output locations moved to the command root. If your CI passes <code>-o</code>, keep looking where you told it to write; do not redirect those to <code>dirname(models.yaml)</code>/<code>dirname(tests.yaml)</code>.</p>
+<h2 id="hook-scripts-run-at-the-invocation-directory">Hook scripts run at the invocation directory</h2>
+<p>This is the one change most likely to break existing projects.</p>
+<p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory. <strong>The change is specific to <code>regression</code>:</strong> in v4 it did <code>os.chdir()</code> into each suite, so hooks ran from the suite directory; v5 removes that chdir, so hooks now run at <code>invocation_cwd</code> — your shell's directory — like every other command.</p>
+<p>Single-suite <code>test</code> and <code>randtest</code> are unaffected here: their hook working directory was already <code>invocation_cwd</code> in v4, so nothing changes for them. (Their <em>artefact</em> locations do move under the suite in v5 — see the table above — but that is anchored independently of the hook's cwd.)</p>
+<p>In all cases, hooks receive <code>suite_dir</code> and <code>artifact_dir</code> as namespace variables. Build paths from those:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># inside a sweep / preproc script</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>          <span class="c1"># correct</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">stim</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">,</span> <span class="s2">&quot;vectors&quot;</span><span class="p">,</span> <span class="s2">&quot;in.txt&quot;</span><span class="p">)</span>  <span class="c1"># correct</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>            <span class="c1"># wrong — invocation cwd</span>
+</code></pre></div>
+<p>Any hook that called <code>os.getcwd()</code> (directly or indirectly) to find the suite will break.</p>
+<h3 id="third-party-generators-that-write-relative-to-cwd">Third-party generators that write relative to cwd</h3>
+<p>If a hook delegates to a generator you don't control — one that writes its outputs relative to <code>os.getcwd()</code> and exposes no output-directory parameter — <code>suite_dir</code>/<code>artifact_dir</code> can't help, because you can't tell the generator where to write. Wrap the call in a <code>chdir</code> to the suite (restore afterwards):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">try</span><span class="p">:</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">finally</span><span class="p">:</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
+</code></pre></div>
+<p>See <a href="../../known-issues/">Quirks &amp; Known Issues</a> for the failure signature when this is missed.</p>
+<h2 id="what-to-update">What to update</h2>
+<h3 id="ci-scripts">CI scripts</h3>
+<p>Scripts that looked for <code>rtl_buddy.log</code> in the invocation directory should look under the command root (<code>dirname(&lt;primary config&gt;)</code>) instead.</p>
+<h3 id="hook-scripts">Hook scripts</h3>
+<p>Replace any <code>os.getcwd()</code> usage with <code>suite_dir</code> or <code>artifact_dir</code>. For uncontrollable generators, use the <code>chdir(suite_dir)</code> pattern above.</p>
 
 
 
@@ -1634,10 +1754,10 @@ When the current implementation differs from a guideline, treat the mismatch as 
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
       
     
   </body>

@@ -1513,6 +1513,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/v4-to-v5/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    v4 to v5
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2029,6 +2057,7 @@ Sweep and preproc failures should return a setup-failure string so the suite rec
 <li>If behavior, YAML schema, version expectations, or validation workflows changed, update user docs and the bundled skill if agents rely on the behavior.</li>
 <li>If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.</li>
 <li>If you discovered or introduced a quirk or non-conventional behavior, add an entry to <code>docs/known-issues.md</code>. Treat this as a default step, not an afterthought.</li>
+<li>If the change is a <code>version/major</code> bump, add or update the <code>docs/migrations/vN-to-vM.md</code> page (and its <code>mkdocs.yml</code> nav entry) covering every breaking behavior change. See <a href="#releases">Releases</a>.</li>
 </ol>
 <h2 id="bundled-skill">Bundled Skill</h2>
 <p>The <code>rtl_buddy</code> agent skill ships inside the wheel at <code>src/rtl_buddy/skill/</code> and is installed by <code>rtl-buddy skill install</code>.
@@ -2136,6 +2165,9 @@ Roll over remaining work into a follow-up milestone rather than leaving the orig
 Pre-releases are cut from feature branches by workflow dispatch and should not be produced by merging pre-release branches into <code>main</code>.</p>
 <p>Docs publishing, PyPI publishing, and downstream template updates depend on that sequence.
 Do not push a template pin for an unreleased <code>rtl_buddy</code> version.</p>
+<p>Every <code>version/major</code> bump must ship a migration page at <code>docs/migrations/vN-to-vM.md</code>, added to the <code>mkdocs.yml</code> nav, before merge.
+The page documents every breaking behavior change — moved outputs, changed defaults, removed or renamed config fields, and any contract that downstream projects or hook scripts depend on — and tells readers what to update.
+A recurring failure mode is a silent contract change buried in a PR description; the migration page is where it must live so users and agents find it.</p>
 
 
 
