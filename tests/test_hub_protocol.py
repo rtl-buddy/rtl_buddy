@@ -224,6 +224,15 @@ def test_make_hello_produces_valid_envelope():
     assert decode(raw) == env
 
 
+def test_make_hello_accepts_notebook_origin():
+    """The axi-profiler notebook registers as origin=notebook
+    (rtl-buddy-axi-profiler#48). decode() schema-validates, so a clean
+    round-trip proves the wire contract accepts the new origin."""
+    env = make_hello(client=Origin.NOTEBOOK, version="0.1.0", capabilities=[])
+    assert env.origin is Origin.NOTEBOOK
+    assert decode(encode(env)) == env
+
+
 def test_make_welcome_carries_request_id():
     hello = make_hello(client=Origin.VIEW, version="0.1.0", capabilities=[])
     welcome = make_welcome(

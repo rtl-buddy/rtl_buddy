@@ -51,6 +51,7 @@ class Origin(str, Enum):
     WAVE = "wave"
     SRC = "src"
     CLI = "cli"
+    NOTEBOOK = "notebook"
 
 
 class Kind(str, Enum):
