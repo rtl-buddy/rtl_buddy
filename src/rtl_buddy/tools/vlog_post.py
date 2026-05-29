@@ -19,8 +19,11 @@ from ..logging_utils import log_event
 # Verilator emits SVA failures as a `%Error` line; the same shape covers
 # immediate and concurrent assertions. Cover hits are not surfaced as errors.
 # Example: `%Error: dut.sv:42: Assertion failed in top.dut: 'signal == expected'`
+# Under `--timing`, Verilator prefixes the line with the sim time, e.g.
+# `[500] %Error: tb_top.sv:32: Assertion failed in top.dut: 'assert' failed.`,
+# so the leading `[<time>] ` prefix is optional.
 _ASSERTION_FAILED_RE = re.compile(
-    r"^%Error[^:]*:\s*[^:]+:\s*\d+:\s*Assertion failed",
+    r"^(?:\[\d+\]\s+)?%Error[^:]*:\s*[^:]+:\s*\d+:\s*Assertion failed",
 )
 
 

@@ -20,6 +20,21 @@ def test_count_assertion_failures_matches_verilator_error_lines(tmp_path):
     assert vlog_post.count_assertion_failures(str(log)) == 2
 
 
+def test_count_assertion_failures_matches_timing_prefixed_lines(tmp_path):
+    # Under Verilator's `--timing` flow, assertion-failure lines are prefixed
+    # with the sim time, e.g. `[500] %Error: ...`. The follow-up `$stop` line
+    # starts with a bare `%Error` but lacks "Assertion failed", so only the
+    # firing should be counted.
+    log = tmp_path / "test.log"
+    log.write_text(
+        "[500] %Error: tb_top.sv:32: Assertion failed in tb_top.CNT_MONOTONE: "
+        "'assert' failed.\n"
+        "%Error: ../../tb_top.sv:32: Verilog $stop\n"
+        "Aborting...\n",
+    )
+    assert vlog_post.count_assertion_failures(str(log)) == 1
+
+
 def test_count_assertion_failures_handles_missing_file(tmp_path):
     log = tmp_path / "exists.log"
     log.write_text("nothing fired\n")
@@ -76,6 +91,29 @@ def test_vlog_post_flips_pass_to_fail_when_assertion_fires(tmp_path):
     )
     post = vlog_post.VlogPost(
         name="t",
+        path=str(log),
+        err_path=None,
+        assertions_enabled=True,
+    )
+    results = post.get_results().results
+    assert results["result"] == "FAIL"
+    assert results["assertions"] == {"enabled": True, "fired": 1}
+    assert "SVA assertion failure" in results["desc"]
+
+
+def test_vlog_post_flips_na_to_fail_on_timing_abort(tmp_path):
+    # The issue-229 scenario: under `--timing`, a fired SVA aborts the sim
+    # before any PASS/FAIL marker is printed. Without the assertion override
+    # this would report NA; the timing-prefixed firing must flip it to FAIL.
+    log = tmp_path / "test.log"
+    log.write_text(
+        "[500] %Error: tb_top.sv:32: Assertion failed in tb_top.CNT_MONOTONE: "
+        "'assert' failed.\n"
+        "%Error: ../../tb_top.sv:32: Verilog $stop\n"
+        "Aborting...\n",
+    )
+    post = vlog_post.VlogPost(
+        name="smoke_with_sva",
         path=str(log),
         err_path=None,
         assertions_enabled=True,
