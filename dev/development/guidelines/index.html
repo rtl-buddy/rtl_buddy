@@ -1197,6 +1197,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#quirks-and-known-issues" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quirks and Known Issues
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#execution-contexts" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1523,7 +1534,7 @@
   <span class="md-ellipsis">
     
   
-    Known Issues
+    Quirks & Known Issues
   
 
     
@@ -1594,6 +1605,17 @@
     <span class="md-ellipsis">
       
         Public Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quirks-and-known-issues" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quirks and Known Issues
       
     </span>
   </a>
@@ -1783,6 +1805,9 @@ When implementation and guideline disagree, treat the mismatch as a bug or docum
 Downstream RTL projects and automation depend on them.</p>
 <p>Prefer targeted changes over broad refactors.
 When a change intentionally alters a contract, update docs, tests, generated references, and downstream validation assets in the same PR.</p>
+<h2 id="quirks-and-known-issues">Quirks and Known Issues</h2>
+<p>When behavior does not follow convention — a surprising default, a simulator-specific workaround, a non-obvious gotcha, or anything that works differently than a reader would reasonably expect — record it on the <a href="../../known-issues/">Quirks &amp; Known Issues</a> page.</p>
+<p>That page is the canonical home for non-conventional behavior. Keep it alive: write the quirk down as you hit or introduce it, rather than leaving it in commit history or tribal memory. Use one <code>##</code> section per quirk, name it after the behavior, and say what a user or agent should do about it.</p>
 <h2 id="execution-contexts">Execution Contexts</h2>
 <p>Keep command execution rooted in explicit contexts rather than ambient <code>os.getcwd()</code>:</p>
 <ul>
@@ -2003,6 +2028,7 @@ Sweep and preproc failures should return a setup-failure string so the suite rec
 <li>If docs changed, keep frontmatter valid and run the docs build. See <a href="../docs/">Documentation Guidelines</a>.</li>
 <li>If behavior, YAML schema, version expectations, or validation workflows changed, update user docs and the bundled skill if agents rely on the behavior.</li>
 <li>If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.</li>
+<li>If you discovered or introduced a quirk or non-conventional behavior, add an entry to <code>docs/known-issues.md</code>. Treat this as a default step, not an afterthought.</li>
 </ol>
 <h2 id="bundled-skill">Bundled Skill</h2>
 <p>The <code>rtl_buddy</code> agent skill ships inside the wheel at <code>src/rtl_buddy/skill/</code> and is installed by <code>rtl-buddy skill install</code>.
