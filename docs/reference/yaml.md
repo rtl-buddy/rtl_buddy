@@ -588,6 +588,7 @@ runs:
 | `activity.default-toggle-rate` | float | Synthetic global toggle rate (used in `dynamic` mode with no trace). Default `0.1` |
 | `activity.default-static-prob` | float | Synthetic global duty cycle. Default `0.5` |
 | `reglvl` | int or dict | Regression level for filtering; same semantics as `synth.yaml`/`pnr.yaml` reglvl |
+| `tool_overrides` | dict | Reserved for tool-specific overrides; accepted but not consumed by the OpenROAD backend today (mirrors `pnr.yaml`) |
 
 **Runtime effects:**
 

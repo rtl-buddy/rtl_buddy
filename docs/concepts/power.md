@@ -113,6 +113,7 @@ runs:
 | `activity.default-toggle-rate` | Synthetic global activity rate (used when `mode: dynamic` and no trace is supplied). Default `0.1` |
 | `activity.default-static-prob` | Synthetic global duty cycle. Default `0.5` |
 | `reglvl` | Regression level for filtering (same semantics as `rb synth` / `rb pnr`) |
+| `tool_overrides` | Reserved for tool-specific overrides; accepted by the schema but not consumed by the OpenROAD backend today (kept for future/commercial backends, mirroring `pnr.yaml`) |
 
 ### Activity source resolution
 
