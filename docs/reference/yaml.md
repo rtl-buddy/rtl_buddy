@@ -1,5 +1,5 @@
 ---
-description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, cdc.yaml, cdc_regression.yaml, fpv.yaml, and fpv_regression.yaml.
+description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, power.yaml, power_regression.yaml, cdc.yaml, cdc_regression.yaml, fpv.yaml, fpv_regression.yaml, and mut.yaml.
 ---
 
 # YAML Formats
@@ -171,6 +171,7 @@ cfg-rtl-reg:
 - `cfg-pnr-platforms` selects a `cfg-pdks` entry + STA corner for place-and-route. Each entry has `name` (referenced by `platform:` in `pnr.yaml`), `pdk`, optional `corner` (defaults to first corner), `cts-buffer` (clock-tree buffer cell), and `routing-layers` with `signal` / `clock` layer ranges.
 - `cfg-synth-efforts` defines named synthesis effort levels referenced by `synth.yaml` `effort` fields or the `--effort` CLI flag. Each entry has optional `yosys.synth-args` / `yosys.abc-args` (merged into the Yosys stage) and an `openroad` block. When `openroad.run: false`, the runner falls back to the Yosys-only backend even if `tool: openroad` was selected — useful for a fast quick-look path that needs no LEF/STA. `openroad.pre-sta-tcl` is a raw Tcl snippet injected into `synth.tcl` between `read_sdc` and `report_checks`; use it to insert floorplan/placement/parasitic-estimation steps before timing analysis. When no `cfg-synth-efforts` entries are configured or no effort is selected, a built-in `standard` effort with all defaults is used. Precedence for the same knob: per-synthesis `tool_overrides` > `cfg-synth-efforts` > `cfg-synth-tools`.
 - `cfg-pnr-tools` defines P&R tool entries selected by `pnr.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. When `pnr.yaml` `tool` does not match a `cfg-pnr-tools` entry, the value is used as the executable name directly (bare-name on `PATH` semantics).
+- `cfg-power-tools` defines power-analysis tool entries selected by `power.yaml` `tool` fields. Each entry has `name` (referenced by `tool:` in `power.yaml`) and `tool` (path to the executable, or a bare name if it is available on `PATH`). When `power.yaml` `tool` does not match a `cfg-power-tools` entry, the value is used as the executable name directly (bare-name on `PATH` semantics).
 - `cfg-cdc-tools` defines CDC tool entries selected by `cdc.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. `opts.sync-depth` is forwarded as `--sync-depth N` and controls CDC-002's required synchronizer depth. `opts.extra-args` is appended verbatim to every analyzer invocation.
 - `cfg-fpv-tools` defines FPV tool entries selected by `fpv.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. `opts.timeout` is written to the generated `.sby` `[options]` block as a per-task timeout in seconds. `opts.extra-args` is appended verbatim to every sby invocation. `opts.solver-versions` is an optional map of solver short name → exact version string (e.g. `yices: "2.6.4"`); known solvers are `yices`, `z3`, `boolector`, `bitwuzla`, `btormc`, `abc`. Each pinned solver is probed before every run and the run hard-fails with a single multi-line summary if any version does not match — protects CI reproducibility against drift in locally-installed solvers. `opts.plugin-path` is the path to the yosys-slang shared library; required when any `fpv.yaml` verification picks `frontend: slang`, ignored for the default verilog frontend. Absolute paths pass through; relative paths resolve against the project root (the directory containing `root_config.yaml`).
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
@@ -198,7 +199,7 @@ test-configs:
 **Runtime effects:**
 
 - `rtl-buddy regression` iterates each listed suite and runs tests filtered by `--start-level`/`--reg-level`.
-- `regression` changes directory into each suite directory before running.
+- `regression` anchors each suite on the directory containing that suite's `tests.yaml` (the command root) and writes its artefacts under `<that dir>/artefacts/`; it does not change the process working directory (the v5 [execution context](../concepts/execution-context.md) model).
 
 ---
 
@@ -434,8 +435,9 @@ syntheses:
 | `defines` | dict | Optional Verilog defines passed to `read_verilog` as `-D KEY=VALUE` |
 | `platform` | string | Optional `cfg-synth-platforms` name (which references a `cfg-pdks` entry); enables technology mapping |
 | `lef-paths` | list of strings | Optional block-specific LEF files (paths resolved relative to the `synth.yaml` file); appended after the PDK's tech/macro LEFs for the OpenROAD backend |
+| `lib-paths` | list of strings | Optional block-specific Liberty files (paths resolved relative to the `synth.yaml` file); appended after the platform's PDK Liberty for both the Yosys and OpenROAD backends |
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
-| `tool_overrides` | dict | Optional per-tool overrides for `synth_args`, `abc_args`, or `strategy`, keyed by synthesis tool name |
+| `tool_overrides` | dict | Optional per-tool overrides for `synth_args`, `abc_args`, `strategy`, `frontend`, and `plugin_path`, keyed by synthesis tool name (always `yosys` for the elaboration stage). Keys are snake_case — see the `cfg-synth-tools` note above on the kebab-vs-snake naming |
 | `effort` | string | Optional effort name from `cfg-synth-efforts`; controls Yosys synth/abc args and OpenROAD `pre-sta-tcl`. Overridable per invocation with `rtl-buddy synth --effort <name>`. Omitted ⇒ built-in `standard` defaults. |
 
 **Runtime effects:**
@@ -469,7 +471,7 @@ synth-configs:
 
 - `rtl-buddy synth-regression` iterates each listed `synth.yaml` file and filters syntheses by `--reg-level`.
 - Paths in `synth-configs` are resolved relative to the `synth_regression.yaml` file.
-- `synth-regression` changes directory into each synthesis suite directory before executing its entries.
+- `synth-regression` anchors each listed synthesis suite on the directory containing its `synth.yaml` (the command root) and writes artefacts under `<that dir>/artefacts/`; it does not change the process working directory (the v5 [execution context](../concepts/execution-context.md) model).
 
 ---
 
@@ -511,6 +513,8 @@ runs:
 | `synth-path` | string | Path to the `synth.yaml` that defines `synth`, resolved relative to `pnr.yaml` |
 | `constraints` | string | Path to the SDC file (required), resolved relative to `pnr.yaml` |
 | `platform` | string | `cfg-pnr-platforms` entry name |
+| `lef-paths` | list of strings | Optional design-specific macro LEF files (e.g. SRAM macros), resolved relative to `pnr.yaml`; emitted as extra `read_lef` lines after the platform's tech/macro LEF |
+| `lib-paths` | list of strings | Optional design-specific macro Liberty files, resolved relative to `pnr.yaml`; emitted as extra `read_liberty` lines |
 | `floorplan.utilization` | float | Core utilization (0–1) |
 | `floorplan.aspect` | float | Die aspect ratio |
 | `floorplan.core-margin` | float | Margin between core area and die edge, in microns |
@@ -523,6 +527,98 @@ runs:
 - The backend writes `pnr.tcl` from a bundled template, invokes `openroad -no_init -exit -log artefacts/<name>/pnr.log artefacts/<name>/pnr.tcl`, and produces routed DEF + post-route netlist/SDC + timing/DRC reports under `artefacts/<name>/`.
 - The selected `cfg-pnr-platforms` entry provides Liberty, tech-LEF, macro-LEF, SITE, tie cells, fill cells, CTS buffer, and routing layer ranges via its referenced `cfg-pdks` entry.
 - Pass when OpenROAD exits 0 and the log has no `[ERROR ...]` lines. SKIP when the entry's `reglvl` is above `--reg-level` or `tool:` is not `openroad`.
+
+---
+
+## power.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: power_config`
+- `runs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: power_config
+
+runs:
+  - name: "demo_power_static"
+    desc: "Static power on Nangate45 typ corner"
+    tool: "openroad"
+    mode: "static"
+    synth: "demo_synth_nangate45"
+    synth-path: "../../synth/demo/synth.yaml"
+    constraints: "../../synth/demo/constraints.sdc"
+    platform: "nangate45_typ"
+    reglvl: 1000
+
+  - name: "demo_power_postpnr"
+    desc: "Post-PnR power from the routed ODB"
+    tool: "openroad"
+    mode: "dynamic"
+    netlist-source: "pnr"
+    pnr: "demo_pnr_nangate45"
+    pnr-path: "../../pnr/demo/pnr.yaml"
+    platform: "nangate45_typ"
+    activity:
+      saif: "../../verif/demo/artefacts/csr_smoke/dump.saif"
+      scope: "tb_top/u_dut"
+    reglvl: 1000
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Run identifier; used on the CLI and in `artefacts/<name>/` |
+| `desc` | string | Human-readable description (required — no default) |
+| `tool` | string | Backend tool name; default `"openroad"` (the only backend today) |
+| `mode` | string | `"static"` (default) or `"dynamic"`. Static skips activity; dynamic applies an activity source |
+| `netlist-source` | string | `"synth"` (default) or `"pnr"`. Selects post-synth netlist vs post-PnR routed ODB |
+| `synth` | string | Upstream `rb synth` entry name — **required when** `netlist-source: synth` |
+| `synth-path` | string | Path to the `synth.yaml`, relative to `power.yaml` — required when `netlist-source: synth` |
+| `pnr` | string | Upstream `rb pnr` entry name — **required when** `netlist-source: pnr` |
+| `pnr-path` | string | Path to the `pnr.yaml`, relative to `power.yaml` — required when `netlist-source: pnr` |
+| `constraints` | string | SDC path (required for `synth` source; optional for `pnr` source — defaults to the post-CTS `<top>.routed.sdc`) |
+| `platform` | string | `cfg-pnr-platforms` entry name — reused for Liberty + corner |
+| `activity.saif` | string | Path to a SAIF v2 file (mutually exclusive with `vcd`) |
+| `activity.vcd` | string | Path to a VCD trace (mutually exclusive with `saif`) |
+| `activity.scope` | string | Hierarchical scope for OpenROAD's `-scope`. Only valid alongside `saif`/`vcd`; set without a trace it raises a config-load error |
+| `activity.default-toggle-rate` | float | Synthetic global toggle rate (used in `dynamic` mode with no trace). Default `0.1` |
+| `activity.default-static-prob` | float | Synthetic global duty cycle. Default `0.5` |
+| `reglvl` | int or dict | Regression level for filtering; same semantics as `synth.yaml`/`pnr.yaml` reglvl |
+
+**Runtime effects:**
+
+- `rb power` resolves the netlist per `netlist-source`: `synth` reads `synth_netlist.v` from the upstream `rb synth` run (`read_verilog`); `pnr` reads `<top>.routed.odb` from the upstream `rb pnr` run (`read_db`) and runs `estimate_parasitics -global_routing` for routing-derived wire-cap (no SPEF). See the [Power Analysis concept page](../concepts/power.md) for the full activity-source matrix.
+- The resolved activity source (`default` / `synthetic` / `saif` / `vcd`) is decided at config load and surfaced in the results table.
+- Pass when `openroad` exits 0, the log has no `[ERROR ...]` lines, and the `Total` line in `power.rpt` parses. SKIP when the entry's `reglvl` is above `--reg-level` or `tool:` is not in the backend registry.
+
+---
+
+## power_regression.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: power_reg_config`
+- `power-configs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: power_reg_config
+
+power-configs:
+  - "power/demo_block_a/power.yaml"
+  - "power/demo_block_b/power.yaml"
+```
+
+**Runtime effects:**
+
+- `rb power-regression` iterates each listed `power.yaml` and filters runs by `--reg-level`.
+- Paths in `power-configs` are resolved relative to the `power_regression.yaml` file.
+- Each listed suite is anchored on the directory containing its `power.yaml` (the command root); the process working directory is not changed (the v5 [execution context](../concepts/execution-context.md) model).
 
 ---
 
@@ -610,7 +706,7 @@ cdc-configs:
 
 - `rtl-buddy cdc-regression` iterates each listed `cdc.yaml` file and filters analyses by `--reg-level`.
 - Paths in `cdc-configs` are resolved relative to the `cdc_regression.yaml` file.
-- `cdc-regression` changes directory into each CDC suite directory before executing its entries.
+- `cdc-regression` anchors each listed CDC suite on the directory containing its `cdc.yaml` (the command root) and writes artefacts under `<that dir>/artefacts/`; it does not change the process working directory (the v5 [execution context](../concepts/execution-context.md) model).
 
 ---
 
@@ -715,7 +811,71 @@ fpv-configs:
 
 - `rtl-buddy fpv-regression` iterates each listed `fpv.yaml` file and filters verifications by `--reg-level`.
 - Paths in `fpv-configs` are resolved relative to the `fpv_regression.yaml` file.
-- `fpv-regression` changes directory into each FPV suite directory before executing its entries.
+- `fpv-regression` anchors each listed FPV suite on the directory containing its `fpv.yaml` (the command root) and writes artefacts under `<that dir>/artefacts/`; it does not change the process working directory (the v5 [execution context](../concepts/execution-context.md) model).
+
+---
+
+## mut.yaml
+
+Unlike the other suite configs, a `mut.yaml` describes a **single mutation campaign** (one design file under test), not a list of runs. See the [Mutation Testing concept page](../concepts/mut.md) for the full workflow.
+
+**Required keys:**
+
+- `rtl-buddy-filetype: mut_config`
+- `model`, `model_path`, `design_file`, `operators`, `verify`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: mut_config
+
+model: demo_top
+model_path: "../../design/demo_top/models.yaml"
+design_file: "../../design/demo_top/rtl/alu.sv"
+
+operators:
+  - arith_flip
+  - bit_op_flip
+  - cond_negate
+
+verify:
+  fpv_config: "../../fpv/demo/fpv.yaml"
+  verification: "demo_fpv_alu_safety"
+  test_config: "../../verif/demo/tests.yaml"
+  tests: ["alu_smoke"]
+  assertions: true
+
+budget:
+  max_mutants: 100
+  schedule: "sequential"
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model` | string | Model name within the referenced `models.yaml` |
+| `model_path` | string | Path to the `models.yaml`, resolved relative to `mut.yaml` |
+| `design_file` | string | The single SystemVerilog file to mutate, relative to `mut.yaml`. Must live within the model directory so per-mutant isolation can copy the tree |
+| `operators` | list of strings | Non-empty list of operators: `arith_flip`, `bit_op_flip`, `cond_negate`, `cond_const`, `assign_drop`, `port_binding_swap`. Empty or unknown ⇒ fatal config error |
+| `verify.fpv_config` | string | Path to an `fpv.yaml`, relative to `mut.yaml` (FPV kill oracle) |
+| `verify.verification` | string | Verification name in that `fpv.yaml` — **required when** `fpv_config` is set |
+| `verify.test_config` | string | Path to a `tests.yaml`, relative to `mut.yaml` (simulation kill oracle) |
+| `verify.tests` | list of strings | Optional subset of test names; empty (default) runs every test in the suite |
+| `verify.assertions` | bool | Compile SVA in via Verilator `--assert`. Default `true` |
+| `name` | string | Campaign id; used in `artefacts/mut/<name>/`. Defaults to `model` |
+| `top` | string | Top module under test. Defaults to `model` |
+| `budget.max_mutants` | int | Cap on mutants generated. Default `100` |
+| `budget.per_module_cap` | int or null | Per-module cap, or `null` (default) for none |
+| `budget.time_budget_minutes` | float or null | Wall-clock budget in minutes, or `null` (default) for none |
+| `budget.schedule` | string | `"sequential"` (default) or `"round_robin"` |
+| `scope.include` / `scope.exclude` | list of strings | Optional include/exclude lists (no-op for single-file campaigns) |
+
+**Runtime effects:**
+
+- `verify` must configure at least one kill oracle (`fpv_config` + `verification`, and/or `test_config`); otherwise config load fails. When both are set, a mutant is killed if either oracle catches it.
+- `rb mut run` writes `mut_report.json` under `<mut.yaml dir>/artefacts/mut/<campaign>/`. It exits `1` only when nothing was scorable; score thresholding is not gated.
+- The mutation engine lives in the optional [`rtl-buddy-xeno`](https://github.com/rtl-buddy/rtl-buddy-xeno) package (`pip install "rtl-buddy-xeno[verible,slang]"`); `rb mut` raises a fatal error with this hint if it is not installed.
 
 ---
 

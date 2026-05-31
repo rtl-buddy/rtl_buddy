@@ -11,27 +11,39 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 OUTPUT = REPO_ROOT / "docs" / "reference" / "cli.md"
+
+# Top-level commands, in the same order `rtl-buddy --help` lists them. Each
+# command is rendered, then the generator auto-discovers and recurses into any
+# subcommands it exposes (so command groups like `axi-profile`, `mut`, `hub`,
+# `verible`, `skill`, `spec`, and `docs` get a section per subcommand without
+# this list having to enumerate them).
 SUBCOMMANDS = [
     "test",
     "randtest",
     "regression",
     "filelist",
     "hier",
-    "axi-profile",
-    "verible",
     "wave",
+    "wave-fpv",
     "wave-install-nvim",
-    "skill",
-    "docs",
-    "spec",
     "synth",
     "synth-regression",
     "pnr",
+    "power",
+    "power-regression",
+    "saif",
     "cdc",
     "cdc-regression",
     "fpv",
     "fpv-regression",
     "tool-check",
+    "axi-profile",
+    "verible",
+    "mut",
+    "hub",
+    "skill",
+    "docs",
+    "spec",
 ]
 
 HEADER = """\
@@ -61,10 +73,51 @@ def run_help(*args):
     return plain.strip()
 
 
+def extract_subcommands(help_text):
+    """Parse subcommand names out of a Typer/Rich ``Commands`` help panel.
+
+    Returns the command names in the order they appear, or an empty list if the
+    command is a leaf (no ``Commands`` panel). Command rows start one space
+    after the box border; wrapped description lines are indented further and are
+    skipped, so multi-line descriptions do not produce phantom commands.
+    """
+    cmds = []
+    in_panel = False
+    for line in help_text.splitlines():
+        if not in_panel:
+            if "Commands" in line and ("╭" in line or "┌" in line):
+                in_panel = True
+            continue
+        if "╰" in line or "└" in line:
+            break
+        m = re.match(r"^[│|] (\S+)\s", line)
+        if m:
+            cmds.append(m.group(1))
+    return cmds
+
+
+def emit_command(path, parts):
+    """Render ``path`` (a list of command words) and recurse into subcommands.
+
+    A subcommand whose ``--help`` fails (e.g. it needs a connection) is skipped
+    rather than aborting the whole reference.
+    """
+    try:
+        help_text = run_help(*path)
+    except RuntimeError as e:
+        if len(path) == 1:
+            raise
+        print(f"Warning: skipping `{' '.join(path)}` ({e})", file=sys.stderr)
+        return
+    parts.append(f"## {' '.join(path)}\n\n```text\n{help_text}\n```")
+    for child in extract_subcommands(help_text):
+        emit_command(path + [child], parts)
+
+
 def generate():
     parts = [HEADER, f"## rtl-buddy\n\n```text\n{run_help()}\n```"]
     for sub in SUBCOMMANDS:
-        parts.append(f"## {sub}\n\n```text\n{run_help(sub)}\n```")
+        emit_command([sub], parts)
     return "\n\n".join(parts) + "\n"
 
 

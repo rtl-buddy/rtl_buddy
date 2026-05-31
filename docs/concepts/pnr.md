@@ -130,7 +130,8 @@ rb pnr
 # A single run from a specific config
 rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml
 
-# Reglvl-gated runs (1000 by default for tech-mapped flows)
+# Reglvl-gated runs (set reglvl: 1000 in pnr.yaml to gate a run behind -l 1000;
+# an unset reglvl defaults to 0, so by default a run executes at -l 0)
 rb pnr demo_pnr_nangate45 -c pnr/demo/pnr.yaml -l 1000
 
 # List runs without executing

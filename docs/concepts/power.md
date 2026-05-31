@@ -14,13 +14,13 @@ description: How to run OpenROAD-driven gate-level power analysis with rtl_buddy
 
 ## Where the numbers come from
 
-`rb power` runs on either the **post-synth** netlist (default) or the **post-PnR** routed netlist with SPEF parasitics. The `netlist-source:` field in `power.yaml` selects which.
+`rb power` runs on either the **post-synth** netlist (default) or the **post-PnR** routed design read back from the OpenROAD database (`<top>.routed.odb`). The `netlist-source:` field in `power.yaml` selects which.
 
 | Aspect | `netlist-source: synth` (default) | `netlist-source: pnr` |
 |---|---|---|
-| Netlist | `synth_netlist.v` from `rb synth` | `<top>.routed.v` from `rb pnr` |
+| Netlist | `synth_netlist.v` from `rb synth` (`read_verilog`) | `<top>.routed.odb` OpenROAD DB from `rb pnr` (`read_db`) |
 | SDC | User-supplied `constraints:` | Post-CTS `<top>.routed.sdc` (or user `constraints:` if set) |
-| Parasitics | None | `<top>.routed.spef` read via `read_spef` |
+| Parasitics | None | Routing-derived wire-cap via `estimate_parasitics -global_routing` on the read-back ODB (no SPEF — OpenROAD's RCX extractor is not wired into the PnR flow, so `write_spef` would emit an empty file) |
 | Clock tree | Flat (no CTS buffers) | Real CTS-buffered tree |
 | Wire capacitance | None (zero) | Extracted from routing |
 | Internal power | Gate-accurate (Liberty) | Gate-accurate (Liberty) |
@@ -28,7 +28,7 @@ description: How to run OpenROAD-driven gate-level power analysis with rtl_buddy
 | Switching | **Under-estimated** | Realistic |
 | Upstream run needed | `rb synth` | `rb synth` + `rb pnr` |
 
-LEF is loaded in both cases because OpenROAD's gate-level `read_verilog` requires a technology view in its in-memory DB; `report_power` itself only consults Liberty (per-cell internal/switching coefficients, leakage tables).
+LEF is loaded for the `synth` source because OpenROAD's gate-level `read_verilog` requires a technology view in its in-memory DB; the `pnr` source restores it from the ODB instead. `report_power` itself only consults Liberty (per-cell internal/switching coefficients, leakage tables). If the routed ODB is missing the run FAILs with `routed ODB not found at … — re-run rb pnr (older runs predate the .routed.odb artefact)`, so re-run `rb pnr` if you upgraded across that change.
 
 For early PPA exploration where you just want a leakage + activity-aware switching estimate, the synth-source path is fast and cheap. For sign-off-grade switching numbers where the clock tree matters, use the pnr-source path.
 
@@ -61,8 +61,8 @@ runs:
     constraints: "../../synth/demo/constraints.sdc"
     platform: "nangate45_typ"
     activity:
-      default-toggle-rate: 0.2
-      default-static-prob: 0.5
+      default-toggle-rate: 0.2   # override; default is 0.1
+      default-static-prob: 0.5   # override; default is 0.5
     reglvl: 1000
 
   - name: "demo_power_dynamic_saif"
@@ -79,7 +79,7 @@ runs:
     reglvl: 1000
 
   - name: "demo_power_postpnr"
-    desc: "Post-PnR power with SPEF parasitics"
+    desc: "Post-PnR power from the routed ODB (estimate_parasitics)"
     tool: "openroad"
     mode: "dynamic"
     netlist-source: "pnr"

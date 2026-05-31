@@ -8,7 +8,7 @@ The `root_config.yaml` file sits at the root of your RTL project and tells `rtl_
 
 ## Location
 
-`rtl_buddy` looks for `root_config.yaml` in the current working directory. All paths in the config are resolved relative to where `rtl_buddy` is invoked.
+`rtl_buddy` discovers `root_config.yaml` by walking **up** from the command root (the directory containing the command's primary config — see [Execution Context](execution-context.md)), not from the directory you ran `rb` from. Paths declared inside `root_config.yaml` are resolved relative to the `root_config.yaml` file itself. (Standalone commands that have no primary config — e.g. `rb tool-check` — fall back to walking up from the current directory.)
 
 ## Structure
 

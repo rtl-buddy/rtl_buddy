@@ -70,8 +70,9 @@ The filelist lands at `repo/design/<block>/out.f` (your shell's cwd) because `ou
 | `fpv` | `dirname(fpv.yaml)` | `<command_root>/artefacts` | `<artifact>/<fpv>` |
 | `pnr` | `dirname(pnr.yaml)` | `<command_root>/artefacts` | `<artifact>/<pnr>` |
 | `power` | `dirname(power.yaml)` | `<command_root>/artefacts` | `<artifact>/<power>` |
+| `mut` | `dirname(mut.yaml)` | `<command_root>/artefacts` | `<artifact>/mut/<campaign>` |
 | `hier --view dut` | `dirname(models.yaml)` | `<model_root>/artefacts/hier/<model>` | `<artifact>` |
-| `hier --view tb` | `dirname(tests.yaml)` | `<suite>/artefacts/hier/<test>` | `<artifact>` |
+| `hier --view tb` | `dirname(tests.yaml)` | `<suite>/artefacts/hier/<model>/tb/<tb_name>` | `<artifact>` |
 | `axi-profile run` | `dirname(tests.yaml)` | `<suite>/artefacts/axi/<test>` | `<artifact>` |
 | `axi-profile discover` | `dirname(models.yaml)` | `<model_root>/artefacts/axi/<model>` | `<artifact>` |
 | `filelist` | `dirname(models.yaml)` (reads) | explicit `-o` / argument | — |
@@ -84,12 +85,12 @@ For a fuller reference (`docs`, `skill`, edge cases), see the [engineering guide
 
 The orchestration log is always written to `command_root/rtl_buddy.log`. In `--machine` mode it is JSONL; otherwise plain text. For `regression`, each suite's iteration re-anchors the log to that suite's directory, and the final summary phase re-anchors back to `dirname(regression.yaml)`. Open the latest log from wherever the *primary* config lives, not from where you ran `rb`.
 
-## Hook scripts (`sweep`, `preproc`, `postproc`)
+## Hook scripts (`sweep`, `preproc`)
 
-Hook scripts execute via `exec()` inside the `rb` process and receive `suite_dir` and `artifact_dir` as namespace variables. **Always use these variables.** Do not call `os.getcwd()` inside a hook — the process CWD stays at `invocation_cwd` (the same as your shell), which is no longer the same as `suite_dir`.
+The `sweep` and `preproc` hook scripts execute via `exec()` inside the `rb` process and receive `suite_dir` and `artifact_dir` as namespace variables. **Always use these variables.** Do not call `os.getcwd()` inside a hook — the process CWD stays at `invocation_cwd` (the same as your shell), which is no longer the same as `suite_dir`. (The `postproc` hook is parsed from config but the runtime currently relies on built-in post-processing rather than running a user script — see [Plugins](plugins.md).)
 
 ```python
-# inside a sweep / preproc / postproc script
+# inside a sweep / preproc script
 import os
 out = os.path.join(artifact_dir, "gen.sv")   # correct
 out = os.path.join(os.getcwd(), "gen.sv")    # wrong — invocation cwd

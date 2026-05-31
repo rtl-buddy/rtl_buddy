@@ -40,6 +40,11 @@ These are installed automatically when you `uv add rtl_buddy` — no action need
 | `rb pnr` | Integrated tool | OpenROAD ≥ `25Q1` | Optional: `klayout` for `--gds` / `--png` streamout and rendering. See [Place-and-Route](concepts/pnr.md). |
 | `rb cdc`, `rb cdc-regression` | Integrated tool | [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) | SpyGlass support is on the roadmap — tracked in [issue #85](https://github.com/rtl-buddy/rtl_buddy/issues/85). |
 | `rb wave` | Integrated tool | Surfer (rtl-buddy fork, `rtl-buddy` branch) | nvim for full annotation round-trip; any editor configurable via `editor-cmd` for one-way "open at line". Vaporview / VS Code support is on the roadmap — tracked in [issue #84](https://github.com/rtl-buddy/rtl_buddy/issues/84). See [Waveform Viewer](concepts/wave.md). |
+| `rb power`, `rb power-regression` | Integrated tool | OpenROAD ≥ `25Q1` | `rb saif` (FST/VCD → SAIF, used to feed activity) needs no extra tool. See [Power Analysis](concepts/power.md). |
+| `rb fpv`, `rb fpv-regression`, `rb wave-fpv` | Integrated tool | SymbiYosys (`sby`) ≥ `0.40` + ≥ 1 SMT solver | Solvers: yices / z3 / boolector / bitwuzla / btormc. `yosys` (for COI / dead-assume) and the optional yosys-slang plugin (for `frontend: slang`). `rb wave-fpv` reuses the `rb wave` Surfer entry (plain VCD — mainline Surfer suffices). See [Formal Property Verification](concepts/fpv.md). |
+| `rb hier` | Pluggable — curated | [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view) | `uv tool install rtl-buddy-view`. Optional: `graphviz` (`dot`) for `--format dot` → SVG/PNG; `pyslang` for `--frontend slang`. See [Hierarchy Rendering](concepts/hier.md). |
+| `rb axi-profile` | Pluggable — curated | [rtl-buddy-axi-profiler](https://github.com/rtl-buddy/rtl-buddy-axi-profiler) | `uv tool install rtl-buddy-axi-profiler`. Optional extras: `[parquet]` (pyarrow) for `--emit-txns-parquet`; `[notebook]` (marimo) for `rb axi-profile notebook`. See [AXI Profiling](concepts/axi-profile.md). |
+| `rb mut` | Pluggable — curated | [rtl-buddy-xeno](https://github.com/rtl-buddy/rtl-buddy-xeno) | Optional mutation engine, not installed by default: `pip install "rtl-buddy-xeno[verible,slang]"`. Kill oracles reuse `rb fpv` and/or `rb test` tooling. See [Mutation Testing](concepts/mut.md). |
 
 ### Forks required
 
