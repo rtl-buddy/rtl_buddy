@@ -76,6 +76,7 @@ def build_view_json(
     model_cfg: ModelConfig,
     axi_perf_source: Path | None = None,
     test_cfg: TestConfig | None = None,
+    test_suite_dir: Path | None = None,
 ) -> Path:
     """Generate view.json for ``model_cfg`` at the stable cache path
     and return it. Raises ``FatalRtlBuddyError`` when the
@@ -145,6 +146,7 @@ def build_view_json(
         cdc_annotations=str(domain_map) if domain_map else None,
         axi_perf_annotations=str(axi_perf_source) if axi_perf_source else None,
         test_cfg=test_cfg,
+        test_suite_dir=str(test_suite_dir) if test_suite_dir is not None else None,
     )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():

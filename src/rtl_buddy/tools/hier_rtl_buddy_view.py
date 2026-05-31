@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 
 def _is_non_source_filelist_line(line: str) -> bool:
     """Return True when ``line`` is a filelist directive that doesn't
-    name a source file (include dirs, lib dirs, lib files). These
-    must not survive into rtl-buddy-view's filelist because the
+    name a source file (include dirs, lib dirs, lib files) or names a
+    file that isn't parseable HDL (Verilator config/waiver files).
+    These must not survive into rtl-buddy-view's filelist because the
     renderer expects bare source paths and ``strip=True`` would emit
     the trailing argument as one — turning ``+incdir+../../common``
     into the bare directory ``../../common`` and crashing the
@@ -48,6 +49,12 @@ def _is_non_source_filelist_line(line: str) -> bool:
     for prefix in ("-y", "-v"):
         if s.startswith(prefix) and len(s) > len(prefix) and s[len(prefix)].isspace():
             return True
+    # Verilator config/waiver files (``*.vlt``) are commonly listed
+    # alongside sources in a testbench filelist (lint waivers scoped to
+    # vendor code). They are not HDL — Verible's ``verible-verilog-syntax``
+    # exits non-zero on them — so drop them before the merge.
+    if s.endswith(".vlt"):
+        return True
     return False
 
 
@@ -72,6 +79,7 @@ class RtlBuddyView:
         clock_legend: bool = False,
         executable: str = "rtl-buddy-view",
         test_cfg: TestConfig | None = None,
+        test_suite_dir: str | None = None,
     ):
         self.name = name
         self.model_cfg = model_cfg
@@ -99,6 +107,16 @@ class RtlBuddyView:
         # DUT-only invocation is byte-identical (no behavioural change
         # for the unconditional ``rb hier <model>`` callers).
         self.test_cfg = test_cfg
+        # Directory the test's ``tests.yaml`` lives in. The TB filelist
+        # entries (e.g. ``tb_axi_2x2.sv``, ``+incdir+../../common``) are
+        # declared relative to it, so it must anchor their resolution.
+        # ``suite_dir`` above is the *artefact* root (the hub passes the
+        # project root there) and is the wrong base for the TB filelist
+        # — without this, the merge resolves TB sources against the hub
+        # process cwd and fails with ``FilelistError: <tb> does not
+        # exist``. ``None`` falls back to cwd, the legacy behaviour for
+        # callers that run from the suite dir.
+        self.test_suite_dir = test_suite_dir
 
         artefact_root = Path(suite_dir) / "artefacts" / "hier" / model_cfg.name
         if test_cfg is not None:
@@ -155,6 +173,7 @@ class RtlBuddyView:
             strip=True,
             deduplicate=True,
             test_filelist=test_filelist,
+            suite_dir=self.test_suite_dir,
         )
         return fl_path
 
@@ -168,13 +187,27 @@ class RtlBuddyView:
             "--format",
             self.format,
         ]
-        if self.test_cfg is not None and self.test_cfg.tb.toplevel is not None:
+        if self.test_cfg is not None:
             # ``--tb-top`` is independent of ``--top`` (rtl-buddy-view
             # #99 / 6a). When both are supplied, the renderer elaborates
             # from --tb-top and records the DUT name in
             # ``view.json::dut_top`` so the SPA can mark the DUT
             # subtree with a dashed boundary.
-            cmd += ["--tb-top", self.test_cfg.tb.toplevel]
+            #
+            # ``toplevel`` is the explicit top override — set for cocotb
+            # / SystemC harnesses, but conventionally unset for a plain
+            # SystemVerilog testbench (Verilator auto-detects the top at
+            # sim time). The view has no elaboration to auto-detect from,
+            # so fall back to the testbench config name, which by
+            # convention is the TB's top module name (e.g. ``tb_axi_2x2``).
+            # Without this fallback a plain-SV testbench silently rendered
+            # DUT-rooted, so clicking "TB" in the SPA showed the DUT view
+            # with no AXI overlay. rtl-buddy-view fails loudly with a
+            # "top module not found" error if the convention doesn't hold,
+            # so a mismatch surfaces as a clear 500 rather than a silent
+            # wrong render.
+            tb_top = self.test_cfg.tb.toplevel or self.test_cfg.tb.name
+            cmd += ["--tb-top", tb_top]
         if self.output is not None:
             cmd += ["--output", self.output]
         if self.frontend is not None:

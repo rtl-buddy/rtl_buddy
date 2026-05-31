@@ -433,6 +433,12 @@ def test_wrapper_drops_non_source_tb_filelist_entries(tmp_path: Path):
     assert _is_non_source_filelist_line("-v rtl/some.sv")
     assert not _is_non_source_filelist_line("tb_top.sv")
     assert not _is_non_source_filelist_line("rtl/example.sv")
+    # Verilator config/waiver files (``*.vlt``) are listed alongside
+    # sources but are not HDL — Verible exits non-zero on them, so they
+    # must be dropped before the merge.
+    assert _is_non_source_filelist_line("../../design/pp_axi.vlt")
+    assert _is_non_source_filelist_line("waivers.vlt")
+    assert not _is_non_source_filelist_line("axi_2x2.sv")
     # Leading whitespace tolerated (matches the YAML loader's output).
     assert _is_non_source_filelist_line("  +incdir+.")
 
@@ -513,6 +519,137 @@ def test_wrapper_dut_only_does_not_emit_tb_top(tmp_path: Path):
     assert view.run() == 0
     argv = json.loads(record.read_text())
     assert "--tb-top" not in argv
+
+
+def test_wrapper_tb_top_defaults_to_tb_name_when_toplevel_unset(tmp_path: Path):
+    """A plain SystemVerilog testbench conventionally leaves ``toplevel``
+    unset (it's only consumed by cocotb/SystemC sims; Verilator auto-
+    detects the top). The view has no elaboration to auto-detect from, so
+    ``--tb-top`` falls back to the testbench config name — which by
+    convention is the TB's top module. Without this the view silently
+    rendered DUT-rooted and the SPA's "TB" toggle showed the DUT with no
+    AXI overlay."""
+    from rtl_buddy.config.test import TestbenchConfig, TestConfig
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    tb_src = tmp_path / "src" / "tb.sv"
+    tb_src.write_text("module tb_axi_2x2; example u_dut(); endmodule\n")
+    tb = TestbenchConfig(
+        name="tb_axi_2x2",
+        filelist=[str(tb_src)],
+        toplevel=None,  # plain SV testbench — no explicit override
+    )
+    test_cfg = TestConfig(
+        name="basic",
+        desc="",
+        model=model,
+        _reglvl=0,
+        pa=None,
+        pd=None,
+        uvm=None,
+        preproc_path=None,
+        postproc_path=None,
+        sweep_path=None,
+        tb=tb,
+        timeout=None,
+    )
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        format="json",
+        executable=str(script),
+        test_cfg=test_cfg,
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    # Falls back to the testbench config name as the TB top module.
+    assert argv[argv.index("--tb-top") + 1] == "tb_axi_2x2"
+
+
+def test_wrapper_resolves_tb_filelist_against_test_suite_dir(tmp_path: Path):
+    """The TB filelist's relative entries are declared relative to the
+    suite dir (where ``tests.yaml`` lives), not the process cwd. When the
+    hub builds a TB view it runs from the project root, so it must pass
+    ``test_suite_dir`` to anchor the merge — otherwise a relative entry
+    like ``tb.sv`` resolves against cwd and fails with ``FilelistError``.
+    Regression guard for the hub ``?test=`` 500."""
+    from rtl_buddy.config.test import TestbenchConfig, TestConfig
+    from rtl_buddy.errors import FilelistError
+
+    suite = tmp_path / "verif" / "demo"
+    suite.mkdir(parents=True)
+    tb_src = suite / "tb.sv"
+    tb_src.write_text("module tb_top; example u_dut(); endmodule\n")
+    src = tmp_path / "design" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "design" / "models.yaml"),
+    )
+
+    def _make_test_cfg() -> TestConfig:
+        tb = TestbenchConfig(
+            name="tb_basic",
+            filelist=["tb.sv"],  # relative to the suite dir
+            toplevel="tb_top",
+        )
+        return TestConfig(
+            name="basic",
+            desc="",
+            model=model,
+            _reglvl=0,
+            pa=None,
+            pd=None,
+            uvm=None,
+            preproc_path=None,
+            postproc_path=None,
+            sweep_path=None,
+            tb=tb,
+            timeout=None,
+        )
+
+    script, _ = _make_fake_view(tmp_path)
+
+    # Correct suite dir → the relative TB entry resolves and survives.
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),  # artefact root (the hub passes project root)
+        format="json",
+        executable=str(script),
+        test_cfg=_make_test_cfg(),
+        test_suite_dir=str(suite),
+    )
+    assert view.run() == 0
+    fl = (
+        tmp_path / "artefacts" / "hier" / "example" / "tb" / "tb_basic" / "hier.f"
+    ).read_text()
+    assert "tb.sv" in fl
+
+    # Wrong suite dir → the relative entry can't be found, surfacing the
+    # FilelistError the hub now translates into a clean 500.
+    bad = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        format="json",
+        executable=str(script),
+        test_cfg=_make_test_cfg(),
+        test_suite_dir=str(tmp_path),  # tb.sv does not live here
+    )
+    with pytest.raises(FilelistError):
+        bad.run()
 
 
 def test_rb_hier_view_tb_resolves_test_and_invokes_renderer(minimal_project: Path):

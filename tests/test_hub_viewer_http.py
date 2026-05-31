@@ -935,10 +935,16 @@ async def test_view_json_query_test_param_flips_active_test_and_broadcasts(
     cache_path = tmp_path / ".rtl-buddy" / "cache" / "view-demo-tb-tb_basic.json"
 
     def fake_build_view_json(
-        *, project_root, model_cfg, axi_perf_source=None, test_cfg=None
+        *,
+        project_root,
+        model_cfg,
+        axi_perf_source=None,
+        test_cfg=None,
+        test_suite_dir=None,
     ):
         captured["model"] = model_cfg.name
         captured["test_cfg"] = test_cfg
+        captured["test_suite_dir"] = test_suite_dir
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(
             '{"schema_version":"1.1","top":"tb_top","tb_top":"tb_top","dut_top":"demo"}'
@@ -976,6 +982,10 @@ async def test_view_json_query_test_param_flips_active_test_and_broadcasts(
         assert captured["model"] == "demo"
         assert captured["test_cfg"] is not None
         assert captured["test_cfg"].name == "t1"
+        # The builder must be anchored at the suite dir (where tests.yaml
+        # lives) so the TB filelist's relative entries resolve — not the
+        # hub's process cwd. Regression guard for the ?test= 500.
+        assert captured["test_suite_dir"] == tmp_path
     finally:
         await _teardown(hub, viewer, hub_task, vtask)
 

@@ -762,7 +762,7 @@ class ViewerServer:
         """
 
         from . import test_discovery, view_builder
-        from ..errors import FatalRtlBuddyError
+        from ..errors import FatalRtlBuddyError, RtlBuddyError
 
         if self.project_root is None:
             return _http_response(
@@ -789,8 +789,17 @@ class ViewerServer:
                     model_cfg=test_cfg.get_model(),
                     axi_perf_source=self.axi_perf_source,
                     test_cfg=test_cfg,
+                    # The TB filelist entries are relative to the suite
+                    # dir (where ``tests.yaml`` lives), not the hub's
+                    # process cwd — anchor the merge there.
+                    test_suite_dir=tests_yaml.parent,
                 )
-            except FatalRtlBuddyError as exc:
+            except RtlBuddyError as exc:
+                # ``RtlBuddyError`` (not just ``FatalRtlBuddyError``) so a
+                # ``FilelistError`` from the TB filelist merge surfaces as
+                # a clean 500 with the message rather than escaping to the
+                # websockets layer's opaque "Failed to open a WebSocket
+                # connection" fallback body.
                 log_event(
                     logger,
                     logging.ERROR,
