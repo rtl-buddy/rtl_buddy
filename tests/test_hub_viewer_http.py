@@ -991,6 +991,82 @@ async def test_view_json_query_test_param_flips_active_test_and_broadcasts(
 
 
 @pytest.mark.asyncio
+async def test_view_json_test_param_disambiguated_by_tests_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A test name shared by multiple suites is ambiguous on its own
+    (400), but ``?test=NAME&tests_file=PATH`` pins the owning suite. The
+    ``tests_file`` is confined to the hub's project_root."""
+    from urllib.parse import quote
+
+    (tmp_path / "suiteA").mkdir()
+    (tmp_path / "suiteB").mkdir()
+    _write_models_yaml(tmp_path / "suiteA" / "models.yaml", [{"name": "mA"}])
+    _write_models_yaml(tmp_path / "suiteB" / "models.yaml", [{"name": "mB"}])
+    _write_tests_yaml(
+        tmp_path / "suiteA" / "tests.yaml",
+        testbenches=[{"name": "tbA", "toplevel": "tbA"}],
+        tests=[{"name": "smoke", "model": "mA", "testbench": "tbA"}],
+    )
+    _write_tests_yaml(
+        tmp_path / "suiteB" / "tests.yaml",
+        testbenches=[{"name": "tbB", "toplevel": "tbB"}],
+        tests=[{"name": "smoke", "model": "mB", "testbench": "tbB"}],
+    )
+
+    from rtl_buddy.hub import view_builder
+
+    captured: dict = {}
+
+    def fake_build_view_json(
+        *,
+        project_root,
+        model_cfg,
+        axi_perf_source=None,
+        test_cfg=None,
+        test_suite_dir=None,
+    ):
+        captured["model"] = model_cfg.name
+        captured["suite_dir"] = test_suite_dir
+        p = tmp_path / ".rtl-buddy" / "cache" / f"view-{model_cfg.name}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('{"schema_version":"1.1","top":"t","tb_top":"t","dut_top":"d"}')
+        return p
+
+    monkeypatch.setattr(view_builder, "build_view_json", fake_build_view_json)
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        base = f"http://127.0.0.1:{viewer.http_port}/view.json"
+
+        # 1. Ambiguous without tests_file → 400.
+        status, _, body = await asyncio.to_thread(
+            _http_get_allow_4xx, f"{base}?test=smoke"
+        )
+        assert status == 400
+        assert b"multiple" in body.lower()
+
+        # 2. tests_file pins suiteB.
+        tf = tmp_path / "suiteB" / "tests.yaml"
+        status, _, _ = await asyncio.to_thread(
+            _http_get, f"{base}?test=smoke&tests_file={quote(str(tf))}"
+        )
+        assert status == 200
+        assert captured["model"] == "mB"
+        assert Path(captured["suite_dir"]).name == "suiteB"
+
+        # 3. A tests_file outside project_root is rejected, not read.
+        status, _, body = await asyncio.to_thread(
+            _http_get_allow_4xx,
+            f"{base}?test=smoke&tests_file={quote('/etc/tests.yaml')}",
+        )
+        assert status == 400
+        assert b"project_root" in body
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
 async def test_switch_model_clears_active_test(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -347,7 +347,15 @@ class ViewerServer:
         if path == "/view.json":
             requested_test = query.get("test", [None])[0]
             if requested_test is not None:
-                return await self._handle_view_json_for_test(connection, requested_test)
+                # ``tests_file`` disambiguates when a test name is shared
+                # by multiple suites (e.g. ``smoke`` in several
+                # tests.yaml). The SPA echoes back the ``tests_file`` it
+                # got from ``GET /tests`` so the name resolves to exactly
+                # one suite instead of erroring as ambiguous.
+                requested_tests_file = query.get("tests_file", [None])[0]
+                return await self._handle_view_json_for_test(
+                    connection, requested_test, requested_tests_file
+                )
             requested = query.get("model", [None])[0]
             if requested is not None:
                 return await self._handle_view_json_for_model(connection, requested)
@@ -753,12 +761,19 @@ class ViewerServer:
                 )
 
     async def _handle_view_json_for_test(
-        self, connection: ServerConnection, requested: str
+        self,
+        connection: ServerConnection,
+        requested: str,
+        requested_tests_file: str | None = None,
     ) -> Response:
-        """``GET /view.json?test=NAME`` — build (or reuse) the TB-rooted
-        view for the named test (#99 / 6b) and serve it. Updates
-        ``active_test`` + ``active_model`` on success and broadcasts
-        ``view_changed`` with ``view_mode='tb'``.
+        """``GET /view.json?test=NAME[&tests_file=PATH]`` — build (or
+        reuse) the TB-rooted view for the named test (#99 / 6b) and serve
+        it. Updates ``active_test`` + ``active_model`` on success and
+        broadcasts ``view_changed`` with ``view_mode='tb'``.
+
+        ``tests_file`` (optional) pins the owning ``tests.yaml`` so a test
+        name shared across suites resolves unambiguously instead of
+        erroring with "matches multiple tests.yaml files".
         """
 
         from . import test_discovery, view_builder
@@ -771,9 +786,24 @@ class ViewerServer:
                 b"hub started without project_root; ?test= requires it",
             )
 
+        tests_file: Path | None = None
+        if requested_tests_file:
+            candidate = Path(requested_tests_file).resolve()
+            root = self.project_root.resolve()
+            # Confine to the hub's project_root — the param is
+            # client-supplied, so never let it read a tests.yaml outside
+            # the served tree.
+            if not candidate.is_relative_to(root):
+                return _http_response(
+                    connection,
+                    400,
+                    b"tests_file must be inside the hub's project_root",
+                )
+            tests_file = candidate
+
         try:
             tests_yaml, test_cfg = test_discovery.resolve_test(
-                self.project_root, requested
+                self.project_root, requested, tests_file=tests_file
             )
         except FatalRtlBuddyError as exc:
             return _http_response(connection, 400, str(exc).encode("utf-8"))
