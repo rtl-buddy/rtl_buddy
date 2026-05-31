@@ -97,10 +97,10 @@ class MutRunner:
     def _effective_count(self) -> int:
         budget = self.mut_cfg.budget
         count = budget.max_mutants
-        if budget.per_module_cap is not None:
-            # Single design file == single module for this slice, so the
-            # per-module cap is just a tighter ceiling on the total.
-            count = min(count, budget.per_module_cap)
+        if budget.per_file_cap is not None:
+            # Single design file == single scoped file for this slice, so the
+            # per-file cap is just a tighter ceiling on the total.
+            count = min(count, budget.per_file_cap)
         return count
 
     def _schedule(self, xeno):
@@ -131,10 +131,22 @@ class MutRunner:
             output=out,
         ).run()
         if rc != 0 or not os.path.isfile(out):
+            log_event(
+                logger,
+                logging.ERROR,
+                "mut_runner.scope_graph_failed",
+                campaign=self.mut_cfg.get_name(),
+                model=self.mut_cfg.get_model().name,
+                rc=rc,
+                output=out,
+            )
             raise FatalRtlBuddyError(
-                "rb mut: scope requires a hierarchy graph but rtl-buddy-view "
-                f"failed (rc={rc}); run `rb hier {self.mut_cfg.get_model().name} "
-                "--format json` to diagnose"
+                "rb mut: scope graph-ingestion needs the rtl-buddy-view binary "
+                "on PATH; install or build it per its README, then re-run. "
+                f"(rtl-buddy-view exited rc={rc}; run `rb hier "
+                f"{self.mut_cfg.get_model().name} --format json` to diagnose.) "
+                "Removing the scope block from mut.yaml runs rb mut in "
+                "single-file mode, which does not require rtl-buddy-view."
             )
         with open(out) as f:
             data = json.load(f)
@@ -150,7 +162,8 @@ class MutRunner:
         """Resolve scope.include/exclude against the hier graph.
 
         Glob-matches each include/exclude pattern (stdlib shell glob via
-        ``fnmatch``) against THREE targets per node: the dotted instance
+        ``fnmatch``, case-sensitive on every platform) against THREE targets
+        per node: the dotted instance
         path (``node["id"]``), the node's absolute source file, and that
         file relative to the model dir. A node is in scope when include is
         empty OR any include matches, and no exclude matches.
@@ -172,10 +185,13 @@ class MutRunner:
             abspath = os.path.normpath(os.path.abspath(src))
             rel = os.path.relpath(abspath, model_dir)
             targets = (node.get("id", ""), abspath, rel)
+            # fnmatchcase: case-sensitive on all platforms (fnmatch would
+            # case-fold on macOS), so a scope selects the same files in dev
+            # and CI.
             included = (not inc) or any(
-                fnmatch.fnmatch(t, p) for p in inc for t in targets
+                fnmatch.fnmatchcase(t, p) for p in inc for t in targets
             )
-            excluded = any(fnmatch.fnmatch(t, p) for p in exc for t in targets)
+            excluded = any(fnmatch.fnmatchcase(t, p) for p in exc for t in targets)
             if included and not excluded:
                 kept.add(abspath)
 
@@ -228,12 +244,12 @@ class MutRunner:
 
         Each candidate carries a model-relative ``file`` key so multi-file
         output disambiguates which scoped file the site belongs to. The
-        per-file ``per_module_cap`` (one scoped file == one module for this
+        per-file ``per_file_cap`` (one scoped file == one unit for this
         slice) caps how many sites are reported per file.
         """
         kinds = self._kinds(xeno)
         model_dir = self._model_dir()
-        cap = self.mut_cfg.budget.per_module_cap
+        cap = self.mut_cfg.budget.per_file_cap
         sites: list[dict] = []
         for source_file in self._scoped_source_files():
             mutator = xeno.Mutator.from_sv(Path(source_file))
@@ -321,13 +337,16 @@ class MutRunner:
         hier graph, then mutate each one in turn, splicing every mutant back
         into ITS origin file.
 
-        Budget semantics for the scoped slice (one scoped file == one
-        "module"):
-          - ``per_module_cap`` caps mutants generated PER scoped file;
+        Budget semantics for the scoped slice (one scoped file == one unit):
+          - ``per_file_cap`` caps mutants generated PER scoped file;
           - ``max_mutants`` is a GLOBAL ceiling across all scoped files —
             once it is reached the campaign stops, even mid-file;
           - the time budget applies across the whole campaign;
           - the schedule is applied independently per file.
+
+        Scoped files are processed in sorted order, so the global
+        ``max_mutants`` ceiling may truncate later files; users control
+        fairness via scope ordering / ``per_file_cap``.
         """
         kinds = self._kinds(xeno)
         Path(self.work_dir).mkdir(parents=True, exist_ok=True)
@@ -355,7 +374,7 @@ class MutRunner:
 
         source_files = self._scoped_source_files()
         model_dir = self._model_dir()
-        per_file_cap = self.mut_cfg.budget.per_module_cap
+        per_file_cap = self.mut_cfg.budget.per_file_cap
         global_cap = self.mut_cfg.budget.max_mutants
 
         outcomes: list[MutantOutcome] = []

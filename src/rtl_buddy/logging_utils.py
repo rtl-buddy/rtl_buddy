@@ -484,6 +484,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'builder "{fields.get("builder")}": mode "{fields.get("mode")}" not in config (stage={fields.get("stage")})'
         case "builder.stage_missing":
             return f'builder "{fields.get("builder")}": stage "{fields.get("stage")}" not in mode "{fields.get("mode")}"'
+        case "mut_runner.scope_graph_failed":
+            return (
+                f"rb mut: scope graph-ingestion for model "
+                f"'{fields.get('model')}' needs rtl-buddy-view on PATH "
+                f"(rtl-buddy-view exited rc={fields.get('rc')})"
+            )
         case "summary":
             return fields.get("title", "Summary")
         case _:

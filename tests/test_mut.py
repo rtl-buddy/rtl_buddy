@@ -964,3 +964,50 @@ def test_scope_multifile_run(tmp_path, monkeypatch, stub_hier):
         v[SURVIVED] + v[KILLED] + v[ERRORED] for v in report["per_file"].values()
     )
     assert total == 2
+
+
+def test_scope_glob_is_case_sensitive(tmp_path, stub_xeno, stub_hier):
+    # The scope globs use fnmatchcase, so matching is case-sensitive on
+    # every platform (fnmatch would case-fold on macOS). A wrong-case
+    # pattern must select NOTHING -> empty selection is a fatal error.
+    wrong_case = _write_hier_project(
+        tmp_path / "wrong",
+        dedent(
+            """\
+            scope:
+              include: ["*/LEAF.SV"]
+            """
+        ),
+    )
+    runner = _hier_runner(tmp_path / "wrong", wrong_case)
+    with pytest.raises(FatalRtlBuddyError, match="selected no source files"):
+        runner._scoped_source_files()
+
+    # A wrong-case instance-path pattern is likewise inert.
+    wrong_inst = _write_hier_project(
+        tmp_path / "wrong_inst",
+        dedent(
+            """\
+            scope:
+              include: ["HIER_TOP.*"]
+            """
+        ),
+    )
+    runner = _hier_runner(tmp_path / "wrong_inst", wrong_inst)
+    with pytest.raises(FatalRtlBuddyError, match="selected no source files"):
+        runner._scoped_source_files()
+
+    # The correct-case pattern selects the matching file.
+    right_case = _write_hier_project(
+        tmp_path / "right",
+        dedent(
+            """\
+            scope:
+              include: ["*/leaf.sv"]
+            """
+        ),
+    )
+    runner = _hier_runner(tmp_path / "right", right_case)
+    files = runner._scoped_source_files()
+    assert len(files) == 1
+    assert files[0].endswith("leaf.sv")

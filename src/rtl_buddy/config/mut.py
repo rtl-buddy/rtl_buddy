@@ -50,7 +50,11 @@ _VALID_SCHEDULES = ("sequential", "round_robin")
 @serde
 class MutBudgetFile:
     max_mutants: int = field(rename="max_mutants", default=100)
-    per_module_cap: int | None = field(rename="per_module_cap", default=None)
+    # Caps mutants PER SCOPED FILE: in scoped mode each source file is
+    # treated as one unit, so this bounds how many mutants any single
+    # scoped file contributes; for the single-file default it caps that
+    # one file.
+    per_file_cap: int | None = field(rename="per_file_cap", default=None)
     time_budget_minutes: float | None = field(
         rename="time_budget_minutes", default=None
     )
@@ -60,7 +64,7 @@ class MutBudgetFile:
 @dataclass
 class MutBudget:
     max_mutants: int
-    per_module_cap: int | None
+    per_file_cap: int | None
     time_budget_minutes: float | None
     schedule: str
 
@@ -89,6 +93,16 @@ class MutVerifyFile:
 
 @serde
 class MutScopeFile:
+    """Scope selector for a hierarchical mutation campaign.
+
+    Patterns are matched (case-sensitively, shell-glob via ``fnmatch`` —
+    so no ``**`` recursion) against BOTH a node's instance path
+    (e.g. ``top.u_alu``) AND its source file (matched in both absolute and
+    model-relative forms). An empty ``include`` means every in-scope node
+    is selected; any ``exclude`` match drops a node. An empty resulting
+    selection is a fatal error.
+    """
+
     include: list[str] = field(default_factory=list)
     exclude: list[str] = field(default_factory=list)
 
@@ -101,10 +115,12 @@ class MutConfigFile:
     filetype: Literal["mut_config"] = field(rename="rtl-buddy-filetype")
     model: str
     model_path: str = field(rename="model_path")
-    # SystemVerilog file to mutate, relative to mut.yaml. Must be one of
-    # the model's source files and must live within the model directory
-    # (the directory containing models.yaml) so per-mutant isolation can
-    # copy the tree and splice the mutant in.
+    # SystemVerilog file, relative to mut.yaml. Must be one of the model's
+    # source files and must live within the model directory (the directory
+    # containing models.yaml) so per-mutant isolation can copy the tree and
+    # splice the mutant in. It is the baseline-oracle target in BOTH modes;
+    # when a scope block is set it is NOT itself the mutation target (the
+    # scoped file-set is) — it only anchors the model dir / oracle baseline.
     design_file: str = field(rename="design_file")
     operators: list[str]
     verify: MutVerifyFile
@@ -170,7 +186,7 @@ class MutConfigFile:
             assertions=self.verify.assertions,
             budget=MutBudget(
                 max_mutants=self.budget.max_mutants,
-                per_module_cap=self.budget.per_module_cap,
+                per_file_cap=self.budget.per_file_cap,
                 time_budget_minutes=self.budget.time_budget_minutes,
                 schedule=self.budget.schedule,
             ),
