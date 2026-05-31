@@ -991,6 +991,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../concepts/mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/axi-profile/" class="md-nav__link">
         
   
@@ -1754,6 +1782,36 @@
 <td>Integrated tool</td>
 <td>Surfer (rtl-buddy fork, <code>rtl-buddy</code> branch)</td>
 <td>nvim for full annotation round-trip; any editor configurable via <code>editor-cmd</code> for one-way "open at line". Vaporview / VS Code support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/84">issue #84</a>. See <a href="../concepts/wave/">Waveform Viewer</a>.</td>
+</tr>
+<tr>
+<td><code>rb power</code>, <code>rb power-regression</code></td>
+<td>Integrated tool</td>
+<td>OpenROAD ≥ <code>25Q1</code></td>
+<td><code>rb saif</code> (FST/VCD → SAIF, used to feed activity) needs no extra tool. See <a href="../concepts/power/">Power Analysis</a>.</td>
+</tr>
+<tr>
+<td><code>rb fpv</code>, <code>rb fpv-regression</code>, <code>rb wave-fpv</code></td>
+<td>Integrated tool</td>
+<td>SymbiYosys (<code>sby</code>) ≥ <code>0.40</code> + ≥ 1 SMT solver</td>
+<td>Solvers: yices / z3 / boolector / bitwuzla / btormc. <code>yosys</code> (for COI / dead-assume) and the optional yosys-slang plugin (for <code>frontend: slang</code>). <code>rb wave-fpv</code> reuses the <code>rb wave</code> Surfer entry (plain VCD — mainline Surfer suffices). See <a href="../concepts/fpv/">Formal Property Verification</a>.</td>
+</tr>
+<tr>
+<td><code>rb hier</code></td>
+<td>Pluggable — curated</td>
+<td><a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a></td>
+<td><code>uv tool install rtl-buddy-view</code>. Optional: <code>graphviz</code> (<code>dot</code>) for <code>--format dot</code> → SVG/PNG; <code>pyslang</code> for <code>--frontend slang</code>. See <a href="../concepts/hier/">Hierarchy Rendering</a>.</td>
+</tr>
+<tr>
+<td><code>rb axi-profile</code></td>
+<td>Pluggable — curated</td>
+<td><a href="https://github.com/rtl-buddy/rtl-buddy-axi-profiler">rtl-buddy-axi-profiler</a></td>
+<td><code>uv tool install rtl-buddy-axi-profiler</code>. Optional extras: <code>[parquet]</code> (pyarrow) for <code>--emit-txns-parquet</code>; <code>[notebook]</code> (marimo) for <code>rb axi-profile notebook</code>. See <a href="../concepts/axi-profile/">AXI Profiling</a>.</td>
+</tr>
+<tr>
+<td><code>rb mut</code></td>
+<td>Pluggable — curated</td>
+<td><a href="https://github.com/rtl-buddy/rtl-buddy-xeno">rtl-buddy-xeno</a></td>
+<td>Optional mutation engine, not installed by default: <code>pip install "rtl-buddy-xeno[verible,slang]"</code>. Kill oracles reuse <code>rb fpv</code> and/or <code>rb test</code> tooling. See <a href="../concepts/mut/">Mutation Testing</a>.</td>
 </tr>
 </tbody>
 </table>

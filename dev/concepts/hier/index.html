@@ -987,6 +987,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../axi-profile/" class="md-nav__link">
         
   
@@ -1756,7 +1784,7 @@
 <p>Both annotation files are JSON keyed by hierarchical instance path. <code>rb hier</code> validates that the files exist before invoking the renderer; the renderer's JSON contract (<code>schema_version</code>, <code>tool.*</code>, <code>design.top</code>, <code>nodes</code>, <code>edges</code>) is the integration boundary.</p>
 <p><code>--clock-legend</code> is honored only for <code>--format dot</code>; the tree and Mermaid renderers ignore it.</p>
 <h2 id="artefacts">Artefacts</h2>
-<p>Per-model outputs land under the current directory's <code>artefacts/hier/&lt;model&gt;/</code>:</p>
+<p>Per-model outputs land under the model's command root — <code>&lt;dir of models.yaml&gt;/artefacts/hier/&lt;model&gt;/</code> (in <code>--view tb</code> mode, <code>&lt;dir of tests.yaml&gt;/artefacts/hier/&lt;model&gt;/tb/&lt;tb_name&gt;/</code>). The artefact tree is anchored on the primary config's directory, not your shell's cwd — see <a href="../execution-context/">Execution Context</a>. For example, <code>rb hier demo_top -c design/demo_top/models.yaml</code> writes under <code>design/demo_top/artefacts/hier/demo_top/</code>:</p>
 <table>
 <thead>
 <tr>
@@ -1780,7 +1808,7 @@
 <p><code>rb hier</code> exits with the renderer's exit code. A non-zero exit means the renderer reported a parse, elaboration, or output error — check <code>hier.log</code> for the captured stderr.</p>
 <p>The <code>Failed to locate rtl-buddy-view</code> error before the renderer runs is the most common failure mode and indicates that <code>rtl-buddy-view</code> is not installed in the active venv or on <code>PATH</code>. Run <code>rb tool-check --explain rtl-buddy-view</code> for the install hint.</p>
 <h2 id="hub-integration">Hub integration</h2>
-<p>The <a href="../hub/">coordination hub</a> consumes <code>rb hier</code>'s JSON output (<code>--format json</code>) to drive the rtl-buddy-view SPA's interactive hierarchy view. Annotation files (<code>--cdc-annotations</code>, <code>--rdc-annotations</code>, <code>--overlay axi-perf=...</code>) are surfaced as overlays in the SPA when the hub is running.</p>
+<p>The <a href="../hub/">coordination hub</a> consumes <code>rb hier</code>'s JSON output (<code>--format json</code>) to drive the rtl-buddy-view SPA's interactive hierarchy view. The <code>rb hier</code> clock/reset overlays (<code>--cdc-annotations</code>, <code>--rdc-annotations</code>) are real CLI flags and are surfaced as overlays in the SPA. The AXI-perf overlay is <strong>not</strong> a <code>rb hier</code> flag — it is baked into the SPA view only via <code>rb hub start --axi-perf-from &lt;axi-perf.json&gt;</code> (see <a href="../hub/#axi-perf-overlay-and-notebook-spawning">Hub</a>), which invokes the renderer with <code>--overlay axi-perf=&lt;path&gt;</code> internally.</p>
 <p><code>rb hub start --model &lt;name&gt;</code> discovers the model's <code>models.yaml</code>, invokes <code>rb hier</code> under the hood, and serves the result alongside live diagnostics and AXI-perf overlays — <code>rb hier</code> is the underlying renderer for both the static CLI use case and the live SPA flow.</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>

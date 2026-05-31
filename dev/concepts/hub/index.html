@@ -810,6 +810,39 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#driving-the-hub-from-the-cli-rb-hub-send" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Driving the hub from the CLI (rb hub send)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auto-start-on-macos-launchagent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-start on macOS (LaunchAgent)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#axi-perf-overlay-and-notebook-spawning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AXI-perf overlay and notebook spawning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#troubleshooting" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1006,6 +1039,34 @@
     
   
     Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
   
 
     
@@ -1696,6 +1757,39 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#driving-the-hub-from-the-cli-rb-hub-send" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Driving the hub from the CLI (rb hub send)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auto-start-on-macos-launchagent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-start on macOS (LaunchAgent)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#axi-perf-overlay-and-notebook-spawning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AXI-perf overlay and notebook spawning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#troubleshooting" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1750,7 +1844,7 @@
 
 <h1 id="hub-rb-hub">Hub (<code>rb hub</code>)</h1>
 <blockquote>
-<p><strong>Integration type:</strong> Integrated tool. Ships in-tree at <code>src/rtl_buddy/hub/</code>; invoked via <code>rb hub start|stop|status|log|config validate</code>.</p>
+<p><strong>Integration type:</strong> Integrated tool. Ships in-tree at <code>src/rtl_buddy/hub/</code>; invoked via <code>rb hub start|stop|status|log|install-launchagent|uninstall-launchagent|config validate|send …</code>.</p>
 <p><strong>External binary required:</strong> None for the hub itself. The wave adapter still needs the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork for live WCP integration; see <a href="../wave/">Waveform Viewer</a>.</p>
 <p><strong>Default install carries it:</strong> No external dependency; the hub is pure Python.</p>
 </blockquote>
@@ -1777,7 +1871,7 @@
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>status<span class="w">                  </span><span class="c1"># in another shell: who&#39;s connected</span>
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>stop<span class="w">                    </span><span class="c1"># graceful shutdown via SIGTERM</span>
 </code></pre></div>
-<p><code>rb hub start</code> runs in the foreground by default; backgrounding is the caller's job (<code>nohup rb hub start &amp;</code>, a process manager, or — on macOS, planned — a LaunchAgent). The server binds the OS-assigned port (TCP, and HTTP if <code>--serve-viewer</code> is set) unless <code>hub.toml</code> pins them; the resolved port is written to <code>.rtl-buddy/hub.json</code> so peers can discover it.</p>
+<p><code>rb hub start</code> runs in the foreground by default; backgrounding is the caller's job (<code>nohup rb hub start &amp;</code>, a process manager, or — on macOS — the bundled LaunchAgent: see <a href="#auto-start-on-macos-launchagent"><code>rb hub install-launchagent</code></a>). The server binds the OS-assigned port (TCP, and HTTP if <code>--serve-viewer</code> is set) unless <code>hub.toml</code> pins them; the resolved TCP address (and HTTP port, with <code>--serve-viewer</code>) is written to <code>.rtl-buddy/hub.json</code> so peers can discover it.</p>
 <h2 id="cli-surface">CLI surface</h2>
 <table>
 <thead>
@@ -1788,8 +1882,8 @@
 </thead>
 <tbody>
 <tr>
-<td><code>rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH] [--listen-port N] [--http-port N]</code></td>
-<td>Bind the TCP server (and optionally the viewer HTTP+WS layer), write <code>.rtl-buddy/hub.json</code>, run the asyncio loop. <code>--listen-port</code> / <code>--http-port</code> override <code>[hub].listen_port</code> / <code>[hub].http_port</code> from <code>hub.toml</code> (default 0 = OS-assigned). When a pinned port is already in use, the command prints a one-line error and exits 1 without a traceback. Exits cleanly on <code>SIGINT</code> / <code>SIGTERM</code> / <code>rb hub stop</code> and removes its discovery file.</td>
+<td><code>rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH] [--listen-port N] [--http-port N] [--model NAME] [--models-file PATH] [--axi-perf-from PATH]</code></td>
+<td>Bind the TCP server (and optionally the viewer HTTP+WS layer), write <code>.rtl-buddy/hub.json</code>, run the asyncio loop. <code>--listen-port</code> / <code>--http-port</code> override <code>[hub].listen_port</code> / <code>[hub].http_port</code> from <code>hub.toml</code> (default 0 = OS-assigned). <code>--axi-perf-from</code> bakes an AXI-perf overlay into served views (see <a href="#axi-perf-overlay-and-notebook-spawning">AXI-perf overlay &amp; notebook spawning</a>). When a pinned port is already in use, the command prints a one-line error and exits 1 without a traceback. Exits cleanly on <code>SIGINT</code> / <code>SIGTERM</code> / <code>rb hub stop</code> and removes its discovery file.</td>
 </tr>
 <tr>
 <td><code>rb hub stop</code></td>
@@ -1804,8 +1898,20 @@
 <td>Tail <code>.rtl-buddy/hub.log</code>.</td>
 </tr>
 <tr>
+<td><code>rb hub install-launchagent</code></td>
+<td>(macOS) Install a LaunchAgent so the hub auto-starts at login. See <a href="#auto-start-on-macos-launchagent">Auto-start on macOS</a>.</td>
+</tr>
+<tr>
+<td><code>rb hub uninstall-launchagent</code></td>
+<td>(macOS) Remove the LaunchAgent.</td>
+</tr>
+<tr>
 <td><code>rb hub config validate [--path PATH]</code></td>
 <td>Schema-check <code>hub.toml</code> and exit non-zero on the first error.</td>
+</tr>
+<tr>
+<td><code>rb hub send &lt;verb&gt; …</code></td>
+<td>One-shot peer that connects as <code>origin=cli</code> to drive the running hub from scripts. See <a href="#driving-the-hub-from-the-cli-rb-hub-send">Driving the hub from the CLI</a>.</td>
 </tr>
 </tbody>
 </table>
@@ -1878,17 +1984,19 @@
 <h2 id="discovery-rtl-buddyhubjson">Discovery (<code>.rtl-buddy/hub.json</code>)</h2>
 <p>When the hub binds, it writes a small JSON record under the project root's <code>.rtl-buddy/</code> directory:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41231</span><span class="p">,</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;listen_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53201</span><span class="p">,</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">&quot;http_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53202</span><span class="p">,</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">&quot;started_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-19T12:34:56Z&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;v&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41231</span><span class="p">,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">&quot;tcp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1:53201&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">&quot;server_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.5.0&quot;</span><span class="p">,</span>
 <a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="nt">&quot;project_root&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">,</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span><span class="nt">&quot;active_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="p">}</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span><span class="nt">&quot;started_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-19T12:34:56+00:00&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span><span class="nt">&quot;http_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53202</span><span class="p">,</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">  </span><span class="nt">&quot;active_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="p">}</span>
 </code></pre></div>
-<p><code>active_model</code> is optional — present when the hub started with <code>--model NAME</code> or after a <code>GET /view.json?model=</code> switch.</p>
+<p>The TCP listener address is the single <code>tcp</code> <code>host:port</code> string (there is no <code>listen_port</code> field). <code>v</code> is the discovery-schema version and <code>server_version</code> is the hub build. <code>http_port</code> is present only when the hub was started with <code>--serve-viewer</code>; <code>active_model</code> is present when the hub started with <code>--model NAME</code> or after a <code>GET /view.json?model=</code> switch (both optional keys are omitted when unset).</p>
 <p>Peers (the viewer SPA, the <code>rb wave</code> bridge, the nvim plugin) read this file to find the hub. The hub deletes the record on clean shutdown; a stale record after a crash is detected by <code>rb hub status</code> (PID not live) and the next <code>rb hub start</code> overwrites it.</p>
-<p>Override discovery resolution with the <code>RTL_BUDDY_HUB</code> environment variable when running outside a project tree — it should point at a <code>hub.json</code> directly.</p>
+<p>Override discovery resolution with the <code>RTL_BUDDY_HUB</code> environment variable when running outside a project tree — set it to the hub's <code>host:port</code> (the <code>tcp</code> value from <code>hub.json</code>, e.g. <code>RTL_BUDDY_HUB=127.0.0.1:53201</code>), <strong>not</strong> a path to a file.</p>
 <h2 id="configuration-rtl-buddyhubtoml">Configuration (<code>.rtl-buddy/hub.toml</code>)</h2>
 <p>Optional; sensible defaults apply when the file is absent. Two top-level sections:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">[hub]</span>
@@ -1933,16 +2041,34 @@
 </tr>
 </tbody>
 </table>
-<p>Each peer has a closed <code>Origin</code> enum value (<code>view</code>, <code>wave</code>, <code>nvim</code>, …); the hub allows at most one client per origin in v1.</p>
+<p>Each peer has a closed <code>Origin</code> enum value: <code>view</code> (the SPA), <code>wave</code> (the <code>rb wave</code> surfer bridge), <code>src</code> (editor adapters — the nvim plugin registers as <code>src</code>), <code>cli</code> (<code>rb hub send</code>), and <code>notebook</code> (the axi-profiler marimo notebook, added so it can peer over the event broker). The hub allows at most one client per origin; a second <code>hello</code> for an already-registered origin is refused unless it sets <code>takeover: true</code>, in which case the older peer is evicted (<code>bye</code>-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one.</p>
 <h2 id="protocol">Protocol</h2>
 <p>Wire envelope is line-delimited JSON, one record per line, UTF-8. The full spec lives in <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy/rtl-buddy-view#19</a>; the JSON Schema enforcing it ships at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code>. Encoded and decoded by <code>rtl_buddy.hub.protocol</code>, which validates on both sides — unknown fields are caller bugs, not forward-compat points.</p>
 <p>State events (selection_changed, signal_selected, cursor_moved, …) are broadcast to every connected peer <strong>except</strong> the origin. Requests (<code>resolve_*</code>, <code>goto_declaration</code>, …) are routed to the peer whose origin owns the target coordinate system; if no peer is registered for that origin, the hub replies with <code>error{code: "not_connected"}</code>. The <code>view ↔ wave ↔ src</code> resolver lives in <code>rtl_buddy.hub.resolver</code> and consumes the <code>view.json</code> snapshot pointed at by <code>mapping.view_json</code>.</p>
 <p>Lifecycle events (<code>hello</code> / <code>welcome</code> / <code>peer_joined</code> / <code>bye</code>) keep each peer's view of the registry live without re-fetching: <code>welcome</code> carries the snapshot at handshake time, and <code>peer_joined</code> / <code>bye</code> are deltas the hub broadcasts when later peers connect or disconnect. The joining or leaving peer's origin is in the envelope's <code>origin</code> field (payload is empty). Consumers should react to all three to maintain a current peer list — relying on <code>welcome</code> alone leaves the list frozen at handshake time.</p>
 <p>The hub also <strong>augments <code>source_focused</code></strong>: when a <code>src</code> peer (e.g. nvim's <code>:RtlBuddyShow</code>) broadcasts <code>{file, line, col}</code>, the resolver looks up the instance(s) whose <code>source</code> range in <code>view.json</code> contains the point and the hub emits a derived <code>selection_changed { instance_path: [...] }</code> with <code>origin: "cli"</code>. The schematic SPA already handles <code>selection_changed</code> — pan/highlight the matching instance — so this bridge makes editor cursor movement light up the schematic without a SPA-side protocol change. Multiple matches (nested instances) come back smallest-range first; consumers picking element <code>[0]</code> get the most-specific instance. Line-only matching is used for multi-line ranges (cursor at column 1 still finds an instantiation whose keyword sits further right); single-line ranges still use columns so two instantiations on the same line resolve distinctly.</p>
+<p>The hub also relays a <strong><code>diagnostics_set</code></strong> event for CDC / RDC / lint findings to the SPA's on-canvas badge layer. Each <code>diagnostics_set</code> carries a producer <code>source</code> key (latest-writer-wins per source, so re-publishing replaces that source's set), a list of <code>{file, line, severity, code, message}</code> items, and an optional <code>instance_path</code> per item (a fast path for the SPA badge layer that skips the file+line resolver). <code>rb cdc</code> publishes its violations this way, and <code>rb hub send diagnose SOURCE ITEM…</code> (with <code>--clear</code> / <code>--instance</code>) lets any tool push diagnostics. A <strong><code>wave_values_changed</code></strong> event is emitted on <code>cursor_moved</code> so the SPA can show signal values at the cursor.</p>
+<p><code>GET /healthz</code> returns <code>ok</code> for liveness probes.</p>
+<h2 id="driving-the-hub-from-the-cli-rb-hub-send">Driving the hub from the CLI (<code>rb hub send</code>)</h2>
+<p><code>rb hub send</code> is a one-shot peer: it connects to the running hub as <code>origin=cli</code>, sends one request or state event, prints any reply, and disconnects. It exits with code 2 when no hub is running (or <code>$RTL_BUDDY_HUB</code> is unset). It is the scripting/automation entry point and the easiest way to poke the hub by hand.</p>
+<p>The verbs group into broadcast, wave-control, SPA, source, and resolve families (see the <a href="../../reference/cli/#hub-send">CLI reference</a> for the full flag list of each):</p>
+<ul>
+<li><strong>State broadcast:</strong> <code>select INSTANCE_PATH</code>, <code>signal SIGNAL</code>, <code>cursor T_FS</code>, <code>scope WAVE_SCOPE</code>, <code>open FILE:LINE[:COL]</code>.</li>
+<li><strong>Wave control</strong> (routed to surfer via the <code>rb wave</code> bridge): <code>wave-add VARIABLES…</code>, <code>wave-cursor T_FS</code>, <code>wave-scope WAVE_SCOPE</code>, <code>wave-pan T_FS</code>, <code>wave-zoom START_FS END_FS</code>, <code>wave-zoom-fit</code>.</li>
+<li><strong>SPA:</strong> <code>view-pan INSTANCE_PATH</code>, <code>overlay NAME --on/--off</code> (<code>clock</code> / <code>reset</code> / <code>axi-perf</code> / <code>wave</code>), <code>capture --out PATH [--format png|svg] [--scale …]</code>.</li>
+<li><strong>Source:</strong> <code>open-source FILE:LINE[:COL]</code>.</li>
+<li><strong>Diagnostics:</strong> <code>diagnose SOURCE ITEM…</code> (each <code>ITEM</code> is <code>file:line:severity:code:message</code>; <code>--clear</code>, <code>--instance</code>).</li>
+<li><strong>State / resolve:</strong> <code>state</code> (snapshot of active model / selection / cursor / scope / peers), and <code>resolve {view-to-wave|wave-to-view|signal-to-view}</code>.</li>
+</ul>
+<h2 id="auto-start-on-macos-launchagent">Auto-start on macOS (LaunchAgent)</h2>
+<p>On macOS, <code>rb hub install-launchagent</code> writes <code>~/Library/LaunchAgents/com.rtl-buddy.hub.plist</code> (with <code>RunAtLoad</code> + <code>KeepAlive</code>) and <code>launchctl load</code>s it, so the hub starts at login and restarts if it dies. The agent runs <code>rb hub start --foreground</code> from the project directory and routes stdout/stderr to <code>.rtl-buddy/hub.log</code>. <code>rb hub uninstall-launchagent</code> unloads and removes the plist. On non-macOS platforms both commands error with <code>LaunchAgentUnsupportedError</code>.</p>
+<h2 id="axi-perf-overlay-and-notebook-spawning">AXI-perf overlay and notebook spawning</h2>
+<p>When the hub is started with <code>rb hub start --serve-viewer --axi-perf-from &lt;axi-perf.json&gt;</code> (the file produced by <code>rb axi-profile run</code>), it bakes a per-bundle / per-interconnect throughput overlay into every generated <code>view.json</code> and records the source test + suite dir so the SPA's "Open in marimo" button can launch the matching notebook without re-prompting. Point <code>--axi-perf-from</code> at the canonical <code>&lt;suite&gt;/artefacts/axi/&lt;test&gt;/axi-perf.json</code> so that derivation works. The file's existence is checked up-front (a missing path is a clean start-up error).</p>
+<p>The SPA and a deep-dive marimo notebook stay in sync through an in-memory <strong>event broker</strong> exposed as a WebSocket at <code>GET /api/events/sync</code> (opaque-string pub/sub: the broker relays each inbound message to every <em>other</em> connected client; topic routing and echo-suppression live in the clients; a slow client's outbound queue is bounded and drops the oldest message on overflow). <code>GET /api/axi-profile/notebook?test=NAME&amp;suite_dir=PATH</code> spawns <code>rb axi-profile notebook --headless</code> on demand, with marimo-session reuse and shutdown cleanup. The hub injects <code>RB_HUB_EVENTS_URL=ws://127.0.0.1:&lt;http_port&gt;/api/events/sync</code> into the spawned notebook so it joins the broker as a peer with <code>origin=notebook</code>; SPA bundle-node clicks then drive the live notebook.</p>
 <h2 id="troubleshooting">Troubleshooting</h2>
 <p><strong><code>rb hub start</code> exits with "already running"</strong> — <code>.rtl-buddy/hub.json</code> exists and its PID is live. If the prior daemon really is gone, the file is stale (clean shutdown didn't run); delete it and retry. <code>rb hub status</code> distinguishes the two cases.</p>
 <p><strong>Port already in use</strong> — pin <code>listen_port</code> (and <code>http_port</code> if using <code>--serve-viewer</code>) to a free port in <code>hub.toml</code>, or leave them at <code>0</code> to let the OS pick. The chosen port lands in <code>hub.json</code> either way.</p>
-<p><strong>Peer can't find the hub from outside the project tree</strong> — set <code>RTL_BUDDY_HUB=/path/to/.rtl-buddy/hub.json</code> in the peer's environment. The default discovery walks up from <code>cwd</code> looking for <code>.rtl-buddy/hub.json</code>, which doesn't work for processes launched from elsewhere.</p>
+<p><strong>Peer can't find the hub from outside the project tree</strong> — set <code>RTL_BUDDY_HUB=&lt;host&gt;:&lt;port&gt;</code> (the <code>tcp</code> value from <code>.rtl-buddy/hub.json</code>, e.g. <code>RTL_BUDDY_HUB=127.0.0.1:53201</code>) in the peer's environment. The default discovery walks up from <code>cwd</code> looking for <code>.rtl-buddy/hub.json</code>, which doesn't work for processes launched from elsewhere. The override is a <code>host:port</code> string, not a file path.</p>
 <p><strong><code>rb wave</code> bridge reports surfer disconnected</strong> — the bridge owns the WCP TCP connection, not the hub. Check the surfer fork is on PATH and built with WCP support; see <a href="../wave/">Waveform Viewer</a>. The hub stays up regardless; reconnect is automatic.</p>
 <p><strong><code>rb hub config validate</code> reports "unknown section"</strong> — typo. The schema accepts exactly <code>[hub]</code> and <code>[mapping]</code>; everything else (surfer flags, nvim keymaps, …) belongs in the adapters' own config.</p>
 <p><strong>Hub log empty or absent</strong> — <code>rb hub log</code> tails <code>.rtl-buddy/hub.log</code> by default. The <code>[hub].log_path</code> setting controls the location; logs route through <code>log_event()</code> like the rest of <code>rtl_buddy</code>, so <code>--machine</code> mode produces JSON Lines.</p>

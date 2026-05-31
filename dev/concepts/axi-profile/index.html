@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/axi-profile/">
       
       
-        <link rel="prev" href="../abv-simulation/">
+        <link rel="prev" href="../mut/">
       
       
         <link rel="next" href="../tool-check/">
@@ -821,6 +821,34 @@
     
   
     Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
   
 
     
@@ -1836,7 +1864,7 @@
 <p>Per-model and per-test outputs land under <code>artefacts/axi/</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>artefacts/axi/
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>├── &lt;model&gt;/
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>│   ├── axi.f                                    # filelist used by discover / gen-monitor
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>│   ├── axi.f                                    # filelist used by discover (gen-monitor reads only the manifest)
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>│   ├── axi-bundles.yaml                         # only when -o defaults here
 <a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│   ├── axi-profile-discover.log                 # stderr from `axi-profiler discover`
 <a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>│   └── axi-profile-gen-monitor.log              # stderr from `axi-profiler gen-monitor`
@@ -1847,14 +1875,15 @@
 <a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    ├── axi-profile-run.log                      # stderr from `axi-profiler run`
 <a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>    └── axi-profile-notebook.log                 # stderr from marimo
 </code></pre></div>
-<p><code>axi-perf.json</code> is the artefact picked up by <code>rb hier --overlay axi-perf=...</code> and by the hub's view-builder when <code>--axi-perf-from</code> is wired up — see <a href="../hub/">Hub</a> for the SPA overlay flow.</p>
+<p><code>axi-perf.json</code> is the artefact the hub's view-builder bakes into every generated <code>view.json</code> when <code>rb hub start --axi-perf-from &lt;path&gt;</code> is set — see <a href="../hub/#axi-perf-overlay-and-notebook-spawning">Hub</a> for the SPA overlay flow. (It is not consumed by a <code>rb hier</code> flag; <code>rb hier</code> has no <code>--overlay</code> option — the hub passes <code>--overlay axi-perf=&lt;path&gt;</code> to the renderer internally.)</p>
 <h2 id="hub-integration">Hub integration</h2>
 <p>When the <a href="../hub/">coordination hub</a> is running, two paths surface AXI-perf data in the rtl-buddy-view SPA:</p>
 <ul>
-<li><strong>Static overlay</strong>: <code>rb hub start --axi-perf-from &lt;test&gt;</code> threads the test's <code>axi-perf.json</code> into the SPA's view builder, decorating each AXI bundle node with throughput badges.</li>
+<li><strong>Static overlay</strong>: <code>rb hub start --axi-perf-from &lt;axi-perf.json&gt;</code> threads the test's <code>axi-perf.json</code> into the SPA's view builder, decorating each AXI bundle node with throughput badges. It also records the source test and suite dir so the SPA's "Open in marimo" button can launch the matching notebook without re-prompting — point <code>--axi-perf-from</code> at the canonical <code>&lt;suite&gt;/artefacts/axi/&lt;test&gt;/axi-perf.json</code> so that derivation lands.</li>
 <li><strong>Notebook launch</strong>: the SPA's "Open in marimo" button calls <code>/api/axi-profile/notebook?test=&lt;name&gt;</code>, which invokes <code>rb axi-profile notebook &lt;test&gt; --headless</code> and proxies the marimo URL back to the SPA. The user gets the full interactive notebook without leaving the hub UI.</li>
+<li><strong>Live event sync</strong>: a hub-launched notebook also joins the hub's event broker as a peer (<code>origin=notebook</code>) via the <code>RB_HUB_EVENTS_URL</code> environment variable the hub injects. SPA bundle-node clicks are then forwarded to the running notebook, so the deep-dive view tracks the SPA selection.</li>
 </ul>
-<p>Both flows reuse the same per-test artefact layout, so the static and interactive views agree on what data they're showing.</p>
+<p>All three flows reuse the same per-test artefact layout, so the static, interactive, and live views agree on what data they're showing.</p>
 <h2 id="passfail-detection">Pass/fail detection</h2>
 <p>Each <code>rb axi-profile</code> subcommand exits with the underlying <code>axi-profiler</code> exit code. A non-zero exit means the profiler reported an elaboration, ingest, or write error — check the relevant <code>.log</code> file under <code>artefacts/axi/</code>.</p>
 <p>Missing prerequisites (no <code>axi_bundles:</code> in <code>models.yaml</code>, no FST at the expected path, no <code>marimo</code> for <code>notebook</code>) surface as a clear <code>FatalRtlBuddyError</code> <em>before</em> invoking <code>axi-profiler</code>, so the error is anchored at the prerequisite step rather than buried in profiler output.</p>

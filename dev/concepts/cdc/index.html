@@ -1026,6 +1026,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../axi-profile/" class="md-nav__link">
         
   
@@ -1882,18 +1910,21 @@
 </code></pre></div>
 <h2 id="results-table">Results table</h2>
 <p>A summary table prints after each run, with one row per analysis:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>                       CDC Results Summary
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>┃ CDC Analysis    ┃ Result ┃ Violations ┃ Suppressed ┃ Crossings ┃
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>┡━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>│ demo_cdc_full   │ PASS   │ 0          │ 3          │ 142       │
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>└─────────────────┴────────┴────────────┴────────────┴───────────┘
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>                                      CDC Lint Results Summary
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>┏━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>┃ CDC Analysis  ┃ Result ┃ Description                       ┃ Violations ┃ Suppressed ┃ Crossings ┃
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>┡━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>│ demo_cdc_full │ PASS   │ no rule violations (3 suppressed) │ 0          │ 3          │ 142       │
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>└───────────────┴────────┴───────────────────────────────────┴────────────┴────────────┴───────────┘
 </code></pre></div>
 <ul>
+<li><strong>Description</strong> — short human-readable status (<code>no rule violations</code>, <code>no rule violations (N suppressed)</code>, or the failure reason for FAIL/SKIP rows).</li>
 <li><strong>Violations</strong> — non-waived findings parsed from <code>summary.violations</code> in the JSON report.</li>
 <li><strong>Suppressed</strong> — waiver-matched findings, parsed from <code>summary.suppressed</code>.</li>
 <li><strong>Crossings</strong> — total clock-domain crossings detected (informational, parsed from <code>summary.crossings</code>).</li>
 </ul>
+<p><code>rb cdc-regression</code> prints the same columns under the title <strong>CDC Regression Summary</strong> with a <code>Reg Level: N</code> metadata line.</p>
+<p>Pass <code>--machine</code> (a global flag, before the subcommand: <code>rb --machine cdc</code>) to get a JSON envelope on stdout instead of the table. Each result row carries <code>name</code>, <code>result</code>, <code>desc</code>, and — when available — <code>violations</code>, <code>suppressed</code>, and <code>crossings</code>; <code>cdc-regression</code> rows additionally carry <code>suite</code>. <code>rb --machine cdc --list</code> emits a <code>names</code> array.</p>
 <h2 id="artefacts">Artefacts</h2>
 <p>Per-analysis outputs land under <code>&lt;suite&gt;/artefacts/&lt;analysis&gt;/</code>:</p>
 <table>

@@ -18,7 +18,7 @@
         <link rel="prev" href="../fpv/">
       
       
-        <link rel="next" href="../axi-profile/">
+        <link rel="next" href="../mut/">
       
       
         
@@ -954,6 +954,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../axi-profile/" class="md-nav__link">
         
   
@@ -1621,9 +1649,9 @@
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
 <p>When <code>assertions: true</code> and the builder is Verilator, <code>rb test</code> appends <code>--assert</code> and <code>--coverage-user</code> to the Verilator compile command. The flags are idempotent — already-configured values in <code>root_config.yaml</code> builder opts are not duplicated.</p>
-<p>For non-Verilator builders the flag is currently a no-op: VCS/Xcelium SVA enablement is a follow-up.</p>
+<p>For non-Verilator builders the flag is currently a no-op — but not a silent one: the run logs a <code>compile.assertions_not_verilator</code> WARNING naming the simulator family, so a misconfigured non-Verilator run is visible rather than ignored. VCS/Xcelium SVA enablement is a follow-up.</p>
 <h2 id="what-you-see-in-the-results-table">What you see in the results table</h2>
-<p>When at least one test in the run enables <code>assertions</code>, <code>rb test</code> adds an <strong>Assertions</strong> column:</p>
+<p>When at least one test in the run enables <code>assertions</code>, both <code>rb test</code> and <code>rb regression</code> add an <strong>Assertions</strong> column:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Test           Result   Description                    Assertions
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>smoke_with_sva PASS     test passed                    0 fired
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sva_violation  FAIL     1 SVA assertion failure(s) …   1 fired
@@ -1648,7 +1676,8 @@
 <p><code>rb test</code> parses both <code>test.log</code> and <code>test.err</code> after simulation looking for lines matching:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>%Error: &lt;file&gt;:&lt;line&gt;: Assertion failed in &lt;hier&gt;: &#39;&lt;expr&gt;&#39;
 </code></pre></div>
-<p>A non-zero count flips the result to FAIL and includes the prior result/description in the FAIL description (so a wrapper that printed PASS still surfaces the truth).</p>
+<p>Under Verilator's <code>--timing</code> flow the line is prefixed with the simulation time, e.g. <code>[500] %Error: tb_top.sv:32: Assertion failed in top.dut: 'assert' failed.</code>; the counter accepts the optional leading <code>[&lt;time&gt;]</code> prefix. (Before this was handled, a fired assertion under <code>--timing</code> was missed and the test reported NA instead of FAIL.)</p>
+<p>A non-zero count flips the result to FAIL regardless of the prior verdict — whether the log said PASS, said nothing (NA), or the sim aborted before any marker — and folds the prior result/description into the FAIL message so the truth still surfaces.</p>
 <h2 id="cover-property-hits">Cover-property hits</h2>
 <p>Cover properties land in the same <code>coverage.dat</code> Verilator emits today, so:</p>
 <ul>
