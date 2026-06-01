@@ -152,7 +152,7 @@ Per-model and per-test outputs land under `artefacts/axi/`:
 ```
 artefacts/axi/
 ├── <model>/
-│   ├── axi.f                                    # filelist used by discover / gen-monitor
+│   ├── axi.f                                    # filelist used by discover (gen-monitor reads only the manifest)
 │   ├── axi-bundles.yaml                         # only when -o defaults here
 │   ├── axi-profile-discover.log                 # stderr from `axi-profiler discover`
 │   └── axi-profile-gen-monitor.log              # stderr from `axi-profiler gen-monitor`
@@ -164,16 +164,17 @@ artefacts/axi/
     └── axi-profile-notebook.log                 # stderr from marimo
 ```
 
-`axi-perf.json` is the artefact picked up by `rb hier --overlay axi-perf=...` and by the hub's view-builder when `--axi-perf-from` is wired up — see [Hub](hub.md) for the SPA overlay flow.
+`axi-perf.json` is the artefact the hub's view-builder bakes into every generated `view.json` when `rb hub start --axi-perf-from <path>` is set — see [Hub](hub.md#axi-perf-overlay-and-notebook-spawning) for the SPA overlay flow. (It is not consumed by a `rb hier` flag; `rb hier` has no `--overlay` option — the hub passes `--overlay axi-perf=<path>` to the renderer internally.)
 
 ## Hub integration
 
 When the [coordination hub](hub.md) is running, two paths surface AXI-perf data in the rtl-buddy-view SPA:
 
-- **Static overlay**: `rb hub start --axi-perf-from <test>` threads the test's `axi-perf.json` into the SPA's view builder, decorating each AXI bundle node with throughput badges.
+- **Static overlay**: `rb hub start --axi-perf-from <axi-perf.json>` threads the test's `axi-perf.json` into the SPA's view builder, decorating each AXI bundle node with throughput badges. It also records the source test and suite dir so the SPA's "Open in marimo" button can launch the matching notebook without re-prompting — point `--axi-perf-from` at the canonical `<suite>/artefacts/axi/<test>/axi-perf.json` so that derivation lands.
 - **Notebook launch**: the SPA's "Open in marimo" button calls `/api/axi-profile/notebook?test=<name>`, which invokes `rb axi-profile notebook <test> --headless` and proxies the marimo URL back to the SPA. The user gets the full interactive notebook without leaving the hub UI.
+- **Live event sync**: a hub-launched notebook also joins the hub's event broker as a peer (`origin=notebook`) via the `RB_HUB_EVENTS_URL` environment variable the hub injects. SPA bundle-node clicks are then forwarded to the running notebook, so the deep-dive view tracks the SPA selection.
 
-Both flows reuse the same per-test artefact layout, so the static and interactive views agree on what data they're showing.
+All three flows reuse the same per-test artefact layout, so the static, interactive, and live views agree on what data they're showing.
 
 ## Pass/fail detection
 

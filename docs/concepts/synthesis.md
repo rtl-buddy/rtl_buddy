@@ -128,6 +128,8 @@ syntheses:
 | `tool` | Synthesis tool name — must match a `cfg-synth-tools` entry in `root_config.yaml` |
 | `platform` | Optional synth platform name from `cfg-synth-platforms` (which in turn references a `cfg-pdks` entry); enables technology mapping |
 | `constraints` | Optional SDC constraints file, resolved relative to `synth.yaml` |
+| `lef-paths` | Optional block-specific LEF files (resolved relative to `synth.yaml`); appended after the platform PDK's tech/macro LEFs for the OpenROAD backend |
+| `lib-paths` | Optional block-specific Liberty files (resolved relative to `synth.yaml`); appended after the platform PDK Liberty for both the Yosys and OpenROAD backends |
 | `params` | Optional key-value pairs passed as top-level parameter overrides (`chparam` in Yosys) |
 | `defines` | Optional compile-time Verilog defines passed via `-D KEY=VALUE` |
 | `reglvl` | Regression level (int or per-tool dict); same semantics as simulation `reglvl` |

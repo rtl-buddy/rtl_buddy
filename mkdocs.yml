@@ -53,6 +53,7 @@ nav:
       - CDC Lint: concepts/cdc.md
       - Formal Property Verification: concepts/fpv.md
       - Assertion-Based Verification (sim): concepts/abv-simulation.md
+      - Mutation Testing: concepts/mut.md
       - AXI Profiling: concepts/axi-profile.md
       - Tool Check: concepts/tool-check.md
   - Reference:

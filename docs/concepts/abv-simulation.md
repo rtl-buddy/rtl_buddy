@@ -25,11 +25,11 @@ tests:
 
 When `assertions: true` and the builder is Verilator, `rb test` appends `--assert` and `--coverage-user` to the Verilator compile command. The flags are idempotent — already-configured values in `root_config.yaml` builder opts are not duplicated.
 
-For non-Verilator builders the flag is currently a no-op: VCS/Xcelium SVA enablement is a follow-up.
+For non-Verilator builders the flag is currently a no-op — but not a silent one: the run logs a `compile.assertions_not_verilator` WARNING naming the simulator family, so a misconfigured non-Verilator run is visible rather than ignored. VCS/Xcelium SVA enablement is a follow-up.
 
 ## What you see in the results table
 
-When at least one test in the run enables `assertions`, `rb test` adds an **Assertions** column:
+When at least one test in the run enables `assertions`, both `rb test` and `rb regression` add an **Assertions** column:
 
 ```text
 Test           Result   Description                    Assertions
@@ -63,7 +63,9 @@ For a property set that needs the full SVA language, point those properties at `
 %Error: <file>:<line>: Assertion failed in <hier>: '<expr>'
 ```
 
-A non-zero count flips the result to FAIL and includes the prior result/description in the FAIL description (so a wrapper that printed PASS still surfaces the truth).
+Under Verilator's `--timing` flow the line is prefixed with the simulation time, e.g. `[500] %Error: tb_top.sv:32: Assertion failed in top.dut: 'assert' failed.`; the counter accepts the optional leading `[<time>] ` prefix. (Before this was handled, a fired assertion under `--timing` was missed and the test reported NA instead of FAIL.)
+
+A non-zero count flips the result to FAIL regardless of the prior verdict — whether the log said PASS, said nothing (NA), or the sim aborted before any marker — and folds the prior result/description into the FAIL message so the truth still surfaces.
 
 ## Cover-property hits
 

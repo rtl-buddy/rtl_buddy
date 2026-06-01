@@ -1629,7 +1629,7 @@ def test_openroad_run_fails_without_library(tmp_path, monkeypatch):
     or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(platform=None))
     result = or_synth.run()
     assert isinstance(result, SynthFailResults)
-    assert "library" in result.results["desc"].lower()
+    assert "liberty" in result.results["desc"].lower()
 
 
 def test_openroad_run_fails_without_lef(tmp_path, monkeypatch):

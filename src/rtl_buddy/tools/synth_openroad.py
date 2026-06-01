@@ -480,7 +480,11 @@ class OpenRoadSynth:
         if not lib_paths:
             return SynthFailResults(
                 name=self.name + "/results",
-                desc="OpenROAD backend requires at least one library (cfg-synth-libs)",
+                desc=(
+                    "OpenROAD backend requires Liberty — set a platform "
+                    "(cfg-synth-platforms -> cfg-pdks corner) or add lib-paths "
+                    "to the synth.yaml entry"
+                ),
             )
 
         if not lef_paths:
@@ -492,7 +496,11 @@ class OpenRoadSynth:
             )
             return SynthFailResults(
                 name=self.name + "/results",
-                desc="OpenROAD backend requires LEF paths (lef-paths) in cfg-synth-libs",
+                desc=(
+                    "OpenROAD backend requires LEF — the platform PDK must "
+                    "provide tech-lef/macro-lef, or add lef-paths to the "
+                    "synth.yaml entry"
+                ),
             )
 
         fl_path = self._filelist_path()

@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-rtl--buddy.github.io-blue)](https://rtl-buddy.github.io/rtl_buddy/)
 
-`rtl_buddy` is a Python CLI for Verilog and SystemVerilog RTL design and verification workflows: simulator-driven tests and randomized regressions, filelist generation, synthesis, place-and-route, power analysis, CDC lint, formal property verification, waveform viewing, hierarchy rendering, AXI interconnect profiling, spec traceability, and adjacent automation. It is designed to work well for both humans and AI agents.
+`rtl_buddy` is a Python CLI for Verilog and SystemVerilog RTL design and verification workflows: simulator-driven tests and randomized regressions, filelist generation, synthesis, place-and-route, power analysis, CDC lint, formal property verification, mutation testing, waveform viewing, hierarchy rendering, AXI interconnect profiling, spec traceability, and adjacent automation. It is designed to work well for both humans and AI agents.
 
 It is built to sit on top of the tools your project already uses, while giving you a cleaner, more repeatable interface for day-to-day RTL work. Current first-class flows cover Verilator/VCS simulation (with optional cocotb), Yosys synthesis (with optional yosys-slang frontend), OpenROAD-based place-and-route and power analysis, [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) CDC lint, SymbiYosys formal verification, and Surfer-based waveform viewing with live editor annotation. Verible command integration covers lint, syntax, format, preprocessor, and `verible.filelist` generation; broader first-class Verible and PeakRDL workflows are on the roadmap.
 
@@ -45,6 +45,7 @@ uv run rb tool-check
 - **Power analysis** (`rb power`, `rb power-regression`): OpenROAD `report_power` over post-synth or post-PnR netlists, with static, synthetic, or SAIF/VCD activity sources (`rb saif` converts FST/VCD traces to SAIF v2.0)
 - **CDC lint** (`rb cdc`, `rb cdc-regression`): first-class integration with [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc)
 - **Formal property verification** (`rb fpv`, `rb fpv-regression`): SymbiYosys-driven proofs with reproducible solver pinning; `rb wave-fpv` opens the counterexample VCD for a failed run
+- **Mutation testing** (`rb mut`): scores how well a verification suite catches injected bugs by mutating a design file and checking whether an FPV proof or a simulation/assertion oracle kills each mutant (via the optional [rtl-buddy-xeno](https://github.com/rtl-buddy/rtl-buddy-xeno) engine)
 - **Waveform viewing** (`rb wave`): opens [Surfer](https://surfer-project.org/) with live signal-value annotation in your editor via the WCP protocol
 - **Hierarchy rendering** (`rb hier`): module hierarchy diagrams via [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view), with optional CDC and RDC clock-domain annotations
 - **AXI interconnect profiling** (`rb axi-profile`): discover AXI bundles from RTL, emit a bind-style SV monitor, ingest a test's FST into per-test `axi-perf.json` + per-transaction Parquet, and launch a packaged marimo notebook for interactive analysis

@@ -10,7 +10,7 @@ description: How to run formal property verification with rtl_buddy via the rb f
 >
 > See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
 
-`rb fpv` drives SymbiYosys through a generated `.sby` config that consumes the model's filelist plus a list of SystemVerilog property files. It produces a per-run `status` verdict, a counterexample VCD when a property is disproved, and a full `sby` log under `fpv/<run>/artefacts/`.
+`rb fpv` drives SymbiYosys through a generated `.sby` config that consumes the model's filelist plus a list of SystemVerilog property files. It produces a per-run `status` verdict, a counterexample VCD when a property is disproved, and a full `sby` log under `<dir of fpv.yaml>/artefacts/<run>/`.
 
 The flow is intentionally compact and config-driven — per-run knobs (mode, depth, engines, properties) live in `fpv.yaml`, tool-wide defaults live in `cfg-fpv-tools` in `root_config.yaml`.
 
@@ -164,11 +164,11 @@ A summary table prints after each run:
 
 ```
                                   FPV Results Summary
-┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
-┃ FPV Run         ┃ Result ┃ Description               ┃ Mode ┃ Depth ┃ Engines      ┃ Runtime ┃
-┡━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
-│ demo_fpv_fifo   │ PASS   │ property proved (bmc, 32) │ bmc  │ 32    │ smtbmc yices │ 0.4s    │
-└─────────────────┴────────┴───────────────────────────┴──────┴───────┴──────────────┴─────────┘
+┏━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ FPV Run       ┃ Result ┃ Description                     ┃ Mode ┃ Depth ┃ Engines      ┃ Runtime ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ demo_fpv_fifo │ PASS   │ property proved (bmc, depth 32) │ bmc  │ 32    │ smtbmc yices │ 0.4s    │
+└───────────────┴────────┴─────────────────────────────────┴──────┴───────┴──────────────┴─────────┘
 ```
 
 - **Mode / Depth / Engines** — what was actually run, surfaced for quick triage.
@@ -191,7 +191,7 @@ Logic *outside* every property's COI is provably unverified by the property set 
 
 ```text
 FPV Run     Result   Description                ...   COI
-counter_inv PASS     property proved (bmc, 32)        73% (38/52)
+counter_inv PASS     property proved (bmc, depth 32)        73% (38/52)
 ```
 
 - Per-module rollup lives in `FpvResults.results["coi"]["per_module"]` so machine consumers can find under-verified blocks.
@@ -211,7 +211,7 @@ When the design has any `$assume` cells, the results table grows an **Assumes** 
 
 ```text
 FPV Run     Result   Description                ...   Assumes
-counter_inv PASS     property proved (bmc, 32)        3 used, 2 dead
+counter_inv PASS     property proved (bmc, depth 32)        3 used, 2 dead
 ```
 
 - `N used` (all assumes are inside the assertion COI) — silent, just a sanity confirmation.
@@ -229,7 +229,7 @@ When vacuity reports any unreachable antecedent, the results table grows a **Vac
 
 ```text
 FPV Run     Result   Description                ...   Vacuity
-counter_inv PASS     property proved (bmc, 32)        1/3 vacuous
+counter_inv PASS     property proved (bmc, depth 32)        1/3 vacuous
 ```
 
 - `N ok` — every antecedent reached
@@ -251,7 +251,7 @@ Scope today:
 
 ## Artefacts
 
-Per-run outputs land under `fpv/<run>/artefacts/`:
+Per-run outputs land under the command root — `<dir of fpv.yaml>/artefacts/<run>/` (the artefact tree is anchored on the selected `fpv.yaml`'s directory, not your shell's cwd; see [Execution Context](execution-context.md)):
 
 | File | Contents |
 |---|---|
@@ -280,7 +280,7 @@ SKIP is returned when the run's `reglvl` is above the `-l` filter passed to `rb 
 rb wave-fpv demo_fpv_counter_safety
 ```
 
-`rb wave-fpv` resolves the trace at `fpv/<suite>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd` (first engine wins when more than one produced a trace). The configured surfer comes from the same `cfg-surfer` entry that `rb wave` uses; override with `--surfer <name>`. Raises if the verification has not been run yet or the proof passed (no CEX was produced).
+`rb wave-fpv` reads the same `fpv.yaml` (`-c`/`--fpv-config`, default `fpv.yaml`) to resolve the verification name, then opens the trace at `<dir of fpv.yaml>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd` (first engine in sorted order wins when more than one produced a trace). It opens the VCD in the `cfg-surfer` entry named `surfer-default` unless you pass `--surfer <name>`. Raises if the verification has not been run yet or the proof passed (no CEX was produced).
 
 ## Out of scope (today)
 

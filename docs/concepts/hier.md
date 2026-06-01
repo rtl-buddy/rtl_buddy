@@ -95,7 +95,7 @@ Both annotation files are JSON keyed by hierarchical instance path. `rb hier` va
 
 ## Artefacts
 
-Per-model outputs land under the current directory's `artefacts/hier/<model>/`:
+Per-model outputs land under the model's command root — `<dir of models.yaml>/artefacts/hier/<model>/` (in `--view tb` mode, `<dir of tests.yaml>/artefacts/hier/<model>/tb/<tb_name>/`). The artefact tree is anchored on the primary config's directory, not your shell's cwd — see [Execution Context](execution-context.md). For example, `rb hier demo_top -c design/demo_top/models.yaml` writes under `design/demo_top/artefacts/hier/demo_top/`:
 
 | File | Contents |
 |---|---|
@@ -112,7 +112,7 @@ The `Failed to locate rtl-buddy-view` error before the renderer runs is the most
 
 ## Hub integration
 
-The [coordination hub](hub.md) consumes `rb hier`'s JSON output (`--format json`) to drive the rtl-buddy-view SPA's interactive hierarchy view. Annotation files (`--cdc-annotations`, `--rdc-annotations`, `--overlay axi-perf=...`) are surfaced as overlays in the SPA when the hub is running.
+The [coordination hub](hub.md) consumes `rb hier`'s JSON output (`--format json`) to drive the rtl-buddy-view SPA's interactive hierarchy view. The `rb hier` clock/reset overlays (`--cdc-annotations`, `--rdc-annotations`) are real CLI flags and are surfaced as overlays in the SPA. The AXI-perf overlay is **not** a `rb hier` flag — it is baked into the SPA view only via `rb hub start --axi-perf-from <axi-perf.json>` (see [Hub](hub.md#axi-perf-overlay-and-notebook-spawning)), which invokes the renderer with `--overlay axi-perf=<path>` internally.
 
 `rb hub start --model <name>` discovers the model's `models.yaml`, invokes `rb hier` under the hood, and serves the result alongside live diagnostics and AXI-perf overlays — `rb hier` is the underlying renderer for both the static CLI use case and the live SPA flow.
 

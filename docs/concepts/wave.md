@@ -37,7 +37,7 @@ cfg-surfer:
   - name: "surfer-default"
     path: "../surfer/target/release/surfer"  # or bare name on PATH
     wcp-port: 0                              # 0 = OS assigns a free port
-    editor-cmd: "nvim +%l %f"               # %f = file, %l = line
+    editor-cmd: "nvim +%l %f"               # %f = file, %l = line (schema default is "vim +%l %f")
     editor-terminal: "tmux"                  # tmux | iterm2 | terminal | ""
     editor-sock: "~/.local/share/rtl-buddy/wave-nvim.sock"  # enables nvim reuse
     ctrl-sock: "~/.local/share/rtl-buddy/wave-ctrl.sock"    # enables nvim → Surfer
@@ -114,6 +114,20 @@ uv run rb wave basic --focused-signal
 When `editor-sock` is set, rtl-buddy launches nvim with `--listen <sock>` on first use. Subsequent `goto_declaration` and `cursor_moved` events reuse the running instance via `--remote-expr nvim_exec2(...)` — no new windows, no command-line flicker.
 
 The socket is probed with a 300 ms timeout. If the socket is stale (nvim has been closed), the next `goto_declaration` opens a fresh nvim window.
+
+## Opening FPV counterexamples (`rb wave-fpv`)
+
+`rb wave-fpv <verif_name>` opens the SymbiYosys counterexample VCD for a failed [formal verification](fpv.md) in Surfer:
+
+```bash
+uv run rb wave-fpv demo_fpv_counter_safety
+```
+
+It reads the same `fpv.yaml` (`-c`/`--fpv-config`, default `fpv.yaml`) to resolve the verification name, then opens the trace at `<dir of fpv.yaml>/artefacts/<verif>/sby_workdir/engine_<N>/trace.vcd` (first engine in sorted order). It opens the VCD in the `cfg-surfer` entry named `surfer-default` unless you pass `--surfer <name>`. Unlike `rb wave`, it just opens the VCD — there is no WCP annotation round-trip — so mainline Surfer suffices. It raises a clear error if the verification has not been run, the proof passed (no counterexample), or no engine produced a trace.
+
+## Hub integration
+
+When a project [coordination hub](hub.md) is running, `rb wave` opportunistically connects to it as the `wave`-origin peer (the bridge in `tools/wave_hub_bridge.py`; the hub is discovered via `$RTL_BUDDY_HUB` or by walking up to `.rtl-buddy/hub.json`). The bridge forwards Surfer events to the hub (cursor moves → `cursor_time_changed`, plus `scope_changed`, `signal_selected`, and a `wave_values_changed` snapshot on cursor move) and serves hub requests back to Surfer (`wave_add_variables`, `wave_set_cursor`, `wave_set_scope`, `wave_set_viewport`, `wave_zoom_to_range`, `wave_zoom_to_fit`). Time is exchanged in femtoseconds (`time_unit=fs`). If no hub is reachable the bridge stays silent and `rb wave` runs fully standalone — the hub is never required.
 
 ## Surfer build
 
