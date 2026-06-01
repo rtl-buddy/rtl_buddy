@@ -3187,9 +3187,9 @@
 <td>Cap on mutants generated. Default <code>100</code></td>
 </tr>
 <tr>
-<td><code>budget.per_module_cap</code></td>
+<td><code>budget.per_file_cap</code></td>
 <td>int or null</td>
-<td>Per-module cap, or <code>null</code> (default) for none</td>
+<td>Per-file cap (max mutants per scoped file), or <code>null</code> (default) for none</td>
 </tr>
 <tr>
 <td><code>budget.time_budget_minutes</code></td>
@@ -3204,7 +3204,7 @@
 <tr>
 <td><code>scope.include</code> / <code>scope.exclude</code></td>
 <td>list of strings</td>
-<td>Optional include/exclude lists (no-op for single-file campaigns)</td>
+<td>Optional case-sensitive globs (shell-glob, no <code>**</code>) matched against each node's instance path and source file; selects which files to mutate. Empty = single-file default (mutate <code>design_file</code>, no rtl-buddy-view needed); non-empty ingests the <code>rb hier</code> graph and needs <code>rtl-buddy-view</code> on PATH</td>
 </tr>
 </tbody>
 </table>

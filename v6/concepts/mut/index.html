@@ -962,6 +962,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#scope-hierarchical-designs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope: hierarchical designs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#running" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1653,6 +1664,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#scope-hierarchical-designs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope: hierarchical designs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#running" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1789,9 +1811,13 @@
 <a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
 <a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="nt">budget</span><span class="p">:</span>
 <a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">  </span><span class="nt">max_mutants</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">  </span><span class="nt">per_module_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">  </span><span class="nt">per_file_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
 <a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">  </span><span class="nt">time_budget_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
 <a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sequential&quot;</span>
+<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>
+<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="nt">scope</span><span class="p">:</span><span class="w">                                 </span><span class="c1"># optional; empty = single-file default</span>
+<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">  </span><span class="nt">include</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
+<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">  </span><span class="nt">exclude</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
 </code></pre></div>
 <h3 id="fields">Fields</h3>
 <table>
@@ -1852,11 +1878,11 @@
 </tr>
 <tr>
 <td><code>budget.max_mutants</code></td>
-<td>Cap on the number of mutants generated. Default <code>100</code></td>
+<td>Global ceiling on mutants generated across the campaign. Default <code>100</code>. Under a non-empty <code>scope</code> this is drained over the scoped files in sorted order, so later files may be truncated once it is spent (see <a href="#scope-hierarchical-designs">Scope: hierarchical designs</a>)</td>
 </tr>
 <tr>
-<td><code>budget.per_module_cap</code></td>
-<td>Per-module cap, or <code>null</code> for none (default <code>null</code>)</td>
+<td><code>budget.per_file_cap</code></td>
+<td>Per-file cap (max mutants per scoped file), or <code>null</code> for none (default <code>null</code>)</td>
 </tr>
 <tr>
 <td><code>budget.time_budget_minutes</code></td>
@@ -1868,7 +1894,7 @@
 </tr>
 <tr>
 <td><code>scope.include</code> / <code>scope.exclude</code></td>
-<td>Optional include/exclude lists (no-op for single-file leaf campaigns)</td>
+<td>Optional shell-glob lists selecting which files participate. Empty (default) is a single-file campaign over <code>design_file</code>; non-empty ingests the design hierarchy (see <a href="#scope-hierarchical-designs">Scope: hierarchical designs</a>)</td>
 </tr>
 </tbody>
 </table>
@@ -1908,6 +1934,25 @@
 </tr>
 </tbody>
 </table>
+<h2 id="scope-hierarchical-designs">Scope: hierarchical designs</h2>
+<p><code>scope.include</code> / <code>scope.exclude</code> select which files a campaign mutates. The two modes are distinguished purely by whether the block is empty:</p>
+<ul>
+<li><strong>Empty <code>scope</code> is the single-file default.</strong> With no include/exclude, the campaign mutates exactly the one <code>design_file</code>. This is the path most leaf-block campaigns take, and it needs <strong>no</strong> rtl-buddy-view and no hierarchy graph — the empty-scope path is unchanged.</li>
+<li><strong>Non-empty <code>scope</code> ingests the design hierarchy.</strong> rtl_buddy resolves the globs against the hierarchy graph that rtl-buddy-view emits (the same graph behind <code>rb hier --format json</code>), so when <code>scope</code> is set the rtl-buddy-view binary must be on <code>PATH</code>.</li>
+</ul>
+<p>How the globs are matched (this is today's implementation, not an aspiration):</p>
+<ul>
+<li><strong>Shell-glob patterns, matched case-sensitively on every platform.</strong> Patterns are stdlib <code>fnmatch</code> globs. There is <strong>no</strong> <code>**</code> recursion — spell out path segments explicitly (e.g. <code>top/sub/*.sv</code>, not <code>top/**/x.sv</code>).</li>
+<li><strong>Each pattern is matched against both a node's instance path and its source file.</strong> An <code>include</code> glob can target either an instance path (e.g. <code>top.u_alu</code>) or a file (its absolute path <em>or</em> its model-relative path).</li>
+<li><strong>Empty <code>include</code> selects every in-scope node</strong>; any <code>exclude</code> match drops a node. A scope that resolves to <strong>zero files is a hard error</strong> (<code>FatalRtlBuddyError</code>) — fix the patterns rather than silently mutating nothing.</li>
+</ul>
+<p>What gets mutated, and where the baseline lives:</p>
+<ul>
+<li><strong>Mutation granularity is per file.</strong> The scoped file-set is mutated one file at a time, with each mutant spliced into its origin file. A module instantiated twice maps to a single source file and is mutated <strong>once</strong>; per-instance scoping is a possible future extension.</li>
+<li><strong><code>design_file</code> stays required and is the baseline-oracle target in both modes.</strong> When <code>scope</code> is set it is the scoped file-set that gets mutated — <code>design_file</code> itself is <strong>not</strong> mutated, it remains the target the baseline oracle proves/runs against.</li>
+<li><strong>Budget under scope.</strong> <code>budget.per_file_cap</code> caps mutants per scoped file; <code>budget.max_mutants</code> is a global ceiling drained over the scoped files in sorted order, so later files may be truncated once it is spent.</li>
+</ul>
+<p>Scope graph-ingestion is the hierarchical-design work tracked under #206 / #239. Until per-instance scoping lands, scope narrows <em>which</em> files a campaign mutates rather than distinguishing two instances of the same module.</p>
 <h2 id="running">Running</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># List candidate mutation sites without mutating (uses ./mut.yaml)</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>mut<span class="w"> </span>list
