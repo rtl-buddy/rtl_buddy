@@ -754,6 +754,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#opening-fpv-counterexamples-rb-wave-fpv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening FPV counterexamples (rb wave-fpv)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#surfer-build" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -984,6 +1006,34 @@
     
   
     Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
   
 
     
@@ -1674,6 +1724,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#opening-fpv-counterexamples-rb-wave-fpv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opening FPV counterexamples (rb wave-fpv)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hub-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#surfer-build" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1729,7 +1801,7 @@
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;surfer-default&quot;</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../surfer/target/release/surfer&quot;</span><span class="w">  </span><span class="c1"># or bare name on PATH</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">wcp-port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">                              </span><span class="c1"># 0 = OS assigns a free port</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nvim</span><span class="nv"> </span><span class="s">+%l</span><span class="nv"> </span><span class="s">%f&quot;</span><span class="w">               </span><span class="c1"># %f = file, %l = line</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">editor-cmd</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nvim</span><span class="nv"> </span><span class="s">+%l</span><span class="nv"> </span><span class="s">%f&quot;</span><span class="w">               </span><span class="c1"># %f = file, %l = line (schema default is &quot;vim +%l %f&quot;)</span>
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">editor-terminal</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tmux&quot;</span><span class="w">                  </span><span class="c1"># tmux | iterm2 | terminal | &quot;&quot;</span>
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">editor-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-nvim.sock&quot;</span><span class="w">  </span><span class="c1"># enables nvim reuse</span>
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">ctrl-sock</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/.local/share/rtl-buddy/wave-ctrl.sock&quot;</span><span class="w">    </span><span class="c1"># enables nvim → Surfer</span>
@@ -1774,11 +1846,18 @@
 <h3 id="editor-socket-reuse">Editor socket reuse</h3>
 <p>When <code>editor-sock</code> is set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use. Subsequent <code>goto_declaration</code> and <code>cursor_moved</code> events reuse the running instance via <code>--remote-expr nvim_exec2(...)</code> — no new windows, no command-line flicker.</p>
 <p>The socket is probed with a 300 ms timeout. If the socket is stale (nvim has been closed), the next <code>goto_declaration</code> opens a fresh nvim window.</p>
+<h2 id="opening-fpv-counterexamples-rb-wave-fpv">Opening FPV counterexamples (<code>rb wave-fpv</code>)</h2>
+<p><code>rb wave-fpv &lt;verif_name&gt;</code> opens the SymbiYosys counterexample VCD for a failed <a href="../fpv/">formal verification</a> in Surfer:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
+</code></pre></div>
+<p>It reads the same <code>fpv.yaml</code> (<code>-c</code>/<code>--fpv-config</code>, default <code>fpv.yaml</code>) to resolve the verification name, then opens the trace at <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine in sorted order). It opens the VCD in the <code>cfg-surfer</code> entry named <code>surfer-default</code> unless you pass <code>--surfer &lt;name&gt;</code>. Unlike <code>rb wave</code>, it just opens the VCD — there is no WCP annotation round-trip — so mainline Surfer suffices. It raises a clear error if the verification has not been run, the proof passed (no counterexample), or no engine produced a trace.</p>
+<h2 id="hub-integration">Hub integration</h2>
+<p>When a project <a href="../hub/">coordination hub</a> is running, <code>rb wave</code> opportunistically connects to it as the <code>wave</code>-origin peer (the bridge in <code>tools/wave_hub_bridge.py</code>; the hub is discovered via <code>$RTL_BUDDY_HUB</code> or by walking up to <code>.rtl-buddy/hub.json</code>). The bridge forwards Surfer events to the hub (cursor moves → <code>cursor_time_changed</code>, plus <code>scope_changed</code>, <code>signal_selected</code>, and a <code>wave_values_changed</code> snapshot on cursor move) and serves hub requests back to Surfer (<code>wave_add_variables</code>, <code>wave_set_cursor</code>, <code>wave_set_scope</code>, <code>wave_set_viewport</code>, <code>wave_zoom_to_range</code>, <code>wave_zoom_to_fit</code>). Time is exchanged in femtoseconds (<code>time_unit=fs</code>). If no hub is reachable the bridge stays silent and <code>rb wave</code> runs fully standalone — the hub is never required.</p>
 <h2 id="surfer-build">Surfer build</h2>
 <p>The annotation features require Surfer built from the <code>rtl-buddy</code> branch:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nb">cd</span><span class="w"> </span>../surfer<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>rtl-buddy
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="nb">cd</span><span class="w"> </span>../surfer<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>checkout<span class="w"> </span>rtl-buddy
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>cargo<span class="w"> </span>build<span class="w"> </span>--release
 </code></pre></div>
 <p>Point <code>cfg-surfer.path</code> at <code>../surfer/target/release/surfer</code> (relative to <code>root_config.yaml</code>) or install the binary on <code>PATH</code>.</p>
 

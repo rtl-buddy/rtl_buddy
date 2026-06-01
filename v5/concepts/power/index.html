@@ -1032,6 +1032,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../axi-profile/" class="md-nav__link">
         
   
@@ -1768,7 +1796,7 @@
 </blockquote>
 <p><code>rb power</code> runs OpenROAD's <code>report_power</code> on the tech-mapped netlist produced by an upstream <code>rb synth</code> run. It supports three activity sources — built-in static defaults, synthetic global toggle/duty, and per-signal activity from a SAIF or VCD trace — and reports total / internal / switching / leakage power.</p>
 <h2 id="where-the-numbers-come-from">Where the numbers come from</h2>
-<p><code>rb power</code> runs on either the <strong>post-synth</strong> netlist (default) or the <strong>post-PnR</strong> routed netlist with SPEF parasitics. The <code>netlist-source:</code> field in <code>power.yaml</code> selects which.</p>
+<p><code>rb power</code> runs on either the <strong>post-synth</strong> netlist (default) or the <strong>post-PnR</strong> routed design read back from the OpenROAD database (<code>&lt;top&gt;.routed.odb</code>). The <code>netlist-source:</code> field in <code>power.yaml</code> selects which.</p>
 <table>
 <thead>
 <tr>
@@ -1780,8 +1808,8 @@
 <tbody>
 <tr>
 <td>Netlist</td>
-<td><code>synth_netlist.v</code> from <code>rb synth</code></td>
-<td><code>&lt;top&gt;.routed.v</code> from <code>rb pnr</code></td>
+<td><code>synth_netlist.v</code> from <code>rb synth</code> (<code>read_verilog</code>)</td>
+<td><code>&lt;top&gt;.routed.odb</code> OpenROAD DB from <code>rb pnr</code> (<code>read_db</code>)</td>
 </tr>
 <tr>
 <td>SDC</td>
@@ -1791,7 +1819,7 @@
 <tr>
 <td>Parasitics</td>
 <td>None</td>
-<td><code>&lt;top&gt;.routed.spef</code> read via <code>read_spef</code></td>
+<td>Routing-derived wire-cap via <code>estimate_parasitics -global_routing</code> on the read-back ODB (no SPEF — OpenROAD's RCX extractor is not wired into the PnR flow, so <code>write_spef</code> would emit an empty file)</td>
 </tr>
 <tr>
 <td>Clock tree</td>
@@ -1825,7 +1853,7 @@
 </tr>
 </tbody>
 </table>
-<p>LEF is loaded in both cases because OpenROAD's gate-level <code>read_verilog</code> requires a technology view in its in-memory DB; <code>report_power</code> itself only consults Liberty (per-cell internal/switching coefficients, leakage tables).</p>
+<p>LEF is loaded for the <code>synth</code> source because OpenROAD's gate-level <code>read_verilog</code> requires a technology view in its in-memory DB; the <code>pnr</code> source restores it from the ODB instead. <code>report_power</code> itself only consults Liberty (per-cell internal/switching coefficients, leakage tables). If the routed ODB is missing the run FAILs with <code>routed ODB not found at … — re-run rb pnr (older runs predate the .routed.odb artefact)</code>, so re-run <code>rb pnr</code> if you upgraded across that change.</p>
 <p>For early PPA exploration where you just want a leakage + activity-aware switching estimate, the synth-source path is fast and cheap. For sign-off-grade switching numbers where the clock tree matters, use the pnr-source path.</p>
 <h2 id="supported-backend">Supported backend</h2>
 <p>Today only <code>openroad</code> is wired up. The <code>tool:</code> field in <code>power.yaml</code> selects it; the dispatch is a registry (<code>_POWER_BACKENDS</code> in <code>runner/power_runner.py</code>), so a commercial backend is one line plus a <code>BasePower</code> subclass under <code>tools/power_&lt;name&gt;.py</code>.</p>
@@ -1852,8 +1880,8 @@
 <a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../synth/demo/constraints.sdc&quot;</span>
 <a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">    </span><span class="nt">platform</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;nangate45_typ&quot;</span>
 <a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="w">    </span><span class="nt">activity</span><span class="p">:</span>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="w">      </span><span class="nt">default-toggle-rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.2</span>
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">      </span><span class="nt">default-static-prob</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="w">      </span><span class="nt">default-toggle-rate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.2</span><span class="w">   </span><span class="c1"># override; default is 0.1</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">      </span><span class="nt">default-static-prob</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span><span class="w">   </span><span class="c1"># override; default is 0.5</span>
 <a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 <a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>
 <a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_power_dynamic_saif&quot;</span>
@@ -1870,7 +1898,7 @@
 <a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 <a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>
 <a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_power_postpnr&quot;</span>
-<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Post-PnR</span><span class="nv"> </span><span class="s">power</span><span class="nv"> </span><span class="s">with</span><span class="nv"> </span><span class="s">SPEF</span><span class="nv"> </span><span class="s">parasitics&quot;</span>
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Post-PnR</span><span class="nv"> </span><span class="s">power</span><span class="nv"> </span><span class="s">from</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">routed</span><span class="nv"> </span><span class="s">ODB</span><span class="nv"> </span><span class="s">(estimate_parasitics)&quot;</span>
 <a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
 <a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;dynamic&quot;</span>
 <a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a><span class="w">    </span><span class="nt">netlist-source</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pnr&quot;</span>
@@ -1958,6 +1986,10 @@
 <tr>
 <td><code>reglvl</code></td>
 <td>Regression level for filtering (same semantics as <code>rb synth</code> / <code>rb pnr</code>)</td>
+</tr>
+<tr>
+<td><code>tool_overrides</code></td>
+<td>Reserved for tool-specific overrides; accepted by the schema but not consumed by the OpenROAD backend today (kept for future/commercial backends, mirroring <code>pnr.yaml</code>)</td>
 </tr>
 </tbody>
 </table>

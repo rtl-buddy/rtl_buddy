@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to compile in SystemVerilog Assertions during simulation with rb test, the Verilator SVA subset, and how firings surface in the results table.">
+        <meta name="description" content="How to score a verification suite with rtl_buddy mutation testing via the rb mut command, mut.yaml, the rtl-buddy-xeno engine, and FPV or simulation kill oracles.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/abv-simulation/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v5/concepts/mut/">
       
       
-        <link rel="prev" href="../fpv/">
+        <link rel="prev" href="../abv-simulation/">
       
       
-        <link rel="next" href="../mut/">
+        <link rel="next" href="../axi-profile/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Assertion-Based Verification (sim) - RTL Buddy</title>
+        <title>Mutation Testing - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#assertion-based-verification-in-simulation" class="md-skip">
+        <a href="#mutation-testing" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Assertion-Based Verification (sim)
+              Mutation Testing
             
           </span>
         </div>
@@ -810,6 +810,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../abv-simulation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -829,7 +857,7 @@
   <span class="md-ellipsis">
     
   
-    Assertion-Based Verification (sim)
+    Mutation Testing
   
 
     
@@ -847,7 +875,7 @@
   <span class="md-ellipsis">
     
   
-    Assertion-Based Verification (sim)
+    Mutation Testing
   
 
     
@@ -873,10 +901,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#enabling-assertions" class="md-nav__link">
+  <a href="#how-scoring-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Enabling assertions
+        How scoring works
       
     </span>
   </a>
@@ -884,10 +912,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-you-see-in-the-results-table" class="md-nav__link">
+  <a href="#kill-oracles" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What you see in the results table
+        Kill oracles
       
     </span>
   </a>
@@ -895,10 +923,49 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verilator-sva-subset" class="md-nav__link">
+  <a href="#mutation-config-mutyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verilator SVA subset
+        Mutation config: mut.yaml
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Mutation config: mut.yaml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operators
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running
       
     </span>
   </a>
@@ -906,35 +973,41 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-firings-are-detected" class="md-nav__link">
+  <a href="#output" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How firings are detected
+        Output
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#machine-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine output
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#cover-property-hits" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cover-property hits
+        Exit codes
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#relationship-to-rb-fpv" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Relationship to rb fpv
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -942,34 +1015,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../mut/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Mutation Testing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1547,10 +1592,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#enabling-assertions" class="md-nav__link">
+  <a href="#how-scoring-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Enabling assertions
+        How scoring works
       
     </span>
   </a>
@@ -1558,10 +1603,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-you-see-in-the-results-table" class="md-nav__link">
+  <a href="#kill-oracles" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What you see in the results table
+        Kill oracles
       
     </span>
   </a>
@@ -1569,10 +1614,49 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verilator-sva-subset" class="md-nav__link">
+  <a href="#mutation-config-mutyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verilator SVA subset
+        Mutation config: mut.yaml
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Mutation config: mut.yaml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operators
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running
       
     </span>
   </a>
@@ -1580,35 +1664,41 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-firings-are-detected" class="md-nav__link">
+  <a href="#output" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How firings are detected
+        Output
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Output">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#machine-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine output
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#cover-property-hits" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Cover-property hits
+        Exit codes
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#relationship-to-rb-fpv" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Relationship to rb fpv
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1632,68 +1722,257 @@
   
 
 
-<h1 id="assertion-based-verification-in-simulation">Assertion-Based Verification in Simulation</h1>
-<p>Pair with <a href="../fpv/">Formal Property Verification</a> for the proof-engine side. This page is about <strong>simulation</strong> — running <code>rb test</code> with assertions compiled into the Verilator-built simulator so SVA properties evaluate on every clock and firings show up in the results table.</p>
+<h1 id="mutation-testing">Mutation Testing</h1>
 <blockquote>
-<p><strong>Status:</strong> Phase 1 ABV. Today this targets Verilator only.</p>
+<p><strong>Integration type:</strong> Pluggable engine. <code>rb mut</code> orchestrates the external <a href="https://github.com/rtl-buddy/rtl-buddy-xeno"><code>rtl-buddy-xeno</code></a> mutation engine; rtl_buddy supplies the config, the kill oracles, and the scoring/report.</p>
+<p><strong>Optional dependency:</strong> the engine is <strong>not</strong> installed by default. Install it with <code>pip install "rtl-buddy-xeno[verible,slang]"</code> (the <code>verible</code>/<code>slang</code> extras provide the Verible CST + pyslang toolchain the operators need). Running <code>rb mut</code> without it raises a fatal error with this hint.</p>
+<p>See also: <a href="../fpv/">Formal Property Verification</a>, <a href="../abv-simulation/">Assertion-Based Verification (sim)</a>.</p>
 </blockquote>
-<h2 id="enabling-assertions">Enabling assertions</h2>
-<p>Set <code>assertions: true</code> on a test in <code>tests.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">smoke_with_sva</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;smoke</span><span class="nv"> </span><span class="s">test</span><span class="nv"> </span><span class="s">with</span><span class="nv"> </span><span class="s">SVA</span><span class="nv"> </span><span class="s">assertions</span><span class="nv"> </span><span class="s">compiled</span><span class="nv"> </span><span class="s">in&quot;</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">../src/models.yaml</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tb_top</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<p><code>rb mut</code> measures how good your verification actually is. It mutates a single SystemVerilog design file — introducing small, deliberate bugs (mutants) — and checks whether your verification <em>kills</em> each mutant (catches the injected bug). The <strong>mutation score</strong> is the fraction of viable mutants that were killed; a high score means your properties and tests genuinely exercise the design, while survivors point at gaps.</p>
+<p>Unlike <code>fpv.yaml</code> (a list of verifications), one <code>mut.yaml</code> describes a <strong>single mutation campaign</strong> — one design file under test — so <code>rb mut list</code> / <code>rb mut run</code> are unambiguous about what is being mutated.</p>
+<h2 id="how-scoring-works">How scoring works</h2>
+<p>Each generated mutant is classified into one of three outcomes:</p>
+<ul>
+<li><strong>KILLED</strong> — the verification caught the mutant (good).</li>
+<li><strong>SURVIVED</strong> — the mutant slipped through every oracle (a coverage gap).</li>
+<li><strong>ERRORED</strong> — the mutant broke elaboration/compilation, so it could not be scored.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>mutation score = killed / (killed + survived)
 </code></pre></div>
-<p>When <code>assertions: true</code> and the builder is Verilator, <code>rb test</code> appends <code>--assert</code> and <code>--coverage-user</code> to the Verilator compile command. The flags are idempotent — already-configured values in <code>root_config.yaml</code> builder opts are not duplicated.</p>
-<p>For non-Verilator builders the flag is currently a no-op — but not a silent one: the run logs a <code>compile.assertions_not_verilator</code> WARNING naming the simulator family, so a misconfigured non-Verilator run is visible rather than ignored. VCS/Xcelium SVA enablement is a follow-up.</p>
-<h2 id="what-you-see-in-the-results-table">What you see in the results table</h2>
-<p>When at least one test in the run enables <code>assertions</code>, both <code>rb test</code> and <code>rb regression</code> add an <strong>Assertions</strong> column:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Test           Result   Description                    Assertions
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>smoke_with_sva PASS     test passed                    0 fired
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>sva_violation  FAIL     1 SVA assertion failure(s) …   1 fired
+<p><code>ERRORED</code> mutants are dropped from the denominator, so a mutant that simply fails to elaborate never inflates or deflates the score. When nothing was scorable (every mutant errored, or none were generated) the score is reported as <code>n/a</code>.</p>
+<p>A <strong>SURVIVED</strong> mutant whose operator <em>predicted</em> it would perturb observable signals is the highest-signal finding — it means a change the engine expected to be observable still passed your checks. These are flagged separately as <strong>predicted-observable misses (weak properties)</strong>.</p>
+<h2 id="kill-oracles">Kill oracles</h2>
+<p>A mutant is <em>killed</em> when a configured oracle flags it. You configure at least one of two oracles in the <code>verify:</code> block (you may configure both — a mutant is killed if <strong>either</strong> oracle catches it):</p>
+<table>
+<thead>
+<tr>
+<th>Oracle</th>
+<th>Configured by</th>
+<th>A mutant is killed when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FPV</strong></td>
+<td><code>fpv_config</code> + <code>verification</code></td>
+<td>the named verification's proof flips from the unmutated baseline <code>PASS</code> to <code>FAIL</code></td>
+</tr>
+<tr>
+<td><strong>Simulation</strong></td>
+<td><code>test_config</code> (+ optional <code>tests</code>, <code>assertions</code>)</td>
+<td>a test in the suite <code>FAIL</code>s or an SVA assertion fires</td>
+</tr>
+</tbody>
+</table>
+<p>The simulation oracle compiles SVA in via Verilator <code>--assert</code> by default (<code>assertions: true</code>); it is much weaker without assertions, so leave them on unless you have a reason not to. See <a href="../abv-simulation/">Assertion-Based Verification (sim)</a> for how firings are detected.</p>
+<h2 id="mutation-config-mutyaml">Mutation config: <code>mut.yaml</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mut_config</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">demo_top</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="nt">design_file</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/rtl/alu.sv&quot;</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nt">operators</span><span class="p">:</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">arith_flip</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bit_op_flip</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_negate</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_const</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="nt">verify</span><span class="p">:</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="c1"># FPV oracle (fpv_config requires verification)</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">fpv_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../fpv/demo/fpv.yaml&quot;</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">  </span><span class="nt">verification</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_alu_safety&quot;</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">  </span><span class="c1"># Simulation oracle (optional; combine with or use instead of FPV)</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="nt">test_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../verif/demo/tests.yaml&quot;</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;alu_smoke&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;alu_random&quot;</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># empty/omitted = every test in the suite</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">  </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="nt">budget</span><span class="p">:</span>
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">  </span><span class="nt">max_mutants</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">  </span><span class="nt">per_module_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">  </span><span class="nt">time_budget_minutes</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sequential&quot;</span>
 </code></pre></div>
-<ul>
-<li><code>0 fired</code> confirms SVA was compiled in and no <code>%Error: ... Assertion failed</code> lines were seen.</li>
-<li><code>N fired</code> reports the count; the test is forced to FAIL even if the testbench wrapper printed PASS earlier.</li>
-</ul>
-<p>The column is hidden when no test in the run requests assertions, so existing flows are unchanged.</p>
-<h2 id="verilator-sva-subset">Verilator SVA subset</h2>
-<p>Verilator implements a <strong>subset</strong> of IEEE 1800-2017 §16. Today's expectations:</p>
-<ul>
-<li>✅ Immediate assertions: <code>assert (cond);</code></li>
-<li>✅ Concurrent assertions on synchronous properties: <code>always @(posedge clk) assert property (a |-&gt; b);</code></li>
-<li>✅ Cover properties: <code>cover property (...)</code> — hits flow into the existing <code>--coverage-user</code> pipeline and are merged through <code>--coverage-merge</code> like any other user coverage point.</li>
-<li>⚠️ <code>disable iff</code> clauses — not supported.</li>
-<li>⚠️ Local variables inside properties — not supported.</li>
-<li>⚠️ Full sequence operators — partial. <code>##N</code>, <code>[*N]</code>, <code>|-&gt;</code>, <code>|=&gt;</code> work; advanced operators like <code>intersect</code>, <code>throughout</code>, <code>within</code> are not supported.</li>
-</ul>
-<p>For a property set that needs the full SVA language, point those properties at <code>rb fpv</code> (which can use the slang frontend) or fall back to a commercial simulator. See the <a href="https://verilator.org/guide/latest/languages.html">Verilator language support notes</a> for the authoritative list.</p>
-<h2 id="how-firings-are-detected">How firings are detected</h2>
-<p><code>rb test</code> parses both <code>test.log</code> and <code>test.err</code> after simulation looking for lines matching:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>%Error: &lt;file&gt;:&lt;line&gt;: Assertion failed in &lt;hier&gt;: &#39;&lt;expr&gt;&#39;
+<h3 id="fields">Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model</code></td>
+<td>Model name within the referenced <code>models.yaml</code></td>
+</tr>
+<tr>
+<td><code>model_path</code></td>
+<td>Path to the <code>models.yaml</code>, resolved relative to <code>mut.yaml</code></td>
+</tr>
+<tr>
+<td><code>design_file</code></td>
+<td>The single SystemVerilog file to mutate, resolved relative to <code>mut.yaml</code>. <strong>Must live within the model directory</strong> (the directory containing <code>models.yaml</code>) so per-mutant isolation can copy the tree and splice the mutant in</td>
+</tr>
+<tr>
+<td><code>operators</code></td>
+<td>Non-empty list of mutation operators (see below). An empty list or an unknown operator is a fatal config error</td>
+</tr>
+<tr>
+<td><code>verify</code></td>
+<td>The kill-oracle block — at least one oracle required (see <a href="#kill-oracles">Kill oracles</a>)</td>
+</tr>
+<tr>
+<td><code>verify.fpv_config</code></td>
+<td>Path to an <code>fpv.yaml</code>, relative to <code>mut.yaml</code> (FPV oracle)</td>
+</tr>
+<tr>
+<td><code>verify.verification</code></td>
+<td>Name of the verification in that <code>fpv.yaml</code> to use as the oracle — <strong>required when</strong> <code>fpv_config</code> is set</td>
+</tr>
+<tr>
+<td><code>verify.test_config</code></td>
+<td>Path to a <code>tests.yaml</code>, relative to <code>mut.yaml</code> (simulation oracle)</td>
+</tr>
+<tr>
+<td><code>verify.tests</code></td>
+<td>Optional subset of test names to run; empty (default) runs every test in the suite</td>
+</tr>
+<tr>
+<td><code>verify.assertions</code></td>
+<td>Compile SVA in via Verilator <code>--assert</code>. Default <code>true</code></td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>Campaign identifier; used in <code>artefacts/mut/&lt;name&gt;/</code>. Defaults to <code>model</code></td>
+</tr>
+<tr>
+<td><code>top</code></td>
+<td>Top module under test. Defaults to <code>model</code></td>
+</tr>
+<tr>
+<td><code>budget.max_mutants</code></td>
+<td>Cap on the number of mutants generated. Default <code>100</code></td>
+</tr>
+<tr>
+<td><code>budget.per_module_cap</code></td>
+<td>Per-module cap, or <code>null</code> for none (default <code>null</code>)</td>
+</tr>
+<tr>
+<td><code>budget.time_budget_minutes</code></td>
+<td>Wall-clock budget in minutes, or <code>null</code> for none (default <code>null</code>)</td>
+</tr>
+<tr>
+<td><code>budget.schedule</code></td>
+<td><code>"sequential"</code> (default) or <code>"round_robin"</code></td>
+</tr>
+<tr>
+<td><code>scope.include</code> / <code>scope.exclude</code></td>
+<td>Optional include/exclude lists (no-op for single-file leaf campaigns)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="operators">Operators</h3>
+<p>The six operators map 1:1 onto <code>rtl_buddy_xeno.MutationKind</code>. An operator not recognised by the <em>installed</em> <code>rtl-buddy-xeno</code> is a fatal error at run time:</p>
+<table>
+<thead>
+<tr>
+<th>Operator</th>
+<th>Mutation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>arith_flip</code></td>
+<td>Flip an arithmetic operator (e.g. <code>+</code> ↔ <code>-</code>)</td>
+</tr>
+<tr>
+<td><code>bit_op_flip</code></td>
+<td>Flip a bitwise/logical operator (e.g. <code>&amp;</code> ↔ <code>\|</code>)</td>
+</tr>
+<tr>
+<td><code>cond_negate</code></td>
+<td>Negate a condition</td>
+</tr>
+<tr>
+<td><code>cond_const</code></td>
+<td>Force a condition to a constant</td>
+</tr>
+<tr>
+<td><code>assign_drop</code></td>
+<td>Drop an assignment</td>
+</tr>
+<tr>
+<td><code>port_binding_swap</code></td>
+<td>Swap two port bindings on an instantiation</td>
+</tr>
+</tbody>
+</table>
+<h2 id="running">Running</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># List candidate mutation sites without mutating (uses ./mut.yaml)</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>mut<span class="w"> </span>list
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># A specific config</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rb<span class="w"> </span>mut<span class="w"> </span>list<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Generate mutants, score them against the oracles, and write a report</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>rb<span class="w"> </span>mut<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>mut/demo/mut.yaml
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># Recompute the score from a saved report (no re-run)</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>rb<span class="w"> </span>mut<span class="w"> </span>score<span class="w"> </span>mut/demo/artefacts/mut/demo_top/mut_report.json
 </code></pre></div>
-<p>Under Verilator's <code>--timing</code> flow the line is prefixed with the simulation time, e.g. <code>[500] %Error: tb_top.sv:32: Assertion failed in top.dut: 'assert' failed.</code>; the counter accepts the optional leading <code>[&lt;time&gt;]</code> prefix. (Before this was handled, a fired assertion under <code>--timing</code> was missed and the test reported NA instead of FAIL.)</p>
-<p>A non-zero count flips the result to FAIL regardless of the prior verdict — whether the log said PASS, said nothing (NA), or the sim aborted before any marker — and folds the prior result/description into the FAIL message so the truth still surfaces.</p>
-<h2 id="cover-property-hits">Cover-property hits</h2>
-<p>Cover properties land in the same <code>coverage.dat</code> Verilator emits today, so:</p>
+<p><code>rb mut run</code> builds each mutant in <code>debug</code> builder mode by default. All three subcommands take <code>-c</code>/<code>--mut-config</code> (default <code>mut.yaml</code>) and, like every command, anchor their artefact tree on the directory containing the selected <code>mut.yaml</code> — not your shell's cwd (see <a href="../execution-context/">Execution Context</a>).</p>
+<h2 id="output">Output</h2>
+<p><code>rb mut list</code> prints a <strong>Mutation Candidates (N)</strong> table with <code>Operator</code>, <code>Line:Col</code>, and <code>Snippet</code> columns.</p>
+<p><code>rb mut run</code> prints a <strong>Mutation Testing Results</strong> table with one row per mutant:</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Mutant</code></td>
+<td>Mutant id</td>
+</tr>
+<tr>
+<td><code>Operator</code></td>
+<td>Operator that produced it</td>
+</tr>
+<tr>
+<td><code>Outcome</code></td>
+<td><code>KILLED</code> / <code>SURVIVED</code> / <code>ERRORED</code></td>
+</tr>
+<tr>
+<td><code>Verdict</code></td>
+<td>The oracle verdict recorded for the mutant (e.g. the FPV proof's <code>PASS</code>/<code>FAIL</code>/<code>NA</code>)</td>
+</tr>
+<tr>
+<td><code>Predicted Signals</code></td>
+<td>Signals the operator predicted it would perturb (<code>-</code> if none)</td>
+</tr>
+<tr>
+<td><code>Mutation</code></td>
+<td>Short diff summary of the injected change</td>
+</tr>
+</tbody>
+</table>
+<p>…followed by summary lines:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Mutation score: 78.6% (killed 11 / scored 14)
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>Survived: 3   Errored: 2   Baseline: PASS
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Predicted-observable misses (weak properties): m07, m12
+</code></pre></div>
+<p>The full report is written to <code>&lt;mut.yaml dir&gt;/artefacts/mut/&lt;campaign&gt;/mut_report.json</code> and echoed as <code>Report written to …</code>. Its keys are <code>name</code>, <code>baseline_verdict</code>, <code>killed</code>, <code>survived</code>, <code>errored</code>, <code>score</code>, and <code>mutants[]</code> (each with <code>mutant_id</code>, <code>operator</code>, <code>outcome</code>, <code>verdict</code>, <code>diff_summary</code>, <code>predicted_signals</code>). <code>rb mut score &lt;report&gt;</code> recomputes the score from exactly this file.</p>
+<h3 id="machine-output">Machine output</h3>
+<p>Under <code>rb --machine …</code> (a global flag, before the subcommand):</p>
 <ul>
-<li><code>rb -M cov test ...</code> continues to be the canonical path for full coverage HTML / Coverview packaging.</li>
-<li>With just <code>assertions: true</code> (no <code>-M cov</code>), <code>coverage.dat</code> still exists per-run because <code>--coverage-user</code> was injected — but only the user-coverage type is present. Merge with <code>--coverage-merge</code> to roll up.</li>
+<li><code>rb --machine mut list</code> emits a <code>sites</code> array in the JSON envelope.</li>
+<li><code>rb --machine mut run</code> / <code>rb --machine mut score</code> emit the full report under <code>report</code>.</li>
 </ul>
-<p>See <a href="../coverage/">Coverage</a> for the merge pipeline and the
-<a href="https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/tools/verilator_cov_analysis.md">Verilator coverage analysis note</a>
-for how the raw simulator coverage points relate to LCOV outputs.</p>
-<h2 id="relationship-to-rb-fpv">Relationship to <code>rb fpv</code></h2>
-<p><code>rb fpv</code> proves assertions exhaustively up to a bound; <code>rb test</code> with <code>assertions: true</code> exercises them on the dynamic stimulus your testbench drives. The two are complementary:</p>
-<ul>
-<li>Use simulation to find <strong>the obvious bugs cheaply</strong> — every existing test now polices SVA properties as a side effect of running.</li>
-<li>Use <a href="../fpv/"><code>rb fpv</code></a> to <strong>prove invariants</strong> over all reachable behaviors up to the bound.</li>
-</ul>
-<p>A property that proves bounded under <code>rb fpv</code> and never fires in simulation is the strongest signal you'll get without a commercial completeness tool.</p>
+<h3 id="exit-codes">Exit codes</h3>
+<p><code>rb mut run</code> exits <code>0</code> when it produced a scorable result and <code>1</code> only when nothing was scorable (<code>score</code> is <code>n/a</code>). <strong>Score thresholding is not gated</strong> — failing under a target score is a separate concern; the command does not exit non-zero just because the score is low. <code>rb mut list</code> and <code>rb mut score</code> exit <code>0</code> on success and fail only on fatal errors (missing engine, missing config, missing report).</p>
 
 
 

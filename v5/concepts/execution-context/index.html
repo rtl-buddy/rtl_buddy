@@ -469,10 +469,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-scripts-sweep-preproc-postproc" class="md-nav__link">
+  <a href="#hook-scripts-sweep-preproc" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook scripts (sweep, preproc, postproc)
+        Hook scripts (sweep, preproc)
       
     </span>
   </a>
@@ -956,6 +956,34 @@
     
   
     Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
   
 
     
@@ -1585,10 +1613,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-scripts-sweep-preproc-postproc" class="md-nav__link">
+  <a href="#hook-scripts-sweep-preproc" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook scripts (sweep, preproc, postproc)
+        Hook scripts (sweep, preproc)
       
     </span>
   </a>
@@ -1762,6 +1790,12 @@
 <td><code>&lt;artifact&gt;/&lt;power&gt;</code></td>
 </tr>
 <tr>
+<td><code>mut</code></td>
+<td><code>dirname(mut.yaml)</code></td>
+<td><code>&lt;command_root&gt;/artefacts</code></td>
+<td><code>&lt;artifact&gt;/mut/&lt;campaign&gt;</code></td>
+</tr>
+<tr>
 <td><code>hier --view dut</code></td>
 <td><code>dirname(models.yaml)</code></td>
 <td><code>&lt;model_root&gt;/artefacts/hier/&lt;model&gt;</code></td>
@@ -1770,7 +1804,7 @@
 <tr>
 <td><code>hier --view tb</code></td>
 <td><code>dirname(tests.yaml)</code></td>
-<td><code>&lt;suite&gt;/artefacts/hier/&lt;test&gt;</code></td>
+<td><code>&lt;suite&gt;/artefacts/hier/&lt;model&gt;/tb/&lt;tb_name&gt;</code></td>
 <td><code>&lt;artifact&gt;</code></td>
 </tr>
 <tr>
@@ -1808,9 +1842,9 @@
 <p>For a fuller reference (<code>docs</code>, <code>skill</code>, edge cases), see the <a href="../../development/guidelines/#command-roots">engineering guidelines</a> — the table there is the policy this page describes.</p>
 <h2 id="where-rtl_buddylog-lives">Where <code>rtl_buddy.log</code> lives</h2>
 <p>The orchestration log is always written to <code>command_root/rtl_buddy.log</code>. In <code>--machine</code> mode it is JSONL; otherwise plain text. For <code>regression</code>, each suite's iteration re-anchors the log to that suite's directory, and the final summary phase re-anchors back to <code>dirname(regression.yaml)</code>. Open the latest log from wherever the <em>primary</em> config lives, not from where you ran <code>rb</code>.</p>
-<h2 id="hook-scripts-sweep-preproc-postproc">Hook scripts (<code>sweep</code>, <code>preproc</code>, <code>postproc</code>)</h2>
-<p>Hook scripts execute via <code>exec()</code> inside the <code>rb</code> process and receive <code>suite_dir</code> and <code>artifact_dir</code> as namespace variables. <strong>Always use these variables.</strong> Do not call <code>os.getcwd()</code> inside a hook — the process CWD stays at <code>invocation_cwd</code> (the same as your shell), which is no longer the same as <code>suite_dir</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># inside a sweep / preproc / postproc script</span>
+<h2 id="hook-scripts-sweep-preproc">Hook scripts (<code>sweep</code>, <code>preproc</code>)</h2>
+<p>The <code>sweep</code> and <code>preproc</code> hook scripts execute via <code>exec()</code> inside the <code>rb</code> process and receive <code>suite_dir</code> and <code>artifact_dir</code> as namespace variables. <strong>Always use these variables.</strong> Do not call <code>os.getcwd()</code> inside a hook — the process CWD stays at <code>invocation_cwd</code> (the same as your shell), which is no longer the same as <code>suite_dir</code>. (The <code>postproc</code> hook is parsed from config but the runtime currently relies on built-in post-processing rather than running a user script — see <a href="../plugins/">Plugins</a>.)</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># inside a sweep / preproc script</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>    <span class="c1"># wrong — invocation cwd</span>

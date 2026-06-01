@@ -839,6 +839,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../concepts/mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/axi-profile/" class="md-nav__link">
         
   
@@ -1639,6 +1667,7 @@
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>docs<span class="w"> </span>show<span class="w"> </span>reference/yaml
 </code></pre></div>
 <p>This is the recommended reference surface for agents: the docs are local (no network), and their content always matches the installed version of <code>rtl_buddy</code>. <code>docs list</code> enumerates each page's slug, title, and description; <code>docs show</code> returns the canonical Markdown for a single page. GitHub Pages at <a href="https://rtl-buddy.github.io/rtl_buddy/">https://rtl-buddy.github.io/rtl_buddy/</a> remains available as a human-facing fallback.</p>
+<p>Note one exception to the <a href="#machine-mode">machine-mode envelope</a> below: under <code>--machine</code>, <code>docs show</code> prints the raw page payload as a <strong>bare JSON object</strong> (not wrapped in the standard <code>{command, exit_code, meta, payload}</code> envelope), because its whole purpose is to hand you the page content directly. <code>docs list</code> does use the standard envelope — the page list is under <code>payload.pages</code>.</p>
 <h2 id="machine-mode">Machine mode</h2>
 <p>Passing <code>--machine</code> switches <code>rtl_buddy</code> into a mode designed for programmatic consumption:</p>
 <ul>

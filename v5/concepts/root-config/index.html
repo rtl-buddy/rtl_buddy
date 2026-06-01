@@ -960,6 +960,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../axi-profile/" class="md-nav__link">
         
   
@@ -1619,7 +1647,7 @@
 <h1 id="root-config">Root Config</h1>
 <p>The <code>root_config.yaml</code> file sits at the root of your RTL project and tells <code>rtl_buddy</code> how to build and simulate designs on the current platform.</p>
 <h2 id="location">Location</h2>
-<p><code>rtl_buddy</code> looks for <code>root_config.yaml</code> in the current working directory. All paths in the config are resolved relative to where <code>rtl_buddy</code> is invoked.</p>
+<p><code>rtl_buddy</code> discovers <code>root_config.yaml</code> by walking <strong>up</strong> from the command root (the directory containing the command's primary config — see <a href="../execution-context/">Execution Context</a>), not from the directory you ran <code>rb</code> from. Paths declared inside <code>root_config.yaml</code> are resolved relative to the <code>root_config.yaml</code> file itself. (Standalone commands that have no primary config — e.g. <code>rb tool-check</code> — fall back to walking up from the current directory.)</p>
 <h2 id="structure">Structure</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">project_root_config</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>

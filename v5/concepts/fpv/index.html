@@ -1121,6 +1121,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../axi-profile/" class="md-nav__link">
         
   
@@ -1944,7 +1972,7 @@
 <p><strong>External binary required:</strong> <code>sby</code> plus at least one SMT solver (e.g. <code>yices</code>, <code>z3</code>, <code>boolector</code>) — see <a href="#installing-symbiyosys">Installing SymbiYosys</a>.</p>
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
-<p><code>rb fpv</code> drives SymbiYosys through a generated <code>.sby</code> config that consumes the model's filelist plus a list of SystemVerilog property files. It produces a per-run <code>status</code> verdict, a counterexample VCD when a property is disproved, and a full <code>sby</code> log under <code>fpv/&lt;run&gt;/artefacts/</code>.</p>
+<p><code>rb fpv</code> drives SymbiYosys through a generated <code>.sby</code> config that consumes the model's filelist plus a list of SystemVerilog property files. It produces a per-run <code>status</code> verdict, a counterexample VCD when a property is disproved, and a full <code>sby</code> log under <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;run&gt;/</code>.</p>
 <p>The flow is intentionally compact and config-driven — per-run knobs (mode, depth, engines, properties) live in <code>fpv.yaml</code>, tool-wide defaults live in <code>cfg-fpv-tools</code> in <code>root_config.yaml</code>.</p>
 <h2 id="supported-backend">Supported backend</h2>
 <p>Today only <code>sby</code> is wired up. The <code>tool:</code> field in <code>fpv.yaml</code> selects it; the runner raises a clear error if no matching <code>cfg-fpv-tools</code> entry exists. Adding a second backend (e.g. a commercial formal tool) parallels how <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85"><code>rb cdc</code> is structured</a> — implement a sibling driver under <code>src/rtl_buddy/tools/</code>, then dispatch from <code>FpvRunner</code>.</p>
@@ -2134,11 +2162,11 @@
 <h2 id="results-table">Results table</h2>
 <p>A summary table prints after each run:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>                                  FPV Results Summary
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>┏━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>┃ FPV Run         ┃ Result ┃ Description               ┃ Mode ┃ Depth ┃ Engines      ┃ Runtime ┃
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>┡━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│ demo_fpv_fifo   │ PASS   │ property proved (bmc, 32) │ bmc  │ 32    │ smtbmc yices │ 0.4s    │
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>└─────────────────┴────────┴───────────────────────────┴──────┴───────┴──────────────┴─────────┘
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>┏━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━┓
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>┃ FPV Run       ┃ Result ┃ Description                     ┃ Mode ┃ Depth ┃ Engines      ┃ Runtime ┃
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>┡━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━┩
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│ demo_fpv_fifo │ PASS   │ property proved (bmc, depth 32) │ bmc  │ 32    │ smtbmc yices │ 0.4s    │
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>└───────────────┴────────┴─────────────────────────────────┴──────┴───────┴──────────────┴─────────┘
 </code></pre></div>
 <ul>
 <li><strong>Mode / Depth / Engines</strong> — what was actually run, surfaced for quick triage.</li>
@@ -2159,7 +2187,7 @@
 </ol>
 <p>Logic <em>outside</em> every property's COI is provably unverified by the property set — a direct, actionable "what's still uncovered" signal that simulation coverage doesn't give you. When the COI pass produces data, the results table grows a <strong>COI</strong> column:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>FPV Run     Result   Description                ...   COI
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>counter_inv PASS     property proved (bmc, 32)        73% (38/52)
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>counter_inv PASS     property proved (bmc, depth 32)        73% (38/52)
 </code></pre></div>
 <ul>
 <li>Per-module rollup lives in <code>FpvResults.results["coi"]["per_module"]</code> so machine consumers can find under-verified blocks.</li>
@@ -2175,7 +2203,7 @@
 <p>The same yosys pass that computes COI coverage also rolls up <code>$assume</code> cells, splitting them into those whose logic intersects with the assertion COI versus those that don't. The latter are <em>structurally dead</em> — they constrain signals no assertion ever observes, usually a sign the environment spec drifted from the property set.</p>
 <p>When the design has any <code>$assume</code> cells, the results table grows an <strong>Assumes</strong> column:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>FPV Run     Result   Description                ...   Assumes
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>counter_inv PASS     property proved (bmc, 32)        3 used, 2 dead
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>counter_inv PASS     property proved (bmc, depth 32)        3 used, 2 dead
 </code></pre></div>
 <ul>
 <li><code>N used</code> (all assumes are inside the assertion COI) — silent, just a sanity confirmation.</li>
@@ -2187,7 +2215,7 @@
 <p>The vacuity pass is enabled by default for <code>mode: bmc</code> and <code>mode: prove</code> and disabled for <code>mode: cover</code> / <code>mode: live</code> (where the user is already exploring reachability). Override with <code>vacuity: true</code> / <code>vacuity: false</code> per verification in <code>fpv.yaml</code>.</p>
 <p>When vacuity reports any unreachable antecedent, the results table grows a <strong>Vacuity</strong> column:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>FPV Run     Result   Description                ...   Vacuity
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>counter_inv PASS     property proved (bmc, 32)        1/3 vacuous
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>counter_inv PASS     property proved (bmc, depth 32)        1/3 vacuous
 </code></pre></div>
 <ul>
 <li><code>N ok</code> — every antecedent reached</li>
@@ -2208,7 +2236,7 @@
 <li>Multi-line antecedents land in a follow-up.</li>
 </ul>
 <h2 id="artefacts">Artefacts</h2>
-<p>Per-run outputs land under <code>fpv/&lt;run&gt;/artefacts/</code>:</p>
+<p>Per-run outputs land under the command root — <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;run&gt;/</code> (the artefact tree is anchored on the selected <code>fpv.yaml</code>'s directory, not your shell's cwd; see <a href="../execution-context/">Execution Context</a>):</p>
 <table>
 <thead>
 <tr>
@@ -2263,7 +2291,7 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Open the CEX VCD for a failed verification in the configured surfer.</span>
 <a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rb<span class="w"> </span>wave-fpv<span class="w"> </span>demo_fpv_counter_safety
 </code></pre></div>
-<p><code>rb wave-fpv</code> resolves the trace at <code>fpv/&lt;suite&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine wins when more than one produced a trace). The configured surfer comes from the same <code>cfg-surfer</code> entry that <code>rb wave</code> uses; override with <code>--surfer &lt;name&gt;</code>. Raises if the verification has not been run yet or the proof passed (no CEX was produced).</p>
+<p><code>rb wave-fpv</code> reads the same <code>fpv.yaml</code> (<code>-c</code>/<code>--fpv-config</code>, default <code>fpv.yaml</code>) to resolve the verification name, then opens the trace at <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine in sorted order wins when more than one produced a trace). It opens the VCD in the <code>cfg-surfer</code> entry named <code>surfer-default</code> unless you pass <code>--surfer &lt;name&gt;</code>. Raises if the verification has not been run yet or the proof passed (no CEX was produced).</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
 <li><strong>SymbiYosys-only.</strong> Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up — adding them parallels the pattern documented for <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">SpyGlass in <code>rb cdc</code></a>.</li>

@@ -841,6 +841,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../axi-profile/" class="md-nav__link">
         
   
@@ -1749,7 +1777,7 @@
 <a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>Subcommand readiness
 <a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>----------------------------------------------------------------------
 <a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>  ok        rb test                 (verible, yosys, verilator, ...)
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>  outdated  rb test                 (outdated: verilator)
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>  outdated  rb regression           (outdated: verilator)
 <a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>  missing   rb fpv                  (needs: sby)                            (optional feature)
 <a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>  ...
 <a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>
@@ -1853,29 +1881,44 @@
 <h2 id="version-cache">Version cache</h2>
 <p>Probed versions are cached to <code>${XDG_CACHE_HOME:-~/.cache}/rtl_buddy/tool_versions.json</code> keyed by <code>(path, mtime)</code>. The cache makes repeated <code>rb tool-check</code> invocations cheap — most tools don't need to be re-probed if their binary hasn't changed. Pass <code>--no-probe-versions</code> to skip version probing entirely (faster, but the Version column shows <code>—</code> for everything).</p>
 <h2 id="exit-codes">Exit codes</h2>
+<p>The default invocation is <strong>purely informational and always exits <code>0</code></strong>, even when a required tool is missing or outdated — so a bare <code>rb tool-check</code> in a script never fails the shell. Pass <code>--strict</code> (or <code>--required-for</code>) to make the process exit non-zero:</p>
 <table>
 <thead>
 <tr>
+<th>Invocation</th>
 <th>Exit</th>
 <th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
+<td><code>rb tool-check</code> (no flag)</td>
+<td><code>0</code></td>
+<td>Always — the report is printed and the command exits cleanly regardless of tool state</td>
+</tr>
+<tr>
+<td><code>rb tool-check --strict</code></td>
 <td><code>0</code></td>
 <td>All required tools present and up-to-date (optional gaps don't matter)</td>
 </tr>
 <tr>
+<td><code>rb tool-check --strict</code></td>
 <td><code>1</code></td>
-<td>At least one required tool missing or outdated</td>
+<td>At least one required tool is missing or outdated</td>
 </tr>
 <tr>
+<td><code>rb tool-check --required-for &lt;sub&gt;</code></td>
+<td><code>0</code></td>
+<td>That subcommand's required deps are all present and up-to-date</td>
+</tr>
+<tr>
+<td><code>rb tool-check --required-for &lt;sub&gt;</code></td>
 <td><code>2</code></td>
-<td><code>--required-for &lt;sub&gt;</code> was passed and that subcommand's deps are missing/outdated</td>
+<td>That subcommand's deps are missing/outdated</td>
 </tr>
 </tbody>
 </table>
-<p><code>--strict</code> is implied for <code>--required-for</code> — exit code semantics differ from the default to make the "this one subcommand is broken" case distinguishable from the broader "some tool, somewhere, is missing" case.</p>
+<p><code>--required-for</code> always enforces (it implies <code>--strict</code>), and uses exit <code>2</code> to make the "this one subcommand is broken" case distinguishable from <code>--strict</code>'s broader "some required tool, somewhere, is missing" exit <code>1</code>. Note that the JSON output's top-level <code>exit_code</code> always reports the <em>would-be strict</em> code (e.g. <code>1</code> when a required tool is missing) even in the default mode where the process itself exits <code>0</code> — so CI can either read that field or use <code>--strict</code> to gate on the process exit.</p>
 <h2 id="when-to-use-it">When to use it</h2>
 <ul>
 <li><strong>First-time setup.</strong> Right after <code>uv add rtl_buddy</code>, run <code>rb tool-check</code> to see which external tools you still need to install for the subcommands you care about.</li>
