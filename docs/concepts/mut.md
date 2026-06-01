@@ -67,9 +67,13 @@ verify:
 
 budget:
   max_mutants: 100
-  per_module_cap: null
+  per_file_cap: null
   time_budget_minutes: null
   schedule: "sequential"
+
+scope:                                 # optional; empty = single-file default
+  include: []
+  exclude: []
 ```
 
 ### Fields
@@ -88,11 +92,11 @@ budget:
 | `verify.assertions` | Compile SVA in via Verilator `--assert`. Default `true` |
 | `name` | Campaign identifier; used in `artefacts/mut/<name>/`. Defaults to `model` |
 | `top` | Top module under test. Defaults to `model` |
-| `budget.max_mutants` | Cap on the number of mutants generated. Default `100` |
-| `budget.per_module_cap` | Per-module cap, or `null` for none (default `null`) |
+| `budget.max_mutants` | Global ceiling on mutants generated across the campaign. Default `100`. Under a non-empty `scope` this is drained over the scoped files in sorted order, so later files may be truncated once it is spent (see [Scope: hierarchical designs](#scope-hierarchical-designs)) |
+| `budget.per_file_cap` | Per-file cap (max mutants per scoped file), or `null` for none (default `null`) |
 | `budget.time_budget_minutes` | Wall-clock budget in minutes, or `null` for none (default `null`) |
 | `budget.schedule` | `"sequential"` (default) or `"round_robin"` |
-| `scope.include` / `scope.exclude` | Optional include/exclude lists (no-op for single-file leaf campaigns) |
+| `scope.include` / `scope.exclude` | Optional shell-glob lists selecting which files participate. Empty (default) is a single-file campaign over `design_file`; non-empty ingests the design hierarchy (see [Scope: hierarchical designs](#scope-hierarchical-designs)) |
 
 ### Operators
 
@@ -106,6 +110,27 @@ The six operators map 1:1 onto `rtl_buddy_xeno.MutationKind`. An operator not re
 | `cond_const` | Force a condition to a constant |
 | `assign_drop` | Drop an assignment |
 | `port_binding_swap` | Swap two port bindings on an instantiation |
+
+## Scope: hierarchical designs
+
+`scope.include` / `scope.exclude` select which files a campaign mutates. The two modes are distinguished purely by whether the block is empty:
+
+- **Empty `scope` is the single-file default.** With no include/exclude, the campaign mutates exactly the one `design_file`. This is the path most leaf-block campaigns take, and it needs **no** rtl-buddy-view and no hierarchy graph — the empty-scope path is unchanged.
+- **Non-empty `scope` ingests the design hierarchy.** rtl_buddy resolves the globs against the hierarchy graph that rtl-buddy-view emits (the same graph behind `rb hier --format json`), so when `scope` is set the rtl-buddy-view binary must be on `PATH`.
+
+How the globs are matched (this is today's implementation, not an aspiration):
+
+- **Shell-glob patterns, matched case-sensitively on every platform.** Patterns are stdlib `fnmatch` globs. There is **no** `**` recursion — spell out path segments explicitly (e.g. `top/sub/*.sv`, not `top/**/x.sv`).
+- **Each pattern is matched against both a node's instance path and its source file.** An `include` glob can target either an instance path (e.g. `top.u_alu`) or a file (its absolute path *or* its model-relative path).
+- **Empty `include` selects every in-scope node**; any `exclude` match drops a node. A scope that resolves to **zero files is a hard error** (`FatalRtlBuddyError`) — fix the patterns rather than silently mutating nothing.
+
+What gets mutated, and where the baseline lives:
+
+- **Mutation granularity is per file.** The scoped file-set is mutated one file at a time, with each mutant spliced into its origin file. A module instantiated twice maps to a single source file and is mutated **once**; per-instance scoping is a possible future extension.
+- **`design_file` stays required and is the baseline-oracle target in both modes.** When `scope` is set it is the scoped file-set that gets mutated — `design_file` itself is **not** mutated, it remains the target the baseline oracle proves/runs against.
+- **Budget under scope.** `budget.per_file_cap` caps mutants per scoped file; `budget.max_mutants` is a global ceiling drained over the scoped files in sorted order, so later files may be truncated once it is spent.
+
+Scope graph-ingestion is the hierarchical-design work tracked under #206 / #239. Until per-instance scoping lands, scope narrows *which* files a campaign mutates rather than distinguishing two instances of the same module.
 
 ## Running
 

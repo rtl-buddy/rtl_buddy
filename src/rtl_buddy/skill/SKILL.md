@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, CDC lint, formal property verification, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, cdc.yaml, or fpv.yaml.
+description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, CDC lint, formal property verification, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, cdc.yaml, fpv.yaml, or mut.yaml.
 ---
 
 # rtl_buddy
@@ -24,6 +24,7 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact fields.
 - `models.yaml` defines design filelists referenced by tests, synth, CDC, and FPV.
 - `regression.yaml`, `synth_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists.
 - `synth.yaml`, `pnr.yaml`, `power.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows.
+- `mut.yaml` defines one mutation-testing campaign for `rb mut`.
 - `specs.yaml` feeds `rb spec` traceability commands.
 
 ## Pass/fail detection
@@ -32,6 +33,11 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact fields.
 - cocotb uses `cocotb_results.xml`, not `PASS` or `FAIL` stdout markers.
 - Other sims should emit `PASS` or `FAIL` in `artefacts/<test>/test.log`; add an `ERR:` or `FAT:` line when reporting failure.
 - Formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
+
+## Mutation testing
+
+- `rb mut list|run|score` drive a campaign from `mut.yaml`. Needs `rtl-buddy-xeno`; a non-empty `scope` also needs `rtl-buddy-view` on `PATH`.
+- Score is `killed / (killed + survived)`; errored mutants are dropped. Survivors are verification holes. Details: `rtl-buddy docs show concepts/mut`.
 
 ## Execution context
 

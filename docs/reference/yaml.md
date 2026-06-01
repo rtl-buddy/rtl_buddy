@@ -867,10 +867,10 @@ budget:
 | `name` | string | Campaign id; used in `artefacts/mut/<name>/`. Defaults to `model` |
 | `top` | string | Top module under test. Defaults to `model` |
 | `budget.max_mutants` | int | Cap on mutants generated. Default `100` |
-| `budget.per_module_cap` | int or null | Per-module cap, or `null` (default) for none |
+| `budget.per_file_cap` | int or null | Per-file cap (max mutants per scoped file), or `null` (default) for none |
 | `budget.time_budget_minutes` | float or null | Wall-clock budget in minutes, or `null` (default) for none |
 | `budget.schedule` | string | `"sequential"` (default) or `"round_robin"` |
-| `scope.include` / `scope.exclude` | list of strings | Optional include/exclude lists (no-op for single-file campaigns) |
+| `scope.include` / `scope.exclude` | list of strings | Optional case-sensitive globs (shell-glob, no `**`) matched against each node's instance path and source file; selects which files to mutate. Empty = single-file default (mutate `design_file`, no rtl-buddy-view needed); non-empty ingests the `rb hier` graph and needs `rtl-buddy-view` on PATH |
 
 **Runtime effects:**
 
