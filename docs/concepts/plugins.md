@@ -118,7 +118,7 @@ finally:
     os.chdir(prev)
 ```
 
-This anchoring behavior changed in v5; see [Migrating from v4 to v5](../migrations/v4-to-v5.md) and the [execution context](execution-context.md) reference.
+This anchoring behavior changed in v5; see [Migrations: v4 to v5](../migrations.md#v4-to-v5) and the [execution context](execution-context.md) reference.
 
 ## Post-processing
 

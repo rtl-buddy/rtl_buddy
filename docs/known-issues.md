@@ -33,7 +33,7 @@ finally:
     os.chdir(prev)
 ```
 
-See [Migrating from v4 to v5](migrations/v4-to-v5.md) for the full behavior change.
+See [Migrations: v4 to v5](migrations.md#v4-to-v5) for the full behavior change.
 
 ## VCS hierarchical seed file
 
