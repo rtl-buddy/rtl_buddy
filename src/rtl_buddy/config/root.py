@@ -305,14 +305,11 @@ class RootConfig:
                 cfg.name: ToolVersionConfig.from_file(cfg) for cfg in data.tools
             }
 
-            # Initialise regression config
+            # Record the regression config path; the RegConfig itself is
+            # loaded lazily in get_rtl_reg_cfg() so non-simulation commands
+            # (fpv, cdc, synth, ...) never touch regression.yaml or the
+            # suite tests.yaml files it references (issue #248).
             self.cfg_rtl_reg = data.cfg_rtl_reg
-            self.reg_cfg = RegConfig(
-                name=self.name + "/reg_config",
-                path=os.path.join(
-                    os.path.dirname(self.root_cfg_path), self.cfg_rtl_reg.path
-                ),
-            )
 
             # Select platform config
             result = subprocess.run(
@@ -426,9 +423,24 @@ class RootConfig:
         """
         Get rtl regression configuration, reading one if it does not exist.
 
+        Loading is deferred to this first call so commands that never
+        consume the simulation regression config do not fail when
+        regression.yaml or a referenced suite tests.yaml is absent
+        (e.g. design-only sandboxed checkouts).
+
         Returns:
           cfg (RegConfig): The RTL Regression configuration.
+        Raises:
+          FatalRtlBuddyError: The regression config or a referenced
+            suite config cannot be loaded.
         """
+        if self.reg_cfg is None:
+            self.reg_cfg = RegConfig(
+                name=self.name + "/reg_config",
+                path=os.path.join(
+                    os.path.dirname(self.root_cfg_path), self.cfg_rtl_reg.path
+                ),
+            )
         return self.reg_cfg
 
     def get_verible_cfg(self):

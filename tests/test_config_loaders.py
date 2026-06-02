@@ -610,6 +610,47 @@ def test_discover_rtl_builder_names_raises_without_root_config(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# RootConfig — lazy regression-config loading (issue #248)
+# ---------------------------------------------------------------------------
+
+
+def test_root_config_init_skips_regression_config(minimal_project):
+    """RootConfig must construct even when regression.yaml references a
+    missing suite config (design-only sandboxed checkouts); the failure
+    only surfaces when the regression config is actually consumed."""
+    (minimal_project / "tests.yaml").unlink()
+
+    root_cfg = RootConfig(name="lazy-test")
+    assert root_cfg.reg_cfg is None
+
+    with pytest.raises(FatalRtlBuddyError, match="failed to load"):
+        root_cfg.get_rtl_reg_cfg()
+
+
+def test_root_config_init_skips_missing_regression_yaml(minimal_project):
+    """Even regression.yaml itself may be absent from a sandbox."""
+    (minimal_project / "regression.yaml").unlink()
+
+    root_cfg = RootConfig(name="lazy-test")
+    assert root_cfg.reg_cfg is None
+
+    with pytest.raises(FatalRtlBuddyError, match="failed to load"):
+        root_cfg.get_rtl_reg_cfg()
+
+
+def test_root_config_reg_cfg_loads_on_demand_and_caches(minimal_project):
+    root_cfg = RootConfig(name="lazy-test")
+    assert root_cfg.reg_cfg is None
+
+    reg_cfg = root_cfg.get_rtl_reg_cfg()
+    assert isinstance(reg_cfg, RegConfig)
+    assert [Path(s.get_path()).name for s in reg_cfg.get_suite_configs()] == [
+        "tests.yaml"
+    ]
+    assert root_cfg.get_rtl_reg_cfg() is reg_cfg
+
+
+# ---------------------------------------------------------------------------
 # ModelConfig — axi_bundles + axi_monitor_out
 # ---------------------------------------------------------------------------
 
