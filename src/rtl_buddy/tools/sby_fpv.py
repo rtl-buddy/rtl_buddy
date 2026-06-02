@@ -256,7 +256,7 @@ class SbyFpv:
             # bind statements at compilation-unit scope see every
             # declared module.
             #
-            # `--no-synthesis-define -D FORMAL=1` mirrors what the
+            # `--no-synthesis-define -DFORMAL=1` mirrors what the
             # verilog path's `read -formal` does: yosys's verilog
             # frontend replaces its implicit SYNTHESIS=1 define with
             # FORMAL=1 in formal mode, while yosys-slang defaults to
@@ -266,7 +266,7 @@ class SbyFpv:
             src_args = " ".join(os.path.basename(s) for s in all_sources)
             lines.append(
                 f"read_slang --top {cfg.get_top()} "
-                f"--no-synthesis-define -D FORMAL=1 {src_args}"
+                f"--no-synthesis-define -DFORMAL=1 {src_args}"
             )
         else:
             for src in all_sources:
