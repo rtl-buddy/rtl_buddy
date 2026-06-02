@@ -255,8 +255,19 @@ class SbyFpv:
             # designated top. All files are read in one invocation so
             # bind statements at compilation-unit scope see every
             # declared module.
+            #
+            # `--no-synthesis-define -D FORMAL=1` mirrors what the
+            # verilog path's `read -formal` does: yosys's verilog
+            # frontend replaces its implicit SYNTHESIS=1 define with
+            # FORMAL=1 in formal mode, while yosys-slang defaults to
+            # SYNTHESIS=1. Without this, in-RTL asserts guarded by
+            # `ifdef FORMAL are preprocessed away and the proof
+            # passes vacuously (#246).
             src_args = " ".join(os.path.basename(s) for s in all_sources)
-            lines.append(f"read_slang --top {cfg.get_top()} {src_args}")
+            lines.append(
+                f"read_slang --top {cfg.get_top()} "
+                f"--no-synthesis-define -D FORMAL=1 {src_args}"
+            )
         else:
             for src in all_sources:
                 # Use basename — files are dropped into the sby workdir under [files].

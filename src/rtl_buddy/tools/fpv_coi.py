@@ -116,9 +116,14 @@ def build_yosys_script(
     if frontend == "slang":
         # Single `read_slang --top <name> <files...>` so `bind`
         # directives at compilation-unit scope see every declared
-        # module — matches the SbyFpv slang renderer.
+        # module — matches the SbyFpv slang renderer, including
+        # `--no-synthesis-define -D FORMAL=1` (read -formal parity):
+        # without it, in-RTL `ifdef FORMAL asserts vanish at
+        # preprocessing and the COI column reports 0% (#246).
         src_args = " ".join(all_files)
-        lines.append(f"read_slang --top {top} {src_args}")
+        lines.append(
+            f"read_slang --top {top} --no-synthesis-define -D FORMAL=1 {src_args}"
+        )
     else:
         for src in all_files:
             lines.append(f"read -sv -formal {src}")

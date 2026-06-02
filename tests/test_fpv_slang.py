@@ -187,7 +187,10 @@ def test_render_sby_slang_emits_plugin_and_read_slang(tmp_path):
     # Single `read_slang --top <top> <files...>` so `bind` directives
     # at compilation-unit scope see every declared module. `--top` is
     # required for slang to pull in bound submodules.
-    assert "read_slang --top dut dut.sv" in text
+    # `--no-synthesis-define -D FORMAL=1` mirrors `read -formal`
+    # semantics (FORMAL=1 replaces the implicit SYNTHESIS=1) so in-RTL
+    # `ifdef FORMAL asserts survive preprocessing (#246).
+    assert "read_slang --top dut --no-synthesis-define -D FORMAL=1 dut.sv" in text
     # The verilog-frontend command must NOT appear when slang is on —
     # otherwise yosys re-parses the same file through two frontends
     # and produces duplicated $check cells.
@@ -236,8 +239,13 @@ def test_build_yosys_script_slang():
         plugin_path="/p/slang.so",
     )
     assert "plugin -i /p/slang.so" in script
-    # Single `read_slang --top <top> dut.sv props.sv ...`
-    assert "read_slang --top dut dut.sv props.sv" in script
+    # Single `read_slang --top <top> ... dut.sv props.sv` with the same
+    # `read -formal`-parity defines as the sby renderer — without them
+    # in-RTL `ifdef FORMAL asserts vanish and COI reports 0% (#246).
+    assert (
+        "read_slang --top dut --no-synthesis-define -D FORMAL=1 dut.sv props.sv"
+        in script
+    )
     assert "read -sv -formal" not in script
 
 

@@ -93,6 +93,8 @@ verifications:
 
 The runner reads the model's filelist via `VlogFilelist` (the same helper `rb synth` and `rb cdc` use), extracts source files and `+incdir+` entries, and emits them under the sby config's `[files]` and `[script]` sections respectively. The script reads, in order: design sources → `constraints:` (if set) → `properties:`. Putting constraints before properties ensures their `assume property` statements are in scope when the assertions are elaborated. Property files can be in-RTL with `` `ifdef FORMAL `` guards or standalone bound checker modules.
 
+Both frontends define `FORMAL` (and not `SYNTHESIS`) when reading sources, so `` `ifdef FORMAL `` guards behave the same either way: the verilog path uses `read -sv -formal` (which swaps yosys's implicit `SYNTHESIS=1` define for `FORMAL=1`), and the slang path passes `--no-synthesis-define -D FORMAL=1` to `read_slang` for the same effect — in the main proof script, the COI script, and the vacuity pass.
+
 ## Root config: `cfg-fpv-tools`
 
 `cfg-fpv-tools` declares the FPV tools available to all suites in this project:
