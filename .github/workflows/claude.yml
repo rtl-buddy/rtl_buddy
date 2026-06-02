@@ -13,7 +13,12 @@ on:
     types: [submitted]
 
 jobs:
-  claude:
+  # Maintainer gate. The default GITHUB_TOKEN cannot read org teams
+  # ("Resource not accessible by integration"), so gate on repo write
+  # access instead — in this org that access is granted via the
+  # maintainers team. An unauthorized actor (or a failed permission
+  # lookup) skips the claude job rather than failing the run.
+  gate:
     if: |
       (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
@@ -23,28 +28,41 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Check actor write permission
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.actor,
+              });
+              const authorized = ['admin', 'maintain', 'write'].includes(data.permission);
+              core.setOutput('authorized', authorized);
+              if (!authorized) {
+                core.notice(`${context.actor} has '${data.permission}' permission (write required) — skipping Claude run`);
+              }
+            } catch (e) {
+              core.setOutput('authorized', false);
+              core.notice(`permission lookup failed for ${context.actor}: ${e.message} — skipping Claude run`);
+            }
+
+  claude:
+    needs: gate
+    if: needs.gate.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
       pull-requests: read
       issues: read
       id-token: write
       actions: read  # Required for Claude to read CI results on PRs
     steps:
-      - name: Check maintainer team membership
-        uses: actions/github-script@v8
-        with:
-          script: |
-            try {
-              const { data } = await github.rest.teams.getMembershipForUserInOrg({
-                org: context.repo.owner,
-                team_slug: 'maintainers',
-                username: context.actor,
-              });
-              if (data.state !== 'active') {
-                core.setFailed(`${context.actor} is not an active member of the maintainers team`);
-              }
-            } catch {
-              core.setFailed(`${context.actor} is not in the maintainers team`);
-            }
-
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
