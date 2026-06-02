@@ -56,6 +56,10 @@ class RegConfig:
                     SuiteConfig(os.path.join(os.path.dirname(self.path), suite_path))
                     for suite_path in data.test_configs
                 ]
+        except FatalRtlBuddyError:
+            # SuiteConfig already logged and named the failing suite file;
+            # re-wrapping here would blame the (valid) regression config.
+            raise
         except Exception as e:
             log_event(
                 logger,

@@ -285,6 +285,17 @@ def test_reg_config_load_failed_invalid_yaml(tmp_path):
         RegConfig(name="r", path=str(bad))
 
 
+def test_reg_config_missing_suite_blames_suite_file(tmp_path):
+    """When a referenced tests.yaml is absent, the error must name the
+    missing suite file — not the present, valid regression.yaml."""
+    reg = tmp_path / "regression.yaml"
+    reg.write_text("rtl-buddy-filetype: reg_config\ntest-configs: [tests.yaml]\n")
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        RegConfig(name="r", path=str(reg))
+    assert "tests.yaml" in str(excinfo.value)
+    assert "regression.yaml" not in str(excinfo.value)
+
+
 def test_reg_config_load_empty_suites(tmp_path):
     """A regression.yaml with no test-configs should load with zero suites."""
     reg = tmp_path / "regression.yaml"
