@@ -1439,25 +1439,9 @@
   
   
   
-    
-    
-    
-    
-      
+    <li class="md-nav__item">
+      <a href="../../migrations/" class="md-nav__link">
         
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
-        
-          
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
-            
   
   
   <span class="md-ellipsis">
@@ -1471,107 +1455,7 @@
   
   
 
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Migrations
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../migrations/submodule-to-uv/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Submodule to uv
-  
-
-    
-  </span>
-  
-  
-
       </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../migrations/v2-to-v3/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    v2 to v3
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../migrations/v4-to-v5/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    v4 to v5
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
     </li>
   
 
@@ -2085,7 +1969,7 @@ Sweep and preproc failures should return a setup-failure string so the suite rec
 <li>If behavior, YAML schema, version expectations, or validation workflows changed, update user docs and the bundled skill if agents rely on the behavior.</li>
 <li>If release or packaging behavior changed, verify wheel inclusion rules and update downstream integrations after release.</li>
 <li>If you discovered or introduced a quirk or non-conventional behavior, add an entry to <code>docs/known-issues.md</code>. Treat this as a default step, not an afterthought.</li>
-<li>If the change is a <code>version/major</code> bump, add or update the <code>docs/migrations/vN-to-vM.md</code> page (and its <code>mkdocs.yml</code> nav entry) covering every breaking behavior change. See <a href="#releases">Releases</a>.</li>
+<li><strong>If the PR carries the <code>version/major</code> label, add a <code>## vN to vM</code> section to <code>docs/migrations.md</code> covering every breaking behavior change — this is mandatory and blocks merge.</strong> See <a href="#releases">Releases</a>.</li>
 </ol>
 <h2 id="bundled-skill">Bundled Skill</h2>
 <p>The <code>rtl_buddy</code> agent skill ships inside the wheel at <code>src/rtl_buddy/skill/</code> and is installed by <code>rtl-buddy skill install</code>.
@@ -2193,9 +2077,9 @@ Roll over remaining work into a follow-up milestone rather than leaving the orig
 Pre-releases are cut from feature branches by workflow dispatch and should not be produced by merging pre-release branches into <code>main</code>.</p>
 <p>Docs publishing, PyPI publishing, and downstream template updates depend on that sequence.
 Do not push a template pin for an unreleased <code>rtl_buddy</code> version.</p>
-<p>Every <code>version/major</code> bump must ship a migration page at <code>docs/migrations/vN-to-vM.md</code>, added to the <code>mkdocs.yml</code> nav, before merge.
-The page documents every breaking behavior change — moved outputs, changed defaults, removed or renamed config fields, and any contract that downstream projects or hook scripts depend on — and tells readers what to update.
-A recurring failure mode is a silent contract change buried in a PR description; the migration page is where it must live so users and agents find it.</p>
+<p>Every <code>version/major</code> bump must add a <code>## vN to vM</code> section to <code>docs/migrations.md</code> before merge — one page, one section per bump (do not create per-version files).
+The section documents every breaking behavior change — moved outputs, changed defaults, removed or renamed config fields, and any contract that downstream projects or hook scripts depend on — and tells readers what to update.
+A recurring failure mode is a silent contract change buried in a PR description; the migration section is where it must live so users and agents find it. Labeling a PR <code>version/major</code> without adding the section is the single most common miss — treat the two as inseparable.</p>
 
 
 
