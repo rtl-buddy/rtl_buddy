@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/known-issues/">
       
       
-        <link rel="prev" href="../migrations/v4-to-v5/">
+        <link rel="prev" href="../migrations/">
       
       
         <link rel="next" href="../CONTRIBUTING/">
@@ -1214,25 +1214,9 @@
   
   
   
-    
-    
-    
-    
-      
+    <li class="md-nav__item">
+      <a href="../migrations/" class="md-nav__link">
         
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
-        
-          
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
-            
   
   
   <span class="md-ellipsis">
@@ -1246,107 +1230,7 @@
   
   
 
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Migrations
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../migrations/submodule-to-uv/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Submodule to uv
-  
-
-    
-  </span>
-  
-  
-
       </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../migrations/v2-to-v3/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    v2 to v3
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../migrations/v4-to-v5/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    v4 to v5
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
     </li>
   
 
@@ -1582,7 +1466,7 @@
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">finally</span><span class="p">:</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
 </code></pre></div>
-<p>See <a href="../migrations/v4-to-v5/">Migrating from v4 to v5</a> for the full behavior change.</p>
+<p>See <a href="../migrations/#v4-to-v5">Migrations: v4 to v5</a> for the full behavior change.</p>
 <h2 id="vcs-hierarchical-seed-file">VCS hierarchical seed file</h2>
 <p>When using VCS with hierarchical instance seeding (<code>-xlrm hier_inst_seed</code>), VCS writes a <code>HierInstanceSeed.txt</code> file in the simulation directory after the run. <code>rtl_buddy</code> looks for this file to record the seed for reproducibility.</p>
 <p>If the file is missing, a <code>sim.hier_seed_missing</code> warning is emitted in the log and the seed is not recorded, but the test result is not affected.</p>
