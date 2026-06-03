@@ -985,13 +985,15 @@ class RtlBuddy:
             results = [test_runner.run()]
         else:
             results = test_runner.run_multiple(run_ids)
-        if test_cfg.get_xfail():
-            # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (fail) so a
-            # known-failing test can live in a suite/regression. Logged so
-            # the remap is visible in the run record.
+        if test_cfg.is_xfail():
+            # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (a failure only
+            # when strict) so a known-failing test can live in a
+            # suite/regression. Logged so the remap is visible in the run
+            # record.
+            strict = test_cfg.get_xfail_strict()
             for res in results:
                 pre = res.results.get("result")
-                apply_test_xfail(res)
+                apply_test_xfail(res, strict=strict)
                 log_event(
                     logger,
                     logging.INFO,
@@ -999,6 +1001,7 @@ class RtlBuddy:
                     test=test_cfg.get_name(),
                     observed=pre,
                     reported=res.results.get("result"),
+                    strict=strict,
                 )
         return results
 
@@ -3367,12 +3370,13 @@ class RtlBuddy:
                 suite_dir=suite_dir,
             )
             res = runner.run()
-            if v.get_xfail():
-                # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (fail) so an
-                # expected-fail verification can live in a regression. Logged
-                # so the remap is visible in the run record.
+            if v.is_xfail():
+                # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (a failure
+                # only when strict) so an expected-fail verification can live
+                # in a regression. Logged so the remap is visible in the run
+                # record.
                 pre = res.results.get("result")
-                res = apply_xfail(res)
+                res = apply_xfail(res, strict=v.get_xfail_strict())
                 log_event(
                     logger,
                     logging.INFO,
@@ -3380,6 +3384,7 @@ class RtlBuddy:
                     fpv=v.get_name(),
                     observed=pre,
                     reported=res.results.get("result"),
+                    strict=v.get_xfail_strict(),
                 )
             results.append({"fpv_name": v.get_name(), "results": res})
         return results

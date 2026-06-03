@@ -1011,14 +1011,22 @@ _XFAIL_SUITE_YAML = dedent("""\
     rtl-buddy-filetype: fpv_config
 
     verifications:
-      - name: "fpv_expected_fail"
-        desc: "A property known not to hold"
+      - name: "fpv_xfail"
+        desc: "Expected-fail, non-strict"
         model: "mod_a"
         model_path: "models.yaml"
         tool: "sby"
         mode: "prove"
         depth: 20
         xfail: true
+      - name: "fpv_xfail_strict"
+        desc: "Expected-fail, strict"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "sby"
+        mode: "prove"
+        depth: 20
+        xfail_strict: true
       - name: "fpv_normal"
         desc: "A normal verification"
         model: "mod_a"
@@ -1029,46 +1037,69 @@ _XFAIL_SUITE_YAML = dedent("""\
 """)
 
 
-def test_fpv_config_xfail_defaults_false():
-    assert _make_fpv_cfg().get_xfail() is False
+def test_fpv_config_xfail_flags_default_false():
+    cfg = _make_fpv_cfg()
+    assert cfg.get_xfail() is False
+    assert cfg.get_xfail_strict() is False
+    assert cfg.is_xfail() is False
 
 
-def test_fpv_suite_config_loads_xfail_flag(tmp_path):
+def test_fpv_suite_config_loads_xfail_flags(tmp_path):
     (tmp_path / "models.yaml").write_text(_MODELS_YAML)
     suite_yaml = tmp_path / "fpv.yaml"
     suite_yaml.write_text(_XFAIL_SUITE_YAML)
     cfg = FpvSuiteConfig(str(suite_yaml))
-    assert cfg.get_verifications("fpv_expected_fail")[0].get_xfail() is True
-    # Absent `xfail:` defaults to False.
-    assert cfg.get_verifications("fpv_normal")[0].get_xfail() is False
+
+    nonstrict = cfg.get_verifications("fpv_xfail")[0]
+    assert nonstrict.is_xfail() is True
+    assert nonstrict.get_xfail_strict() is False
+
+    strict = cfg.get_verifications("fpv_xfail_strict")[0]
+    assert strict.is_xfail() is True  # either flag enables xfail
+    assert strict.get_xfail_strict() is True
+
+    normal = cfg.get_verifications("fpv_normal")[0]
+    assert normal.is_xfail() is False
 
 
 def test_apply_xfail_fail_becomes_xfail_and_passes():
     from rtl_buddy.runner.fpv_results import FpvFailResults, apply_xfail
 
-    res = FpvFailResults(name="t", mode="prove", depth=20)
-    assert res.is_pass() is False
-    apply_xfail(res)
-    assert res.results["result"] == "XFAIL"
-    assert res.is_pass() is True  # expected failure does not fail the run
-    assert res.results["desc"].startswith("xfail (expected fail): ")
+    for strict in (False, True):
+        res = FpvFailResults(name="t", mode="prove", depth=20)
+        assert res.is_pass() is False
+        apply_xfail(res, strict=strict)
+        assert res.results["result"] == "XFAIL"
+        assert res.is_pass() is True  # XFAIL passes regardless of strictness
+        assert res.results["desc"].startswith("xfail (expected fail): ")
 
 
-def test_apply_xfail_pass_becomes_xpass_and_fails():
+def test_apply_xfail_nonstrict_xpass_still_passes():
     from rtl_buddy.runner.fpv_results import FpvPassResults, apply_xfail
 
     res = FpvPassResults(name="t", mode="prove", depth=20)
-    assert res.is_pass() is True
-    apply_xfail(res)
+    apply_xfail(res, strict=False)
     assert res.results["result"] == "XPASS"
-    assert res.is_pass() is False  # stale xfail surfaces loudly
+    assert res.is_pass() is True  # non-strict: an XPASS does not fail the run
     assert res.results["desc"].startswith("XPASS (expected fail but passed): ")
+
+
+def test_apply_xfail_strict_xpass_fails():
+    from rtl_buddy.runner.fpv_results import FpvPassResults, apply_xfail
+
+    res = FpvPassResults(name="t", mode="prove", depth=20)
+    apply_xfail(res, strict=True)
+    assert res.results["result"] == "XPASS"
+    assert res.is_pass() is False  # strict: a stale xfail surfaces loudly
+    assert res.results["desc"].startswith(
+        "XPASS (expected fail but passed — strict, failing): "
+    )
 
 
 def test_apply_xfail_skip_passes_through_unchanged():
     from rtl_buddy.runner.fpv_results import FpvSkipResults, apply_xfail
 
     res = FpvSkipResults(name="t", desc="below reg level")
-    apply_xfail(res)
+    apply_xfail(res, strict=True)
     assert res.results["result"] == "SKIP"
     assert res.is_pass() is True

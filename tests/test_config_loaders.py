@@ -785,11 +785,14 @@ def test_model_config_loader_round_trips_axi_fields(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_test_config_xfail_defaults_false():
-    assert _make_test_config().get_xfail() is False
+def test_test_config_xfail_flags_default_false():
+    cfg = _make_test_config()
+    assert cfg.get_xfail() is False
+    assert cfg.get_xfail_strict() is False
+    assert cfg.is_xfail() is False
 
 
-def test_suite_config_loads_xfail_flag(tmp_path):
+def test_suite_config_loads_xfail_flags(tmp_path):
     (tmp_path / "models.yaml").write_text(
         "rtl-buddy-filetype: model_config\n"
         "models:\n  - name: m\n    filelist: [top.sv]\n"
@@ -801,11 +804,17 @@ def test_suite_config_loads_xfail_flag(tmp_path):
         "    filelist: [tb.sv]\n"
         "tests:\n"
         "  - name: known_fail\n"
-        "    desc: a test known to fail\n"
+        "    desc: a test known to fail (non-strict)\n"
         "    model: m\n"
         "    model_path: models.yaml\n"
         "    testbench: tb1\n"
         "    xfail: true\n"
+        "  - name: known_fail_strict\n"
+        "    desc: a test known to fail (strict)\n"
+        "    model: m\n"
+        "    model_path: models.yaml\n"
+        "    testbench: tb1\n"
+        "    xfail_strict: true\n"
         "  - name: normal\n"
         "    desc: a normal test\n"
         "    model: m\n"
@@ -813,37 +822,52 @@ def test_suite_config_loads_xfail_flag(tmp_path):
         "    testbench: tb1\n"
     )
     cfg = SuiteConfig(str(tmp_path / "tests.yaml"))
-    assert cfg.tests["known_fail"].get_xfail() is True
-    # Absent `xfail:` defaults to False.
-    assert cfg.tests["normal"].get_xfail() is False
+    assert cfg.tests["known_fail"].is_xfail() is True
+    assert cfg.tests["known_fail"].get_xfail_strict() is False
+    assert cfg.tests["known_fail_strict"].is_xfail() is True
+    assert cfg.tests["known_fail_strict"].get_xfail_strict() is True
+    # Absent both keys defaults to not-xfail.
+    assert cfg.tests["normal"].is_xfail() is False
 
 
 def test_apply_test_xfail_fail_becomes_xfail_and_passes():
     from rtl_buddy.runner.test_results import CompileFailResults, apply_xfail
 
-    res = CompileFailResults(name="t")
-    assert res.is_pass() is False
-    apply_xfail(res)
-    assert res.results["result"] == "XFAIL"
-    assert res.is_pass() is True  # expected failure does not fail the run
-    assert res.results["desc"].startswith("xfail (expected fail): ")
+    for strict in (False, True):
+        res = CompileFailResults(name="t")
+        assert res.is_pass() is False
+        apply_xfail(res, strict=strict)
+        assert res.results["result"] == "XFAIL"
+        assert res.is_pass() is True  # XFAIL passes regardless of strictness
+        assert res.results["desc"].startswith("xfail (expected fail): ")
 
 
-def test_apply_test_xfail_pass_becomes_xpass_and_fails():
+def test_apply_test_xfail_nonstrict_xpass_still_passes():
     from rtl_buddy.runner.test_results import TestPassResults, apply_xfail
 
     res = TestPassResults(name="t")
-    assert res.is_pass() is True
-    apply_xfail(res)
+    apply_xfail(res, strict=False)
     assert res.results["result"] == "XPASS"
-    assert res.is_pass() is False  # stale xfail surfaces loudly
+    assert res.is_pass() is True  # non-strict: an XPASS does not fail the run
     assert res.results["desc"].startswith("XPASS (expected fail but passed): ")
+
+
+def test_apply_test_xfail_strict_xpass_fails():
+    from rtl_buddy.runner.test_results import TestPassResults, apply_xfail
+
+    res = TestPassResults(name="t")
+    apply_xfail(res, strict=True)
+    assert res.results["result"] == "XPASS"
+    assert res.is_pass() is False  # strict: a stale xfail surfaces loudly
+    assert res.results["desc"].startswith(
+        "XPASS (expected fail but passed — strict, failing): "
+    )
 
 
 def test_apply_test_xfail_skip_passes_through_unchanged():
     from rtl_buddy.runner.test_results import SkipResults, apply_xfail
 
     res = SkipResults(name="t", desc="below reg level")
-    apply_xfail(res)
+    apply_xfail(res, strict=True)
     assert res.results["result"] == "SKIP"
     assert res.is_pass() is True

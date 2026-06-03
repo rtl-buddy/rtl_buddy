@@ -66,7 +66,10 @@ class DummySweepTest:
     def get_name(self):
         return self.name
 
-    def get_xfail(self):
+    def is_xfail(self):
+        return False
+
+    def get_xfail_strict(self):
         return False
 
 

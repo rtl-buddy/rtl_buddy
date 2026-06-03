@@ -137,15 +137,22 @@ class FpvConfigFile:
     # `cfg-fpv-tools[].opts.plugin-path` must point at the built
     # slang.so.
     frontend: str = "verilog"
-    # Expected-fail marker (pytest-style xfail). When true, a verification
-    # that FAILs is reported as `XFAIL` and counts as a pass (does not fail
-    # the run / regression); a verification that unexpectedly PASSes is
-    # reported as `XPASS` and counts as a failure (strict — a stale xfail
-    # should be loud). Use for teaching/demonstration properties that are
-    # known not to hold (e.g. a true-but-not-inductive property under
-    # `mode: prove`) so they can live in a regression without turning it
-    # red. SKIP/NA pass through unchanged.
+    # Expected-fail markers (pytest-style xfail). A verification is treated
+    # as expected-to-fail when *either* `xfail` or `xfail_strict` is true:
+    # a FAIL is reported as `XFAIL` and counts as a pass (does not fail the
+    # run / regression), and SKIP/NA pass through unchanged. The two flags
+    # differ only in how an *unexpected* pass (`XPASS`) is counted:
+    #
+    #   xfail: true         — non-strict. XPASS is reported but still
+    #                         counts as a pass (does not fail the run).
+    #   xfail_strict: true  — strict. XPASS counts as a FAILURE, so a stale
+    #                         xfail (the property started holding) is loud.
+    #
+    # If both are set, strict wins. Use for known-not-to-hold properties
+    # (e.g. a true-but-not-inductive property under `mode: prove`) so they
+    # can live in a regression without turning it red.
     xfail: bool = False
+    xfail_strict: bool = field(rename="xfail_strict", default=False)
 
     def initialise(self, config_dir: str) -> "FpvConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -182,6 +189,7 @@ class FpvConfigFile:
             coi=self.coi,
             frontend=self.frontend,
             xfail=self.xfail,
+            xfail_strict=self.xfail_strict,
         )
 
 
@@ -203,12 +211,20 @@ class FpvConfig:
     coi: bool | None = dc_field(default=None)
     frontend: str = dc_field(default="verilog")
     xfail: bool = dc_field(default=False)
+    xfail_strict: bool = dc_field(default=False)
 
     def get_frontend(self) -> str:
         return self.frontend
 
+    def is_xfail(self) -> bool:
+        """Whether this verification is expected to fail (either flag set)."""
+        return self.xfail or self.xfail_strict
+
     def get_xfail(self) -> bool:
         return self.xfail
+
+    def get_xfail_strict(self) -> bool:
+        return self.xfail_strict
 
     def vacuity_enabled(self) -> bool:
         """Whether to run the vacuity cover pass for this verification.

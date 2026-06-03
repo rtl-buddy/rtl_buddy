@@ -162,13 +162,17 @@ class TestConfig:
     timeout: int | None
     covers: list[str] | None = None
     assertions: bool = False
-    # Expected-fail marker (pytest-style xfail). When True, a test that
-    # FAILs is reported as XFAIL and counts as a pass (does not fail the
-    # run / regression); a test that unexpectedly PASSes is reported as
-    # XPASS and counts as a failure (strict). SKIP / NA pass through. Use
-    # for a known-failing test you want tracked in the suite rather than
-    # deleted or silently excluded.
+    # Expected-fail markers (pytest-style xfail). A test is treated as
+    # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
+    # FAIL is reported as XFAIL and counts as a pass; SKIP/NA pass through.
+    # They differ only in how an unexpected pass (XPASS) is counted:
+    #   xfail        — non-strict: XPASS still counts as a pass.
+    #   xfail_strict — strict: XPASS counts as a FAILURE (stale marker is
+    #                  loud). If both are set, strict wins.
+    # Use for a known-failing test you want tracked in the suite rather
+    # than deleted or silently excluded.
     xfail: bool = False
+    xfail_strict: bool = False
     default_timeout: int = 60  # NOTE: potential for config through root config
 
     def get_name(self):
@@ -180,9 +184,17 @@ class TestConfig:
         """
         return self.name
 
+    def is_xfail(self) -> bool:
+        """Whether this test is expected to fail (either flag set)."""
+        return self.xfail or self.xfail_strict
+
     def get_xfail(self) -> bool:
         """Whether this test is marked expected-to-fail (see `xfail`)."""
         return self.xfail
+
+    def get_xfail_strict(self) -> bool:
+        """Whether an unexpected pass (XPASS) should count as a failure."""
+        return self.xfail_strict
 
     def get_model(self):
         """
@@ -433,6 +445,7 @@ class TestConfigFile:
     covers: list[str] | None = None
     assertions: bool = False
     xfail: bool = False
+    xfail_strict: bool = False
 
     def initialise(self, config_dir, tbs):
         tb = tbs[self.tb]
@@ -463,6 +476,7 @@ class TestConfigFile:
             covers=self.covers,
             assertions=self.assertions,
             xfail=self.xfail,
+            xfail_strict=self.xfail_strict,
         )
 
 

@@ -313,7 +313,8 @@ tests:
 | `postproc.path` | string | Path to post-processing script (parsed but not yet fully active) |
 | `covers` | list of strings | IDs of spec coverage items this test addresses (e.g. `["BLOCK-COV-01"]`). Used by `rb spec check-coverage`; has no effect at simulation time. |
 | `assertions` | bool | When true and the builder is Verilator, compile in SVA via `--assert` (and `--coverage-user` for cover-property hits) and add an `Assertions` column to the `rb test` results table. See [Assertion-Based Verification](../concepts/abv-simulation.md). |
-| `xfail` | bool | Optional, default false. Marks the test as expected-to-fail: a FAIL is reported as `XFAIL` and counts as a pass; a PASS is reported as `XPASS` and counts as a failure (strict). SKIP/NA pass through. Mirrors the `fpv.yaml` `xfail` field — see [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the test expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. SKIP/NA pass through. Mirrors the `fpv.yaml` field — see [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks the test expected-to-fail; strict wins if both are set. |
 
 ### cocotb testbenches
 
@@ -755,7 +756,8 @@ verifications:
     reglvl:
       default: 0
       sby: 1000
-    xfail: false           # set true to mark a known-failing proof expected
+    xfail: false           # expected-fail, non-strict (XPASS still passes)
+    xfail_strict: false    # expected-fail, strict (XPASS counts as a failure)
     tool_overrides:
       sby:
         timeout: 1800
@@ -782,7 +784,8 @@ verifications:
 | `vacuity` | bool | Optional. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived covers for every `\|->` / `\|=>` antecedent in the property set. Default is false for `cover` / `live` modes. See [Vacuity covers](../concepts/fpv.md#vacuity-covers). |
 | `coi` | bool | Optional. When true (default), run a yosys cone-of-influence pass after the primary proof and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](../concepts/fpv.md#cone-of-influence-coverage). |
 | `frontend` | string | SystemVerilog frontend. `"verilog"` (default — yosys native, immediate + simple-concurrent SVA only) or `"slang"` (yosys-slang plugin — required for `\|->` / `\|=>` and SV `bind`). `slang` requires `cfg-fpv-tools[].opts.plugin-path` in root_config.yaml. See [Choosing a frontend](../concepts/fpv.md#choosing-a-frontend). |
-| `xfail` | bool | Optional, default false. Marks the verification as expected-to-fail: a FAIL is reported as `XFAIL` and counts as a pass; a PASS is reported as `XPASS` and counts as a failure (strict). See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the verification expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. A verification is expected-to-fail if either flag is set; strict wins if both are. |
 
 **Runtime effects:**
 
