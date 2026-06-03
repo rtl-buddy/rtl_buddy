@@ -51,6 +51,17 @@ classifiers = [
   "Operating System :: MacOS",
 ]
 
+[project.optional-dependencies]
+# `rb mut` mutation testing. rtl-buddy-xeno is a library rtl_buddy
+# imports lazily (runner/mut_runner.py), not a subprocess tool, so it
+# installs into the same environment via this extra rather than via
+# `uv tool install`. The `>= 0.1.0` floor (first PyPI release) guards
+# against API drift -- e.g. the ExpectedChange -> Prediction rename in
+# rtl-buddy-xeno#5 -- at pip/uv resolve time. mut_runner repeats the
+# same floor at import time (_check_xeno_version) for git/editable
+# installs that bypass this resolve-time guard; keep the two in sync.
+mut = ["rtl-buddy-xeno[verible,slang] >= 0.1.0"]
+
 [project.urls]
 Source = "https://github.com/rtl-buddy/rtl_buddy"
 Documentation = "https://rtl-buddy.github.io/rtl_buddy/"

@@ -279,6 +279,45 @@ def test_missing_xeno_raises_with_install_hint(tmp_path, monkeypatch):
         runner.list_candidates()
 
 
+def test_too_old_xeno_raises_with_floor_hint(tmp_path, stub_xeno, monkeypatch):
+    # xeno imports fine (stub) but reports a version below the floor: the
+    # runtime guard rejects it with the same `>=` floor the pyproject
+    # `[mut]` extra enforces at resolve time, catching git/editable
+    # installs that bypass that resolve-time check.
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.0.9")
+    mut_path = _write_project(tmp_path)
+    runner = _runner(tmp_path, mut_path)
+    with pytest.raises(FatalRtlBuddyError, match=r"0\.0\.9 is installed"):
+        runner.list_candidates()
+
+
+def test_recent_xeno_version_accepted(tmp_path, stub_xeno, monkeypatch):
+    # A version at or above the floor passes the runtime guard.
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "1.2.0")
+    mut_path = _write_project(tmp_path)
+    runner = _runner(tmp_path, mut_path)
+    assert len(runner.list_candidates()) == 2
+
+
+def test_missing_xeno_metadata_is_tolerated(tmp_path, stub_xeno, monkeypatch):
+    # No distribution metadata (editable/dev install, or this stub) must
+    # not block: the resolve-time floor and a successful import stand in
+    # for the runtime check.
+    import importlib.metadata
+
+    def _raise(_name):
+        raise importlib.metadata.PackageNotFoundError("rtl-buddy-xeno")
+
+    monkeypatch.setattr(importlib.metadata, "version", _raise)
+    mut_path = _write_project(tmp_path)
+    runner = _runner(tmp_path, mut_path)
+    assert len(runner.list_candidates()) == 2
+
+
 def test_operator_mapping_to_kinds(tmp_path, stub_xeno):
     mut_path = _write_project(tmp_path)
     runner = _runner(tmp_path, mut_path)

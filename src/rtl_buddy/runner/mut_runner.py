@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import importlib.metadata
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -41,13 +43,38 @@ from .mut_results import ERRORED, KILLED, SURVIVED, MutantOutcome, MutResults
 logger = logging.getLogger(__name__)
 
 
+# Minimum rtl-buddy-xeno release rb mut's bridge code targets. Kept in
+# sync with the `mut` extra's floor in pyproject.toml: bumping the xeno
+# API rb mut relies on (see the module docstring and the audit notes on
+# rtl-buddy/rtl_buddy#239) must bump both. The pyproject floor guards
+# pip/uv resolves; _check_xeno_version() repeats it at import time so a
+# too-old git/editable install fails with a friendly hint instead of an
+# obscure AttributeError deep inside a campaign.
+_XENO_MIN_VERSION = "0.1.0"
+
+
 _XENO_INSTALL_HINT = (
     "rb mut requires the rtl-buddy-xeno mutation engine, which is not "
-    "installed. Install it with:\n"
-    '    pip install "rtl-buddy-xeno[verible,slang]"\n'
+    "installed. Install it with the mut extra:\n"
+    '    pip install "rtl_buddy[mut]"\n'
+    "or install the engine directly:\n"
+    f'    pip install "rtl-buddy-xeno[verible,slang] >= {_XENO_MIN_VERSION}"\n'
     "(the [verible] and [slang] extras pull the Verible CST + pyslang "
     "toolchain the structural operators need)."
 )
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Leading (major, minor, patch) ints of a PEP 440 version string.
+
+    Enough for a floor comparison; non-numeric suffixes (rc/dev/+local)
+    are dropped, so a pre-release of the floor compares equal to it.
+    """
+    parts = []
+    for segment in version.split(".")[:3]:
+        match = re.match(r"\d+", segment)
+        parts.append(int(match.group()) if match else 0)
+    return tuple(parts)
 
 
 class MutRunner:
@@ -75,7 +102,32 @@ class MutRunner:
             import rtl_buddy_xeno
         except ImportError as e:
             raise FatalRtlBuddyError(_XENO_INSTALL_HINT) from e
+        MutRunner._check_xeno_version()
         return rtl_buddy_xeno
+
+    @staticmethod
+    def _check_xeno_version() -> None:
+        """Fail fast when a too-old rtl-buddy-xeno is installed.
+
+        The `mut` extra's `>=` floor in pyproject.toml guards pip/uv
+        resolves, but git and editable installs bypass it. This repeats
+        the floor at import time so xeno API drift below
+        ``_XENO_MIN_VERSION`` surfaces as a friendly hint, not an
+        AttributeError mid-campaign. Skipped when the installed version
+        can't be read (no distribution metadata -- e.g. the test stub);
+        there the resolve-time floor and a successful import stand in.
+        """
+        try:
+            installed = importlib.metadata.version("rtl-buddy-xeno")
+        except importlib.metadata.PackageNotFoundError:
+            return
+        if _version_tuple(installed) < _version_tuple(_XENO_MIN_VERSION):
+            raise FatalRtlBuddyError(
+                f"rb mut requires rtl-buddy-xeno >= {_XENO_MIN_VERSION}, "
+                f"but {installed} is installed. Upgrade it with:\n"
+                f'    pip install -U "rtl-buddy-xeno[verible,slang] '
+                f'>= {_XENO_MIN_VERSION}"'
+            )
 
     def _kinds(self, xeno):
         """Map the config's operator strings onto xeno MutationKinds."""

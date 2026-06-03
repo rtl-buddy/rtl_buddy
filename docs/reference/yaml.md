@@ -890,7 +890,7 @@ budget:
 
 - `verify` must configure at least one kill oracle (`fpv_config` + `verification`, and/or `test_config`); otherwise config load fails. When both are set, a mutant is killed if either oracle catches it.
 - `rb mut run` writes `mut_report.json` under `<mut.yaml dir>/artefacts/mut/<campaign>/`. It exits `1` only when nothing was scorable; score thresholding is not gated.
-- The mutation engine lives in the optional [`rtl-buddy-xeno`](https://github.com/rtl-buddy/rtl-buddy-xeno) package (`pip install "rtl-buddy-xeno[verible,slang]"`); `rb mut` raises a fatal error with this hint if it is not installed.
+- The mutation engine lives in the optional [`rtl-buddy-xeno`](https://github.com/rtl-buddy/rtl-buddy-xeno) package, enabled via the `[mut]` extra (`uv add "rtl_buddy[mut]"`, which pulls `rtl-buddy-xeno[verible,slang] >= 0.1.0`); `rb mut` raises a fatal error with this hint if it is missing or below the version floor.
 
 ---
 

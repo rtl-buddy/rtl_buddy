@@ -6,7 +6,7 @@ description: How to score a verification suite with rtl_buddy mutation testing v
 
 > **Integration type:** Pluggable engine. `rb mut` orchestrates the external [`rtl-buddy-xeno`](https://github.com/rtl-buddy/rtl-buddy-xeno) mutation engine; rtl_buddy supplies the config, the kill oracles, and the scoring/report.
 >
-> **Optional dependency:** the engine is **not** installed by default. Install it with `pip install "rtl-buddy-xeno[verible,slang]"` (the `verible`/`slang` extras provide the Verible CST + pyslang toolchain the operators need). Running `rb mut` without it raises a fatal error with this hint.
+> **Optional dependency:** the engine is **not** installed by default. Enable it with the `[mut]` extra — `uv add "rtl_buddy[mut]"` or `pip install "rtl_buddy[mut]"` — which pulls `rtl-buddy-xeno[verible,slang] >= 0.1.0` (the `verible`/`slang` extras provide the Verible CST + pyslang toolchain the operators need). You can also install the engine directly with `pip install "rtl-buddy-xeno[verible,slang] >= 0.1.0"`. Running `rb mut` without it — or with a version below the floor — raises a fatal error with this hint.
 >
 > See also: [Formal Property Verification](fpv.md), [Assertion-Based Verification (sim)](abv-simulation.md).
 
