@@ -86,6 +86,14 @@ class CdcConfigFile:
     # can add frontends without an rtl_buddy release. Unknown values
     # are rejected by the analyzer's own arg parser.
     frontend: str | None = None
+    # Expected-fail markers (pytest-style). Either flag marks the analysis
+    # expected-to-fail (a FAIL becomes XFAIL, a pass); they differ only in
+    # how an unexpected pass (XPASS) is counted: `xfail` non-strict (XPASS
+    # still passes), `xfail_strict` strict (XPASS is a failure). Strict
+    # wins if both set. Use for a design with known/intentional CDC
+    # violations tracked in a suite rather than excluded.
+    xfail: bool = False
+    xfail_strict: bool = field(rename="xfail_strict", default=False)
 
     def initialise(self, config_dir: str) -> "CdcConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -105,6 +113,8 @@ class CdcConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             frontend=self.frontend,
+            xfail=self.xfail,
+            xfail_strict=self.xfail_strict,
         )
 
 
@@ -119,6 +129,15 @@ class CdcConfig:
     _reglvl: int | dict | None
     tool_overrides: dict | None
     frontend: str | None = None
+    xfail: bool = False
+    xfail_strict: bool = False
+
+    def is_xfail(self) -> bool:
+        """Whether this analysis is expected to fail (either flag set)."""
+        return self.xfail or self.xfail_strict
+
+    def get_xfail_strict(self) -> bool:
+        return self.xfail_strict
 
     def get_name(self) -> str:
         return self.name

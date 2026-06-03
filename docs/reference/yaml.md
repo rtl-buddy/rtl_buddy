@@ -441,6 +441,8 @@ syntheses:
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
 | `tool_overrides` | dict | Optional per-tool overrides for `synth_args`, `abc_args`, `strategy`, `frontend`, and `plugin_path`, keyed by synthesis tool name (always `yosys` for the elaboration stage). Keys are snake_case — see the `cfg-synth-tools` note above on the kebab-vs-snake naming |
 | `effort` | string | Optional effort name from `cfg-synth-efforts`; controls Yosys synth/abc args and OpenROAD `pre-sta-tcl`. Overridable per invocation with `rtl-buddy synth --effort <name>`. Omitted ⇒ built-in `standard` defaults. |
+| `xfail` | bool | Optional, default false. Marks the synthesis run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
 
@@ -522,6 +524,8 @@ runs:
 | `floorplan.core-margin` | float | Margin between core area and die edge, in microns |
 | `reglvl` | int or dict | Regression level for filtering; same semantics as `synth.yaml` reglvl (int for all tools, dict for per-tool with `default`) |
 | `tool_overrides` | dict | Reserved for tool-specific overrides (none consumed today) |
+| `xfail` | bool | Optional, default false. Marks the pnr run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
 
@@ -591,6 +595,8 @@ runs:
 | `activity.default-static-prob` | float | Synthetic global duty cycle. Default `0.5` |
 | `reglvl` | int or dict | Regression level for filtering; same semantics as `synth.yaml`/`pnr.yaml` reglvl |
 | `tool_overrides` | dict | Reserved for tool-specific overrides; accepted but not consumed by the OpenROAD backend today (mirrors `pnr.yaml`) |
+| `xfail` | bool | Optional, default false. Marks the power run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
 
@@ -677,6 +683,8 @@ analyses:
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
 | `tool_overrides` | dict | Optional per-tool overrides for `sync_depth` or `extra_args`, keyed by CDC tool name |
 | `frontend` | string | Optional elaboration frontend selector forwarded as-is via `--frontend <value>` to the analyzer subprocess. The set of accepted values is the analyzer's, not rtl_buddy's — for the bundled `rtl-buddy-cdc` backend on current main it's `"yosys"` (built-in) or `"slang"` (full SV-2017 via the optional `pyslang`-backed `[slang]` extra); see the analyzer's own docs for the authoritative list. Unknown values are rejected by the analyzer, not by rtl_buddy. Omit to use the analyzer's own default. |
+| `xfail` | bool | Optional, default false. Marks the CDC analysis expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. Useful for a design with known/intentional CDC violations tracked in a suite. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
 

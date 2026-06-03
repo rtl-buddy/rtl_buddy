@@ -1063,7 +1063,8 @@ def test_fpv_suite_config_loads_xfail_flags(tmp_path):
 
 
 def test_apply_xfail_fail_becomes_xfail_and_passes():
-    from rtl_buddy.runner.fpv_results import FpvFailResults, apply_xfail
+    from rtl_buddy.runner.fpv_results import FpvFailResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     for strict in (False, True):
         res = FpvFailResults(name="t", mode="prove", depth=20)
@@ -1075,7 +1076,8 @@ def test_apply_xfail_fail_becomes_xfail_and_passes():
 
 
 def test_apply_xfail_nonstrict_xpass_still_passes():
-    from rtl_buddy.runner.fpv_results import FpvPassResults, apply_xfail
+    from rtl_buddy.runner.fpv_results import FpvPassResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     res = FpvPassResults(name="t", mode="prove", depth=20)
     apply_xfail(res, strict=False)
@@ -1085,7 +1087,8 @@ def test_apply_xfail_nonstrict_xpass_still_passes():
 
 
 def test_apply_xfail_strict_xpass_fails():
-    from rtl_buddy.runner.fpv_results import FpvPassResults, apply_xfail
+    from rtl_buddy.runner.fpv_results import FpvPassResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     res = FpvPassResults(name="t", mode="prove", depth=20)
     apply_xfail(res, strict=True)
@@ -1097,7 +1100,8 @@ def test_apply_xfail_strict_xpass_fails():
 
 
 def test_apply_xfail_skip_passes_through_unchanged():
-    from rtl_buddy.runner.fpv_results import FpvSkipResults, apply_xfail
+    from rtl_buddy.runner.fpv_results import FpvSkipResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     res = FpvSkipResults(name="t", desc="below reg level")
     apply_xfail(res, strict=True)

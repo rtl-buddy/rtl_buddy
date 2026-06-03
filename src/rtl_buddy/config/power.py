@@ -73,6 +73,12 @@ class PowerConfigFile:
     activity: PowerActivityFile = field(default_factory=PowerActivityFile)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # Expected-fail markers (pytest-style). Either marks this run
+    # expected-to-fail; `xfail` is non-strict (an unexpected pass still
+    # passes), `xfail_strict` is strict (an unexpected pass is a failure).
+    # See docs/concepts/fpv.md#expected-failures-xfail.
+    xfail: bool = False
+    xfail_strict: bool = field(rename="xfail_strict", default=False)
 
     def initialise(self, config_dir: str) -> "PowerConfig":
         if self.netlist_source == "synth":
@@ -143,6 +149,8 @@ class PowerConfigFile:
             activity=activity,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            xfail=self.xfail,
+            xfail_strict=self.xfail_strict,
         )
 
 
@@ -162,6 +170,15 @@ class PowerConfig:
     activity: PowerActivity
     _reglvl: int | dict | None
     tool_overrides: dict | None
+    xfail: bool = False
+    xfail_strict: bool = False
+
+    def is_xfail(self) -> bool:
+        """Whether this run is expected to fail (either flag set)."""
+        return self.xfail or self.xfail_strict
+
+    def get_xfail_strict(self) -> bool:
+        return self.xfail_strict
 
     def get_name(self) -> str:
         return self.name

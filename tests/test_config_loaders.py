@@ -831,7 +831,8 @@ def test_suite_config_loads_xfail_flags(tmp_path):
 
 
 def test_apply_test_xfail_fail_becomes_xfail_and_passes():
-    from rtl_buddy.runner.test_results import CompileFailResults, apply_xfail
+    from rtl_buddy.runner.test_results import CompileFailResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     for strict in (False, True):
         res = CompileFailResults(name="t")
@@ -843,7 +844,8 @@ def test_apply_test_xfail_fail_becomes_xfail_and_passes():
 
 
 def test_apply_test_xfail_nonstrict_xpass_still_passes():
-    from rtl_buddy.runner.test_results import TestPassResults, apply_xfail
+    from rtl_buddy.runner.test_results import TestPassResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     res = TestPassResults(name="t")
     apply_xfail(res, strict=False)
@@ -853,7 +855,8 @@ def test_apply_test_xfail_nonstrict_xpass_still_passes():
 
 
 def test_apply_test_xfail_strict_xpass_fails():
-    from rtl_buddy.runner.test_results import TestPassResults, apply_xfail
+    from rtl_buddy.runner.test_results import TestPassResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     res = TestPassResults(name="t")
     apply_xfail(res, strict=True)
@@ -865,7 +868,8 @@ def test_apply_test_xfail_strict_xpass_fails():
 
 
 def test_apply_test_xfail_skip_passes_through_unchanged():
-    from rtl_buddy.runner.test_results import SkipResults, apply_xfail
+    from rtl_buddy.runner.test_results import SkipResults
+    from rtl_buddy.runner.xfail import apply_xfail
 
     res = SkipResults(name="t", desc="below reg level")
     apply_xfail(res, strict=True)

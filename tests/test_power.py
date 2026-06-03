@@ -570,3 +570,44 @@ def test_power_pass_results_omits_netlist_source_when_none():
 
     r = PowerPassResults(name="demo/results", mode="static")
     assert "netlist_source" not in r.results
+
+
+_POWER_XFAIL_YAML = dedent("""\
+    rtl-buddy-filetype: power_config
+
+    runs:
+      - name: "power_xfail"
+        desc: "expected-fail power, non-strict"
+        tool: "openroad"
+        mode: "static"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+        xfail: true
+      - name: "power_xfail_strict"
+        desc: "expected-fail power, strict"
+        tool: "openroad"
+        mode: "static"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+        xfail_strict: true
+      - name: "power_normal"
+        desc: "normal"
+        tool: "openroad"
+        mode: "static"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+""")
+
+
+def test_power_suite_loads_xfail_flags(tmp_path):
+    p = tmp_path / "power.yaml"
+    p.write_text(_POWER_XFAIL_YAML)
+    suite = PowerSuiteConfig(str(p))
+    assert suite.get_runs("power_xfail")[0].is_xfail() is True
+    assert suite.get_runs("power_xfail")[0].get_xfail_strict() is False
+    assert suite.get_runs("power_xfail_strict")[0].is_xfail() is True
+    assert suite.get_runs("power_xfail_strict")[0].get_xfail_strict() is True
+    assert suite.get_runs("power_normal")[0].is_xfail() is False

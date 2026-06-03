@@ -1,5 +1,7 @@
 import pprint
 
+from .xfail import is_pass_with_xfail
+
 
 class SynthResults:
     def __init__(self, name, results=None):
@@ -13,7 +15,8 @@ class SynthResults:
             results["desc"] = "NA"
 
     def is_pass(self):
-        return self.results["result"] in ("PASS", "SKIP")
+        # PASS/SKIP/XFAIL pass; XPASS passes only for a non-strict xfail.
+        return is_pass_with_xfail(self.results)
 
     def __str__(self):
         return "synth_results: " + pprint.pformat(self.results)

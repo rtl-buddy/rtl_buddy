@@ -122,6 +122,12 @@ genuine property disproof from an infrastructure error that also
 surfaces as a FAIL, so reserve it for properties whose failure is
 understood.
 
+The same `xfail` / `xfail_strict` markers and `XFAIL` / `XPASS`
+semantics apply to every command whose results carry a PASS/FAIL/SKIP
+verdict — `tests.yaml`, `synth.yaml`, `cdc.yaml`, `pnr.yaml`, and
+`power.yaml` — via one shared implementation. (`cdc.yaml` in particular
+is a natural fit for a design with known/intentional CDC violations.)
+
 ### Where inputs come from
 
 The runner reads the model's filelist via `VlogFilelist` (the same helper `rb synth` and `rb cdc` use), extracts source files and `+incdir+` entries, and emits them under the sby config's `[files]` and `[script]` sections respectively. The script reads, in order: design sources → `constraints:` (if set) → `properties:`. Putting constraints before properties ensures their `assume property` statements are in scope when the assertions are elaborated. Property files can be in-RTL with `` `ifdef FORMAL `` guards or standalone bound checker modules.

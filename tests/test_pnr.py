@@ -521,3 +521,41 @@ def test_def2stream_treats_empty_gds_as_failure(tmp_path, monkeypatch):
 
     returned = backend._run_def2stream(platform, "demo_top")
     assert returned is None
+
+
+_PNR_XFAIL_YAML = dedent("""\
+    rtl-buddy-filetype: pnr_config
+
+    runs:
+      - name: "pnr_xfail"
+        desc: "expected-fail pnr, non-strict"
+        tool: "openroad"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+        xfail: true
+      - name: "pnr_xfail_strict"
+        desc: "expected-fail pnr, strict"
+        tool: "openroad"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+        xfail_strict: true
+      - name: "pnr_normal"
+        desc: "normal"
+        tool: "openroad"
+        synth: "demo_synth"
+        synth-path: "../synth/synth.yaml"
+        platform: "nangate45_typ"
+""")
+
+
+def test_pnr_suite_loads_xfail_flags(tmp_path):
+    pnr_yaml = tmp_path / "pnr.yaml"
+    pnr_yaml.write_text(_PNR_XFAIL_YAML)
+    suite = PnrSuiteConfig(str(pnr_yaml))
+    assert suite.get_runs("pnr_xfail")[0].is_xfail() is True
+    assert suite.get_runs("pnr_xfail")[0].get_xfail_strict() is False
+    assert suite.get_runs("pnr_xfail_strict")[0].is_xfail() is True
+    assert suite.get_runs("pnr_xfail_strict")[0].get_xfail_strict() is True
+    assert suite.get_runs("pnr_normal")[0].is_xfail() is False

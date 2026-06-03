@@ -438,3 +438,40 @@ def test_lint_argv_adds_frontend_yosys_when_explicit(tmp_path, monkeypatch):
     assert len(calls) == 2
     for cmd in calls:
         assert cmd[cmd.index("--frontend") + 1] == "yosys"
+
+
+def test_cdc_suite_config_loads_xfail_flags(tmp_path):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    (tmp_path / "cdc.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: cdc_config
+
+        analyses:
+          - name: "cdc_xfail"
+            desc: "known violations, non-strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+            xfail: true
+          - name: "cdc_xfail_strict"
+            desc: "known violations, strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+            xfail_strict: true
+          - name: "cdc_normal"
+            desc: "normal"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+    """)
+    )
+    cfg = CdcSuiteConfig(str(tmp_path / "cdc.yaml"))
+    assert cfg.get_analyses("cdc_xfail")[0].is_xfail() is True
+    assert cfg.get_analyses("cdc_xfail")[0].get_xfail_strict() is False
+    assert cfg.get_analyses("cdc_xfail_strict")[0].is_xfail() is True
+    assert cfg.get_analyses("cdc_xfail_strict")[0].get_xfail_strict() is True
+    assert cfg.get_analyses("cdc_normal")[0].is_xfail() is False

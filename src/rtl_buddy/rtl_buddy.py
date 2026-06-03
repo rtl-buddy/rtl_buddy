@@ -37,12 +37,12 @@ from .logging_utils import (
 from .runner.cdc_runner import CdcRunner
 from .runner.cdc_results import CdcSkipResults
 from .runner.fpv_runner import FpvRunner
-from .runner.fpv_results import FpvSkipResults, apply_xfail
+from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
 from .runner.test_results import SetupFailResults, SkipResults
-from .runner.test_results import apply_xfail as apply_test_xfail
 from .runner.test_runner import RunDepth, TestRunner
+from .runner.xfail import apply_xfail
 from .runner.pnr_runner import PnrRunner
 from .runner.pnr_results import PnrSkipResults
 from .runner.power_runner import PowerRunner
@@ -519,6 +519,27 @@ class RtlBuddy:
             exit_code |= 0 if suite_result["results"].is_pass() else 1
         return exit_code
 
+    def _apply_xfail_logged(self, res, cfg, event):
+        """Re-interpret one result under cfg's xfail marker, and log it.
+
+        Shared by every command whose per-item config exposes
+        ``is_xfail()`` / ``get_xfail_strict()`` (test, fpv, synth, cdc,
+        pnr, power). Call only when ``cfg.is_xfail()`` is true.
+        """
+        observed = res.results.get("result")
+        strict = cfg.get_xfail_strict()
+        apply_xfail(res, strict=strict)
+        log_event(
+            logger,
+            logging.INFO,
+            event,
+            name=cfg.get_name(),
+            observed=observed,
+            reported=res.results.get("result"),
+            strict=strict,
+        )
+        return res
+
     def _render_test_summary(
         self,
         title,
@@ -986,23 +1007,10 @@ class RtlBuddy:
         else:
             results = test_runner.run_multiple(run_ids)
         if test_cfg.is_xfail():
-            # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (a failure only
-            # when strict) so a known-failing test can live in a
-            # suite/regression. Logged so the remap is visible in the run
-            # record.
-            strict = test_cfg.get_xfail_strict()
+            # FAIL->XFAIL (pass) / PASS->XPASS (a failure only when strict)
+            # so a known-failing test can live in a suite/regression.
             for res in results:
-                pre = res.results.get("result")
-                apply_test_xfail(res, strict=strict)
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "suite.xfail",
-                    test=test_cfg.get_name(),
-                    observed=pre,
-                    reported=res.results.get("result"),
-                    strict=strict,
-                )
+                self._apply_xfail_logged(res, test_cfg, "suite.xfail")
         return results
 
     def _append_results(self, test_name, run_ids, results, suite_results):
@@ -2333,7 +2341,10 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 effort_override=effort_override,
             )
-            results.append({"synth_name": s.get_name(), "results": runner.run()})
+            res = runner.run()
+            if s.is_xfail():
+                self._apply_xfail_logged(res, s, "synth_suite.xfail")
+            results.append({"synth_name": s.get_name(), "results": res})
         return results
 
     def do_cmd_synth(
@@ -2532,7 +2543,10 @@ class RtlBuddy:
                 emit_gds=emit_gds,
                 emit_png=emit_png,
             )
-            results.append({"pnr_name": run.get_name(), "results": runner.run()})
+            res = runner.run()
+            if run.is_xfail():
+                self._apply_xfail_logged(res, run, "pnr_suite.xfail")
+            results.append({"pnr_name": run.get_name(), "results": res})
         return results
 
     def _render_pnr_summary(self, title, pnr_results, *, metadata=None):
@@ -2718,7 +2732,10 @@ class RtlBuddy:
                 suite_dir=suite_dir,
                 reglvl_filter=reg_level if reg_level else None,
             )
-            results.append({"power_name": run.get_name(), "results": runner.run()})
+            res = runner.run()
+            if run.is_xfail():
+                self._apply_xfail_logged(res, run, "power_suite.xfail")
+            results.append({"power_name": run.get_name(), "results": res})
         return results
 
     def _render_power_summary(self, title, power_results, *, metadata=None):
@@ -3049,7 +3066,10 @@ class RtlBuddy:
                 cdc_cfg=a,
                 suite_dir=suite_dir,
             )
-            results.append({"cdc_name": a.get_name(), "results": runner.run()})
+            res = runner.run()
+            if a.is_xfail():
+                self._apply_xfail_logged(res, a, "cdc_suite.xfail")
+            results.append({"cdc_name": a.get_name(), "results": res})
         return results
 
     def do_cmd_saif(
@@ -3371,21 +3391,10 @@ class RtlBuddy:
             )
             res = runner.run()
             if v.is_xfail():
-                # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (a failure
-                # only when strict) so an expected-fail verification can live
-                # in a regression. Logged so the remap is visible in the run
-                # record.
-                pre = res.results.get("result")
-                res = apply_xfail(res, strict=v.get_xfail_strict())
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "fpv_suite.xfail",
-                    fpv=v.get_name(),
-                    observed=pre,
-                    reported=res.results.get("result"),
-                    strict=v.get_xfail_strict(),
-                )
+                # FAIL->XFAIL (pass) / PASS->XPASS (a failure only when
+                # strict) so an expected-fail verification can live in a
+                # regression.
+                self._apply_xfail_logged(res, v, "fpv_suite.xfail")
             results.append({"fpv_name": v.get_name(), "results": res})
         return results
 

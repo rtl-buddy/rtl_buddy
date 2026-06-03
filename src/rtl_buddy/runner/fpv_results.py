@@ -2,6 +2,8 @@
 
 import pprint
 
+from .xfail import is_pass_with_xfail
+
 
 class FpvResults:
     def __init__(self, name, results=None):
@@ -15,16 +17,8 @@ class FpvResults:
             results["desc"] = "NA"
 
     def is_pass(self) -> bool:
-        # XFAIL (an expected failure that did fail) always counts as a pass.
-        # XPASS (an expected failure that unexpectedly passed) counts as a
-        # pass only for a non-strict xfail; a strict xfail makes XPASS a
-        # failure so a stale marker is loud. See apply_xfail().
-        result = self.results["result"]
-        if result in ("PASS", "SKIP", "XFAIL"):
-            return True
-        if result == "XPASS":
-            return not self.results.get("xfail_strict", False)
-        return False
+        # PASS/SKIP/XFAIL pass; XPASS passes only for a non-strict xfail.
+        return is_pass_with_xfail(self.results)
 
     def __str__(self):
         return "fpv_results: " + pprint.pformat(self.results)
@@ -88,41 +82,3 @@ class FpvSkipResults(FpvResults):
             name=name,
             results={"result": "SKIP", "name": name, "desc": desc},
         )
-
-
-def apply_xfail(result: FpvResults, *, strict: bool = False) -> FpvResults:
-    """Re-interpret a result under an expected-fail (xfail) verification.
-
-    Mutates and returns ``result`` in place (results are freshly built per
-    run, so this is safe):
-
-    - ``FAIL`` -> ``XFAIL`` — the expected failure happened; counts as a
-      pass via :meth:`FpvResults.is_pass`, so it does not fail the run.
-    - ``PASS`` -> ``XPASS`` — the verification was expected to fail but
-      passed. For a non-strict xfail this still counts as a pass; for a
-      ``strict`` xfail it counts as a failure, so a stale marker (the
-      property started holding) surfaces loudly. ``strict`` is recorded on
-      the result so :meth:`FpvResults.is_pass` can honour it.
-    - ``SKIP`` / ``NA`` -> unchanged (no verdict to re-interpret).
-
-    Note: like pytest xfail without ``raises=``, this does not distinguish
-    a genuine property disproof from an infrastructure error that also
-    surfaces as ``FAIL`` — both become ``XFAIL``. Reserve xfail for
-    properties whose failure is understood.
-    """
-    status = result.results.get("result")
-    if status == "FAIL":
-        result.results["result"] = "XFAIL"
-        result.results["desc"] = "xfail (expected fail): " + result.results.get(
-            "desc", ""
-        )
-    elif status == "PASS":
-        result.results["result"] = "XPASS"
-        result.results["xfail_strict"] = strict
-        note = (
-            "XPASS (expected fail but passed — strict, failing): "
-            if strict
-            else "XPASS (expected fail but passed): "
-        )
-        result.results["desc"] = note + result.results.get("desc", "")
-    return result

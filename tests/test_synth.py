@@ -1645,3 +1645,37 @@ def test_openroad_run_fails_without_lef(tmp_path, monkeypatch):
     result = or_synth.run()
     assert isinstance(result, SynthFailResults)
     assert "lef" in result.results["desc"].lower()
+
+
+def test_synth_suite_config_loads_xfail_flags(tmp_path):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+
+        syntheses:
+          - name: "synth_xfail"
+            desc: "expected-fail synth, non-strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+            xfail: true
+          - name: "synth_xfail_strict"
+            desc: "expected-fail synth, strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+            xfail_strict: true
+          - name: "synth_normal"
+            desc: "normal"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+    """)
+    )
+    cfg = SynthSuiteConfig(str(tmp_path / "synth.yaml"))
+    assert cfg.get_syntheses("synth_xfail")[0].is_xfail() is True
+    assert cfg.get_syntheses("synth_xfail")[0].get_xfail_strict() is False
+    assert cfg.get_syntheses("synth_xfail_strict")[0].is_xfail() is True
+    assert cfg.get_syntheses("synth_xfail_strict")[0].get_xfail_strict() is True
+    assert cfg.get_syntheses("synth_normal")[0].is_xfail() is False
