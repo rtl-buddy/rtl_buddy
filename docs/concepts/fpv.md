@@ -290,6 +290,91 @@ Scope today:
 - Sequence-valued antecedents (`(req ##2 ack) |-> done`) are extracted but treated as boolean for the cover — close enough for the reachability signal.
 - Multi-line antecedents land in a follow-up.
 
+## Writing properties that prove: BMC vs induction
+
+A property can be **true** of a design yet still fail `mode: prove`. The
+difference is the difference between *bounded* and *unbounded* checking,
+and learning to write properties that hold under induction is the single
+highest-leverage FPV skill.
+
+- **`mode: bmc`** explores only the states reachable within `depth`
+  cycles from reset. A safety property that is never violated in that
+  bounded window passes — even if it is only *accidentally* true.
+- **`mode: prove`** does **temporal k-induction with `k = depth`**: a
+  base case (BMC from reset) plus an inductive step that starts from a
+  *completely arbitrary* state — constrained only by the transition
+  relation, any `assume` statements, and the induction hypothesis (the
+  property held for the previous `k` states). Crucially, the inductive
+  step is **not** restricted to reachable states.
+
+### A worked corpus
+
+Take a wrapping counter whose reachable set is exactly `{0..5}`:
+
+```systemverilog
+logic [9:0] cnt;
+initial cnt = 0;
+always @(posedge clk)
+  cnt <= (cnt == 5) ? 0 : cnt + 1;   // 0,1,2,3,4,5,0,1,...
+```
+
+All three assertions below are **true**, but they do not all *prove*:
+
+| Property | True? | Inductive? | Why |
+|---|---|---|---|
+| `cnt != 6`  | yes | **yes** | nothing transitions *to* 6 — `5` wraps to `0`, so `6` has no predecessor at all |
+| `cnt != 26` | yes | **no**  | the unreachable state `cnt == 25` steps to `26`; the inductive step may start on `25` (it satisfies `!= 26`) and walk into the violation |
+| `cnt <= 5`  | yes | **yes** | the reachable set `{0..5}` is *closed* under the transition relation, so the property carries itself forward |
+
+The lesson is the middle vs the bottom row: both express "the counter
+stays small," but only `cnt <= 5` is an **inductive invariant**.
+
+### Why a true property fails induction
+
+An `assert` is a *proof obligation*, not a *constraint* — it does not
+restrict the states the solver may explore (only `assume` does that). So
+in the inductive step the solver is free to pick `cnt == 25`: it
+satisfies the hypothesis (`25 != 26`), and one transition later
+`cnt == 26` violates the assertion. The tool reports this as a
+**counterexample-to-induction** — a path through *unreachable* states
+that the assertion alone cannot forbid. `cnt != 26` is true of every
+reachable state but is not closed under the transition relation, so
+induction cannot confirm it.
+
+### Write inductive invariants
+
+The fix is to assert a property whose own hypothesis excludes the bad
+predecessor states. With `cnt <= 5`, the induction hypothesis becomes
+"`cnt <= 5` in the prior state," which rules out `25` as a start state;
+every state it admits transitions to another state it admits, so the
+induction closes. The rule of thumb:
+
+> An inductive invariant must be strong enough that its *own* hypothesis
+> rules out the bad predecessors. `cnt != 26` is too weak; `cnt <= 5` is
+> exactly strong enough.
+
+### Don't just raise the depth
+
+Because `prove` is k-induction up to `depth`, increasing the depth can
+make a non-inductive property *appear* to pass — a wider induction
+window can outrun a bounded chain of unreachable states. This is the
+engine getting lucky on the design's geometry, not the property becoming
+inductive, and it does not generalise (a larger gap, or an unbounded
+approach to the bad state, defeats any finite depth). Prefer the
+inductive invariant, which proves at `k = 1` regardless of depth. When
+you genuinely want to keep a known-non-inductive property visible in a
+regression (for example a teaching case), mark it
+[`xfail` / `xfail_strict`](#expected-failures-xfail) rather than inflating
+the depth.
+
+A runnable version of this corpus — the three properties above, each as
+its own verification, with the `xfail` wiring — ships as the
+`demo_abv_induction` block in the
+[rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template).
+For the theory, see Sheeran, Singh & Stålmarck, *Checking Safety
+Properties Using Induction and a SAT-Solver* (FMCAD 2000), the
+foundational treatment of k-induction.
+
 ## Artefacts
 
 Per-run outputs land under the command root — `<dir of fpv.yaml>/artefacts/<run>/` (the artefact tree is anchored on the selected `fpv.yaml`'s directory, not your shell's cwd; see [Execution Context](execution-context.md)):

@@ -34,6 +34,10 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact fields.
 - Other sims should emit `PASS` or `FAIL` in `artefacts/<test>/test.log`; add an `ERR:` or `FAT:` line when reporting failure.
 - Formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
 
+## Formal property authoring
+
+- `mode: prove` is k-induction up to `depth`: a true property can still FAIL if it is not an *inductive invariant*. Prefer invariants whose hypothesis excludes the bad predecessor states (`cnt <= 5`, not `cnt != 26`); raising `depth` masks but does not fix it. Keep a known-non-inductive case in regression with `xfail`/`xfail_strict`. Details: `rtl-buddy docs show concepts/fpv`.
+
 ## Mutation testing
 
 - `rb mut list|run|score` drive a campaign from `mut.yaml`. Needs `rtl-buddy-xeno`; a non-empty `scope` also needs `rtl-buddy-view` on `PATH`.
