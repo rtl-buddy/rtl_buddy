@@ -278,6 +278,10 @@ def compute_coverage(
     percent = (coi_cells / total_cells * 100.0) if total_cells else 0.0
 
     assumes_total = sum(s["cells"] for s in assumes_total_blocks.values())
+    # "in_assert_coi" is kept for the key name, but since #250 the
+    # marker counts assumes whose *fan-in cone* intersects the COI
+    # (forward walk from the COI), not assumes inside the COI itself —
+    # assume cells are sinks and can never be in an input cone.
     assumes_used = sum(s["cells"] for s in assumes_in_coi_blocks.values())
     assumes_dead = max(assumes_total - assumes_used, 0)
 
