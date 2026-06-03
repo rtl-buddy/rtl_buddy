@@ -284,5 +284,18 @@ def test_build_yosys_script_emits_assume_markers():
     )
     assert "=== RTL_BUDDY_ASSUMES_TOTAL ===" in script
     assert "=== RTL_BUDDY_ASSUMES_IN_COI ===" in script
-    # The intersection selection lives in standard yosys language.
-    assert "@all_assumes @property_coi %i" in script
+    # Used-assume selection walks *forward* from the assertion COI and
+    # intersects with the assume cells — assume cells are sinks, so
+    # intersecting them with the (input-cone) COI directly is empty by
+    # construction and misreported every assume as dead (#250).
+    used_line = next(
+        ln for ln in script.splitlines() if ln.startswith("select @property_coi %co*")
+    )
+    assert used_line.endswith(" @all_assumes %i")
+    # Clock/trigger and reset network edges must be excluded from the
+    # forward walk, or the shared clk/rst would mark every assume in
+    # the design as used.
+    assert ":-$check[TRG]" in used_line
+    assert "[CLK]" in used_line
+    assert "[ARST]" in used_line
+    assert "[SRST]" in used_line

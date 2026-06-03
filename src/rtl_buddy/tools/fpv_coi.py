@@ -157,15 +157,44 @@ def build_yosys_script(
     lines.append("stat")
 
     # Dead-assume analysis (#135): count assume cells total, then
-    # count those that intersect with the assertion COI. The delta is
-    # the structural lower bound on "assumes constraining signals no
-    # assertion observes" — a flag for environment-spec drift. Same
-    # `$check` / `$assume` dual-selector applies.
+    # count those whose fan-in cone shares logic with the assertion
+    # COI. The delta is the structural lower bound on "assumes
+    # constraining signals no assertion observes" — a flag for
+    # environment-spec drift. Same `$check` / `$assume` dual-selector
+    # applies.
     lines.append("select -set all_assumes t:$assume t:$check r:FLAVOR=assume %i %u")
     lines.append("select @all_assumes")
     lines.append(f"log === {_MARK_ASSUMES_TOTAL} ===")
     lines.append("stat")
-    lines.append("select @all_assumes @property_coi %i")
+    # An assume cell is a sink (it has no outputs), so it can never
+    # appear inside an assertion's *input* cone — intersecting the
+    # assume cells with @property_coi directly is empty by
+    # construction and reported every assume as dead (#250). Instead
+    # walk *forward* from the assertion COI: an assume lands in the
+    # COI's output cone exactly when its own fan-in cone intersects
+    # the COI, i.e. when it constrains logic some assertion observes.
+    #
+    # The walk must not follow clock/reset network edges: every
+    # clocked assume hangs off `clk` via its `$check` TRG port (and
+    # every FF via CLK/ARST/SRST/...), and clk/rst sit in essentially
+    # every assertion COI — following those edges would mark every
+    # assume in the design as used. The rules below exclude those
+    # ports; data ports (FF `D`, `$dffe` EN, `$check` A/EN) still
+    # traverse, so assumes on registered functions of COI signals are
+    # found. The cell list must track the FF/memory types `prep` can
+    # emit.
+    lines.append(
+        "select @property_coi %co*"
+        ":-$check[TRG]"
+        ":-$dff,$dffe,$sdff,$sdffe,$sdffce,$adff,$adffe,$aldff,$aldffe,"
+        "$dffsr,$dffsre,$memrd,$memrd_v2,$memwr,$memwr_v2[CLK]"
+        ":-$mem,$mem_v2[RD_CLK,WR_CLK]"
+        ":-$adff,$adffe,$aldff,$aldffe[ARST]"
+        ":-$sdff,$sdffe,$sdffce[SRST]"
+        ":-$dffsr,$dffsre[SET,CLR]"
+        ":-$aldff,$aldffe[ALOAD]"
+        " @all_assumes %i"
+    )
     lines.append(f"log === {_MARK_ASSUMES_IN_COI} ===")
     lines.append("stat")
     return "\n".join(lines) + "\n"

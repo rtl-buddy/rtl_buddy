@@ -246,7 +246,7 @@ Artefacts:
 
 ## Dead-assume detection
 
-The same yosys pass that computes COI coverage also rolls up `$assume` cells, splitting them into those whose logic intersects with the assertion COI versus those that don't. The latter are *structurally dead* — they constrain signals no assertion ever observes, usually a sign the environment spec drifted from the property set.
+The same yosys pass that computes COI coverage also rolls up `$assume` cells, splitting them into those whose fan-in cone shares logic with the assertion COI (used) versus those that don't (dead). Dead assumes constrain signals no assertion ever observes, usually a sign the environment spec drifted from the property set.
 
 When the design has any `$assume` cells, the results table grows an **Assumes** column:
 
@@ -255,10 +255,12 @@ FPV Run     Result   Description                ...   Assumes
 counter_inv PASS     property proved (bmc, depth 32)        3 used, 2 dead
 ```
 
-- `N used` (all assumes are inside the assertion COI) — silent, just a sanity confirmation.
-- `M used, K dead` — `K` assumes are not reachable from any assertion. Either remove them or extend the assertion set to cover the signal they constrain.
+- `N used` (every assume's cone touches the assertion COI) — silent, just a sanity confirmation.
+- `M used, K dead` — `K` assumes constrain logic that is disjoint from every assertion's COI. Either remove them or extend the assertion set to cover the signal they constrain.
 
-The detection is structural and conservative: it does not prove an assumption is *semantically* dead, just that yosys's elaborated graph shows no path from the assume to any assertion. In particular, assumes inside dead-code regions or untouched submodules will surface here. The detection rides on the same `coi.ys`/`coi.log` artefacts.
+An assume counts as *used* when its fan-in cone (the logic computing its condition and enable) intersects any assertion's cone of influence — clock and reset network edges are excluded from the walk, since a shared clock or global reset would otherwise connect every assume to every assertion and make the metric vacuous. A reset-release assume like `assume property (rst_n |=> rst_n)` therefore counts as used whenever some assertion observes `rst_n` in its data logic.
+
+The detection is structural and conservative in the *dead* direction: it does not prove an assumption is *semantically* dead, just that yosys's elaborated graph shows no shared logic between the assume and any assertion. In particular, assumes inside dead-code regions or untouched submodules will surface here. Two known limitations: an assume that is only load-bearing *through another assume* (assume-to-assume chaining) is not chased to a fixpoint and may be reported dead; and sharing logic does not prove the assume actually changed the verdict. The detection rides on the same `coi.ys`/`coi.log` artefacts.
 
 ## Vacuity covers
 
