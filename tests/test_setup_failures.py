@@ -66,6 +66,9 @@ class DummySweepTest:
     def get_name(self):
         return self.name
 
+    def get_xfail(self):
+        return False
+
 
 class DummySuiteCfg:
     def __init__(self, tests, path="tests.yaml"):

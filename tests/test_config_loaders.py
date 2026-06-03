@@ -778,3 +778,72 @@ def test_model_config_loader_round_trips_axi_fields(tmp_path):
     assert cpu.axi_monitor_out is None
     assert cpu.get_axi_bundles_path() is None
     assert cpu.get_axi_monitor_out_path() is None
+
+
+# ---------------------------------------------------------------------------
+# xfail (expected-fail) — schema + result re-interpretation
+# ---------------------------------------------------------------------------
+
+
+def test_test_config_xfail_defaults_false():
+    assert _make_test_config().get_xfail() is False
+
+
+def test_suite_config_loads_xfail_flag(tmp_path):
+    (tmp_path / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n  - name: m\n    filelist: [top.sv]\n"
+    )
+    (tmp_path / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\n"
+        "testbenches:\n"
+        "  - name: tb1\n"
+        "    filelist: [tb.sv]\n"
+        "tests:\n"
+        "  - name: known_fail\n"
+        "    desc: a test known to fail\n"
+        "    model: m\n"
+        "    model_path: models.yaml\n"
+        "    testbench: tb1\n"
+        "    xfail: true\n"
+        "  - name: normal\n"
+        "    desc: a normal test\n"
+        "    model: m\n"
+        "    model_path: models.yaml\n"
+        "    testbench: tb1\n"
+    )
+    cfg = SuiteConfig(str(tmp_path / "tests.yaml"))
+    assert cfg.tests["known_fail"].get_xfail() is True
+    # Absent `xfail:` defaults to False.
+    assert cfg.tests["normal"].get_xfail() is False
+
+
+def test_apply_test_xfail_fail_becomes_xfail_and_passes():
+    from rtl_buddy.runner.test_results import CompileFailResults, apply_xfail
+
+    res = CompileFailResults(name="t")
+    assert res.is_pass() is False
+    apply_xfail(res)
+    assert res.results["result"] == "XFAIL"
+    assert res.is_pass() is True  # expected failure does not fail the run
+    assert res.results["desc"].startswith("xfail (expected fail): ")
+
+
+def test_apply_test_xfail_pass_becomes_xpass_and_fails():
+    from rtl_buddy.runner.test_results import TestPassResults, apply_xfail
+
+    res = TestPassResults(name="t")
+    assert res.is_pass() is True
+    apply_xfail(res)
+    assert res.results["result"] == "XPASS"
+    assert res.is_pass() is False  # stale xfail surfaces loudly
+    assert res.results["desc"].startswith("XPASS (expected fail but passed): ")
+
+
+def test_apply_test_xfail_skip_passes_through_unchanged():
+    from rtl_buddy.runner.test_results import SkipResults, apply_xfail
+
+    res = SkipResults(name="t", desc="below reg level")
+    apply_xfail(res)
+    assert res.results["result"] == "SKIP"
+    assert res.is_pass() is True

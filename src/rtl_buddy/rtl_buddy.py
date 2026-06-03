@@ -41,6 +41,7 @@ from .runner.fpv_results import FpvSkipResults, apply_xfail
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
 from .runner.test_results import SetupFailResults, SkipResults
+from .runner.test_results import apply_xfail as apply_test_xfail
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.pnr_runner import PnrRunner
 from .runner.pnr_results import PnrSkipResults
@@ -981,8 +982,25 @@ class RtlBuddy:
         )
 
         if len(run_ids) == 1:
-            return [test_runner.run()]
-        return test_runner.run_multiple(run_ids)
+            results = [test_runner.run()]
+        else:
+            results = test_runner.run_multiple(run_ids)
+        if test_cfg.get_xfail():
+            # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (fail) so a
+            # known-failing test can live in a suite/regression. Logged so
+            # the remap is visible in the run record.
+            for res in results:
+                pre = res.results.get("result")
+                apply_test_xfail(res)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "suite.xfail",
+                    test=test_cfg.get_name(),
+                    observed=pre,
+                    reported=res.results.get("result"),
+                )
+        return results
 
     def _append_results(self, test_name, run_ids, results, suite_results):
         for run_id, test_results in zip(run_ids, results):

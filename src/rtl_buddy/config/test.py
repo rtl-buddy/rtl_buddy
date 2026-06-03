@@ -162,6 +162,13 @@ class TestConfig:
     timeout: int | None
     covers: list[str] | None = None
     assertions: bool = False
+    # Expected-fail marker (pytest-style xfail). When True, a test that
+    # FAILs is reported as XFAIL and counts as a pass (does not fail the
+    # run / regression); a test that unexpectedly PASSes is reported as
+    # XPASS and counts as a failure (strict). SKIP / NA pass through. Use
+    # for a known-failing test you want tracked in the suite rather than
+    # deleted or silently excluded.
+    xfail: bool = False
     default_timeout: int = 60  # NOTE: potential for config through root config
 
     def get_name(self):
@@ -172,6 +179,10 @@ class TestConfig:
         name (str): The name of the test
         """
         return self.name
+
+    def get_xfail(self) -> bool:
+        """Whether this test is marked expected-to-fail (see `xfail`)."""
+        return self.xfail
 
     def get_model(self):
         """
@@ -421,6 +432,7 @@ class TestConfigFile:
     timeout: int | None = field(rename="sim_timeout")
     covers: list[str] | None = None
     assertions: bool = False
+    xfail: bool = False
 
     def initialise(self, config_dir, tbs):
         tb = tbs[self.tb]
@@ -450,6 +462,7 @@ class TestConfigFile:
             self.timeout,
             covers=self.covers,
             assertions=self.assertions,
+            xfail=self.xfail,
         )
 
 
