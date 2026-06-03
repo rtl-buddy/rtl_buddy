@@ -907,6 +907,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#expected-failures-xfail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expected failures (xfail)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#where-inputs-come-from" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1660,6 +1671,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#expected-failures-xfail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Expected failures (xfail)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#where-inputs-come-from" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1969,8 +1991,83 @@
 <td><code>frontend</code></td>
 <td>SystemVerilog frontend: <code>"verilog"</code> (default — fast, no plugin, immediate-assert + simple-concurrent SVA only) or <code>"slang"</code> (yosys-slang plugin — required for concurrent SVA <code>\|-&gt;</code> / <code>\|=&gt;</code> / sequence operators and for <code>bind</code> to elaborate). <code>slang</code> requires <code>cfg-fpv-tools[].opts.plugin-path</code> in root_config.yaml. See <a href="#choosing-a-frontend">Choosing a frontend</a>.</td>
 </tr>
+<tr>
+<td><code>xfail</code></td>
+<td>Optional bool, default false. Marks the verification as <em>expected to fail</em>, <strong>non-strict</strong>. See <a href="#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
+<tr>
+<td><code>xfail_strict</code></td>
+<td>Optional bool, default false. Like <code>xfail</code>, but <strong>strict</strong> — an unexpected pass (<code>XPASS</code>) counts as a failure. See <a href="#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
 </tbody>
 </table>
+<h3 id="expected-failures-xfail">Expected failures (xfail)</h3>
+<p>Mark a verification that is <strong>known not to hold</strong> — a teaching property
+that is true but not inductive under <code>mode: prove</code>, or a placeholder for
+a not-yet-fixed bug you want tracked in the suite rather than deleted.
+A verification is treated as expected-to-fail when <strong>either</strong> <code>xfail</code> or
+<code>xfail_strict</code> is set; the verdict is then re-interpreted:</p>
+<table>
+<thead>
+<tr>
+<th>Actual outcome</th>
+<th>Reported as</th>
+<th>Counts as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FAIL</td>
+<td><code>XFAIL</code></td>
+<td><strong>pass</strong> — the expected failure happened, so it does not fail the run or <code>rb fpv-regression</code></td>
+</tr>
+<tr>
+<td>PASS</td>
+<td><code>XPASS</code></td>
+<td>depends on strictness (see below)</td>
+</tr>
+<tr>
+<td>SKIP / NA</td>
+<td>unchanged</td>
+<td>unchanged</td>
+</tr>
+</tbody>
+</table>
+<p>The two markers differ <strong>only</strong> in how an unexpected pass is counted:</p>
+<table>
+<thead>
+<tr>
+<th>Marker</th>
+<th><code>XPASS</code> counts as</th>
+<th>Use when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>xfail: true</code></td>
+<td><strong>pass</strong> (non-strict)</td>
+<td>the property <em>may</em> start passing and that is fine / not worth failing on</td>
+</tr>
+<tr>
+<td><code>xfail_strict: true</code></td>
+<td><strong>fail</strong> (strict)</td>
+<td>a pass means the marker is stale and you want to be told — the safe choice for a regression guard</td>
+</tr>
+</tbody>
+</table>
+<p>If both are set, strict wins. Each verification picks the marker it
+needs. A common pattern: <code>xfail_strict: true</code> on a teaching demo, so the
+regression turns red (via <code>XPASS</code>) the moment the property starts
+holding and the marker should be removed.</p>
+<p>Like pytest <code>xfail</code> without <code>raises=</code>, this does not distinguish a
+genuine property disproof from an infrastructure error that also
+surfaces as a FAIL, so reserve it for properties whose failure is
+understood.</p>
+<p>The same <code>xfail</code> / <code>xfail_strict</code> markers and <code>XFAIL</code> / <code>XPASS</code>
+semantics apply to every command whose results carry a PASS/FAIL/SKIP
+verdict — <code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, <code>pnr.yaml</code>, and
+<code>power.yaml</code> — via one shared implementation. (<code>cdc.yaml</code> in particular
+is a natural fit for a design with known/intentional CDC violations.)</p>
 <h3 id="where-inputs-come-from">Where inputs come from</h3>
 <p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb cdc</code> use), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. The script reads, in order: design sources → <code>constraints:</code> (if set) → <code>properties:</code>. Putting constraints before properties ensures their <code>assume property</code> statements are in scope when the assertions are elaborated. Property files can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
 <p>Both frontends define <code>FORMAL</code> (and not <code>SYNTHESIS</code>) when reading sources, so <code>`ifdef FORMAL</code> guards behave the same either way: the verilog path uses <code>read -sv -formal</code> (which swaps yosys's implicit <code>SYNTHESIS=1</code> define for <code>FORMAL=1</code>), and the slang path passes <code>--no-synthesis-define -DFORMAL=1</code> to <code>read_slang</code> for the same effect — in the main proof script, the COI script, and the vacuity pass.</p>

@@ -2178,6 +2178,16 @@
 <td>bool</td>
 <td>When true and the builder is Verilator, compile in SVA via <code>--assert</code> (and <code>--coverage-user</code> for cover-property hits) and add an <code>Assertions</code> column to the <code>rb test</code> results table. See <a href="../../concepts/abv-simulation/">Assertion-Based Verification</a>.</td>
 </tr>
+<tr>
+<td><code>xfail</code></td>
+<td>bool</td>
+<td>Optional, default false. Marks the test expected-to-fail, <strong>non-strict</strong>: a FAIL becomes <code>XFAIL</code> (a pass); an unexpected PASS becomes <code>XPASS</code> but still counts as a pass. SKIP/NA pass through. Mirrors the <code>fpv.yaml</code> field — see <a href="../../concepts/fpv/#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
+<tr>
+<td><code>xfail_strict</code></td>
+<td>bool</td>
+<td>Optional, default false. Like <code>xfail</code> but <strong>strict</strong>: an unexpected PASS (<code>XPASS</code>) counts as a failure. Either flag marks the test expected-to-fail; strict wins if both are set.</td>
+</tr>
 </tbody>
 </table>
 <h3 id="cocotb-testbenches">cocotb testbenches</h3>
@@ -2373,6 +2383,16 @@
 <td>string</td>
 <td>Optional effort name from <code>cfg-synth-efforts</code>; controls Yosys synth/abc args and OpenROAD <code>pre-sta-tcl</code>. Overridable per invocation with <code>rtl-buddy synth --effort &lt;name&gt;</code>. Omitted ⇒ built-in <code>standard</code> defaults.</td>
 </tr>
+<tr>
+<td><code>xfail</code></td>
+<td>bool</td>
+<td>Optional, default false. Marks the synthesis run expected-to-fail, <strong>non-strict</strong>: a FAIL becomes <code>XFAIL</code> (a pass); an unexpected PASS becomes <code>XPASS</code> but still counts as a pass. See <a href="../../concepts/fpv/#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
+<tr>
+<td><code>xfail_strict</code></td>
+<td>bool</td>
+<td>Optional, default false. Like <code>xfail</code> but <strong>strict</strong>: an unexpected PASS (<code>XPASS</code>) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set.</td>
+</tr>
 </tbody>
 </table>
 <p><strong>Runtime effects:</strong></p>
@@ -2506,6 +2526,16 @@
 <td><code>tool_overrides</code></td>
 <td>dict</td>
 <td>Reserved for tool-specific overrides (none consumed today)</td>
+</tr>
+<tr>
+<td><code>xfail</code></td>
+<td>bool</td>
+<td>Optional, default false. Marks the pnr run expected-to-fail, <strong>non-strict</strong>: a FAIL becomes <code>XFAIL</code> (a pass); an unexpected PASS becomes <code>XPASS</code> but still counts as a pass. See <a href="../../concepts/fpv/#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
+<tr>
+<td><code>xfail_strict</code></td>
+<td>bool</td>
+<td>Optional, default false. Like <code>xfail</code> but <strong>strict</strong>: an unexpected PASS (<code>XPASS</code>) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set.</td>
 </tr>
 </tbody>
 </table>
@@ -2650,6 +2680,16 @@
 <td>dict</td>
 <td>Reserved for tool-specific overrides; accepted but not consumed by the OpenROAD backend today (mirrors <code>pnr.yaml</code>)</td>
 </tr>
+<tr>
+<td><code>xfail</code></td>
+<td>bool</td>
+<td>Optional, default false. Marks the power run expected-to-fail, <strong>non-strict</strong>: a FAIL becomes <code>XFAIL</code> (a pass); an unexpected PASS becomes <code>XPASS</code> but still counts as a pass. See <a href="../../concepts/fpv/#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
+<tr>
+<td><code>xfail_strict</code></td>
+<td>bool</td>
+<td>Optional, default false. Like <code>xfail</code> but <strong>strict</strong>: an unexpected PASS (<code>XPASS</code>) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set.</td>
+</tr>
 </tbody>
 </table>
 <p><strong>Runtime effects:</strong></p>
@@ -2773,6 +2813,16 @@
 <td>string</td>
 <td>Optional elaboration frontend selector forwarded as-is via <code>--frontend &lt;value&gt;</code> to the analyzer subprocess. The set of accepted values is the analyzer's, not rtl_buddy's — for the bundled <code>rtl-buddy-cdc</code> backend on current main it's <code>"yosys"</code> (built-in) or <code>"slang"</code> (full SV-2017 via the optional <code>pyslang</code>-backed <code>[slang]</code> extra); see the analyzer's own docs for the authoritative list. Unknown values are rejected by the analyzer, not by rtl_buddy. Omit to use the analyzer's own default.</td>
 </tr>
+<tr>
+<td><code>xfail</code></td>
+<td>bool</td>
+<td>Optional, default false. Marks the CDC analysis expected-to-fail, <strong>non-strict</strong>: a FAIL becomes <code>XFAIL</code> (a pass); an unexpected PASS becomes <code>XPASS</code> but still counts as a pass. Useful for a design with known/intentional CDC violations tracked in a suite. See <a href="../../concepts/fpv/#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
+<tr>
+<td><code>xfail_strict</code></td>
+<td>bool</td>
+<td>Optional, default false. Like <code>xfail</code> but <strong>strict</strong>: an unexpected PASS (<code>XPASS</code>) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set.</td>
+</tr>
 </tbody>
 </table>
 <p><strong>Runtime effects:</strong></p>
@@ -2844,10 +2894,12 @@
 <a id="__codelineno-12-31" name="__codelineno-12-31" href="#__codelineno-12-31"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span>
 <a id="__codelineno-12-32" name="__codelineno-12-32" href="#__codelineno-12-32"></a><span class="w">      </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 <a id="__codelineno-12-33" name="__codelineno-12-33" href="#__codelineno-12-33"></a><span class="w">      </span><span class="nt">sby</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
-<a id="__codelineno-12-34" name="__codelineno-12-34" href="#__codelineno-12-34"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
-<a id="__codelineno-12-35" name="__codelineno-12-35" href="#__codelineno-12-35"></a><span class="w">      </span><span class="nt">sby</span><span class="p">:</span>
-<a id="__codelineno-12-36" name="__codelineno-12-36" href="#__codelineno-12-36"></a><span class="w">        </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1800</span>
-<a id="__codelineno-12-37" name="__codelineno-12-37" href="#__codelineno-12-37"></a><span class="w">        </span><span class="nt">extra_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
+<a id="__codelineno-12-34" name="__codelineno-12-34" href="#__codelineno-12-34"></a><span class="w">    </span><span class="nt">xfail</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">           </span><span class="c1"># expected-fail, non-strict (XPASS still passes)</span>
+<a id="__codelineno-12-35" name="__codelineno-12-35" href="#__codelineno-12-35"></a><span class="w">    </span><span class="nt">xfail_strict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">    </span><span class="c1"># expected-fail, strict (XPASS counts as a failure)</span>
+<a id="__codelineno-12-36" name="__codelineno-12-36" href="#__codelineno-12-36"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
+<a id="__codelineno-12-37" name="__codelineno-12-37" href="#__codelineno-12-37"></a><span class="w">      </span><span class="nt">sby</span><span class="p">:</span>
+<a id="__codelineno-12-38" name="__codelineno-12-38" href="#__codelineno-12-38"></a><span class="w">        </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1800</span>
+<a id="__codelineno-12-39" name="__codelineno-12-39" href="#__codelineno-12-39"></a><span class="w">        </span><span class="nt">extra_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
 </code></pre></div>
 <p><strong>Field reference:</strong></p>
 <table>
@@ -2938,6 +2990,16 @@
 <td><code>frontend</code></td>
 <td>string</td>
 <td>SystemVerilog frontend. <code>"verilog"</code> (default — yosys native, immediate + simple-concurrent SVA only) or <code>"slang"</code> (yosys-slang plugin — required for <code>\|-&gt;</code> / <code>\|=&gt;</code> and SV <code>bind</code>). <code>slang</code> requires <code>cfg-fpv-tools[].opts.plugin-path</code> in root_config.yaml. See <a href="../../concepts/fpv/#choosing-a-frontend">Choosing a frontend</a>.</td>
+</tr>
+<tr>
+<td><code>xfail</code></td>
+<td>bool</td>
+<td>Optional, default false. Marks the verification expected-to-fail, <strong>non-strict</strong>: a FAIL becomes <code>XFAIL</code> (a pass); an unexpected PASS becomes <code>XPASS</code> but still counts as a pass. See <a href="../../concepts/fpv/#expected-failures-xfail">Expected failures (xfail)</a>.</td>
+</tr>
+<tr>
+<td><code>xfail_strict</code></td>
+<td>bool</td>
+<td>Optional, default false. Like <code>xfail</code> but <strong>strict</strong>: an unexpected PASS (<code>XPASS</code>) counts as a failure. A verification is expected-to-fail if either flag is set; strict wins if both are.</td>
 </tr>
 </tbody>
 </table>
