@@ -754,6 +754,7 @@ verifications:
     reglvl:
       default: 0
       sby: 1000
+    xfail: false           # set true to mark a known-failing proof expected
     tool_overrides:
       sby:
         timeout: 1800
@@ -780,6 +781,7 @@ verifications:
 | `vacuity` | bool | Optional. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived covers for every `\|->` / `\|=>` antecedent in the property set. Default is false for `cover` / `live` modes. See [Vacuity covers](../concepts/fpv.md#vacuity-covers). |
 | `coi` | bool | Optional. When true (default), run a yosys cone-of-influence pass after the primary proof and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](../concepts/fpv.md#cone-of-influence-coverage). |
 | `frontend` | string | SystemVerilog frontend. `"verilog"` (default — yosys native, immediate + simple-concurrent SVA only) or `"slang"` (yosys-slang plugin — required for `\|->` / `\|=>` and SV `bind`). `slang` requires `cfg-fpv-tools[].opts.plugin-path` in root_config.yaml. See [Choosing a frontend](../concepts/fpv.md#choosing-a-frontend). |
+| `xfail` | bool | Optional, default false. Marks the verification as expected-to-fail: a FAIL is reported as `XFAIL` and counts as a pass; a PASS is reported as `XPASS` and counts as a failure (strict). See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
 
 **Runtime effects:**
 

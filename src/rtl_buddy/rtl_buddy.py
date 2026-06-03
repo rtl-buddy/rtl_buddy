@@ -37,7 +37,7 @@ from .logging_utils import (
 from .runner.cdc_runner import CdcRunner
 from .runner.cdc_results import CdcSkipResults
 from .runner.fpv_runner import FpvRunner
-from .runner.fpv_results import FpvSkipResults
+from .runner.fpv_results import FpvSkipResults, apply_xfail
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
 from .runner.test_results import SetupFailResults, SkipResults
@@ -3348,7 +3348,22 @@ class RtlBuddy:
                 fpv_cfg=v,
                 suite_dir=suite_dir,
             )
-            results.append({"fpv_name": v.get_name(), "results": runner.run()})
+            res = runner.run()
+            if v.get_xfail():
+                # Re-interpret FAIL->XFAIL (pass) / PASS->XPASS (fail) so an
+                # expected-fail verification can live in a regression. Logged
+                # so the remap is visible in the run record.
+                pre = res.results.get("result")
+                res = apply_xfail(res)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpv_suite.xfail",
+                    fpv=v.get_name(),
+                    observed=pre,
+                    reported=res.results.get("result"),
+                )
+            results.append({"fpv_name": v.get_name(), "results": res})
         return results
 
     def do_cmd_fpv(

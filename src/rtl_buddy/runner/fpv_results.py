@@ -15,7 +15,11 @@ class FpvResults:
             results["desc"] = "NA"
 
     def is_pass(self) -> bool:
-        return self.results["result"] in ("PASS", "SKIP")
+        # XFAIL (an expected failure that did fail) counts as a pass so it
+        # does not fail the run/regression. XPASS (an expected failure that
+        # unexpectedly passed) deliberately does NOT — a stale xfail should
+        # be loud. See apply_xfail().
+        return self.results["result"] in ("PASS", "SKIP", "XFAIL")
 
     def __str__(self):
         return "fpv_results: " + pprint.pformat(self.results)
@@ -79,3 +83,36 @@ class FpvSkipResults(FpvResults):
             name=name,
             results={"result": "SKIP", "name": name, "desc": desc},
         )
+
+
+def apply_xfail(result: FpvResults) -> FpvResults:
+    """Re-interpret a result under an ``xfail: true`` verification.
+
+    Mutates and returns ``result`` in place (results are freshly built per
+    run, so this is safe):
+
+    - ``FAIL`` -> ``XFAIL`` — the expected failure happened; counts as a
+      pass via :meth:`FpvResults.is_pass`, so it does not fail the run.
+    - ``PASS`` -> ``XPASS`` — the verification was expected to fail but
+      passed; counts as a failure (strict, like pytest's default), so a
+      stale xfail surfaces loudly instead of hiding.
+    - ``SKIP`` / ``NA`` -> unchanged (the verification never produced a
+      verdict to re-interpret).
+
+    Note: like pytest xfail without ``raises=``, this does not distinguish
+    a genuine property disproof from an infrastructure error that also
+    surfaces as ``FAIL`` — both become ``XFAIL``. Reserve ``xfail`` for
+    properties whose failure is understood.
+    """
+    status = result.results.get("result")
+    if status == "FAIL":
+        result.results["result"] = "XFAIL"
+        result.results["desc"] = "xfail (expected fail): " + result.results.get(
+            "desc", ""
+        )
+    elif status == "PASS":
+        result.results["result"] = "XPASS"
+        result.results["desc"] = (
+            "XPASS (expected fail but passed): " + result.results.get("desc", "")
+        )
+    return result

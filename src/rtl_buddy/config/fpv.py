@@ -137,6 +137,15 @@ class FpvConfigFile:
     # `cfg-fpv-tools[].opts.plugin-path` must point at the built
     # slang.so.
     frontend: str = "verilog"
+    # Expected-fail marker (pytest-style xfail). When true, a verification
+    # that FAILs is reported as `XFAIL` and counts as a pass (does not fail
+    # the run / regression); a verification that unexpectedly PASSes is
+    # reported as `XPASS` and counts as a failure (strict — a stale xfail
+    # should be loud). Use for teaching/demonstration properties that are
+    # known not to hold (e.g. a true-but-not-inductive property under
+    # `mode: prove`) so they can live in a regression without turning it
+    # red. SKIP/NA pass through unchanged.
+    xfail: bool = False
 
     def initialise(self, config_dir: str) -> "FpvConfig":
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
@@ -172,6 +181,7 @@ class FpvConfigFile:
             vacuity=self.vacuity,
             coi=self.coi,
             frontend=self.frontend,
+            xfail=self.xfail,
         )
 
 
@@ -192,9 +202,13 @@ class FpvConfig:
     vacuity: bool | None = dc_field(default=None)
     coi: bool | None = dc_field(default=None)
     frontend: str = dc_field(default="verilog")
+    xfail: bool = dc_field(default=False)
 
     def get_frontend(self) -> str:
         return self.frontend
+
+    def get_xfail(self) -> bool:
+        return self.xfail
 
     def vacuity_enabled(self) -> bool:
         """Whether to run the vacuity cover pass for this verification.
