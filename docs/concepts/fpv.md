@@ -333,13 +333,22 @@ stays small," but only `cnt <= 5` is an **inductive invariant**.
 
 An `assert` is a *proof obligation*, not a *constraint* — it does not
 restrict the states the solver may explore (only `assume` does that). So
-in the inductive step the solver is free to pick `cnt == 25`: it
+in the inductive step the solver is free to start from `cnt == 25`: it
 satisfies the hypothesis (`25 != 26`), and one transition later
-`cnt == 26` violates the assertion. The tool reports this as a
-**counterexample-to-induction** — a path through *unreachable* states
-that the assertion alone cannot forbid. `cnt != 26` is true of every
-reachable state but is not closed under the transition relation, so
-induction cannot confirm it.
+`cnt == 26` violates the assertion. sby reports this not as a disproof
+but as **`UNKNOWN`**, and writes the offending trace — a
+**counterexample-to-induction (CTI)** — to the induction engine's
+workdir.
+
+`UNKNOWN` is genuinely ambiguous, and resolving it is the engineer's job.
+The CTI may begin in a state that is itself **unreachable** — in which
+case the property is true but simply not closed under the transition
+relation (the situation here: `25` is unreachable) — *or* in a
+**reachable** state, which would be a real design bug or an environment
+`assume` that is too weak. sby cannot tell the two apart, which is exactly
+why the verdict is `UNKNOWN` rather than FAIL: open the CTI waveform and
+decide. For `cnt != 26` we happen to know `25` is unreachable, so it is
+the non-inductive case.
 
 ### Write inductive invariants
 
@@ -353,19 +362,30 @@ induction closes. The rule of thumb:
 > rules out the bad predecessors. `cnt != 26` is too weak; `cnt <= 5` is
 > exactly strong enough.
 
-### Don't just raise the depth
+### Raising the depth: sound, but usually the wrong lever
 
-Because `prove` is k-induction up to `depth`, increasing the depth can
-make a non-inductive property *appear* to pass — a wider induction
-window can outrun a bounded chain of unreachable states. This is the
-engine getting lucky on the design's geometry, not the property becoming
-inductive, and it does not generalise (a larger gap, or an unbounded
-approach to the bad state, defeats any finite depth). Prefer the
-inductive invariant, which proves at `k = 1` regardless of depth. When
-you genuinely want to keep a known-non-inductive property visible in a
-regression (for example a teaching case), mark it
-[`xfail` / `xfail_strict`](#expected-failures-xfail) rather than inflating
-the depth.
+Because `prove` is k-induction up to `depth`, raising the depth can make a
+property that is *not* closed under the transition relation pass anyway —
+it can be **k-inductive** for some larger `k` (here, `cnt != 26` proves
+once `depth ≥ 21`). That is a **sound** result, not a trick: k-induction
+is sound for every `k`. A larger `k` is sometimes even the *intended*
+fix — a design that takes, say, 20 cycles to stabilise from an arbitrary
+state is legitimately only k-inductive for `k ≥ 20`, and a too-small
+depth would conflict with that design intent.
+
+The catch is **fragility**. A proof that leans on `depth` depends on the
+exact length of the spurious counterexample chains in *this* design: a
+wider gap (`cnt != 1000`) needs a correspondingly larger depth, an
+unbounded approach to the bad state defeats any finite depth, and the
+proof can silently break when the design changes. So when a simple
+**inductive invariant** exists, prefer it — `cnt <= 5` is closed under
+*this* counter's transition relation, so it proves without depending on
+`depth`. (That is a property of this design, not of `<=` in general;
+whether any given invariant is inductive is always design-specific.) And
+when you want to keep a known-non-inductive property visible in a
+regression — a teaching case, or a not-yet-fixed bug — mark it
+[`xfail` / `xfail_strict`](#expected-failures-xfail) rather than tuning
+the depth around it.
 
 A runnable version of this corpus — the three properties above, each as
 its own verification, with the `xfail` wiring — ships as the
