@@ -303,9 +303,10 @@ highest-leverage FPV skill.
 - **`mode: prove`** does **temporal k-induction with `k = depth`**: a
   base case (BMC from reset) plus an inductive step that starts from a
   *completely arbitrary* state — constrained only by the transition
-  relation, any `assume` statements, and the induction hypothesis (the
-  property held for the previous `k` states). Crucially, the inductive
-  step is **not** restricted to reachable states.
+  relation, any `assume` statements, and the **induction hypothesis**
+  (every asserted property held for the previous `k` states).
+  Crucially, the inductive step is **not** restricted to reachable
+  states.
 
 ### A worked corpus
 
@@ -331,12 +332,28 @@ stays small," but only `cnt <= 5` is an **inductive invariant**.
 
 ### Why a true property fails induction
 
-An `assert` is a *proof obligation*, not a *constraint* — it does not
-restrict the states the solver may explore (only `assume` does that). So
-in the inductive step the solver is free to start from `cnt == 25`: it
-satisfies the hypothesis (`25 != 26`), and one transition later
-`cnt == 26` violates the assertion. sby reports this not as a disproof
-but as **`UNKNOWN`**, and writes the offending trace — a
+An `assert P` plays a **dual role** in `mode: prove`. At step `k` it is
+the **proof obligation**: the solver searches for a state where `¬P`
+holds. At the prior `k` states it is part of the **induction
+hypothesis**, riding along as a constraint — the solver may only
+consider traces in which `P` (and every *other* asserted property) held
+at all prior states. Spelled out, the inductive step is satisfiable iff
+some trace satisfies
+
+```
+P(s₀) ∧ T(s₀,s₁) ∧ P(s₁) ∧ … ∧ P(s_{k-1}) ∧ T(s_{k-1},s_k) ∧ ¬P(s_k)
+```
+
+(`P` here stands for the conjunction of *all* asserted properties at
+that step; `T` is the transition relation, already conjoined with any
+`assume`s.) Assumes differ in one important way: they are constraints at
+*every* step, including `s_k`, which is why an over-strong `assume` can
+mask bugs.
+
+So with `assert (cnt != 26)` alone at `depth = 20` the inductive step is
+free to start from `cnt == 25` (the hypothesis `25 != 26` is satisfied)
+and walk one transition into `cnt == 26`. sby reports this not as a
+disproof but as **`UNKNOWN`**, and writes the offending trace — a
 **counterexample-to-induction (CTI)** — to the induction engine's
 workdir.
 
@@ -361,6 +378,37 @@ induction closes. The rule of thumb:
 > An inductive invariant must be strong enough that its *own* hypothesis
 > rules out the bad predecessors. `cnt != 26` is too weak; `cnt <= 5` is
 > exactly strong enough.
+
+### Assertions strengthen each other
+
+The dual role of `assert` becomes concrete when a verification has more
+than one of them. Take the same counter and add a *second* assertion:
+
+```systemverilog
+assert property (@(posedge clk) cnt != 6);
+assert property (@(posedge clk) cnt != 26);
+```
+
+Individually, `cnt != 6` is inductive (`6` has no predecessor in this
+DUT — `5` wraps to `0`) and `cnt != 26` is not. But assert them
+**together** at `depth = 20` and both pass induction. The mechanism is
+exactly the hypothesis-as-constraint behaviour above:
+
+- To refute `cnt != 26`, the inductive step must find a trace reaching
+  `cnt == 26` in at most `k = 20` transitions whose prior states all
+  satisfy the *full* hypothesis — including `cnt != 6`.
+- The only way to walk *into* `cnt == 26` is to count up through
+  `cnt == 6` somewhere in the chain. The companion assertion forbids
+  `6` at every prior state, so no such CTI exists, and the verdict
+  flips to PASS.
+
+The corollary is the proper generalisation of "inductive invariant":
+*it need not be a single property*. A set of mutually-strengthening
+assertions can be inductive together even when none of them is inductive
+alone, because each one's induction hypothesis tightens every *other*
+one's prior-state constraints. When you are fighting an `UNKNOWN`,
+strengthening the property itself is one lever — adding a companion
+assertion that prunes the CTI ramp is another.
 
 ### Raising the depth: sound, but usually the wrong lever
 
