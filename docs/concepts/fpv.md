@@ -441,7 +441,13 @@ its own verification, with the `xfail` wiring — ships as the
 [rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template).
 For the theory, see Sheeran, Singh & Stålmarck, *Checking Safety
 Properties Using Induction and a SAT-Solver* (FMCAD 2000), the
-foundational treatment of k-induction.
+foundational treatment of k-induction. The "add a companion assertion
+to mark an unreachable predecessor state bad" lever is the operational
+guidance in the [YosysHQ SBY FAQ](https://yosyshq.readthedocs.io/projects/ap011/en/latest/faq_sby.html)
+("adding assertions to mark them bad helps the solver find a proof for
+a lower `depth`"). For a hands-on walk-through of the same pattern,
+ZipCPU's [*An Exercise in using Formal Induction*](https://zipcpu.com/blog/2018/03/10/induction-exercise.html)
+remains the most-cited open practitioner reference.
 
 ## Artefacts
 
