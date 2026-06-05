@@ -1723,7 +1723,7 @@
 <td><code>rb mut</code></td>
 <td>Pluggable — curated</td>
 <td><a href="https://github.com/rtl-buddy/rtl-buddy-xeno">rtl-buddy-xeno</a></td>
-<td>Optional mutation engine, not installed by default: <code>pip install "rtl-buddy-xeno[verible,slang]"</code>. Kill oracles reuse <code>rb fpv</code> and/or <code>rb test</code> tooling. See <a href="../concepts/mut/">Mutation Testing</a>.</td>
+<td>Optional mutation engine, not installed by default. Enable it with the <code>[mut]</code> extra: <code>uv add "rtl_buddy[mut]"</code> (or <code>pip install "rtl_buddy[mut]"</code>), which pulls <code>rtl-buddy-xeno[verible,slang] &gt;= 0.1.0</code>; the <code>verible</code>/<code>slang</code> extras provide the Verible CST + pyslang toolchain the operators need. Kill oracles reuse <code>rb fpv</code> and/or <code>rb test</code> tooling. See <a href="../concepts/mut/">Mutation Testing</a>.</td>
 </tr>
 </tbody>
 </table>

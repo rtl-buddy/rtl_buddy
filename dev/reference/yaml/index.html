@@ -3186,7 +3186,7 @@
 <ul>
 <li><code>verify</code> must configure at least one kill oracle (<code>fpv_config</code> + <code>verification</code>, and/or <code>test_config</code>); otherwise config load fails. When both are set, a mutant is killed if either oracle catches it.</li>
 <li><code>rb mut run</code> writes <code>mut_report.json</code> under <code>&lt;mut.yaml dir&gt;/artefacts/mut/&lt;campaign&gt;/</code>. It exits <code>1</code> only when nothing was scorable; score thresholding is not gated.</li>
-<li>The mutation engine lives in the optional <a href="https://github.com/rtl-buddy/rtl-buddy-xeno"><code>rtl-buddy-xeno</code></a> package (<code>pip install "rtl-buddy-xeno[verible,slang]"</code>); <code>rb mut</code> raises a fatal error with this hint if it is not installed.</li>
+<li>The mutation engine lives in the optional <a href="https://github.com/rtl-buddy/rtl-buddy-xeno"><code>rtl-buddy-xeno</code></a> package, enabled via the <code>[mut]</code> extra (<code>uv add "rtl_buddy[mut]"</code>, which pulls <code>rtl-buddy-xeno[verible,slang] &gt;= 0.1.0</code>); <code>rb mut</code> raises a fatal error with this hint if it is missing or below the version floor.</li>
 </ul>
 <hr />
 <h2 id="specsyaml">specs.yaml</h2>
