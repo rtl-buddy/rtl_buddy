@@ -40,6 +40,7 @@ nav:
       - Root Config: concepts/root-config.md
       - Tests: concepts/tests.md
       - Regressions: concepts/regressions.md
+      - Expected Failures (xfail): concepts/expected-failures.md
       - Coverage: concepts/coverage.md
       - Plugins: concepts/plugins.md
       - cocotb: concepts/cocotb.md

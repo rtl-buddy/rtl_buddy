@@ -313,7 +313,7 @@ tests:
 | `postproc.path` | string | Path to post-processing script (parsed but not yet fully active) |
 | `covers` | list of strings | IDs of spec coverage items this test addresses (e.g. `["BLOCK-COV-01"]`). Used by `rb spec check-coverage`; has no effect at simulation time. |
 | `assertions` | bool | When true and the builder is Verilator, compile in SVA via `--assert` (and `--coverage-user` for cover-property hits) and add an `Assertions` column to the `rb test` results table. See [Assertion-Based Verification](../concepts/abv-simulation.md). |
-| `xfail` | bool | Optional, default false. Marks the test expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. SKIP/NA pass through. Mirrors the `fpv.yaml` field — see [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the test expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. SKIP/NA pass through. Mirrors the `fpv.yaml` field — see [Expected failures (xfail)](../concepts/expected-failures.md). |
 | `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks the test expected-to-fail; strict wins if both are set. |
 
 ### cocotb testbenches
@@ -441,7 +441,7 @@ syntheses:
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
 | `tool_overrides` | dict | Optional per-tool overrides for `synth_args`, `abc_args`, `strategy`, `frontend`, and `plugin_path`, keyed by synthesis tool name (always `yosys` for the elaboration stage). Keys are snake_case — see the `cfg-synth-tools` note above on the kebab-vs-snake naming |
 | `effort` | string | Optional effort name from `cfg-synth-efforts`; controls Yosys synth/abc args and OpenROAD `pre-sta-tcl`. Overridable per invocation with `rtl-buddy synth --effort <name>`. Omitted ⇒ built-in `standard` defaults. |
-| `xfail` | bool | Optional, default false. Marks the synthesis run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the synthesis run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/expected-failures.md). |
 | `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
@@ -524,7 +524,7 @@ runs:
 | `floorplan.core-margin` | float | Margin between core area and die edge, in microns |
 | `reglvl` | int or dict | Regression level for filtering; same semantics as `synth.yaml` reglvl (int for all tools, dict for per-tool with `default`) |
 | `tool_overrides` | dict | Reserved for tool-specific overrides (none consumed today) |
-| `xfail` | bool | Optional, default false. Marks the pnr run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the pnr run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/expected-failures.md). |
 | `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
@@ -595,7 +595,7 @@ runs:
 | `activity.default-static-prob` | float | Synthetic global duty cycle. Default `0.5` |
 | `reglvl` | int or dict | Regression level for filtering; same semantics as `synth.yaml`/`pnr.yaml` reglvl |
 | `tool_overrides` | dict | Reserved for tool-specific overrides; accepted but not consumed by the OpenROAD backend today (mirrors `pnr.yaml`) |
-| `xfail` | bool | Optional, default false. Marks the power run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the power run expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/expected-failures.md). |
 | `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
@@ -683,7 +683,7 @@ analyses:
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
 | `tool_overrides` | dict | Optional per-tool overrides for `sync_depth` or `extra_args`, keyed by CDC tool name |
 | `frontend` | string | Optional elaboration frontend selector forwarded as-is via `--frontend <value>` to the analyzer subprocess. The set of accepted values is the analyzer's, not rtl_buddy's — for the bundled `rtl-buddy-cdc` backend on current main it's `"yosys"` (built-in) or `"slang"` (full SV-2017 via the optional `pyslang`-backed `[slang]` extra); see the analyzer's own docs for the authoritative list. Unknown values are rejected by the analyzer, not by rtl_buddy. Omit to use the analyzer's own default. |
-| `xfail` | bool | Optional, default false. Marks the CDC analysis expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. Useful for a design with known/intentional CDC violations tracked in a suite. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the CDC analysis expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. Useful for a design with known/intentional CDC violations tracked in a suite. See [Expected failures (xfail)](../concepts/expected-failures.md). |
 | `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
 
 **Runtime effects:**
@@ -792,7 +792,7 @@ verifications:
 | `vacuity` | bool | Optional. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived covers for every `\|->` / `\|=>` antecedent in the property set. Default is false for `cover` / `live` modes. See [Vacuity covers](../concepts/fpv.md#vacuity-covers). |
 | `coi` | bool | Optional. When true (default), run a yosys cone-of-influence pass after the primary proof and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](../concepts/fpv.md#cone-of-influence-coverage). |
 | `frontend` | string | SystemVerilog frontend. `"verilog"` (default — yosys native, immediate + simple-concurrent SVA only) or `"slang"` (yosys-slang plugin — required for `\|->` / `\|=>` and SV `bind`). `slang` requires `cfg-fpv-tools[].opts.plugin-path` in root_config.yaml. See [Choosing a frontend](../concepts/fpv.md#choosing-a-frontend). |
-| `xfail` | bool | Optional, default false. Marks the verification expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/fpv.md#expected-failures-xfail). |
+| `xfail` | bool | Optional, default false. Marks the verification expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. See [Expected failures (xfail)](../concepts/expected-failures.md). |
 | `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. A verification is expected-to-fail if either flag is set; strict wins if both are. |
 
 **Runtime effects:**

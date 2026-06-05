@@ -62,7 +62,7 @@ class PnrConfigFile:
     # Expected-fail markers (pytest-style). Either marks this run
     # expected-to-fail; `xfail` is non-strict (an unexpected pass still
     # passes), `xfail_strict` is strict (an unexpected pass is a failure).
-    # See docs/concepts/fpv.md#expected-failures-xfail.
+    # See docs/concepts/expected-failures.md.
     xfail: bool = False
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
