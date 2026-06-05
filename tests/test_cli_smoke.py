@@ -78,14 +78,16 @@ def test_docs_show_unknown_slug_exits_nonzero():
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["docs", "show", "does/not/exist"])
     assert result.exit_code != 0
-    assert "Unknown docs page" in result.output
+    # Typer 0.26+ leaves the ClickException on result.exception rather than
+    # mixing its text into result.output (stdout); accept either location.
+    assert "Unknown docs page" in result.output + str(result.exception)
 
 
 def test_docs_show_unknown_anchor_exits_nonzero():
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["docs", "show", "agents#zzz-not-a-real-anchor"])
     assert result.exit_code != 0
-    assert "Unknown section" in result.output
+    assert "Unknown section" in result.output + str(result.exception)
 
 
 def test_docs_show_machine_emits_json():
