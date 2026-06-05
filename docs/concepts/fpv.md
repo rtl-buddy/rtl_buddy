@@ -407,18 +407,12 @@ regression — a teaching case, or a not-yet-fixed bug — mark it
 the depth around it.
 
 A runnable version of this corpus — the three properties above, each as
-its own verification, with the `xfail` wiring — ships as the
-`demo_abv_induction` block in the
+its own verification with the `xfail` wiring already in place — ships
+as the `demo_abv_induction` block in the
 [rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template).
-For the theory, see Sheeran, Singh & Stålmarck, *Checking Safety
-Properties Using Induction and a SAT-Solver* (FMCAD 2000), the
-foundational treatment of k-induction. The "add a companion assertion
-to mark an unreachable predecessor state bad" lever is the operational
-guidance in the [YosysHQ SBY FAQ](https://yosyshq.readthedocs.io/projects/ap011/en/latest/faq_sby.html)
-("adding assertions to mark them bad helps the solver find a proof for
-a lower `depth`"). For a hands-on walk-through of the same pattern,
-ZipCPU's [*An Exercise in using Formal Induction*](https://zipcpu.com/blog/2018/03/10/induction-exercise.html)
-remains the most-cited open practitioner reference.
+For the theory paper, the first-party YosysHQ guidance the "companion
+assertion" lever above is taken from, and a hands-on practitioner
+walk-through of the same pattern, see [References](#references) below.
 
 ## Artefacts
 
@@ -458,3 +452,23 @@ rb wave-fpv demo_fpv_counter_safety
 - **SymbiYosys-only.** Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up — adding them parallels the pattern documented for [SpyGlass in `rb cdc`](https://github.com/rtl-buddy/rtl_buddy/issues/85).
 - **Per-property granularity.** The summary table reports the overall sby verdict, not per-assertion pass/fail. Sby's own `status.json` per task is preserved under `sby_workdir/` for users who need that detail.
 - **Wide SVA coverage.** Yosys's native frontend supports a limited subset of SystemVerilog Assertions. Broader SVA coverage will land alongside the [slang frontend](https://github.com/rtl-buddy/rtl_buddy/issues/88).
+
+## References
+
+Open literature and first-party tool docs the FPV guidance in this page
+is grounded in. No commercial-EDA methodology manuals are used as
+authority (per repo policy).
+
+### Theory
+
+- **Sheeran, Singh & Stålmarck**, *Checking Safety Properties Using Induction and a SAT-Solver* (FMCAD 2000) — the foundational treatment of k-induction; this is the algorithm `mode: prove` implements.
+
+### First-party tool docs
+
+- **[SymbiYosys reference](https://symbiyosys.readthedocs.io/en/latest/reference.html)** — canonical `sby` config schema, mode list, and engine catalogue. The default `depth: 20` and the "k-induction performed by the smtbmc engine" definition are here.
+- **[YosysHQ SBY FAQ — AppNote-011](https://yosyshq.readthedocs.io/projects/ap011/en/latest/faq_sby.html)** — operational guidance, including the *"companion assertion to mark an unreachable predecessor state bad"* lever used in [*Assertions strengthen each other*](#assertions-strengthen-each-other): "adding assertions to mark them bad helps the solver find a proof for a lower `depth`."
+
+### Practitioner walk-throughs
+
+- **ZipCPU — [*An Exercise in using Formal Induction*](https://zipcpu.com/blog/2018/03/10/induction-exercise.html)** — the most-cited open hands-on tutorial for the same property-strengthening pattern, on a SymbiYosys-based flow.
+- **ZipCPU — [Formal Verification posts](https://zipcpu.com/formal/formal.html)** — index of related material (aggregating invariants across modules, constraining inputs, reset synchronisers).
