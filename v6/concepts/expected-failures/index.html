@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to extend rtl_buddy test behavior using sweep, preproc, and postproc Python plugin hooks.">
+        <meta name="description" content="How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, cdc, pnr, and power runs.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/concepts/plugins/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/concepts/expected-failures/">
       
       
-        <link rel="prev" href="../coverage/">
+        <link rel="prev" href="../regressions/">
       
       
-        <link rel="next" href="../cocotb/">
+        <link rel="next" href="../coverage/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Plugins - RTL Buddy</title>
+        <title>Expected Failures (xfail) - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#plugins" class="md-skip">
+        <a href="#expected-failures-xfail" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Plugins
+              Expected Failures (xfail)
             
           </span>
         </div>
@@ -474,10 +474,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../expected-failures/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expected Failures (xfail)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -493,6 +520,59 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#strict-vs-non-strict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Strict vs non-strict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#caveat" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caveat
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-it-shows-up" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where it shows up
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -530,37 +610,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plugins
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
         
   
   
@@ -576,70 +629,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#sweep-expanding-one-test-into-many" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Sweep: expanding one test into many
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pre-processing-mutate-test-params-before-compile" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pre-processing: mutate test params before compile
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#hook-working-directory" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Hook working directory
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#post-processing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Post-processing
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1437,10 +1426,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#sweep-expanding-one-test-into-many" class="md-nav__link">
+  <a href="#strict-vs-non-strict" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Sweep: expanding one test into many
+        Strict vs non-strict
       
     </span>
   </a>
@@ -1448,10 +1437,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#pre-processing-mutate-test-params-before-compile" class="md-nav__link">
+  <a href="#caveat" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Pre-processing: mutate test params before compile
+        Caveat
       
     </span>
   </a>
@@ -1459,21 +1448,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#hook-working-directory" class="md-nav__link">
+  <a href="#where-it-shows-up" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Hook working directory
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#post-processing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Post-processing
+        Where it shows up
       
     </span>
   </a>
@@ -1500,159 +1478,88 @@
   
 
 
-<h1 id="plugins">Plugins</h1>
-<p><code>rtl_buddy</code> supports three Python plugin hooks that let you extend test behavior without modifying the tool itself. All hooks are specified per-test in <code>tests.yaml</code> and are executed by the tool at the appropriate point in the test flow.</p>
-<p>Hook scripts receive their input through named variables injected into the script's namespace. They do not use <code>import</code> or function arguments — instead they read from and write to these predefined variables.</p>
-<h2 id="sweep-expanding-one-test-into-many">Sweep: expanding one test into many</h2>
-<p>The sweep hook runs before the test flow and expands a single test entry into multiple <code>TestConfig</code> objects, each with different parameters. Use it to cover a combinatorial space of plusargs, seeds, or configurations without manually listing every variant.</p>
-<p><strong><code>tests.yaml</code> entry:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sweep_case&quot;</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">sweep</span><span class="p">:</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;example_sweep.py&quot;</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
-</code></pre></div>
-<p><strong>Available variables in the script:</strong></p>
+<h1 id="expected-failures-xfail">Expected failures (xfail)</h1>
+<p>Mark a verification that is <strong>known not to hold</strong> — a teaching property
+that is true but not inductive under FPV <code>mode: prove</code>, a test guarding
+an unfixed bug, a CDC lint with intentional violations, a synthesis or
+P&amp;R configuration whose current failure is documented — when you want it
+tracked in the suite rather than deleted.</p>
+<p><code>xfail</code> and <code>xfail_strict</code> are one shared mechanism wired across every
+command whose results carry a PASS / FAIL / SKIP verdict: <code>fpv.yaml</code>,
+<code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code>. A
+verification is treated as expected-to-fail when <strong>either</strong> marker is
+set; the verdict is then re-interpreted:</p>
 <table>
 <thead>
 <tr>
-<th>Variable</th>
-<th>Type</th>
-<th>Description</th>
+<th>Actual outcome</th>
+<th>Reported as</th>
+<th>Counts as</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>logger</code></td>
-<td>Logger</td>
-<td>Use this for all logging so output goes through <code>rtl_buddy</code>'s log system</td>
+<td>FAIL</td>
+<td><code>XFAIL</code></td>
+<td><strong>pass</strong> — the expected failure happened, so it does not fail the run or the regression</td>
 </tr>
 <tr>
-<td><code>test_cfg</code></td>
-<td>TestConfig (immutable)</td>
-<td>The original test entry from <code>tests.yaml</code></td>
+<td>PASS</td>
+<td><code>XPASS</code></td>
+<td>depends on strictness (see below)</td>
 </tr>
 <tr>
-<td><code>root_cfg</code></td>
-<td>RootConfig (mutable)</td>
-<td>The loaded root config</td>
-</tr>
-<tr>
-<td><code>suite_dir</code></td>
-<td>string</td>
-<td>Absolute path to the directory containing <code>tests.yaml</code></td>
-</tr>
-<tr>
-<td><code>artifact_dir</code></td>
-<td>string</td>
-<td>Artifact root for the incoming test name under <code>suite_dir/artefacts/</code></td>
-</tr>
-<tr>
-<td><code>out_test_cfgs</code></td>
-<td>list</td>
-<td><strong>Assign</strong> the expanded list of <code>TestConfig</code> objects here</td>
-</tr>
-<tr>
-<td><code>__file__</code></td>
-<td>string</td>
-<td>Absolute path to the current sweep script</td>
+<td>SKIP / NA</td>
+<td>unchanged</td>
+<td>unchanged</td>
 </tr>
 </tbody>
 </table>
-<p>Everything in <code>TestConfig</code> except <code>reglvl</code> can be mutated in the generated tests (e.g. change <code>name</code>, <code>plusargs</code>, <code>plusdefines</code>).</p>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># example_sweep.py</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">out_test_cfgs</span> <span class="o">=</span> <span class="p">[]</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">4</span><span class="p">):</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">cfg</span> <span class="o">=</span> <span class="n">test_cfg</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">test_cfg</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;SCENARIO&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">i</span><span class="p">)</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">out_test_cfgs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">cfg</span><span class="p">)</span>
-</code></pre></div>
-<p>If the sweep script raises an exception, <code>rtl_buddy</code> records that test as a setup failure and continues with the remaining tests.</p>
-<p>See the template repo for a working example.</p>
-<h2 id="pre-processing-mutate-test-params-before-compile">Pre-processing: mutate test params before compile</h2>
-<p>The pre-processing hook runs after sweep expansion but before the compilation step. Use it to dynamically adjust plusargs, plusdefines, or other test parameters based on runtime state.</p>
-<p><strong><code>tests.yaml</code> entry:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;basic&quot;</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">preproc</span><span class="p">:</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_preproc.py&quot;</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_top&quot;</span>
-</code></pre></div>
-<p><strong>Available variables:</strong></p>
+<h2 id="strict-vs-non-strict">Strict vs non-strict</h2>
+<p>The two markers differ <strong>only</strong> in how an unexpected pass is counted:</p>
 <table>
 <thead>
 <tr>
-<th>Variable</th>
-<th>Type</th>
-<th>Description</th>
+<th>Marker</th>
+<th><code>XPASS</code> counts as</th>
+<th>Use when</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>logger</code></td>
-<td>Logger</td>
-<td>Use for all logging</td>
+<td><code>xfail: true</code></td>
+<td><strong>pass</strong> (non-strict)</td>
+<td>the run <em>may</em> start passing and that is fine / not worth failing on</td>
 </tr>
 <tr>
-<td><code>test_cfg</code></td>
-<td>TestConfig (mutable)</td>
-<td>Modify this to change compile/sim parameters</td>
-</tr>
-<tr>
-<td><code>root_cfg</code></td>
-<td>RootConfig (mutable)</td>
-<td>The loaded root config</td>
-</tr>
-<tr>
-<td><code>suite_dir</code></td>
-<td>string</td>
-<td>Absolute path to the directory containing <code>tests.yaml</code></td>
-</tr>
-<tr>
-<td><code>artifact_dir</code></td>
-<td>string</td>
-<td>Artifact root for this test under <code>suite_dir/artefacts/</code></td>
-</tr>
-<tr>
-<td><code>__file__</code></td>
-<td>string</td>
-<td>Absolute path to the current pre-processing script</td>
+<td><code>xfail_strict: true</code></td>
+<td><strong>fail</strong> (strict)</td>
+<td>a pass means the marker is stale and you want to be told — the safe choice for a regression guard</td>
 </tr>
 </tbody>
 </table>
-<p>Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against <code>suite_dir</code> in preproc. Output filenames that should land in the per-test artefact tree can remain relative to <code>artifact_dir</code>.</p>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># my_preproc.py</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;BUILD_ID&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;CI_BUILD_ID&quot;</span><span class="p">,</span> <span class="s2">&quot;local&quot;</span><span class="p">)</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">test_cfg</span><span class="o">.</span><span class="n">plusargs</span><span class="p">[</span><span class="s2">&quot;stimulus&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;vectors&quot;</span> <span class="o">/</span> <span class="s2">&quot;streaming_contract.txt&quot;</span><span class="p">)</span>
-</code></pre></div>
-<p>If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.</p>
-<p>See the template repo for a working example.</p>
-<h2 id="hook-working-directory">Hook working directory</h2>
-<p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which stays at <code>invocation_cwd</code> — the directory you ran <code>rb</code> from. It is <strong>not</strong> the suite directory. Always build paths from the injected <code>suite_dir</code> and <code>artifact_dir</code> variables; never call <code>os.getcwd()</code> to locate the suite.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>     <span class="c1"># wrong — invocation cwd</span>
-</code></pre></div>
-<p>If a hook delegates to a third-party generator that writes relative to <code>os.getcwd()</code> and exposes no output-directory argument, wrap the call in a <code>chdir</code> to the suite and restore it afterwards:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">finally</span><span class="p">:</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
-</code></pre></div>
-<p>This anchoring behavior changed in v5; see <a href="../../migrations/#v4-to-v5">Migrations: v4 to v5</a> and the <a href="../execution-context/">execution context</a> reference.</p>
-<h2 id="post-processing">Post-processing</h2>
-<p>The <code>postproc</code> hook is parsed from config but the runtime flow currently relies on built-in post-processing. Custom post-processing support is planned for a future release.</p>
+<p>If both are set, strict wins. Each verification picks the marker it
+needs. A common pattern: <code>xfail_strict: true</code> on a teaching demo or a
+not-yet-fixed bug, so the regression turns red (via <code>XPASS</code>) the moment
+the run starts passing and the marker should be removed.</p>
+<h2 id="caveat">Caveat</h2>
+<p>Like pytest <code>xfail</code> without <code>raises=</code>, this does not distinguish a
+genuine disproof from an infrastructure error that also surfaces as a
+FAIL. Reserve the marker for runs whose failure mode is understood.</p>
+<h2 id="where-it-shows-up">Where it shows up</h2>
+<p>The marker is a per-verification field in each command's yaml; the
+exact schema entries live in <a href="../../reference/yaml/">YAML Formats</a>.
+Common contexts:</p>
+<ul>
+<li><strong><code>fpv.yaml</code></strong> — a teaching property that is true but not inductive
+  under <code>mode: prove</code> (see <a href="../fpv/#writing-properties-that-prove-bmc-vs-induction">Writing properties that prove</a>).</li>
+<li><strong><code>tests.yaml</code></strong> — a test that guards a known unfixed bug or an
+  environment limitation.</li>
+<li><strong><code>cdc.yaml</code></strong> — a design with known / intentional CDC violations
+  tracked in the suite.</li>
+<li><strong><code>synth.yaml</code> / <code>pnr.yaml</code> / <code>power.yaml</code></strong> — a configuration whose
+  current failure is documented and tracked.</li>
+</ul>
 
 
 
