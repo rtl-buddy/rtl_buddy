@@ -494,6 +494,108 @@ def test_sby_fpv_constraints_optional_default_unchanged(tmp_path):
     assert content.count("read -sv -formal ") == 2
 
 
+# ---------------------------------------------------------------------------
+# Vacuous-PASS guard (#260): a bind-based property file that the verilog
+# frontend silently drops elaborates zero formal cells. The generated
+# script must assert at least one formal cell exists after `prep` so sby
+# errors loud instead of reporting a vacuous PASS.
+# ---------------------------------------------------------------------------
+
+
+def _sby_for(tmp_path, *, properties, frontend="verilog"):
+    """Build an SbyFpv whose filelist points at a single design source."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("module design(); endmodule\n")
+    fl = tmp_path / "artefacts" / "demo" / "fpv.f"
+    fl.parent.mkdir(parents=True)
+    fl.write_text(f"{src}\n")
+
+    fpv_cfg = _make_fpv_cfg(name="demo", top="design", properties=properties)
+    fpv_cfg.frontend = frontend
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=fpv_cfg,
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    sources, incdirs = sby._parse_filelist(str(fl))
+    return sby, sources, incdirs
+
+
+def test_sby_fpv_emits_formal_cell_guard_when_properties_listed(tmp_path):
+    """A suite with `properties:` must guard against zero formal cells:
+    a `select -assert-min 1 ...` after `prep`, then `select -clear` to
+    restore the full selection for sby's engine passes."""
+    props = tmp_path / "props.sv"
+    props.write_text("// SVA properties\n")
+    sby, sources, incdirs = _sby_for(tmp_path, properties=[str(props)])
+    content = Path(sby._write_sby_file(sources, incdirs)).read_text()
+
+    script = content.split("[script]")[1].split("[files]")[0]
+    prep_pos = script.index("prep -top design")
+    guard_pos = script.index("select -assert-min 1 ")
+    clear_pos = script.index("select -clear")
+    # Guard lands after prep and is followed by the selection restore.
+    assert prep_pos < guard_pos < clear_pos
+    # Covers both the unified `$check` cell and the legacy dedicated
+    # formal-cell types so the guard works across yosys generations.
+    for cell in ("t:$assert", "t:$assume", "t:$cover", "t:$live", "t:$check"):
+        assert cell in script
+
+
+def test_sby_fpv_no_guard_for_inline_assertion_suite(tmp_path):
+    """`properties: []` (inline-assertion DUTs) are not bind-based, so
+    the guard is not emitted — it would false-positive on suites whose
+    asserts live in the design source."""
+    sby, sources, incdirs = _sby_for(tmp_path, properties=[])
+    content = Path(sby._write_sby_file(sources, incdirs)).read_text()
+    assert "select -assert-min" not in content
+
+
+def test_vacuous_guard_hint_flags_dropped_bind(tmp_path):
+    """When the guard trips, the ERROR description must explain that zero
+    formal cells elaborated and point at `frontend: slang` for the
+    verilog-frontend bind case."""
+    props = tmp_path / "props.sv"
+    props.write_text("// SVA properties\n")
+    sby, _, _ = _sby_for(tmp_path, properties=[str(props)], frontend="verilog")
+
+    log_path = tmp_path / "fpv.log"
+    log_path.write_text(
+        "SBY [wd] base: ERROR: Assertion failed: selection contains 0 "
+        "elements, less than the minimum number 1: t:$assert\n"
+    )
+    hint = sby._vacuous_guard_hint(str(log_path), str(tmp_path / "missing_wd"))
+    assert "zero formal cells" in hint
+    assert "frontend: slang" in hint
+    assert "verilog" in hint
+
+
+def test_vacuous_guard_hint_slang_omits_frontend_advice(tmp_path):
+    """On the slang frontend the bind already resolves, so a zero-cell
+    error is something else — don't suggest switching frontend."""
+    props = tmp_path / "props.sv"
+    props.write_text("// SVA properties\n")
+    sby, _, _ = _sby_for(tmp_path, properties=[str(props)], frontend="slang")
+
+    log_path = tmp_path / "fpv.log"
+    log_path.write_text("ERROR: ... selection contains 0 elements ...\n")
+    hint = sby._vacuous_guard_hint(str(log_path), str(tmp_path / "missing_wd"))
+    assert "zero formal cells" in hint
+    assert "frontend: slang" not in hint
+
+
+def test_vacuous_guard_hint_silent_on_unrelated_error(tmp_path):
+    """An ERROR without the empty-selection signature keeps its plain
+    description — the hint must not fire on every failure."""
+    sby, _, _ = _sby_for(tmp_path, properties=["/x/props.sv"])
+    log_path = tmp_path / "fpv.log"
+    log_path.write_text("ERROR: syntax error near token 'always'\n")
+    assert sby._vacuous_guard_hint(str(log_path), str(tmp_path / "missing_wd")) == ""
+
+
 def test_sby_fpv_parse_filelist_extracts_incdirs(tmp_path):
     """+incdir+ entries from the filelist must be resolved and surfaced
     as include directories, separate from source files."""

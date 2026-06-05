@@ -46,6 +46,19 @@ _SOURCE_OPT_PREFIX = "-v "
 _FILELIST_SKIP_PREFIXES = ("-y ", "-F ", "-f ")
 
 
+# Union selector for every formal-cell flavor across yosys generations:
+# modern yosys folds assert/assume/cover/live/fair into a single `$check`
+# cell (with a `FLAVOR` parameter); older yosys emits dedicated `$assert`
+# / `$assume` / `$cover` / `$live` cells. The union is non-empty iff the
+# design elaborated at least one property cell.
+_FORMAL_CELL_SELECTOR = "t:$assert t:$assume t:$cover t:$live t:$check"
+
+# yosys prints this when `select -assert-min 1` finds an empty selection.
+# We match on the stable leading phrase so a yosys version that reorders
+# the trailing selector text still triggers the hint.
+_EMPTY_FORMAL_SELECTION_MARKER = "selection contains 0 elements"
+
+
 class SbyFpv:
     def __init__(
         self,
@@ -182,6 +195,11 @@ class SbyFpv:
             incdirs=incdirs,
             mode=self.fpv_cfg.get_mode(),
             extra_property_files=[],
+            # Guard the primary proof against a vacuous PASS whenever the
+            # user listed `properties:` — those files are expected to
+            # elaborate at least one formal cell. Inline-assertion suites
+            # (`properties: []`) are not bind-based and opt out.
+            emit_formal_guard=bool(self.fpv_cfg.get_properties()),
         )
 
     def _render_sby(
@@ -192,6 +210,7 @@ class SbyFpv:
         incdirs: list[str],
         mode: str,
         extra_property_files: list[str],
+        emit_formal_guard: bool = False,
     ) -> str:
         cfg = self.fpv_cfg
         opts = self.tool_cfg.get_opts(
@@ -273,6 +292,16 @@ class SbyFpv:
                 # Use basename — files are dropped into the sby workdir under [files].
                 lines.append(f"read -sv -formal {os.path.basename(src)}")
         lines.append(f"prep -top {cfg.get_top()}")
+        if emit_formal_guard:
+            # Fail loud on a vacuous proof: a compilation-unit-scope
+            # `bind` the verilog frontend cannot resolve leaves the
+            # checker module as `$abstract`, which is then removed as
+            # unused — so zero formal cells reach sby and the proof
+            # PASSes having constrained nothing (#260). Assert at least
+            # one formal cell exists, then restore the full selection so
+            # sby's downstream engine passes see the whole design.
+            lines.append(f"select -assert-min 1 {_FORMAL_CELL_SELECTOR}")
+            lines.append("select -clear")
         lines.append("")
 
         # [files]
@@ -435,17 +464,51 @@ class SbyFpv:
             return result
 
         desc_status = status or f"sby exit code {proc.returncode}"
+        hint = self._vacuous_guard_hint(log_path, workdir)
         result = FpvFailResults(
             name=cfg.get_name(),
             mode=cfg.get_mode(),
             depth=cfg.get_depth(),
             engines=cfg.get_engines(),
             runtime_s=round(runtime_s, 2),
-            desc=f"sby reported {desc_status} (see {log_path})",
+            desc=f"sby reported {desc_status} (see {log_path}){hint}",
             per_engine=per_engine,
         )
         self._merge_extras(result, vacuity=vacuity, coi=coi)
         return result
+
+    def _vacuous_guard_hint(self, log_path: str, workdir: str) -> str:
+        """Return an actionable hint when the formal-cell guard tripped.
+
+        The guard (`select -assert-min 1 ...` appended after `prep`)
+        makes yosys — and therefore sby — error out when a property set
+        elaborates zero formal cells. That is almost always a
+        compilation-unit-scope `bind` dropped by the verilog frontend
+        (#260). Scans both the user-facing sby log and the workdir
+        logfile for yosys's empty-selection assertion message; returns
+        an empty string for any other ERROR so unrelated failures keep
+        their plain description.
+        """
+        texts: list[str] = []
+        if os.path.isfile(log_path):
+            texts.append(Path(log_path).read_text())
+        wd_log = os.path.join(workdir, "logfile.txt")
+        if os.path.isfile(wd_log):
+            texts.append(Path(wd_log).read_text())
+        if not any(_EMPTY_FORMAL_SELECTION_MARKER in t for t in texts):
+            return ""
+        hint = (
+            " — zero formal cells elaborated: the property set produced no "
+            "assert/assume/cover cells, so the proof would otherwise have "
+            "passed vacuously"
+        )
+        if self.fpv_cfg.get_frontend() != "slang":
+            hint += (
+                f" (frontend={self.fpv_cfg.get_frontend()!r} cannot resolve a "
+                f"compilation-unit-scope `bind`; set `frontend: slang` for "
+                f"bind-based property modules)"
+            )
+        return hint
 
     # --- vacuity pass -------------------------------------------------------
 
