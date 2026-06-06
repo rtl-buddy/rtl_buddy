@@ -779,6 +779,12 @@ class SurferWcpListener:
                 log_event(
                     logger, logging.WARNING, "wcp.connection_lost", reason=str(exc)
                 )
+            except FatalRtlBuddyError as exc:
+                # The lazy waveform open can fail here (present-but-corrupt
+                # trace) — tear down gracefully instead of dying with a
+                # listener-thread traceback (#263).
+                log_event(logger, logging.ERROR, "wcp.fatal_error", error=str(exc))
+                self.stop()
             finally:
                 conn.close()
 

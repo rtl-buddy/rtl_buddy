@@ -402,6 +402,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "wcp.resolve_failed":
             return f'WCP: could not find source for "{fields.get("variable")}" (searched {fields.get("searched")} files)'
+        case "wcp.fatal_error":
+            return (
+                f"WCP: fatal error — wave annotations disabled ({fields.get('error')})"
+            )
         case "wcp.connection_lost":
             return f"WCP: connection lost ({fields.get('reason')}); waiting for Surfer to reconnect"
         case "synth.sdc_multi_clock":

@@ -930,3 +930,40 @@ class TestWaveLauncherValueReaderPreflight:
             with pytest.raises(FatalRtlBuddyError, match="not found"):
                 launcher.launch()
         popen.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SurferWcpListener.run: graceful teardown on FatalRtlBuddyError (#263)
+# ---------------------------------------------------------------------------
+
+
+class TestListenerFatalErrorTeardown:
+    def test_fatal_from_handler_stops_listener_without_traceback(self):
+        from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.tools.surfer_wcp import (
+            EditorLauncher,
+            SurferSourceResolver,
+            SurferWcpListener,
+        )
+
+        surfer_cfg = _make_surfer_cfg()
+        resolver = object.__new__(SurferSourceResolver)
+        resolver._sv_files = []
+        editor = object.__new__(EditorLauncher)
+        editor._surfer_cfg = surfer_cfg
+        listener = SurferWcpListener(surfer_cfg, resolver, editor)
+
+        fake_conn = MagicMock()
+        srv = MagicMock()
+        srv.accept.return_value = (fake_conn, ("127.0.0.1", 12345))
+        listener._srv = srv
+
+        with patch.object(
+            listener,
+            "_handle_connection",
+            side_effect=FatalRtlBuddyError("could not open waveform trace"),
+        ):
+            listener.run()  # must return cleanly, not raise
+
+        assert listener._stop.is_set()
+        fake_conn.close.assert_called()
