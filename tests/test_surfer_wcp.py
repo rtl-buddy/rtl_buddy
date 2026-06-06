@@ -773,3 +773,32 @@ class TestEditorLauncherNvimExecLua:
         expr_val = cmd[expr_idx + 1]
         # The double-quote must be escaped in the Vimscript string context
         assert '\\"' in expr_val
+
+
+# ---------------------------------------------------------------------------
+# pywellen API surface guard
+# ---------------------------------------------------------------------------
+
+
+class TestPywellenApiSurface:
+    """Pin the pywellen API that rtl_buddy's trace readers depend on.
+
+    pywellen 0.25.0 rewrote ``Waveform`` to a streaming-only surface,
+    removing the random-access API below — which silently blanked
+    ``rb wave`` value annotations and crashed ``rb saif`` (#263). The
+    dependency is bounded to ``<0.25`` in pyproject; this test makes the
+    next such rewrite fail loudly in CI at lock-bump time instead of in
+    the field. Lift/adjust together with the bound when the readers are
+    ported.
+    """
+
+    def test_waveform_random_access_api_present(self):
+        import pywellen
+
+        # tools/surfer_wcp.WaveformValueReader + tools/saif_from_trace
+        for attr in ("hierarchy", "get_signal", "get_signal_from_path"):
+            assert hasattr(pywellen.Waveform, attr), (
+                f"pywellen.Waveform.{attr} missing — incompatible pywellen "
+                "(>=0.25 streaming rewrite?); rb wave annotations and "
+                "rb saif depend on the random-access API (#263)"
+            )

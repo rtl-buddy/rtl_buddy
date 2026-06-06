@@ -1053,7 +1053,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.3.0" },
     { name = "jsonschema", specifier = ">=4.21.0" },
     { name = "pyserde", extras = ["yaml"], specifier = ">=0.27.0" },
-    { name = "pywellen", specifier = ">=0.20.0" },
+    { name = "pywellen", specifier = ">=0.20.0,<0.25" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "rtl-buddy-xeno", extras = ["slang", "verible"], marker = "extra == 'mut'", specifier = ">=0.1.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.15" },
