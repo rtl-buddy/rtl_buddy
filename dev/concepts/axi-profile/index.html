@@ -1009,6 +1009,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Subcommand: run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#builder-auto-detection-verilator-vcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builder auto-detection (Verilator / VCS)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1555,6 +1572,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Subcommand: run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#builder-auto-detection-verilator-vcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builder auto-detection (Verilator / VCS)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1643,7 +1677,7 @@
 <ol>
 <li><strong><code>discover</code></strong> — parse RTL to produce an <code>axi-bundles.yaml</code> manifest of the model's AXI interfaces.</li>
 <li><strong><code>gen-monitor</code></strong> — emit a bind-style SystemVerilog monitor whose <code>axi-stream</code> taps are added to the testbench's filelist.</li>
-<li><strong><code>run</code></strong> — ingest a test's FST trace and emit per-test <code>axi-perf.json</code> (and optionally a per-transaction Parquet).</li>
+<li><strong><code>run</code></strong> — ingest a test's trace (FST / VCD / VCS VPD, auto-detected) and emit per-test <code>axi-perf.json</code> (and optionally a per-transaction Parquet).</li>
 <li><strong><code>notebook</code></strong> — launch the packaged marimo notebook against the per-transaction Parquet for interactive deep-dive.</li>
 </ol>
 <p>The four wrappers share the same subprocess-granularity integration: pass <code>--tool /path/to/axi-profiler</code> to pin a specific build, otherwise the binary on <code>PATH</code> is used.</p>
@@ -1710,7 +1744,7 @@
 <p>You add the generated SV to the testbench's filelist once. If <code>axi_monitor_out:</code> points at a path inside the verif tree (e.g. <code>../verif/soc_top/gen/axi_perf_mon.sv</code>), that's a one-time step — subsequent <code>gen-monitor</code> runs just rewrite the file in place.</p>
 <p><code>--time-precision</code> must match the IEEE 1800 <code>timeprecision</code> of the wrapping testbench, otherwise the monitor's timestamp arithmetic will be off by a power of ten. <code>--buffer-cap</code> bounds memory growth on extremely long traces — the buffer is drained to disk only at <code>$finish</code>.</p>
 <h2 id="subcommand-run">Subcommand: <code>run</code></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Ingest the test&#39;s FST and emit axi-perf.json</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Ingest the test&#39;s trace and emit axi-perf.json</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Also produce the per-txn parquet that the notebook reads</span>
@@ -1722,7 +1756,7 @@
 <a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># Custom output path for axi-perf.json</span>
 <a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test<span class="w"> </span>-o<span class="w"> </span>/tmp/axi-perf.json
 <a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
-<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># Override the FST top scope (default = the test&#39;s tb name)</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># Override the trace top scope (default = the test&#39;s tb name)</span>
 <a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>run<span class="w"> </span>my_test<span class="w"> </span>--tb-prefix<span class="w"> </span>my_custom_wrapper
 </code></pre></div>
 <p>The runner resolves everything from <code>tests.yaml</code> and the standard artefact layout:</p>
@@ -1743,8 +1777,8 @@
 <td><code>model.axi_bundles</code> in <code>models.yaml</code> (must exist — run <code>discover</code> first)</td>
 </tr>
 <tr>
-<td>FST trace</td>
-<td><code>&lt;suite_dir&gt;/artefacts/&lt;test&gt;/dump.fst</code> (same convention as <code>rb wave</code>)</td>
+<td>Trace</td>
+<td>newest of <code>dump.fst</code> / <code>dump.vcd</code> / <code>vcdplus.vpd</code> under <code>&lt;suite_dir&gt;/artefacts/&lt;test&gt;/</code> (same dir convention as <code>rb wave</code>)</td>
 </tr>
 <tr>
 <td>Top scope prefix</td>
@@ -1754,6 +1788,46 @@
 </table>
 <p>You only type <code>rb axi-profile run &lt;test&gt;</code> — everything else auto-resolves. The <code>--tb-prefix</code> override exists for setups where the Verilator wrapper renames the testbench scope; pass an empty string to disable prefix matching entirely.</p>
 <p>Pass <code>--emit-txns-parquet</code> to also write per-transaction rows to <code>artefacts/axi/&lt;test&gt;/axi-txns.parquet</code> — that's the canonical location <code>rb axi-profile notebook</code> reads. Requires the <code>axi-profiler</code> <code>[parquet]</code> extra (pyarrow).</p>
+<h3 id="builder-auto-detection-verilator-vcs">Builder auto-detection (Verilator / VCS)</h3>
+<p>The trace input follows whichever builder ran the debug test last — newest
+mtime wins among the candidates in <code>artefacts/&lt;test&gt;/</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Candidate</th>
+<th>Producer</th>
+<th>Handling</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dump.fst</code></td>
+<td>Verilator (<code>$dumpfile</code> on the testbench's <code>VERILATOR</code> dump branch)</td>
+<td>ingested directly</td>
+</tr>
+<tr>
+<td><code>dump.vcd</code></td>
+<td>any simulator dumping plain VCD</td>
+<td>ingested directly (the wellen reader auto-detects VCD)</td>
+</tr>
+<tr>
+<td><code>vcdplus.vpd</code></td>
+<td>VCS (<code>$vcdpluson</code> on the <code>VCS</code> dump branch)</td>
+<td>converted on the fly</td>
+</tr>
+</tbody>
+</table>
+<p>VPD is Synopsys-proprietary, so it is converted before ingest: <code>vpd2vcd</code>
+(ships with VCS — no new dependency for anyone who produced a VPD) to a
+temporary VCD, then <code>vcd2fst</code> (ships with GTKWave) down to a cached
+<code>vcdplus.fst</code> next to the VPD. Conversion output lands in
+<code>artefacts/axi/&lt;test&gt;/vpd-convert.log</code>. The conversion is skipped when the
+cached FST is already newer than the VPD, so repeat <code>run</code>s are free. Without
+<code>vcd2fst</code> the intermediate VCD is kept and ingested as-is — correct, just
+~15x larger on disk than the FST.</p>
+<p>So <code>rb -B vcs -M debug test &lt;test&gt;</code> followed by <code>rb axi-profile run &lt;test&gt;</code>
+works with no extra flags, and switching builders between runs needs no
+cleanup — the newest dump wins.</p>
 <h2 id="subcommand-notebook">Subcommand: <code>notebook</code></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Foreground (default) — opens marimo in your browser</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rb<span class="w"> </span>axi-profile<span class="w"> </span>notebook<span class="w"> </span>my_test
@@ -1798,7 +1872,7 @@
 <p>All three flows reuse the same per-test artefact layout, so the static, interactive, and live views agree on what data they're showing.</p>
 <h2 id="passfail-detection">Pass/fail detection</h2>
 <p>Each <code>rb axi-profile</code> subcommand exits with the underlying <code>axi-profiler</code> exit code. A non-zero exit means the profiler reported an elaboration, ingest, or write error — check the relevant <code>.log</code> file under <code>artefacts/axi/</code>.</p>
-<p>Missing prerequisites (no <code>axi_bundles:</code> in <code>models.yaml</code>, no FST at the expected path, no <code>marimo</code> for <code>notebook</code>) surface as a clear <code>FatalRtlBuddyError</code> <em>before</em> invoking <code>axi-profiler</code>, so the error is anchored at the prerequisite step rather than buried in profiler output.</p>
+<p>Missing prerequisites (no <code>axi_bundles:</code> in <code>models.yaml</code>, no trace at the expected path, no <code>marimo</code> for <code>notebook</code>) surface as a clear <code>FatalRtlBuddyError</code> <em>before</em> invoking <code>axi-profiler</code>, so the error is anchored at the prerequisite step rather than buried in profiler output.</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
 <li><strong>Non-AXI protocols.</strong> AXI4 / AXI4-Lite / AXI4-Stream are supported by <code>rtl-buddy-axi-profiler</code>'s bundle discovery; AHB, APB, TileLink, and custom protocols are not. The pluggable wrapper boundary makes adding sibling profilers straightforward, but no other profilers are wired up yet.</li>
