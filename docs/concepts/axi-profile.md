@@ -16,7 +16,7 @@ description: How to profile AXI interconnect performance with rtl_buddy via the 
 
 1. **`discover`** — parse RTL to produce an `axi-bundles.yaml` manifest of the model's AXI interfaces.
 2. **`gen-monitor`** — emit a bind-style SystemVerilog monitor whose `axi-stream` taps are added to the testbench's filelist.
-3. **`run`** — ingest a test's FST trace and emit per-test `axi-perf.json` (and optionally a per-transaction Parquet).
+3. **`run`** — ingest a test's trace (FST / VCD / VCS VPD, auto-detected) and emit per-test `axi-perf.json` (and optionally a per-transaction Parquet).
 4. **`notebook`** — launch the packaged marimo notebook against the per-transaction Parquet for interactive deep-dive.
 
 The four wrappers share the same subprocess-granularity integration: pass `--tool /path/to/axi-profiler` to pin a specific build, otherwise the binary on `PATH` is used.
@@ -93,7 +93,7 @@ You add the generated SV to the testbench's filelist once. If `axi_monitor_out:`
 ## Subcommand: `run`
 
 ```bash
-# Ingest the test's FST and emit axi-perf.json
+# Ingest the test's trace and emit axi-perf.json
 rb axi-profile run my_test
 
 # Also produce the per-txn parquet that the notebook reads
@@ -105,7 +105,7 @@ rb axi-profile run my_test --emit-txns-parquet-path /tmp/txns.parquet
 # Custom output path for axi-perf.json
 rb axi-profile run my_test -o /tmp/axi-perf.json
 
-# Override the FST top scope (default = the test's tb name)
+# Override the trace top scope (default = the test's tb name)
 rb axi-profile run my_test --tb-prefix my_custom_wrapper
 ```
 
@@ -115,12 +115,36 @@ The runner resolves everything from `tests.yaml` and the standard artefact layou
 |-------|---------------------|
 | Model | `tests.yaml` → `model:` |
 | Manifest | `model.axi_bundles` in `models.yaml` (must exist — run `discover` first) |
-| FST trace | `<suite_dir>/artefacts/<test>/dump.fst` (same convention as `rb wave`) |
+| Trace | newest of `dump.fst` / `dump.vcd` / `vcdplus.vpd` under `<suite_dir>/artefacts/<test>/` (same dir convention as `rb wave`) |
 | Top scope prefix | The test's `testbenches:` entry name in `tests.yaml` |
 
 You only type `rb axi-profile run <test>` — everything else auto-resolves. The `--tb-prefix` override exists for setups where the Verilator wrapper renames the testbench scope; pass an empty string to disable prefix matching entirely.
 
 Pass `--emit-txns-parquet` to also write per-transaction rows to `artefacts/axi/<test>/axi-txns.parquet` — that's the canonical location `rb axi-profile notebook` reads. Requires the `axi-profiler` `[parquet]` extra (pyarrow).
+
+### Builder auto-detection (Verilator / VCS)
+
+The trace input follows whichever builder ran the debug test last — newest
+mtime wins among the candidates in `artefacts/<test>/`:
+
+| Candidate | Producer | Handling |
+|-----------|----------|----------|
+| `dump.fst` | Verilator (`$dumpfile` on the testbench's `VERILATOR` dump branch) | ingested directly |
+| `dump.vcd` | any simulator dumping plain VCD | ingested directly (the wellen reader auto-detects VCD) |
+| `vcdplus.vpd` | VCS (`$vcdpluson` on the `VCS` dump branch) | converted on the fly |
+
+VPD is Synopsys-proprietary, so it is converted before ingest: `vpd2vcd`
+(ships with VCS — no new dependency for anyone who produced a VPD) to a
+temporary VCD, then `vcd2fst` (ships with GTKWave) down to a cached
+`vcdplus.fst` next to the VPD. Conversion output lands in
+`artefacts/axi/<test>/vpd-convert.log`. The conversion is skipped when the
+cached FST is already newer than the VPD, so repeat `run`s are free. Without
+`vcd2fst` the intermediate VCD is kept and ingested as-is — correct, just
+~15x larger on disk than the FST.
+
+So `rb -B vcs -M debug test <test>` followed by `rb axi-profile run <test>`
+works with no extra flags, and switching builders between runs needs no
+cleanup — the newest dump wins.
 
 ## Subcommand: `notebook`
 
@@ -180,7 +204,7 @@ All three flows reuse the same per-test artefact layout, so the static, interact
 
 Each `rb axi-profile` subcommand exits with the underlying `axi-profiler` exit code. A non-zero exit means the profiler reported an elaboration, ingest, or write error — check the relevant `.log` file under `artefacts/axi/`.
 
-Missing prerequisites (no `axi_bundles:` in `models.yaml`, no FST at the expected path, no `marimo` for `notebook`) surface as a clear `FatalRtlBuddyError` *before* invoking `axi-profiler`, so the error is anchored at the prerequisite step rather than buried in profiler output.
+Missing prerequisites (no `axi_bundles:` in `models.yaml`, no trace at the expected path, no `marimo` for `notebook`) surface as a clear `FatalRtlBuddyError` *before* invoking `axi-profiler`, so the error is anchored at the prerequisite step rather than buried in profiler output.
 
 ## Out of scope (today)
 

@@ -12,6 +12,8 @@ promise the downstream:
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import stat
 from pathlib import Path
 
@@ -379,8 +381,8 @@ def test_run_wrapper_errors_when_manifest_file_missing(tmp_path: Path) -> None:
     assert "rb axi-profile discover soc" in msg
 
 
-def test_run_wrapper_errors_when_fst_missing(tmp_path: Path) -> None:
-    """No FST under artefacts/<test>/ → hint to run `rb test <test>` first."""
+def test_run_wrapper_errors_when_trace_missing(tmp_path: Path) -> None:
+    """No trace under artefacts/<test>/ → hint to run a debug test first."""
     suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
     script, _ = _make_fake_profiler(tmp_path)
     test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
@@ -394,8 +396,194 @@ def test_run_wrapper_errors_when_fst_missing(tmp_path: Path) -> None:
     with pytest.raises(FatalRtlBuddyError) as info:
         profiler.run()
     msg = str(info.value)
-    assert "FST not found" in msg
-    assert "rb test basic" in msg
+    assert "no trace found" in msg
+    assert "dump.fst" in msg and "vcdplus.vpd" in msg
+    assert "rb -M debug test basic" in msg
+
+
+# ---------------------------------------------------------------------------
+# Trace auto-detection (Verilator FST / plain VCD / VCS VPD)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_converter(tmp_path: Path, name: str, *, exit_code: int = 0) -> Path:
+    """Drop a fake vpd2vcd/vcd2fst that copies input to output.
+
+    Mirrors the real CLI shapes used by the wrapper:
+    ``vpd2vcd [-full64] <in> <out>`` and ``vcd2fst <in> <out>`` — the
+    last two argv entries are always input then output.
+    """
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / name
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        'in="${@: -2:1}"; out="${@: -1}"\n'
+        f'cp "$in" "$out"\n'
+        f"exit {exit_code}\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return bindir
+
+
+def _set_mtime(path: Path, epoch: int) -> None:
+    os.utime(path, (epoch, epoch))
+
+
+def test_run_newest_trace_wins(tmp_path: Path) -> None:
+    """dump.vcd newer than dump.fst → the VCD is fed to the profiler."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    trace_dir = suite_dir / "artefacts" / "basic"
+    vcd = trace_dir / "dump.vcd"
+    vcd.write_text("fake vcd\n")
+    _set_mtime(trace_dir / "dump.fst", 1_000)
+    _set_mtime(vcd, 2_000)
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--input") + 1].endswith("artefacts/basic/dump.vcd")
+
+
+def test_run_vpd_converts_via_vpd2vcd_and_vcd2fst(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Newest trace is a VPD → converted to vcdplus.fst, intermediate removed."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    trace_dir = suite_dir / "artefacts" / "basic"
+    vpd = trace_dir / "vcdplus.vpd"
+    vpd.write_text("fake vpd\n")
+    _set_mtime(trace_dir / "dump.fst", 1_000)
+    _set_mtime(vpd, 2_000)
+
+    bindir = _make_fake_converter(tmp_path, "vpd2vcd")
+    _make_fake_converter(tmp_path, "vcd2fst")
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--input") + 1].endswith("artefacts/basic/vcdplus.fst")
+    assert (trace_dir / "vcdplus.fst").is_file()
+    assert not (trace_dir / "vcdplus.tmp.vcd").exists()
+
+
+def test_run_vpd_cached_fst_skips_conversion(tmp_path: Path) -> None:
+    """vcdplus.fst newer than the VPD → reused without converters on PATH."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    trace_dir = suite_dir / "artefacts" / "basic"
+    trace_dir.mkdir(parents=True)
+    vpd = trace_dir / "vcdplus.vpd"
+    vpd.write_text("fake vpd\n")
+    cached = trace_dir / "vcdplus.fst"
+    cached.write_text("cached fst\n")
+    _set_mtime(vpd, 1_000)
+    _set_mtime(cached, 2_000)
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--input") + 1].endswith("artefacts/basic/vcdplus.fst")
+
+
+def test_run_vpd_without_vcd2fst_keeps_vcd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """vpd2vcd present but vcd2fst absent → the converted VCD is ingested."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
+    script, record = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    trace_dir = suite_dir / "artefacts" / "basic"
+    trace_dir.mkdir(parents=True)
+    (trace_dir / "vcdplus.vpd").write_text("fake vpd\n")
+
+    bindir = _make_fake_converter(tmp_path, "vpd2vcd")
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    # Hide any system vcd2fst from the wrapper's lookup only — the
+    # subprocesses still need a working PATH for /usr/bin/env bash.
+    import rtl_buddy.tools.axi_profile_rtl_buddy as mod
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        mod.shutil,
+        "which",
+        lambda name, *a, **kw: (
+            None if name == "vcd2fst" else real_which(name, *a, **kw)
+        ),
+    )
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    assert profiler.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--input") + 1].endswith("artefacts/basic/vcdplus.vcd")
+    assert not (trace_dir / "vcdplus.tmp.vcd").exists()
+
+
+def test_run_vpd_errors_when_vpd2vcd_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VPD newest but no vpd2vcd anywhere → clear Synopsys-env hint."""
+    suite_dir, tests_yaml = _write_run_fixture(tmp_path, fst_present=False)
+    script, _ = _make_fake_profiler(tmp_path)
+    test_cfg = SuiteConfig(str(tests_yaml)).get_tests("basic")[0]
+
+    trace_dir = suite_dir / "artefacts" / "basic"
+    trace_dir.mkdir(parents=True)
+    (trace_dir / "vcdplus.vpd").write_text("fake vpd\n")
+
+    # Hide any system vpd2vcd from the wrapper's lookup only.
+    import rtl_buddy.tools.axi_profile_rtl_buddy as mod
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        mod.shutil,
+        "which",
+        lambda name, *a, **kw: (
+            None if name == "vpd2vcd" else real_which(name, *a, **kw)
+        ),
+    )
+
+    profiler = RtlBuddyAxiProfileRun(
+        name="t",
+        test_cfg=test_cfg,
+        suite_dir=str(suite_dir),
+        executable=str(script),
+    )
+    with pytest.raises(FatalRtlBuddyError) as info:
+        profiler.run()
+    msg = str(info.value)
+    assert "vpd2vcd" in msg
+    assert "Synopsys" in msg
 
 
 def test_run_wrapper_emits_parquet_at_artefact_default(tmp_path: Path) -> None:

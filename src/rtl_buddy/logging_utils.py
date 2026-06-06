@@ -474,6 +474,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'{fields.get("name")}: no platform config matches uname "{fields.get("uname")}"'
         case "project_path.missing_directory":
             return f"project path is not a directory: {fields.get('path')}"
+        case "axi_profile_run.vcd2fst_missing":
+            return (
+                f"{target}: vcd2fst not on PATH — keeping the converted VCD "
+                f"at {fields.get('vcd')} (works, but ~15x larger than FST; "
+                "install GTKWave to get vcd2fst)"
+            )
         case "cocotb.results_missing":
             return f"cocotb results file not found for {target} at {fields.get('path')} — sim may have crashed before writing results"
         case "systemc.cfg_missing":

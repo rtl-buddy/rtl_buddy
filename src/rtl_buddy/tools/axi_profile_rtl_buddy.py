@@ -14,13 +14,16 @@ Four wrappers, one per ``rb axi-profile`` subcommand:
   ``artefacts/axi/<model>/axi-bundles.yaml``.
 
 * :class:`RtlBuddyAxiProfileRun` — ``rb axi-profile run <test>``: ingests
-  a per-test FST and writes ``axi-perf.json``. Resolves the model
+  a per-test trace and writes ``axi-perf.json``. Resolves the model
   (from ``tests.yaml``), the checked-in manifest (from
-  ``models.yaml``'s ``axi_bundles``), the FST path
-  (``<suite_dir>/artefacts/<test>/dump.fst`` — same convention as
-  ``rb wave``), and the testbench top scope (from the test's
-  ``tb.name`` in ``tests.yaml``) without further user input. The
-  ``tb_prefix`` override lets the user replace the auto-extracted
+  ``models.yaml``'s ``axi_bundles``), the trace input
+  (newest of ``dump.fst`` / ``dump.vcd`` / ``vcdplus.vpd`` under
+  ``<suite_dir>/artefacts/<test>/`` — so the builder used for the
+  debug run is auto-detected: Verilator dumps FST, VCS's
+  ``$vcdpluson`` dumps VPD, which is converted to FST on the fly via
+  ``vpd2vcd`` + ``vcd2fst``), and the testbench top scope (from the
+  test's ``tb.name`` in ``tests.yaml``) without further user input.
+  The ``tb_prefix`` override lets the user replace the auto-extracted
   value when the wrapping scope name diverges from the testbench
   name (e.g. a custom Verilator wrapper).
 
@@ -183,11 +186,27 @@ class RtlBuddyAxiProfileDiscover:
 class RtlBuddyAxiProfileRun:
     """Per-test ingest + aggregate via ``axi-profiler run``.
 
-    Resolves model + manifest + FST + tb_prefix automatically from
+    Resolves model + manifest + trace + tb_prefix automatically from
     ``tests.yaml`` / ``models.yaml`` / the standard artefact layout —
     the user only types ``rb axi-profile run <test>``. Override hooks
     exist for ``--output`` and ``--tb-prefix`` so unusual setups can
     redirect without editing config files.
+
+    The trace input is auto-detected from what the debug run dumped
+    (newest mtime wins among the candidates), so the same command
+    works regardless of which builder ran the test:
+
+    * ``dump.fst`` — Verilator (``$dumpfile`` on the VERILATOR branch
+      of the testbench dump hook). Ingested directly.
+    * ``dump.vcd`` — any simulator dumping plain VCD. The profiler's
+      wellen reader auto-detects VCD, so it is ingested directly too.
+    * ``vcdplus.vpd`` — VCS (``$vcdpluson``). VPD is Synopsys-
+      proprietary, so it is converted on the fly: ``vpd2vcd`` (ships
+      with VCS) to a temporary VCD, then ``vcd2fst`` (ships with
+      GTKWave) to a cached ``vcdplus.fst`` next to the VPD. The
+      conversion is skipped when the cached FST is already newer than
+      the VPD. Without ``vcd2fst`` the intermediate VCD is kept and
+      ingested as-is (correct, just ~15x larger on disk).
     """
 
     def __init__(
@@ -232,9 +251,13 @@ class RtlBuddyAxiProfileRun:
     def _default_parquet_path(self) -> str:
         return os.path.join(self.artefact_dir, "axi-txns.parquet")
 
-    def _fst_path(self) -> str:
-        # Same convention as `rb wave`: artefacts/<test>/dump.fst.
-        return os.path.join(self.suite_dir, "artefacts", self.test_name, "dump.fst")
+    # Trace candidates under artefacts/<test>/ (same dir convention as
+    # `rb wave`), in the order they are named in errors. Newest mtime
+    # wins so the profiler follows whichever builder ran last.
+    _TRACE_CANDIDATES = ("dump.fst", "dump.vcd", "vcdplus.vpd")
+
+    def _trace_dir(self) -> str:
+        return os.path.join(self.suite_dir, "artefacts", self.test_name)
 
     def _resolve_manifest_path(self) -> str:
         manifest = self.model_cfg.get_axi_bundles_path()
@@ -253,14 +276,114 @@ class RtlBuddyAxiProfileRun:
             )
         return manifest
 
-    def _resolve_fst_path(self) -> str:
-        fst = self._fst_path()
-        if not os.path.isfile(fst):
+    def _resolve_input_path(self) -> str:
+        trace_dir = self._trace_dir()
+        candidates = [
+            p
+            for p in (os.path.join(trace_dir, n) for n in self._TRACE_CANDIDATES)
+            if os.path.isfile(p)
+        ]
+        if not candidates:
+            names = " / ".join(self._TRACE_CANDIDATES)
             raise FatalRtlBuddyError(
-                f"axi-profile run: FST not found at {fst}. "
-                f"Run `rb test {self.test_name}` first to produce it."
+                f"axi-profile run: no trace found under {trace_dir} "
+                f"(looked for {names}). "
+                f"Run `rb -M debug test {self.test_name}` first to produce one."
             )
-        return fst
+        newest = max(candidates, key=os.path.getmtime)
+        if newest.endswith(".vpd"):
+            return self._convert_vpd(newest)
+        return newest
+
+    def _convert_vpd(self, vpd: str) -> str:
+        """Convert a VCS VPD dump to FST, cached next to the VPD.
+
+        ``vpd2vcd`` ships with VCS itself, so requiring it adds no new
+        dependency for anyone who produced a VPD in the first place.
+        The intermediate VCD is deleted once ``vcd2fst`` shrinks it;
+        when ``vcd2fst`` (GTKWave) is absent the VCD is kept and
+        ingested directly — wellen reads VCD natively.
+        """
+        trace_dir = os.path.dirname(vpd)
+        cached_fst = os.path.join(trace_dir, "vcdplus.fst")
+        cached_vcd = os.path.join(trace_dir, "vcdplus.vcd")
+        for cached in (cached_fst, cached_vcd):
+            if os.path.isfile(cached) and os.path.getmtime(cached) >= os.path.getmtime(
+                vpd
+            ):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "axi_profile_run.vpd_convert_cached",
+                    test=self.test_name,
+                    vpd=vpd,
+                    cached=cached,
+                )
+                return cached
+
+        if shutil.which("vpd2vcd") is None:
+            raise FatalRtlBuddyError(
+                f"axi-profile run: newest trace is a VCS VPD ({vpd}) but "
+                "`vpd2vcd` is not on PATH. It ships with VCS — source "
+                "your Synopsys environment, or convert manually and "
+                "re-run."
+            )
+
+        log_path = os.path.join(self.artefact_dir, "vpd-convert.log")
+        tmp_vcd = os.path.join(trace_dir, "vcdplus.tmp.vcd")
+        with task_status(f"axi-profile vpd2vcd {self.test_name}"):
+            with open(log_path, "w") as log_f:
+                # -full64 first: 64-bit-only VCS installs ship no 32-bit
+                # vpd2vcd.exe and the bare wrapper fails outright.
+                proc = None
+                for argv in (
+                    ["vpd2vcd", "-full64", vpd, tmp_vcd],
+                    ["vpd2vcd", vpd, tmp_vcd],
+                ):
+                    log_f.write("$ " + " ".join(argv) + "\n")
+                    log_f.flush()
+                    proc = run_managed_process(
+                        argv, stdout=log_f, stderr=log_f, cwd=trace_dir
+                    )
+                    if proc.returncode == 0 and os.path.isfile(tmp_vcd):
+                        break
+                if proc is None or proc.returncode != 0 or not os.path.isfile(tmp_vcd):
+                    raise FatalRtlBuddyError(
+                        f"axi-profile run: vpd2vcd failed on {vpd}; see {log_path}."
+                    )
+
+                if shutil.which("vcd2fst") is None:
+                    os.replace(tmp_vcd, cached_vcd)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "axi_profile_run.vcd2fst_missing",
+                        test=self.test_name,
+                        vcd=cached_vcd,
+                    )
+                    return cached_vcd
+
+                argv = ["vcd2fst", tmp_vcd, cached_fst]
+                log_f.write("$ " + " ".join(argv) + "\n")
+                log_f.flush()
+                proc = run_managed_process(
+                    argv, stdout=log_f, stderr=log_f, cwd=trace_dir
+                )
+                if proc.returncode != 0 or not os.path.isfile(cached_fst):
+                    raise FatalRtlBuddyError(
+                        f"axi-profile run: vcd2fst failed on {tmp_vcd}; see {log_path}."
+                    )
+                os.unlink(tmp_vcd)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "axi_profile_run.vpd_converted",
+            test=self.test_name,
+            vpd=vpd,
+            fst=cached_fst,
+        )
+        return cached_fst
 
     def _resolve_tb_prefix(self) -> str:
         if self.tb_prefix_override is not None:
@@ -288,7 +411,7 @@ class RtlBuddyAxiProfileRun:
         self,
         fl_path: str,
         manifest: str,
-        fst: str,
+        trace: str,
         out_path: str,
         tb_prefix: str,
         parquet_path: str | None,
@@ -301,7 +424,7 @@ class RtlBuddyAxiProfileRun:
             "--top",
             self.model_cfg.name,
             "--input",
-            fst,
+            trace,
             "--manifest",
             manifest,
             "--output",
@@ -317,7 +440,7 @@ class RtlBuddyAxiProfileRun:
         _require_axi_profiler(self.executable)
 
         manifest = self._resolve_manifest_path()
-        fst = self._resolve_fst_path()
+        trace = self._resolve_input_path()
         tb_prefix = self._resolve_tb_prefix()
         out_path = self.output_override or self._default_output_path()
         # Resolve the parquet destination: empty-string → artefact-dir
@@ -331,7 +454,9 @@ class RtlBuddyAxiProfileRun:
             parquet_path = self.emit_txns_parquet
 
         fl_path = self._write_filelist()
-        cmd = self._build_cmd(fl_path, manifest, fst, out_path, tb_prefix, parquet_path)
+        cmd = self._build_cmd(
+            fl_path, manifest, trace, out_path, tb_prefix, parquet_path
+        )
 
         log_event(
             logger,
