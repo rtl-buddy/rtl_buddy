@@ -411,13 +411,17 @@ def _make_fake_converter(tmp_path: Path, name: str, *, exit_code: int = 0) -> Pa
 
     Mirrors the real CLI shapes used by the wrapper:
     ``vpd2vcd [-full64] <in> <out>`` and ``vcd2fst <in> <out>`` — the
-    last two argv entries are always input then output.
+    last two argv entries are always input then output. The working
+    directory of each invocation is recorded to ``<name>-cwd.txt`` so
+    tests can pin the subprocess ``cwd``.
     """
     bindir = tmp_path / "fakebin"
     bindir.mkdir(exist_ok=True)
+    cwd_record = tmp_path / f"{name}-cwd.txt"
     script = bindir / name
     script.write_text(
         "#!/usr/bin/env bash\n"
+        f'pwd > "{cwd_record}"\n'
         'in="${@: -2:1}"; out="${@: -1}"\n'
         f'cp "$in" "$out"\n'
         f"exit {exit_code}\n"
@@ -482,6 +486,10 @@ def test_run_vpd_converts_via_vpd2vcd_and_vcd2fst(
     assert argv[argv.index("--input") + 1].endswith("artefacts/basic/vcdplus.fst")
     assert (trace_dir / "vcdplus.fst").is_file()
     assert not (trace_dir / "vcdplus.tmp.vcd").exists()
+    # Both converters run with an explicit cwd at the trace dir.
+    for name in ("vpd2vcd", "vcd2fst"):
+        recorded = (tmp_path / f"{name}-cwd.txt").read_text().strip()
+        assert Path(recorded).resolve() == trace_dir.resolve()
 
 
 def test_run_vpd_cached_fst_skips_conversion(tmp_path: Path) -> None:

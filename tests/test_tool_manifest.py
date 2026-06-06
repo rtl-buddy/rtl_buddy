@@ -427,6 +427,25 @@ def test_root_cfg_tools_min_version_overrides_manifest(
     assert by_name["surfer"].minimum_version is None
 
 
+def test_axi_profile_vpd_converters_declared():
+    """The VPD-conversion tools behind `rb axi-profile run` are declared.
+
+    `axi_profile_rtl_buddy._convert_vpd` shells out to `vpd2vcd` (VCS)
+    and `vcd2fst` (GTKWave) — both must stay visible to `rb tool-check`
+    so a missing converter surfaces before a long profile run.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+
+    vpd2vcd = by_name["vpd2vcd"]
+    assert vpd2vcd.optional
+    assert "axi-profile" in vpd2vcd.used_by
+    assert vpd2vcd.binaries == ("vpd2vcd",)
+
+    gtkwave = by_name["gtkwave"]
+    assert "vcd2fst" in gtkwave.binaries
+    assert "axi-profile" in gtkwave.used_by
+
+
 def test_fpv_solvers_present_in_manifest():
     """Every solver tracked by fpv_solver_pin must have a manifest entry.
 

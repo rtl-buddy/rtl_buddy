@@ -321,7 +321,7 @@ def _builtin_manifest() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="gtkwave",
-            binaries=("gtkwave",),
+            binaries=("gtkwave", "vcd2fst"),
             version_cmd=("gtkwave", "--version"),
             version_regex=r"GTKWave Analyzer\s+v?([\d.]+)",
             minimum_version=None,
@@ -330,9 +330,32 @@ def _builtin_manifest() -> list[ToolSpec]:
                 "macos": "brew install --cask gtkwave",
                 "linux": "apt install gtkwave",
             },
-            used_by=("wave-fpv",),
+            used_by=("wave-fpv", "axi-profile"),
             optional=True,
-            description="Legacy waveform viewer (fallback for rb wave-fpv)",
+            description=(
+                "Legacy waveform viewer (fallback for rb wave-fpv); its "
+                "vcd2fst compacts converted VCS traces for rb axi-profile"
+            ),
+        ),
+        ToolSpec(
+            name="vpd2vcd",
+            binaries=("vpd2vcd",),
+            version_cmd=None,
+            version_regex=None,
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "any": (
+                    "ships with Synopsys VCS — source your Synopsys "
+                    "environment so vpd2vcd is on PATH"
+                ),
+            },
+            used_by=("axi-profile",),
+            optional=True,
+            description=(
+                "VPD-to-VCD converter (ships with VCS) — used by "
+                "rb axi-profile run to ingest VCS $vcdpluson traces"
+            ),
         ),
         ToolSpec(
             name="graphviz",

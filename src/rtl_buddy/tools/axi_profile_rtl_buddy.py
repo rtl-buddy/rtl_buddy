@@ -303,6 +303,16 @@ class RtlBuddyAxiProfileRun:
         The intermediate VCD is deleted once ``vcd2fst`` shrinks it;
         when ``vcd2fst`` (GTKWave) is absent the VCD is kept and
         ingested directly — wellen reads VCD natively.
+
+        Deliberate artifact-layout deviation: the cached
+        ``vcdplus.fst`` / ``vcdplus.vcd`` live next to the VPD in the
+        *test* command's artefact dir, not under this command's own
+        ``artefacts/axi/<test>/`` root. The cache is a re-encoding of
+        the test's trace (not an analysis product): co-location keeps
+        the mtime-based invalidation against the VPD self-evident, and
+        puts the converted FST where the ``rb wave`` convention
+        (``artefacts/<test>/``) can open it. The conversion *log* is an
+        axi-profile artifact and stays under ``self.artefact_dir``.
         """
         trace_dir = os.path.dirname(vpd)
         cached_fst = os.path.join(trace_dir, "vcdplus.fst")

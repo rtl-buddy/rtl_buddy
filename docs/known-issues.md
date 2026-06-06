@@ -42,3 +42,29 @@ When using VCS with hierarchical instance seeding (`-xlrm hier_inst_seed`), VCS 
 If the file is missing, a `sim.hier_seed_missing` warning is emitted in the log and the seed is not recorded, but the test result is not affected.
 
 Ensure your VCS compile-time flags include `-xlrm hier_inst_seed` and that the simulation directory is writable so VCS can write the file.
+
+## VCS VPD traces convert at profile time, with two fallbacks
+
+`rb axi-profile run` ingests FST and VCD natively, but a VCS debug run dumps
+Synopsys-proprietary `vcdplus.vpd` (`$vcdpluson`), so the wrapper converts it
+on the fly — `vpd2vcd` → temporary VCD → `vcd2fst` → cached `vcdplus.fst`
+next to the VPD (skipped when the cache is newer). Two non-obvious behaviors
+inside that flow:
+
+- **`vpd2vcd` is invoked with `-full64` first, bare second.** 64-bit-only VCS
+  installs ship no 32-bit `vpd2vcd.exe`, so the bare wrapper fails outright
+  with `… linux/bin/vpd2vcd.exe: No such file or directory`; older 32-bit
+  installs may not accept `-full64`. The wrapper tries both, in that order.
+  Both attempts (and their output) are recorded in
+  `artefacts/axi/<test>/vpd-convert.log`.
+- **Missing `vcd2fst` degrades, not fails.** Without GTKWave's `vcd2fst` on
+  PATH the intermediate VCD is kept as `vcdplus.vcd` and ingested directly —
+  results are identical, but the file is roughly 15x larger than the FST
+  (the AXI 2x2 demo: 15.8M VCD vs 1.1M FST vs 376K VPD). A WARNING
+  (`axi_profile_run.vcd2fst_missing`) flags it; install GTKWave to get the
+  compact cache.
+
+The cached conversion artifacts live next to the VPD in the *test* artefact
+dir (`artefacts/<test>/`), not in axi-profile's own root — deliberate, so the
+cache-invalidation mtime comparison and the trace stay co-located, and `rb
+wave` conventions can open the converted FST from the standard place.
