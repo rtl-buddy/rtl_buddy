@@ -108,7 +108,7 @@ def test_build_view_json_creates_cache_dir(tmp_path, monkeypatch):
             self._out = Path(kwargs["output"])
 
         def run(self) -> int:
-            self._out.write_text("{}")
+            self._out.write_text('{"schema_version": "1.0"}')
             return 0
 
     monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
@@ -180,7 +180,7 @@ def test_build_view_json_no_cdc_annotations_when_back_pointer_absent(
         def run(self) -> int:
             out = Path(captured["kwargs"]["output"])
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("{}")
+            out.write_text('{"schema_version": "1.0"}')
             return 0
 
     monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
@@ -250,7 +250,7 @@ def test_build_view_json_tb_mode_uses_tb_cache_path_and_forwards_test_cfg(
         def run(self) -> int:
             out = Path(captured["kwargs"]["output"])
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text("{}")
+            out.write_text('{"schema_version": "1.1"}')
             return 0
 
     monkeypatch.setattr(view_builder, "RtlBuddyView", FakeRunner)
@@ -295,3 +295,69 @@ def test_build_view_json_tb_mode_error_message_mentions_test_name(
         view_builder.build_view_json(
             project_root=tmp_path, model_cfg=model, test_cfg=test_cfg
         )
+
+
+# --- contract floor (view.json schema_version major) ---------------------
+#
+# rtl_buddy pins no rtl-buddy-view version, so the on-disk view.json shape
+# is floored independently by its top-level schema_version major. 1.x is
+# forward-compatible (minor bumps add fields only); a breaking major or an
+# unparseable value must fail loudly before the SPA loads it.
+
+
+def _runner_emitting(tmp_path: Path, payload: str):
+    """Build a FakeRunner class that writes ``payload`` and exits 0."""
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            self.artefact_dir = str(tmp_path / "artefacts" / "hier" / "demo")
+            Path(self.artefact_dir).mkdir(parents=True, exist_ok=True)
+            self._out = Path(kwargs["output"])
+
+        def run(self) -> int:
+            self._out.parent.mkdir(parents=True, exist_ok=True)
+            self._out.write_text(payload)
+            return 0
+
+    return FakeRunner
+
+
+@pytest.mark.parametrize("schema", ["1.0", "1.1", "1.5", "1"])
+def test_build_view_json_accepts_supported_schema_major(tmp_path, monkeypatch, schema):
+    """Any 1.x view.json passes — minor bumps only add fields."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    monkeypatch.setattr(
+        view_builder,
+        "RtlBuddyView",
+        _runner_emitting(tmp_path, f'{{"schema_version": "{schema}", "top": "demo"}}'),
+    )
+    result = view_builder.build_view_json(
+        project_root=tmp_path, model_cfg=_model(tmp_path)
+    )
+    assert result.is_file()
+
+
+def test_build_view_json_rejects_future_schema_major(tmp_path, monkeypatch):
+    """A breaking major (2.x) is rejected with an upgrade hint, even though
+    rtl-buddy-view exited 0 — the contract floor is package-independent."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    monkeypatch.setattr(
+        view_builder,
+        "RtlBuddyView",
+        _runner_emitting(tmp_path, '{"schema_version": "2.0", "top": "demo"}'),
+    )
+    with pytest.raises(FatalRtlBuddyError, match=r"schema major 2"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
+
+
+def test_build_view_json_rejects_unparseable_schema(tmp_path, monkeypatch):
+    """A missing / non-numeric schema_version is a clear error, not a
+    confusing KeyError or silent serve of a malformed payload."""
+    monkeypatch.setattr(view_builder.shutil, "which", lambda _: "/fake/rtl-buddy-view")
+    monkeypatch.setattr(
+        view_builder,
+        "RtlBuddyView",
+        _runner_emitting(tmp_path, '{"top": "demo"}'),
+    )
+    with pytest.raises(FatalRtlBuddyError, match=r"schema_version unparseable"):
+        view_builder.build_view_json(project_root=tmp_path, model_cfg=_model(tmp_path))
