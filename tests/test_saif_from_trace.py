@@ -49,3 +49,18 @@ def test_bit_stats_string_x_handled():
 def test_convert_missing_input_raises(tmp_path):
     with pytest.raises(FatalRtlBuddyError, match="not found"):
         convert(tmp_path / "nope.fst", tmp_path / "out.saif")
+
+
+def test_convert_pywellen_without_random_access_api_raises(tmp_path, monkeypatch):
+    """A streaming-only pywellen (>=0.25) must fail loudly before the
+    w.hierarchy touch — a clear FatalRtlBuddyError, not an AttributeError
+    traceback (#263)."""
+    import sys
+    from types import SimpleNamespace
+
+    trace = tmp_path / "dump.fst"
+    trace.touch()
+    fake_pywellen = SimpleNamespace(Waveform=type("Waveform", (), {}))
+    monkeypatch.setitem(sys.modules, "pywellen", fake_pywellen)
+    with pytest.raises(FatalRtlBuddyError, match="random-access"):
+        convert(trace, tmp_path / "out.saif")

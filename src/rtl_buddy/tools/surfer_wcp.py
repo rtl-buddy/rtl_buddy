@@ -29,7 +29,9 @@ if TYPE_CHECKING:
     from ..config.surfer import SurferConfig
     from ..config.test import TestConfig
 
+from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
+from .pywellen_compat import require_random_access_api
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +76,37 @@ class WaveformValueReader:
     Look up signal values at a specific FST timestamp using pywellen.
 
     The pywellen Waveform is loaded lazily on the first query and reused.
-    Errors (file missing, signal not in waveform, etc.) return None silently.
+    A genuine lookup miss (signal not in the waveform) returns None/empty;
+    a missing or unreadable trace, or a pywellen without the random-access
+    Waveform API, raises FatalRtlBuddyError instead of silently blanking
+    every annotation (#263). WaveLauncher calls check() on the main thread
+    before Surfer starts so those failures abort the command up front.
     """
 
     def __init__(self, fst_path: str):
         self._fst_path = fst_path
         self._waveform = None
 
+    def check(self) -> None:
+        """Validate the trace path and the pywellen API surface.
+
+        Cheap (no waveform load). Raises FatalRtlBuddyError on failure.
+        """
+        if not os.path.isfile(self._fst_path):
+            log_event(
+                logger,
+                logging.ERROR,
+                "wave.trace_missing",
+                path=self._fst_path,
+            )
+            raise FatalRtlBuddyError(f"waveform trace not found: {self._fst_path}")
+        require_random_access_api("rb wave")
+
     def _load(self):
         if self._waveform is None:
+            self.check()
             import pywellen  # type: ignore[import-untyped]  # noqa: PLC0415
 
-            if not os.path.isfile(self._fst_path):
-                raise FileNotFoundError(self._fst_path)
             # pywellen emits terminal capability queries to stderr on load; suppress them
             import sys
 
@@ -94,70 +114,65 @@ class WaveformValueReader:
             sys.stderr = open(os.devnull, "w")  # noqa: WPS515
             try:
                 self._waveform = pywellen.Waveform(self._fst_path)
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "wave.trace_open_failed",
+                    path=self._fst_path,
+                    error=str(e),
+                )
+                raise FatalRtlBuddyError(
+                    f"could not open waveform trace {self._fst_path}: {e}"
+                ) from e
             finally:
                 sys.stderr.close()
                 sys.stderr = old_stderr
         return self._waveform
 
     def get_value(self, variable: str, timestamp: int) -> str | None:
-        """Return the signal value string at *timestamp* (FST ticks), or None."""
+        """Return the signal value string at *timestamp* (FST ticks).
+
+        Returns None when the signal is not in the waveform; anything else
+        (broken trace, API break) propagates loudly.
+        """
+        wf = self._load()
         try:
-            wf = self._load()
             sig = wf.get_signal_from_path(variable)
-            return str(sig.value_at_time(timestamp))
-        except Exception:
+        except RuntimeError:
+            # pywellen lookup miss ("No var at path ...")
             return None
+        return str(sig.value_at_time(timestamp))
 
     def get_scope_signals(self, scope_path: str) -> list[tuple[str, str]]:
         """Return [(signal_name, full_fst_path), ...] for all vars directly under scope_path."""
-        try:
-            wf = self._load()
-            h = wf.hierarchy
-            results = []
-            for scope in h.top_scopes():
-                results.extend(self._walk_scope(h, scope, scope_path))
-            return results
-        except Exception:
-            return []
+        wf = self._load()
+        h = wf.hierarchy
+        results = []
+        for scope in h.top_scopes():
+            results.extend(self._walk_scope(h, scope, scope_path))
+        return results
 
     def _walk_scope(self, h, scope, target_path: str) -> list[tuple[str, str]]:
-        try:
-            full = scope.full_name(h)
-        except Exception:
-            return []
-        if full == target_path:
-            results = []
-            try:
-                for v in scope.vars(h):
-                    try:
-                        results.append((v.name(h), v.full_name(h)))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            return results
+        if scope.full_name(h) == target_path:
+            return [(v.name(h), v.full_name(h)) for v in scope.vars(h)]
         # recurse into child scopes
         results = []
-        try:
-            for child in scope.scopes(h):
-                results.extend(self._walk_scope(h, child, target_path))
-        except Exception:
-            pass
+        for child in scope.scopes(h):
+            results.extend(self._walk_scope(h, child, target_path))
         return results
 
     def get_values_bulk(self, full_paths: list[str], timestamp: int) -> dict[str, str]:
-        """Return {full_path: value} for all paths that resolve successfully."""
-        try:
-            wf = self._load()
-        except Exception:
-            return {}
+        """Return {full_path: value} for all paths present in the waveform."""
+        wf = self._load()
         out = {}
         for path in full_paths:
             try:
                 sig = wf.get_signal_from_path(path)
-                out[path] = str(sig.value_at_time(timestamp))
-            except Exception:
-                pass
+            except RuntimeError:
+                # pywellen lookup miss — path not in waveform, omit
+                continue
+            out[path] = str(sig.value_at_time(timestamp))
         return out
 
 
