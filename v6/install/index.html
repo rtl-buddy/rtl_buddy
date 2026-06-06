@@ -1717,7 +1717,7 @@
 <td><code>rb axi-profile</code></td>
 <td>Pluggable — curated</td>
 <td><a href="https://github.com/rtl-buddy/rtl-buddy-axi-profiler">rtl-buddy-axi-profiler</a></td>
-<td><code>uv tool install rtl-buddy-axi-profiler</code>. Optional extras: <code>[parquet]</code> (pyarrow) for <code>--emit-txns-parquet</code>; <code>[notebook]</code> (marimo) for <code>rb axi-profile notebook</code>. See <a href="../concepts/axi-profile/">AXI Profiling</a>.</td>
+<td><code>uv tool install rtl-buddy-axi-profiler</code>. Optional extras: <code>[parquet]</code> (pyarrow) for <code>--emit-txns-parquet</code>; <code>[notebook]</code> (marimo) for <code>rb axi-profile notebook</code>. Optional for VCS traces: <code>vpd2vcd</code> (ships with VCS) converts <code>vcdplus.vpd</code> dumps at profile time, and GTKWave's <code>vcd2fst</code> compacts the result — without it the intermediate VCD is kept (~15x larger). See <a href="../concepts/axi-profile/">AXI Profiling</a>.</td>
 </tr>
 <tr>
 <td><code>rb mut</code></td>
