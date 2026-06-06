@@ -133,7 +133,7 @@ cfg-fpv-tools:
 
 Two SystemVerilog frontends are supported under `rb fpv`:
 
-- **`frontend: verilog`** (default) — yosys's native verilog reader. No plugin needed. Handles immediate `assert (expr);` inside `always` blocks plus simple concurrent assertions (`assert property (@clk expr);`). Rejects `|->` / `|=>`, `##N`, sequence operators, and SV `bind`.
+- **`frontend: verilog`** (default) — yosys's native verilog reader. No plugin needed. Handles immediate `assert (expr);` inside `always` blocks plus simple concurrent assertions (`assert property (@clk expr);`). Rejects `|->` / `|=>`, `##N`, and sequence operators outright. A compilation-unit-scope SV `bind` is **not** rejected — it parses, but the bound checker module is silently dropped (stored as `$abstract`, then removed as unused), so the proof elaborates **zero** formal cells. `rb fpv` guards against this: a `properties:`-listed suite that produces no assert/assume/cover cells fails loud with an error pointing you at `frontend: slang`, rather than reporting a vacuous PASS — see [Quirks & Known Issues](../known-issues.md#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells).
 - **`frontend: slang`** — yosys-slang plugin. Required for concurrent SVA implications (`a |-> b`, `a |=> b`), sequence operators, and SV `bind` directives to elaborate. Requires `cfg-fpv-tools[].opts.plugin-path` in `root_config.yaml`.
 
 When in doubt, **start with `verilog`** — it's the path most rtl_buddy demos use. Move to `slang` only when you need `|->` / `|=>` for vacuity covers or a richer SVA dialect.
