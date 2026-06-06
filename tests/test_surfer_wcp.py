@@ -7,12 +7,55 @@ import logging
 import os
 import socket
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from rtl_buddy.config.surfer import SurferConfig, SurferConfigFile
+
+
+# ---------------------------------------------------------------------------
+# pywellen >=0.25 random-access fakes
+# ---------------------------------------------------------------------------
+
+
+class _FakeSignal:
+    def __init__(self, value):
+        self._value = value
+
+    def value_at(self, _t):
+        return self._value
+
+
+class _FakeVar:
+    def __init__(self, value, name="", full_name=""):
+        self.signal = _FakeSignal(value)
+        self.name = name
+        self.full_name = full_name
+
+
+class _FakeScope:
+    def __init__(self, vars_):
+        self._vars = vars_
+
+    def vars(self):
+        return self._vars
+
+
+class _FakeWaveform:
+    """Stand-in for the pywellen >=0.25 Waveform random-access surface.
+
+    ``wf[path]`` resolves a hierarchical name to a ``Var`` (or ``Scope``);
+    an unknown path raises ``KeyError``, matching pywellen's lookup-miss.
+    """
+
+    def __init__(self, items):
+        self._items = items
+
+    def __getitem__(self, path):
+        if path not in self._items:
+            raise KeyError(path)
+        return self._items[path]
 
 
 # ---------------------------------------------------------------------------
@@ -325,22 +368,46 @@ class TestWaveformValueReader:
 
     def test_get_value_returns_string_from_pywellen(self):
         reader = self._make_reader()
-        mock_sig = SimpleNamespace(value_at_time=lambda t: "1'b1")
-        mock_wf = SimpleNamespace(get_signal_from_path=lambda path: mock_sig)
-        mock_pywellen = SimpleNamespace(Waveform=lambda path: mock_wf)
-        with patch.dict("sys.modules", {"pywellen": mock_pywellen}):
-            reader._waveform = mock_wf
-            result = reader.get_value("tb_top.clk", 1000)
+        reader._waveform = _FakeWaveform({"tb_top.clk": _FakeVar("1'b1")})
+        result = reader.get_value("tb_top.clk", 1000)
         assert result == "1'b1"
 
     def test_get_value_returns_none_on_signal_not_found(self):
-        def bad_path(path):
-            raise KeyError("not found")
-
         reader = self._make_reader()
-        reader._waveform = SimpleNamespace(get_signal_from_path=bad_path)
+        reader._waveform = _FakeWaveform({})  # any path → KeyError (lookup miss)
         result = reader.get_value("tb_top.nonexistent", 1000)
         assert result is None
+
+    def test_get_value_returns_none_when_value_absent_at_time(self):
+        # pywellen's value_at returns None before a signal's first change.
+        reader = self._make_reader()
+        reader._waveform = _FakeWaveform({"tb_top.clk": _FakeVar(None)})
+        assert reader.get_value("tb_top.clk", 0) is None
+
+    def test_get_value_logs_once_on_api_break(self):
+        # A non-KeyError pywellen error (an API/version break) must surface
+        # loudly — logged once at ERROR — not silently blank the annotation.
+        class _BrokenVar:
+            @property
+            def signal(self):
+                raise AttributeError("Signal API removed")
+
+        reader = self._make_reader()
+        reader._waveform = _FakeWaveform(
+            {"tb_top.clk": _BrokenVar(), "tb_top.rst": _BrokenVar()}
+        )
+        logged = []
+        with patch(
+            "rtl_buddy.tools.surfer_wcp.log_event",
+            side_effect=lambda *a, **kw: logged.append(a),
+        ):
+            assert reader.get_value("tb_top.clk", 100) is None
+            assert reader.get_value("tb_top.rst", 200) is None
+        # Exactly one ERROR log despite two failing queries.
+        assert len(logged) == 1
+        assert logged[0][1] == logging.ERROR
+        assert logged[0][2] == "wave.value_reader.api_error"
+        assert reader._api_break_logged is True
 
     def test_get_value_returns_none_on_load_failure(self):
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
@@ -377,11 +444,7 @@ class TestWcpValueEmission:
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         reader = WaveformValueReader("/fake/dump.fst")
-        reader._waveform = SimpleNamespace(
-            get_signal_from_path=lambda path: SimpleNamespace(
-                value_at_time=lambda t: "1'b1"
-            )
-        )
+        reader._waveform = _FakeWaveform({"tb_top.clk": _FakeVar("1'b1")})
         listener = self._make_listener(reader)
         emitted = []
         with patch(
@@ -397,11 +460,7 @@ class TestWcpValueEmission:
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         reader = WaveformValueReader("/fake/dump.fst")
-        reader._waveform = SimpleNamespace(
-            get_signal_from_path=lambda path: SimpleNamespace(
-                value_at_time=lambda t: "1'b0"
-            )
-        )
+        reader._waveform = _FakeWaveform({"tb_top.clk": _FakeVar("1'b0")})
         listener = self._make_listener(reader)
         emitted = []
         with patch(
@@ -423,11 +482,7 @@ class TestWcpValueEmission:
         from rtl_buddy.tools.surfer_wcp import WaveformValueReader
 
         reader = WaveformValueReader("/fake/dump.fst")
-
-        def bad_path(path):
-            raise KeyError("not in waveform")
-
-        reader._waveform = SimpleNamespace(get_signal_from_path=bad_path)
+        reader._waveform = _FakeWaveform({})  # any path → KeyError
         listener = self._make_listener(reader)
         emitted = []
         with patch(
@@ -525,12 +580,12 @@ class TestWaveformValueReaderBulk:
 
     def test_returns_dict_with_found_values(self):
         reader = self._make_reader()
-        mock_wf = SimpleNamespace(
-            get_signal_from_path=lambda path: SimpleNamespace(
-                value_at_time=lambda t: "1'b1"
-            )
+        reader._waveform = _FakeWaveform(
+            {
+                "tb_top.i_dut.clk": _FakeVar("1'b1"),
+                "tb_top.i_dut.rst": _FakeVar("1'b1"),
+            }
         )
-        reader._waveform = mock_wf
         result = reader.get_values_bulk(["tb_top.i_dut.clk", "tb_top.i_dut.rst"], 500)
         assert result == {
             "tb_top.i_dut.clk": "1'b1",
@@ -538,13 +593,8 @@ class TestWaveformValueReaderBulk:
         }
 
     def test_missing_signal_omitted_not_raised(self):
-        def bad_path(path):
-            if "missing" in path:
-                raise KeyError("not in waveform")
-            return SimpleNamespace(value_at_time=lambda t: "1'b0")
-
         reader = self._make_reader()
-        reader._waveform = SimpleNamespace(get_signal_from_path=bad_path)
+        reader._waveform = _FakeWaveform({"tb_top.i_dut.clk": _FakeVar("1'b0")})
         result = reader.get_values_bulk(
             ["tb_top.i_dut.clk", "tb_top.i_dut.missing"], 100
         )
@@ -571,6 +621,38 @@ class TestWaveformValueReaderScopeSignals:
         reader = WaveformValueReader("/nonexistent/dump.fst")
         result = reader.get_scope_signals("tb_top.i_dut")
         assert result == []
+
+    def test_returns_vars_directly_under_scope_path(self):
+        from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+
+        reader = WaveformValueReader("/fake/dump.fst")
+        scope = _FakeScope(
+            [
+                _FakeVar("", name="clk", full_name="tb_top.i_dut.clk"),
+                _FakeVar("", name="rst", full_name="tb_top.i_dut.rst"),
+            ]
+        )
+        reader._waveform = _FakeWaveform({"tb_top.i_dut": scope})
+        result = reader.get_scope_signals("tb_top.i_dut")
+        assert result == [
+            ("clk", "tb_top.i_dut.clk"),
+            ("rst", "tb_top.i_dut.rst"),
+        ]
+
+    def test_returns_empty_when_path_resolves_to_var(self):
+        # A path resolving to a Var (no vars()) must yield [], not raise.
+        from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+
+        reader = WaveformValueReader("/fake/dump.fst")
+        reader._waveform = _FakeWaveform({"tb_top.clk": _FakeVar("1'b1")})
+        assert reader.get_scope_signals("tb_top.clk") == []
+
+    def test_returns_empty_on_unknown_scope(self):
+        from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+
+        reader = WaveformValueReader("/fake/dump.fst")
+        reader._waveform = _FakeWaveform({})
+        assert reader.get_scope_signals("tb_top.nope") == []
 
 
 # ---------------------------------------------------------------------------
@@ -773,32 +855,3 @@ class TestEditorLauncherNvimExecLua:
         expr_val = cmd[expr_idx + 1]
         # The double-quote must be escaped in the Vimscript string context
         assert '\\"' in expr_val
-
-
-# ---------------------------------------------------------------------------
-# pywellen API surface guard
-# ---------------------------------------------------------------------------
-
-
-class TestPywellenApiSurface:
-    """Pin the pywellen API that rtl_buddy's trace readers depend on.
-
-    pywellen 0.25.0 rewrote ``Waveform`` to a streaming-only surface,
-    removing the random-access API below — which silently blanked
-    ``rb wave`` value annotations and crashed ``rb saif`` (#263). The
-    dependency is bounded to ``<0.25`` in pyproject; this test makes the
-    next such rewrite fail loudly in CI at lock-bump time instead of in
-    the field. Lift/adjust together with the bound when the readers are
-    ported.
-    """
-
-    def test_waveform_random_access_api_present(self):
-        import pywellen
-
-        # tools/surfer_wcp.WaveformValueReader + tools/saif_from_trace
-        for attr in ("hierarchy", "get_signal", "get_signal_from_path"):
-            assert hasattr(pywellen.Waveform, attr), (
-                f"pywellen.Waveform.{attr} missing — incompatible pywellen "
-                "(>=0.25 streaming rewrite?); rb wave annotations and "
-                "rb saif depend on the random-access API (#263)"
-            )

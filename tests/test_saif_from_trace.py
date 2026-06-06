@@ -49,3 +49,74 @@ def test_bit_stats_string_x_handled():
 def test_convert_missing_input_raises(tmp_path):
     with pytest.raises(FatalRtlBuddyError, match="not found"):
         convert(tmp_path / "nope.fst", tmp_path / "out.saif")
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: real VCD -> SAIF through the live pywellen >=0.25 API.
+#
+# top.clk (1-bit), top.data (8-bit bus), top.sub.rst (1-bit, nested scope).
+# clk toggles 0->1->0; the last change at t=10 fixes the duration.
+# ---------------------------------------------------------------------------
+
+_VCD = """\
+$timescale 1ns $end
+$scope module top $end
+$var wire 1 ! clk $end
+$var wire 8 # data $end
+$scope module sub $end
+$var wire 1 % rst $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b00000000 #
+0%
+#5
+1!
+b00000001 #
+1%
+#10
+0!
+b00000010 #
+"""
+
+
+def _write_vcd(tmp_path):
+    vcd = tmp_path / "dump.vcd"
+    vcd.write_text(_VCD)
+    return vcd
+
+
+def test_convert_writes_saif_structure(tmp_path):
+    saif = tmp_path / "out.saif"
+    convert(_write_vcd(tmp_path), saif)
+    text = saif.read_text()
+
+    # Header: native timescale, backward direction, computed duration (max t).
+    assert '(SAIFVERSION "2.0")' in text
+    assert '(DIRECTION "backward")' in text
+    assert "(TIMESCALE 1 ns)" in text
+    assert "(DURATION 10)" in text
+
+    # Hierarchy: nested INSTANCE for top and its child scope sub.
+    assert "(INSTANCE top" in text
+    assert "(INSTANCE sub" in text
+
+    # 1-bit nets by name; the 8-bit bus expanded to per-bit nets.
+    assert "(clk" in text
+    assert "(rst" in text
+    assert "(data\\[0\\]" in text
+    assert "(data\\[7\\]" in text
+
+
+def test_convert_emits_toggle_and_state_blocks(tmp_path):
+    saif = tmp_path / "out.saif"
+    convert(_write_vcd(tmp_path), saif)
+    text = saif.read_text()
+
+    # clk toggles 0->1->0, so its TC is exactly 2 (only 0<->1 transitions count).
+    assert "(TC 2)" in text
+    # Every net carries the full per-bit state + glitch block.
+    assert "(IG 0)" in text
+    assert "(T0 " in text and "(T1 " in text

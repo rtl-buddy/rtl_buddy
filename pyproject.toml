@@ -12,12 +12,11 @@ dependencies = [
   "click >= 8.3.0",
   "pyserde[yaml] >= 0.27.0",
   "rich >= 14.0.0",
-  # <0.25: pywellen 0.25.0 rewrote the Waveform API to a streaming
-  # surface, removing hierarchy/get_signal/get_signal_from_path used by
-  # tools/surfer_wcp.py (rb wave annotations) and
-  # tools/saif_from_trace.py (rb saif). Lift the bound when both are
-  # ported (#263).
-  "pywellen >= 0.20.0, <0.25",
+  # >=0.25: tools/surfer_wcp.py and tools/saif_from_trace.py are ported to the
+  # 0.25 random-access API (lifts the interim <0.25 bound from #264). Cap the
+  # minor — pre-1.0 minors break the API — so the next rewrite fails the CI lock
+  # bump, not in the field; test_pywellen_api.py guards the surface. See #263.
+  "pywellen >=0.25.2,<0.26",
   "jsonschema >= 4.21.0",
   "websockets >= 12.0",
 ]
