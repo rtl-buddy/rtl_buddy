@@ -377,6 +377,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"Wrote filelist to {fields.get('output')}"
         case "verible.path_missing":
             return f"Verible disabled: path not found at {fields.get('path')}"
+        case "verible.path_fallback":
+            return f"Verible: configured path not found at {fields.get('path')}, using PATH"
         case "verible.command":
             return f"Running {fields.get('executable')}"
         case "verible.completed":

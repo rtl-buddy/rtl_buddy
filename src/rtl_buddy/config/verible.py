@@ -3,6 +3,7 @@ import logging
 logger = logging.getLogger(__name__)
 import pprint
 import os
+import shutil
 from pathlib import Path
 
 from dataclasses import dataclass
@@ -50,10 +51,20 @@ class VeribleConfig:
         """
         Retrieves the full path to a Verible executable.
 
+        The configured ``path`` directory wins when it actually contains the
+        executable. Otherwise fall back to PATH, so a site that exposes
+        verible via ``module load`` / an env script (rather than the
+        committed default directory) does not need to edit ``root_config.yaml``.
+        The configured join is returned as a last resort so a genuine
+        "not found" error still points at the expected location.
+
         Returns:
           path (str): The path.
         """
-        return os.path.join(self.path, exe_name)
+        candidate = os.path.join(self.path, exe_name)
+        if os.path.exists(candidate):
+            return candidate
+        return shutil.which(exe_name) or candidate
 
     def __str__(self):
         return pprint.pformat(self)
@@ -68,7 +79,20 @@ class VeribleConfigFile:
     def initialise(self, root_cfg_path: str) -> VeribleConfig:
         resolved = str(Path(root_cfg_path).parent / self.path)
         res = VeribleConfig(self.name, resolved, self.extra_args, False)
-        if not os.path.exists(resolved):
+        if os.path.exists(resolved):
+            res.available = True
+        elif shutil.which("verible-verilog-syntax"):
+            # configured dir absent, but verible is on PATH (e.g. a site
+            # module load) — usable without editing the committed path.
+            res.available = True
+            log_event(
+                logger,
+                logging.DEBUG,
+                "verible.path_fallback",
+                name=res.get_name(),
+                path=resolved,
+            )
+        else:
             log_event(
                 logger,
                 logging.DEBUG,
@@ -76,7 +100,5 @@ class VeribleConfigFile:
                 name=res.get_name(),
                 path=resolved,
             )
-        else:
-            res.available = True
 
         return res
