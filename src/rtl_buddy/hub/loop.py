@@ -15,12 +15,14 @@ import asyncio
 import errno
 import logging
 import os
+import re
 import signal
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
+from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
 from .config import HubConfig
 from .discovery import delete_record_if_owner, write_record
@@ -30,6 +32,53 @@ from .viewer_http import ViewerServer
 
 
 logger = logging.getLogger(__name__)
+
+
+# Minimum rtl-buddy-view release the hub's in-env SPA bundle path targets.
+# Mirrors the `rtl-buddy-view` floor in tool_manifest.py: 0.2.1 is the first
+# PyPI release that ships the SPA bundle (pre-0.2.1 git builds were
+# SPA-less). rtl_buddy declares no view pin in pyproject.toml, so this
+# runtime guard IS the floor for the in-process viewer_bundle path — it
+# catches editable / old in-env installs that bypass any resolve-time
+# floor. Kept in sync with tool_manifest's minimum_version for the binary.
+_VIEW_MIN_VERSION = "0.2.1"
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Leading (major, minor, patch) ints of a PEP 440 version string.
+
+    Enough for a floor comparison; non-numeric suffixes (rc/dev/+local)
+    are dropped, so a pre-release of the floor compares equal to it.
+    """
+    parts = []
+    for segment in version.split(".")[:3]:
+        match = re.match(r"\d+", segment)
+        parts.append(int(match.group()) if match else 0)
+    return tuple(parts)
+
+
+def _check_view_version() -> None:
+    """Fail fast when a too-old in-env rtl-buddy-view is used for the SPA.
+
+    rtl_buddy pins no version of rtl-buddy-view, so nothing guards the
+    in-process ``rtl_buddy_view.viewer_bundle`` import at resolve time.
+    This repeats the floor when the bundle is actually consumed so an
+    old editable / git install surfaces as a friendly hint instead of a
+    stale SPA (or an AttributeError) later. Skipped when the installed
+    version can't be read (no distribution metadata); there a successful
+    import stands in.
+    """
+    try:
+        installed = _pkg_version("rtl-buddy-view")
+    except PackageNotFoundError:
+        return
+    if _version_tuple(installed) < _version_tuple(_VIEW_MIN_VERSION):
+        raise FatalRtlBuddyError(
+            f"rb hub --serve-viewer requires rtl-buddy-view >= "
+            f"{_VIEW_MIN_VERSION}, but {installed} is installed. "
+            f"Upgrade it with:\n"
+            f'    pip install -U "rtl-buddy-view >= {_VIEW_MIN_VERSION}"'
+        )
 
 
 class _PortInUseError(Exception):
@@ -111,6 +160,10 @@ def _discover_viewer_bundle() -> Path | None:
         from rtl_buddy_view import viewer_bundle  # type: ignore[import-not-found]
     except ImportError:
         return None
+    # The in-env library is about to be consumed — enforce the floor here
+    # (rtl_buddy declares no view pin, so this is the only guard for the
+    # in-process bundle path; raises FatalRtlBuddyError when too old).
+    _check_view_version()
     try:
         return viewer_bundle.path()
     except Exception:  # noqa: BLE001 - defensive against API drift in the peer package

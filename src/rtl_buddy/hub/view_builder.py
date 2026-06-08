@@ -16,6 +16,7 @@ content-hash cache; the layout was chosen to make that drop-in.
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -25,8 +26,44 @@ from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tools.hier_rtl_buddy_view import RtlBuddyView
+from .resolver import SUPPORTED_VIEW_SCHEMA_MAJOR
 
 logger = logging.getLogger(__name__)
+
+
+def _assert_view_schema_supported(out_path: Path, label: str) -> None:
+    """Floor the view.json contract at its major version.
+
+    rtl_buddy pins no rtl-buddy-view version, so the package floor can't
+    guarantee the on-disk ``view.json`` shape. The renderer versions that
+    shape with a top-level ``schema_version`` (currently ``"1.1"``); 1.x
+    is forward-compatible (minor bumps add fields only), so we accept any
+    ``1.x`` and reject a future, breaking major before the SPA loads it.
+    Independent of the package version: a too-new renderer can be
+    installed against an old rtl_buddy and this still catches it.
+    """
+    try:
+        raw = json.loads(out_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FatalRtlBuddyError(
+            f"{label}: rtl-buddy-view produced an unreadable view.json "
+            f"at {out_path} ({exc})."
+        ) from exc
+    schema = raw.get("schema_version", "")
+    try:
+        major = int(str(schema).split(".", 1)[0])
+    except ValueError as exc:
+        raise FatalRtlBuddyError(
+            f"{label}: rtl-buddy-view view.json schema_version unparseable: {schema!r}."
+        ) from exc
+    if major != SUPPORTED_VIEW_SCHEMA_MAJOR:
+        raise FatalRtlBuddyError(
+            f"{label}: rtl-buddy-view emitted view.json schema major {major}, "
+            f"but this rtl_buddy supports {SUPPORTED_VIEW_SCHEMA_MAJOR}.x. "
+            "Upgrade rtl_buddy to a version that understands the new view.json "
+            "schema, or pin an rtl-buddy-view release that still emits "
+            f"{SUPPORTED_VIEW_SCHEMA_MAJOR}.x."
+        )
 
 
 def cache_dir(project_root: Path) -> Path:
@@ -148,17 +185,18 @@ def build_view_json(
         test_cfg=test_cfg,
         test_suite_dir=str(test_suite_dir) if test_suite_dir is not None else None,
     )
+    label = (
+        f"rb hub --model {model_cfg.name} --test {test_cfg.name}"
+        if test_cfg is not None
+        else f"rb hub --model {model_cfg.name}"
+    )
     rc = runner.run()
     if rc != 0 or not out_path.is_file():
-        label = (
-            f"rb hub --model {model_cfg.name} --test {test_cfg.name}"
-            if test_cfg is not None
-            else f"rb hub --model {model_cfg.name}"
-        )
         raise FatalRtlBuddyError(
             f"{label}: rtl-buddy-view exited with "
             f"code {rc}; see {Path(runner.artefact_dir) / 'hier.log'} for "
             f"details."
         )
 
+    _assert_view_schema_supported(out_path, label)
     return out_path

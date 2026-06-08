@@ -78,3 +78,20 @@ The cached conversion artifacts live next to the VPD in the *test* artefact
 dir (`artefacts/<test>/`), not in axi-profile's own root — deliberate, so the
 cache-invalidation mtime comparison and the trace stay co-located, and `rb
 wave` conventions can open the converted FST from the standard place.
+
+## pywellen must keep the random-access Waveform API (`<0.25`)
+
+`rb wave` value annotations and `rb saif` read traces through pywellen's
+random-access `Waveform` API (`hierarchy`, `get_signal`,
+`get_signal_from_path`), which pywellen 0.25.0 removed in its streaming
+rewrite. The dependency is therefore bounded to `pywellen >= 0.20.0, <0.25`
+([#263](https://github.com/rtl-buddy/rtl_buddy/issues/263)).
+
+If an environment force-resolves a newer pywellen anyway (e.g. a manually
+upgraded venv), both tools fail loudly with a `FatalRtlBuddyError` naming the
+missing API and the fix (`pywellen.api_missing`) — `rb wave` checks at launch,
+before Surfer starts. They do **not** degrade to blank annotations or partial
+output. Porting to the streaming API is tracked in #263; the bound, the
+runtime guard (`tools/pywellen_compat.py`), and the CI surface test
+(`tests/test_surfer_wcp.py::TestPywellenApiSurface`) are lifted together when
+that lands.

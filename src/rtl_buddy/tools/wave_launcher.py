@@ -79,6 +79,10 @@ class WaveLauncher:
         resolver = SurferSourceResolver(self._test_cfg, self._suite_dir)
         editor = EditorLauncher(self._surfer_cfg)
         value_reader = WaveformValueReader(self._fst_path)
+        # Fail loud on the main thread (trace missing / pywellen API break)
+        # before Surfer starts — not as blank annotations from the WCP
+        # listener thread (#263).
+        value_reader.check()
         listener = SurferWcpListener(
             self._surfer_cfg,
             resolver,

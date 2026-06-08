@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import sys
 import types
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
 import pytest
 
-from rtl_buddy.hub.loop import _discover_viewer_bundle
+from rtl_buddy.errors import FatalRtlBuddyError
+from rtl_buddy.hub import loop as hub_loop
+from rtl_buddy.hub.loop import _check_view_version, _discover_viewer_bundle
 
 
 @pytest.fixture
@@ -83,3 +86,55 @@ def test_swallows_unexpected_exception_from_peer(fake_viewer_pkg):
 
     fake_viewer_pkg.path = boom  # type: ignore[attr-defined]
     assert _discover_viewer_bundle() is None
+
+
+# ---------------------------------------------------------------------------
+# In-env version floor (_check_view_version)
+#
+# rtl_buddy declares no rtl-buddy-view pin, so this runtime guard is the
+# only floor for the in-process SPA-bundle path. It mirrors
+# runner.mut_runner._check_xeno_version: read the installed dist version,
+# skip when there's no metadata, raise a friendly hint when too old.
+
+
+def test_check_view_version_skips_when_not_installed(monkeypatch):
+    """No distribution metadata → skip (a successful import stands in)."""
+
+    def _missing(_name):
+        raise PackageNotFoundError("rtl-buddy-view")
+
+    monkeypatch.setattr(hub_loop, "_pkg_version", _missing)
+    # Must not raise.
+    _check_view_version()
+
+
+def test_check_view_version_passes_at_floor(monkeypatch):
+    """Exactly the floor (and dev/rc suffixes of it) is accepted."""
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.1")
+    _check_view_version()
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.1.dev3+g0f37a43")
+    _check_view_version()
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "1.0.0")
+    _check_view_version()
+
+
+def test_check_view_version_raises_when_too_old(monkeypatch):
+    """Below the floor → FatalRtlBuddyError naming the floor + upgrade hint."""
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.0")
+    with pytest.raises(FatalRtlBuddyError, match=r"0\.2\.1"):
+        _check_view_version()
+
+
+def test_discover_bundle_enforces_floor(fake_viewer_pkg, monkeypatch, tmp_path: Path):
+    """A too-old in-env view fails the bundle discovery, not silently None.
+
+    This is the integration the guard exists for: the import succeeds (an
+    old editable install is present) so the soft-dep ImportError branch
+    does not catch it — the version floor must.
+    """
+    bundle = tmp_path / "_viewer_bundle"
+    bundle.mkdir()
+    fake_viewer_pkg.path = lambda: bundle  # type: ignore[attr-defined]
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.0")
+    with pytest.raises(FatalRtlBuddyError, match=r"rtl-buddy-view >= 0\.2\.1"):
+        _discover_viewer_bundle()

@@ -390,8 +390,22 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations'
                 f" (expected: {fields.get('path')})"
             )
+        case "wave.trace_missing":
+            return f"waveform trace not found: {fields.get('path')}"
+        case "wave.trace_open_failed":
+            return f"could not open waveform trace {fields.get('path')}: {fields.get('error')}"
+        case "pywellen.api_missing":
+            return (
+                f"pywellen {fields.get('version')} lacks the random-access Waveform API "
+                f"{fields.get('tool')} requires (removed in 0.25) — "
+                f"reinstall with 'pywellen>=0.20.0,<0.25' (#263)"
+            )
         case "wcp.resolve_failed":
             return f'WCP: could not find source for "{fields.get("variable")}" (searched {fields.get("searched")} files)'
+        case "wcp.fatal_error":
+            return (
+                f"WCP: fatal error — wave annotations disabled ({fields.get('error')})"
+            )
         case "wcp.connection_lost":
             return f"WCP: connection lost ({fields.get('reason')}); waiting for Surfer to reconnect"
         case "synth.sdc_multi_clock":

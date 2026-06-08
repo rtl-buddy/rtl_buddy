@@ -494,9 +494,20 @@ def _builtin_manifest() -> list[ToolSpec]:
         ToolSpec(
             name="rtl-buddy-view",
             binaries=("rtl-buddy-view",),
-            version_cmd=None,
-            version_regex=None,
-            minimum_version=None,
+            # `rtl-buddy-view --version` prints `rtl-buddy-view <version>`
+            # (added in rtl-buddy-view#121): a clean `X.Y.Z` on a tagged
+            # release, or `X.Y[.Z].devN+g<sha>` on an untagged/editable
+            # build. The optional third component + ignored dev suffix keep
+            # the probe parsing both. The probe needs the flag — pre-0.2.1
+            # builds without it leave version=None, which the 0.2.1 floor
+            # then flags as outdated, which is the point.
+            version_cmd=("rtl-buddy-view", "--version"),
+            version_regex=r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)",
+            # Floor, not a cap: rtl_buddy declares no upper pin on view
+            # (a pre-1.0 peer whose view.json is forward-compatible within
+            # schema 1.x). 0.2.1 is the first PyPI release that clears the
+            # 0.2.0 filelist IsADirectoryError bug and ships the SPA bundle.
+            minimum_version="0.2.1",
             detection=(PythonSiblingDetector("rtl-buddy-view"),),
             install_hint={
                 "any": "uv tool install rtl-buddy-view  (or pip install rtl-buddy-view)",
