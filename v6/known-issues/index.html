@@ -1384,6 +1384,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#pywellen-must-keep-the-random-access-waveform-api-025" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pywellen must keep the random-access Waveform API (&lt;0.25)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1500,6 +1511,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#pywellen-must-keep-the-random-access-waveform-api-025" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        pywellen must keep the random-access Waveform API (&lt;0.25)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1574,6 +1596,20 @@ inside that flow:</p>
 dir (<code>artefacts/&lt;test&gt;/</code>), not in axi-profile's own root — deliberate, so the
 cache-invalidation mtime comparison and the trace stay co-located, and <code>rb
 wave</code> conventions can open the converted FST from the standard place.</p>
+<h2 id="pywellen-must-keep-the-random-access-waveform-api-025">pywellen must keep the random-access Waveform API (<code>&lt;0.25</code>)</h2>
+<p><code>rb wave</code> value annotations and <code>rb saif</code> read traces through pywellen's
+random-access <code>Waveform</code> API (<code>hierarchy</code>, <code>get_signal</code>,
+<code>get_signal_from_path</code>), which pywellen 0.25.0 removed in its streaming
+rewrite. The dependency is therefore bounded to <code>pywellen &gt;= 0.20.0, &lt;0.25</code>
+(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/263">#263</a>).</p>
+<p>If an environment force-resolves a newer pywellen anyway (e.g. a manually
+upgraded venv), both tools fail loudly with a <code>FatalRtlBuddyError</code> naming the
+missing API and the fix (<code>pywellen.api_missing</code>) — <code>rb wave</code> checks at launch,
+before Surfer starts. They do <strong>not</strong> degrade to blank annotations or partial
+output. Porting to the streaming API is tracked in #263; the bound, the
+runtime guard (<code>tools/pywellen_compat.py</code>), and the CI surface test
+(<code>tests/test_surfer_wcp.py::TestPywellenApiSurface</code>) are lifted together when
+that lands.</p>
 
 
 
