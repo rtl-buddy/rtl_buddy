@@ -1341,6 +1341,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#verible-resolves-from-path-when-cfg-veriblepath-lacks-the-binaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verible resolves from PATH when cfg-verible.path lacks the binaries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#hook-scripts-run-at-the-invocation-directory-not-the-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1468,6 +1479,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#verible-resolves-from-path-when-cfg-veriblepath-lacks-the-binaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verible resolves from PATH when cfg-verible.path lacks the binaries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#hook-scripts-run-at-the-invocation-directory-not-the-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1549,6 +1571,9 @@
 <p>Random testing does not behave reliably with Verilator. While Verilator supports multiple random tests with different seeds, tests are not always reproducible even with the same seed.</p>
 <p>VCS is recommended for stable random testing due to its hierarchical instance seeding. VCS seeds instantiated modules, process threads, and classes based on their hierarchical names. For stable random seeding with VCS, name your instances explicitly.</p>
 <p>If you require reproducible randomized testing on macOS (where VCS is not available), this is a known limitation.</p>
+<h2 id="verible-resolves-from-path-when-cfg-veriblepath-lacks-the-binaries">Verible resolves from PATH when <code>cfg-verible.path</code> lacks the binaries</h2>
+<p><code>rb verible</code> resolves each executable in a fixed precedence: the configured <code>cfg-verible.path</code> directory wins <strong>when it actually contains the binary</strong>, otherwise rtl_buddy falls back to whatever is on <code>PATH</code>, and only as a last resort returns the configured join (so a genuine "not found" still names the expected directory).</p>
+<p>This means a site can expose Verible through its environment (a <code>module load</code>, or a sourced setup script that puts <code>verible-verilog-*</code> on <code>PATH</code>) and leave <code>cfg-verible.path</code> at the committed default — no per-checkout edit to <code>root_config.yaml</code>. The flip side: if your configured directory does not contain the binaries but a <em>different</em> Verible is on <code>PATH</code>, that PATH copy is used silently. If <code>rb verible</code> seems to run a different build than the one you configured, check <code>PATH</code> — the configured directory only takes precedence when the binary is present there. This mirrors how <code>cfg-surfer</code> already resolves its executable.</p>
 <h2 id="hook-scripts-run-at-the-invocation-directory-not-the-suite">Hook scripts run at the invocation directory, not the suite</h2>
 <p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which is <code>invocation_cwd</code> — your shell's cwd — not the suite directory. Resolve suite-local inputs and outputs from the injected <code>suite_dir</code> / <code>artifact_dir</code> variables, never from <code>os.getcwd()</code>.</p>
 <p>The footgun is a hook that delegates to a <strong>third-party generator</strong> which writes its outputs relative to <code>os.getcwd()</code> and offers no output-directory argument. Under v4, <code>regression</code> chdir'd into each suite so such a generator dropped files under the suite; under v5 it drops them under the invocation directory instead (e.g. polluting the repo root when running <code>regression</code> from there). The failure is silent: generation "succeeds", but the test fails much later at sim time with a generic <code>cannot open &lt;suite_dir&gt;/&lt;gen_dir&gt;/&lt;file&gt;</code>. It only reproduces when <code>invocation_cwd != suite_dir</code>, so it passes when run from inside the suite and fails under <code>regression</code> from the repo root.</p>
