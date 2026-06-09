@@ -804,6 +804,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#time-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time units
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#surfer-build" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1658,6 +1669,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#time-units" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time units
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#surfer-build" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1765,6 +1787,13 @@
 <p>It reads the same <code>fpv.yaml</code> (<code>-c</code>/<code>--fpv-config</code>, default <code>fpv.yaml</code>) to resolve the verification name, then opens the trace at <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine in sorted order). It opens the VCD in the <code>cfg-surfer</code> entry named <code>surfer-default</code> unless you pass <code>--surfer &lt;name&gt;</code>. Unlike <code>rb wave</code>, it just opens the VCD — there is no WCP annotation round-trip — so mainline Surfer suffices. It raises a clear error if the verification has not been run, the proof passed (no counterexample), or no engine produced a trace.</p>
 <h2 id="hub-integration">Hub integration</h2>
 <p>When a project <a href="../hub/">coordination hub</a> is running, <code>rb wave</code> opportunistically connects to it as the <code>wave</code>-origin peer (the bridge in <code>tools/wave_hub_bridge.py</code>; the hub is discovered via <code>$RTL_BUDDY_HUB</code> or by walking up to <code>.rtl-buddy/hub.json</code>). The bridge forwards Surfer events to the hub (cursor moves → <code>cursor_time_changed</code>, plus <code>scope_changed</code>, <code>signal_selected</code>, and a <code>wave_values_changed</code> snapshot on cursor move) and serves hub requests back to Surfer (<code>wave_add_variables</code>, <code>wave_set_cursor</code>, <code>wave_set_scope</code>, <code>wave_set_viewport</code>, <code>wave_zoom_to_range</code>, <code>wave_zoom_to_fit</code>). Time is exchanged in femtoseconds (<code>time_unit=fs</code>). If no hub is reachable the bridge stays silent and <code>rb wave</code> runs fully standalone — the hub is never required.</p>
+<h2 id="time-units">Time units</h2>
+<p>The wave stack uses <strong>two different time units</strong> — mixing them silently mis-places the cursor by orders of magnitude:</p>
+<ul>
+<li><strong>pywellen / FST analysis — timescale <em>ticks</em>.</strong> Signal-value reads go through pywellen, whose <code>Signal.all_changes()</code> and <code>Waveform.time_table</code> return integer <strong>timesteps in the FST's timescale resolution</strong>, not picoseconds. With Verilator's default <code>1ns/10ps</code> timescale one tick = 10 ps, so a 10 ns clock period is 1000 ticks and a cursor at 95 ns is tick 9500. Convert ticks to real time with the timescale object from <code>Waveform.hierarchy.timescale()</code> (a method — it returns <code>.factor</code> / <code>.unit</code>, e.g. <code>10</code> / <code>ps</code>), not a bare multiplier.</li>
+<li><strong>Hub / WCP — femtoseconds.</strong> The bridge and <code>rb hub send wave-cursor &lt;T_FS&gt;</code> / <code>wave-zoom &lt;START_FS&gt; &lt;END_FS&gt;</code> exchange time in <strong>femtoseconds</strong> (<code>time_unit=fs</code>); the bridge forwards the fs value to Surfer verbatim with <code>time_unit=fs</code> and Surfer converts to its own timestep. At a 10 ps timescale 1 tick = 10 000 fs, so 95 ns = 95 000 000 fs = tick 9500. Pass fs to the <code>wave-*</code> verbs — a ps or tick value lands 10³–10⁶× off.</li>
+<li><strong>Surfer command files (the <a href="https://github.com/rtl-buddy/surfer"><code>rtl-buddy/surfer</code></a> fork) — timescale ticks.</strong> <code>cursor_set</code> / <code>zoom_range</code> in a <code>-c</code> command file use the same tick unit as pywellen, <em>not</em> fs. (This is surfer-side behavior, documented here for the round-trip.)</li>
+</ul>
 <h2 id="surfer-build">Surfer build</h2>
 <p>The annotation features require Surfer built from the <code>rtl-buddy</code> branch:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/rtl-buddy/surfer.git<span class="w"> </span>../surfer
