@@ -1568,10 +1568,16 @@
 <td><code>&lt;root&gt;/.claude/skills/rtl_buddy/SKILL.md</code></td>
 <td><code>&lt;root&gt;/.agents/skills/rtl_buddy/SKILL.md</code></td>
 </tr>
+<tr>
+<td>Explicit dir (<code>--dir PATH</code>)</td>
+<td><code>&lt;PATH&gt;/rtl_buddy/SKILL.md</code> (single flat target)</td>
+<td>—</td>
+</tr>
 </tbody>
 </table>
 <p>User-level is the default because the skill is workflow-pattern guidance that changes rarely across <code>rtl_buddy</code> versions; a single copy per machine encourages keeping <code>rtl_buddy</code> aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent <code>rtl_buddy</code> major — Claude Code's resolution order puts the project copy first, so both scopes can coexist.</p>
-<p>For project-level installs, the install command prints the <code>.gitignore</code> lines to add. Project root is discovered by walking up for <code>root_config.yaml</code> (falling back to <code>.git/</code>), so <code>rtl-buddy skill install --project</code> is safe to run from a <code>verif/</code> subdirectory.</p>
+<p>Use <code>--dir PATH</code> when you need the skill written to an arbitrary directory without the <code>.claude</code>/<code>.agents</code> layout — it writes a single <code>PATH/rtl_buddy/SKILL.md</code> (mutually exclusive with <code>--project</code>/<code>--root</code>).</p>
+<p>For project-level installs, the install command prints the <code>.gitignore</code> lines to add. Pass <code>--no-gitignore</code> to skip that edit. Project root is discovered by walking up for <code>root_config.yaml</code> (falling back to <code>.git/</code>), so <code>rtl-buddy skill install --project</code> is safe to run from a <code>verif/</code> subdirectory.</p>
 <h2 id="local-docs-access">Local docs access</h2>
 <p>The wheel ships the full Markdown docs site alongside the CLI, exposed through:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rtl-buddy<span class="w"> </span>docs<span class="w"> </span>list
