@@ -129,6 +129,14 @@ It reads the same `fpv.yaml` (`-c`/`--fpv-config`, default `fpv.yaml`) to resolv
 
 When a project [coordination hub](hub.md) is running, `rb wave` opportunistically connects to it as the `wave`-origin peer (the bridge in `tools/wave_hub_bridge.py`; the hub is discovered via `$RTL_BUDDY_HUB` or by walking up to `.rtl-buddy/hub.json`). The bridge forwards Surfer events to the hub (cursor moves → `cursor_time_changed`, plus `scope_changed`, `signal_selected`, and a `wave_values_changed` snapshot on cursor move) and serves hub requests back to Surfer (`wave_add_variables`, `wave_set_cursor`, `wave_set_scope`, `wave_set_viewport`, `wave_zoom_to_range`, `wave_zoom_to_fit`). Time is exchanged in femtoseconds (`time_unit=fs`). If no hub is reachable the bridge stays silent and `rb wave` runs fully standalone — the hub is never required.
 
+## Time units
+
+The wave stack uses **two different time units** — mixing them silently mis-places the cursor by orders of magnitude:
+
+- **pywellen / FST analysis — timescale *ticks*.** Signal-value reads go through pywellen, whose `Signal.all_changes()` and `Waveform.time_table` return integer **timesteps in the FST's timescale resolution**, not picoseconds. With Verilator's default `1ns/10ps` timescale one tick = 10 ps, so a 10 ns clock period is 1000 ticks and a cursor at 95 ns is tick 9500. Multiply ticks by the timescale (`Waveform.hierarchy.timescale`) before reporting a real time.
+- **Hub / WCP — femtoseconds.** The bridge and `rb hub send wave-cursor <T_FS>` / `wave-zoom <START_FS> <END_FS>` exchange time in **femtoseconds** (`time_unit=fs`); the bridge converts to Surfer's timestep. At a 10 ps timescale 1 tick = 10 000 fs, so 95 ns = 95 000 000 fs = tick 9500. Pass fs to the `wave-*` verbs — a ps or tick value lands 10³–10⁶× off.
+- **Surfer command files — timescale ticks.** `cursor_set` / `zoom_range` in a `-c` command file use the same tick unit as pywellen, *not* fs.
+
 ## Surfer build
 
 The annotation features require Surfer built from the `rtl-buddy` branch:
