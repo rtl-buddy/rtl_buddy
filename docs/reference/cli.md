@@ -1418,17 +1418,22 @@ Usage: rtl-buddy skill install [OPTIONS]
  Default scope is user-level (`~/.claude/skills/rtl_buddy/` and                         
  `~/.codex/skills/rtl_buddy/`). Use `--project` to install into the                     
  discovered project root instead; project-level copies take precedence                  
- over user-level when both exist.                                                       
+ over user-level when both exist. Use `--dir PATH` to write a single                    
+ `PATH/rtl_buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
+ layout entirely.                                                                       
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --project                install into the discovered project root instead of the     │
-│                          user home                                                   │
-│ --root             PATH  explicit target root (implies project-level layout)         │
-│ --no-claude              skip writing the Claude Code target                         │
-│ --no-codex               skip writing the Codex target                               │
-│ --dry-run                print what would be written and exit                        │
-│ --force                  overwrite even when content matches                         │
-│ --help                   Show this message and exit.                                 │
+│ --project                   install into the discovered project root instead of the  │
+│                             user home                                                │
+│ --root                PATH  explicit target root (implies project-level layout)      │
+│ --dir                 PATH  write a single flat target at <DIR>/rtl_buddy/SKILL.md,  │
+│                             bypassing the .claude/.agents/.codex layout              │
+│ --no-claude                 skip writing the Claude Code target                      │
+│ --no-codex                  skip writing the Codex target                            │
+│ --no-gitignore              skip updating .gitignore on project-level installs       │
+│ --dry-run                   print what would be written and exit                     │
+│ --force                     overwrite even when content matches                      │
+│ --help                      Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
