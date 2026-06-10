@@ -81,6 +81,8 @@ class SuiteConfig:
 
             try:
                 tbs = {tb.get_name(): tb for tb in data.testbenches}
+            except FatalRtlBuddyError:
+                raise
             except Exception as e:
                 log_event(
                     logger,
@@ -101,6 +103,8 @@ class SuiteConfig:
                     logger, logging.ERROR, "suite_config.testbench_missing", path=path
                 )
                 raise FatalRtlBuddyError(f"{path}: Requested testbench missing")
+            except FatalRtlBuddyError:
+                raise
             except Exception as e:
                 log_event(
                     logger,
