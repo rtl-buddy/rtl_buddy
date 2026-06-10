@@ -108,7 +108,7 @@ Every artifact-writing command takes an exclusive `flock` on
 `<artifact_root>/.rtl-buddy.lock` and **fails immediately** if another
 rtl-buddy process holds it ([#73](https://github.com/rtl-buddy/rtl_buddy/issues/73)) —
 see [Execution Context](concepts/execution-context.md#one-run-per-artefact-tree).
-Two consequences that can surprise:
+Three consequences that can surprise:
 
 - **Contention is per artefact tree, not per command family.** When
   `tests.yaml`, `cdc.yaml`, `synth.yaml`, etc. share a suite directory, they
@@ -121,3 +121,9 @@ Two consequences that can surprise:
   holding process exits (crash and `kill` included). A leftover file means
   nothing is locked — do not "clean it up" mid-run thinking it's stale
   state, and don't be alarmed by it after runs finish.
+- **No protection across hosts (NFS).** `flock` is relied on with local
+  semantics only; on an NFS-mounted workspace, two runs on *different
+  machines* may both acquire "the" lock and proceed. Whether flock spans
+  NFS depends on protocol version, mount options, and the server's lock
+  daemon — rtl_buddy assumes it doesn't. Same-host concurrent runs are the
+  protected case; cross-host coordination is on you.

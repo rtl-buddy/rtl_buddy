@@ -120,6 +120,8 @@ The lock is released by the kernel when the holding process exits — normal com
 
 The lock covers the **whole artefact tree**, not just the subtree a command writes: when `tests.yaml`, `cdc.yaml`, `synth.yaml`, etc. share a suite directory, any two artifact-writing commands contend — `rb hier` during a long `rb test` in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the `--list` paths and commands anchored elsewhere (another suite, `rb docs`, `rb hub`) remain available.
 
+**The protection is per host.** The guarantee relies on local `flock(2)` semantics and ends at the machine boundary. On a workspace shared over NFS, two runs on **different hosts** may both acquire "the" lock — whether `flock` propagates across NFS depends on the protocol version, mount options, and server lock-daemon configuration, and rtl_buddy does not rely on it. Concurrent runs against the same suite from two machines are not protected; coordinate those yourself.
+
 ## Future: redirecting the artifact root
 
 The artifact root defaults to `command_root/artefacts/`. The `ExecutionContext` carrier is built to accept an explicit override so a future `--artifact-root` flag (or `root_config.yaml` field) can redirect large artifacts — synthesis netlists, simulation waveforms — onto a separate disk without touching command code. None of this is wired today; this page will update when it ships.
