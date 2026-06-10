@@ -255,12 +255,15 @@ class SbyFpv:
             # emit the directive when slang is actually used so the
             # default verilog path stays plugin-free.
             lines.append(f"plugin -i {plugin}")
-        for inc in incdirs:
-            if frontend == "slang":
-                # slang's preprocessor uses --include-directory; we
-                # accept the same incdirs the filelist already parsed.
-                lines.append(f"verilog_defaults -add -I {inc}")
-            else:
+        slang_inc_args = ""
+        if frontend == "slang":
+            # read_slang reads include dirs from its OWN command line.
+            # `verilog_defaults -add -I` only configures yosys's built-in
+            # verilog frontend and is ignored by read_slang, so incdirs must
+            # be appended to the read_slang command (below), not emitted here.
+            slang_inc_args = "".join(f" -I {inc}" for inc in incdirs)
+        else:
+            for inc in incdirs:
                 lines.append(f"verilog_defaults -add -I {inc}")
         constraints = cfg.get_constraints()
         constraint_files = [constraints] if constraints else []
@@ -276,9 +279,19 @@ class SbyFpv:
             # that the native verilog frontend rejects. The `--top`
             # arg is required for `bind` to resolve — slang's
             # elaborator only pulls in bound modules under the
-            # designated top. All files are read in one invocation so
-            # bind statements at compilation-unit scope see every
-            # declared module.
+            # designated top.
+            #
+            # `--single-unit` compiles every file in the filelist as ONE
+            # compilation unit. Without it, yosys-slang treats each file
+            # as its own unit, so `define macros (and `define-based config
+            # like a leading defines header) do NOT carry across files and
+            # a compilation-unit-scope `bind` cannot see modules from other
+            # files — neither matches how simulators / yosys's own verilog
+            # frontend treat a filelist. Single-unit is what makes the
+            # "all files read in one invocation" intent above actually hold,
+            # and it lets a vendored module's `include-based config (e.g.
+            # `define COMMON_CELLS_ASSERTS_OFF in a header read first) take
+            # effect on later files.
             #
             # `--no-synthesis-define -DFORMAL=1` mirrors what the
             # verilog path's `read -formal` does: yosys's verilog
@@ -289,7 +302,7 @@ class SbyFpv:
             # passes vacuously (#246).
             src_args = " ".join(os.path.basename(s) for s in all_sources)
             lines.append(
-                f"read_slang --top {cfg.get_top()} "
+                f"read_slang --top {cfg.get_top()} --single-unit{slang_inc_args} "
                 f"--no-synthesis-define -DFORMAL=1 {src_args}"
             )
         else:

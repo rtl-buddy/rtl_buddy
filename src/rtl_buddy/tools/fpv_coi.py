@@ -109,20 +109,28 @@ def build_yosys_script(
                 "fpv_coi: frontend='slang' requires a non-empty plugin_path"
             )
         lines.append(f"plugin -i {plugin_path}")
-    for inc in incdirs:
-        lines.append(f"verilog_defaults -add -I {inc}")
+    slang_inc_args = ""
+    if frontend == "slang":
+        # read_slang reads include dirs from its own command line;
+        # `verilog_defaults -add -I` is ignored by it (see SbyFpv._render_sby).
+        slang_inc_args = "".join(f" -I {inc}" for inc in incdirs)
+    else:
+        for inc in incdirs:
+            lines.append(f"verilog_defaults -add -I {inc}")
     constraint_files = [constraints] if constraints else []
     all_files = list(sources) + constraint_files + list(properties)
     if frontend == "slang":
-        # Single `read_slang --top <name> <files...>` so `bind`
-        # directives at compilation-unit scope see every declared
-        # module — matches the SbyFpv slang renderer, including
-        # `--no-synthesis-define -DFORMAL=1` (read -formal parity):
-        # without it, in-RTL `ifdef FORMAL asserts vanish at
+        # Single `read_slang --top <name> --single-unit <files...>`: must
+        # match the SbyFpv slang renderer exactly so the COI walk parses the
+        # same design the proof did. `--single-unit` compiles the filelist as
+        # one compilation unit (cross-file `define macros + compilation-unit
+        # `bind), and `--no-synthesis-define -DFORMAL=1` gives read -formal
+        # parity — without the latter, in-RTL `ifdef FORMAL asserts vanish at
         # preprocessing and the COI column reports 0% (#246).
         src_args = " ".join(all_files)
         lines.append(
-            f"read_slang --top {top} --no-synthesis-define -DFORMAL=1 {src_args}"
+            f"read_slang --top {top} --single-unit{slang_inc_args} "
+            f"--no-synthesis-define -DFORMAL=1 {src_args}"
         )
     else:
         for src in all_files:
