@@ -1406,6 +1406,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The artefact-tree lock is per tree, and its lock file stays behind
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1544,6 +1555,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The artefact-tree lock is per tree, and its lock file stays behind
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1635,6 +1657,31 @@ output. Porting to the streaming API is tracked in #263; the bound, the
 runtime guard (<code>tools/pywellen_compat.py</code>), and the CI surface test
 (<code>tests/test_surfer_wcp.py::TestPywellenApiSurface</code>) are lifted together when
 that lands.</p>
+<h2 id="the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">The artefact-tree lock is per tree, and its lock file stays behind</h2>
+<p>Every artifact-writing command takes an exclusive <code>flock</code> on
+<code>&lt;artifact_root&gt;/.rtl-buddy.lock</code> and <strong>fails immediately</strong> if another
+rtl-buddy process holds it (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/73">#73</a>) —
+see <a href="../concepts/execution-context/#one-run-per-artefact-tree">Execution Context</a>.
+Three consequences that can surprise:</p>
+<ul>
+<li><strong>Contention is per artefact tree, not per command family.</strong> When
+  <code>tests.yaml</code>, <code>cdc.yaml</code>, <code>synth.yaml</code>, etc. share a suite directory, they
+  share one <code>artefacts/</code> — so <code>rb hier</code> or <code>rb cdc</code> during a long <code>rb test</code>
+  in the same suite fails loud, even though their output subtrees are
+  disjoint. Deliberate: one coarse lock per tree, no partial-overlap edge
+  cases. Wait for the running command, or work from a different suite.</li>
+<li><strong>A <code>.rtl-buddy.lock</code> file lingers in <code>artefacts/</code>.</strong> It is holder
+  metadata only; the actual lock is kernel-managed and vanishes when the
+  holding process exits (crash and <code>kill</code> included). A leftover file means
+  nothing is locked — do not "clean it up" mid-run thinking it's stale
+  state, and don't be alarmed by it after runs finish.</li>
+<li><strong>No protection across hosts (NFS).</strong> <code>flock</code> is relied on with local
+  semantics only; on an NFS-mounted workspace, two runs on <em>different
+  machines</em> may both acquire "the" lock and proceed. Whether flock spans
+  NFS depends on protocol version, mount options, and the server's lock
+  daemon — rtl_buddy assumes it doesn't. Same-host concurrent runs are the
+  protected case; cross-host coordination is on you.</li>
+</ul>
 
 
 
