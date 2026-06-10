@@ -86,6 +86,8 @@ cfg-cdc-tools:
 | `opts.sync-depth` | Default synchronizer depth, forwarded via `--sync-depth` |
 | `opts.extra-args` | Passed through verbatim to the analyzer command line |
 
+**Relative paths in `extra-args`.** A relative path inside `extra-args` (e.g. `--yosys-plugin ../slang.so`, `--emit-domain-map overlays/map.json`) is resolved by the analyzer relative to the **`cdc.yaml` directory**, not the process cwd — the same anchor `constraints` and `waivers` already use. The runner forwards the config's directory as `rtl-buddy-cdc --project-root <dir>` when the installed analyzer supports it (requires the rtl-buddy-cdc release carrying [rtl-buddy-cdc#245](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/245); older analyzers run without it and fall back to cwd-relative resolution). Absolute paths are always used verbatim. Author `extra-args` paths relative to `cdc.yaml`, like the other path fields.
+
 ## Running CDC
 
 ```bash
