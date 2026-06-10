@@ -1758,15 +1758,19 @@
 <h3 id="active-scope">Active scope</h3>
 <p>Clicking any signal in Surfer's signal list sets the <strong>active scope</strong> — the module instance used to resolve signal names. rtl-buddy updates the scope cache automatically via the <code>scope_changed</code> WCP event, so annotation context is always current without requiring a "Go to declaration".</p>
 <h3 id="nvim-setup">nvim setup</h3>
-<p>The annotation feature requires a small nvim plugin. Install it once:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>wave-install-nvim
+<p>The annotation feature lives in the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a> plugin — the same plugin that connects your editor to the <a href="../hub/">hub</a>. Install it once with the unified command:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>nvim-install
 </code></pre></div>
-<p>This copies <code>rtl_buddy_wave.lua</code> to <code>~/.local/share/nvim/site/plugin/</code>, which nvim auto-sources at startup. No <code>init.lua</code> changes are needed. Reinstall after rtl-buddy upgrades with <code>--force</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>wave-install-nvim<span class="w"> </span>--force
+<p>This clones the plugin (pinned to a revision compatible with this rtl-buddy's hub protocol) into <code>~/.local/share/nvim/site/pack/rtlbuddy/start/rtl-buddy-nvim</code> and writes a managed <code>~/.local/share/nvim/site/plugin/rtl_buddy_setup.lua</code> that nvim auto-sources at startup — no <code>init.lua</code> changes are needed. The managed setup also auto-connects to the hub and, when <code>verible-verilog-ls</code> is on <code>PATH</code>, starts it for symbol resolution.</p>
+<p>Keep it current after an rtl-buddy upgrade:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--update<span class="w">   </span><span class="c1"># sync to the revision pinned by your rtl-buddy</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--force<span class="w">    </span><span class="c1"># remove and re-install</span>
 </code></pre></div>
+<p><code>git</code> is required (the plugin is fetched via <code>git clone</code>). For an offline or sibling-checkout install, point at a local path: <code>rb nvim-install --source /path/to/rtl-buddy-nvim --ref &lt;branch&gt;</code>.</p>
 <p>If the plugin is missing when <code>rb wave</code> starts with <code>editor-sock</code> configured, a warning is shown:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING  nvim plugin not installed — run &quot;rb wave-install-nvim&quot; to enable wave annotations
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>WARNING  nvim plugin not installed — run &quot;rb nvim-install&quot; to enable the hub connection and wave annotations
 </code></pre></div>
+<p>Verify the install with <code>:checkhealth rtlbuddy</code> in nvim — it reports hub state, LSP attach, and whether wave annotation is enabled.</p>
 <h3 id="adding-signals-to-surfer-from-nvim">Adding signals to Surfer from nvim</h3>
 <p>With <code>ctrl-sock</code> configured, place the cursor on any signal name in nvim and press <strong><code>&lt;Space&gt;wa</code></strong> (<code>&lt;leader&gt;wa</code>) to add it to Surfer's waveform view.</p>
 <p>The signal is resolved using the active scope — click a signal in Surfer first to establish the instance context (e.g. clicking <code>tb_top.i_dut.clk</code> sets scope <code>tb_top.i_dut</code>), then add signals freely from nvim.</p>

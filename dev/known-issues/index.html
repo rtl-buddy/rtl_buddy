@@ -1417,6 +1417,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb nvim-install requires git + network, and pins the plugin by hand
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1566,6 +1577,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb nvim-install requires git + network, and pins the plugin by hand
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1682,6 +1704,26 @@ Three consequences that can surprise:</p>
   daemon — rtl_buddy assumes it doesn't. Same-host concurrent runs are the
   protected case; cross-host coordination is on you.</li>
 </ul>
+<h2 id="rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand"><code>rb nvim-install</code> requires git + network, and pins the plugin by hand</h2>
+<p>Unlike the old <code>rb wave-install-nvim</code> (which copied a bundled <code>.lua</code> offline),
+<code>rb nvim-install</code> (the new primary name; <code>wave-install-nvim</code> is now an alias)
+fetches the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a>
+plugin with <code>git clone</code>. It therefore needs <strong><code>git</code> on PATH and network
+access</strong>. For air-gapped machines, install from a local checkout instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--source<span class="w"> </span>/path/to/rtl-buddy-nvim<span class="w"> </span>--ref<span class="w"> </span>&lt;ref&gt;
+</code></pre></div>
+<p>The revision it clones is pinned in <code>RTL_BUDDY_NVIM_REF</code>
+(<code>src/rtl_buddy/tools/nvim_install.py</code>). That pin and the hub wire-protocol
+version (<code>PROTOCOL_VERSION</code> in <code>src/rtl_buddy/hub/protocol.py</code>) are coupled but
+not mechanically linked: the pinned plugin speaks one protocol version, and the
+hub enforces it on the wire (<code>decode()</code> rejects a mismatched <code>v</code>), so a mismatch
+would surface only as a failed handshake on a <em>user's</em> machine — never at build
+time.</p>
+<p>The guard against that drift is a CI tripwire: <code>_PIN_PROTOCOL_VERSION</code> sits next
+to the pin and <code>test_pin_tracks_hub_protocol_version</code> asserts it equals the hub
+<code>PROTOCOL_VERSION</code>. When you bump <code>PROTOCOL_VERSION</code>, the test fails until you
+(1) tag a compatible <code>rtl-buddy-nvim</code> release, (2) bump <code>RTL_BUDDY_NVIM_REF</code> to
+it, and (3) bump <code>_PIN_PROTOCOL_VERSION</code>. Keep the three in lockstep.</p>
 
 
 

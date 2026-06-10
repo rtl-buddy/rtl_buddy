@@ -1773,7 +1773,7 @@
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        │       .rtl-buddy/hub.toml        │         └──────────────────────┘
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        │                                  │         ┌──────────────────────┐
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        │                                  │◀──TCP──▶│  nvim Lua plugin     │
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        │                                  │         │  rtl_buddy_wave.lua  │
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        │                                  │         │  (rtl-buddy-nvim)    │
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        └──────────────────────────────────┘         └──────────────────────┘
 </code></pre></div>
 <h2 id="quick-start">Quick start</h2>
@@ -1947,9 +1947,9 @@
 <td>Started by <code>rb wave</code>; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff.</td>
 </tr>
 <tr>
-<td><strong>nvim plugin</strong> (<code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code>)</td>
+<td><strong>nvim plugin</strong> (<a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a>, installed by <code>rb nvim-install</code>)</td>
 <td>Line-delimited JSON over TCP on <code>listen_port</code></td>
-<td>Connects when the user opens a file rtl-buddy knows how to resolve.</td>
+<td>Auto-connects on startup (the managed setup calls <code>setup({ auto_connect = true })</code>).</td>
 </tr>
 </tbody>
 </table>
@@ -1986,14 +1986,14 @@
 <p><strong>Hub log empty or absent</strong> — <code>rb hub log</code> tails <code>.rtl-buddy/hub.log</code> by default. The <code>[hub].log_path</code> setting controls the location; logs route through <code>log_event()</code> like the rest of <code>rtl_buddy</code>, so <code>--machine</code> mode produces JSON Lines.</p>
 <h2 id="writing-a-new-adapter">Writing a new adapter</h2>
 <p>Bring up a TCP client against the hub's <code>listen_port</code>, send the <code>hello</code> envelope claiming an origin, accept the <code>welcome</code> reply, then send / receive state events and requests per <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy-view#19</a>. The JSON Schema at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code> is the contract — validate against it on both sides and unknown <code>type</code> strings should be silently dropped (forward-compat rule from §11 of the spec).</p>
-<p>The existing peers — <code>tools/wave_hub_bridge.py</code> and <code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code> — are the reference adapters. Both stay narrow on purpose: parse the envelope, translate to the peer's native API, route, repeat.</p>
+<p>The existing peers — <code>tools/wave_hub_bridge.py</code> and the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a> plugin — are the reference adapters. Both stay narrow on purpose: parse the envelope, translate to the peer's native API, route, repeat.</p>
 <h2 id="reference">Reference</h2>
 <ul>
 <li>Wire protocol spec: <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy-view#19</a></li>
 <li>JSON Schema: <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code></li>
 <li>Implementation: <code>src/rtl_buddy/hub/</code></li>
 <li>Wave bridge: <code>src/rtl_buddy/tools/wave_hub_bridge.py</code>, <code>src/rtl_buddy/tools/wave_launcher.py</code></li>
-<li>nvim plugin: <code>src/rtl_buddy/nvim/rtl_buddy_wave.lua</code></li>
+<li>nvim plugin: <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a> (installer: <code>src/rtl_buddy/tools/nvim_install.py</code>, command <code>rb nvim-install</code>)</li>
 </ul>
 
 
