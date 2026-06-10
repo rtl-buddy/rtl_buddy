@@ -1807,6 +1807,7 @@
 </tr>
 </tbody>
 </table>
+<p><strong>Relative paths in <code>extra-args</code>.</strong> A relative path inside <code>extra-args</code> (e.g. <code>--yosys-plugin ../slang.so</code>, <code>--emit-domain-map overlays/map.json</code>) is resolved by the analyzer relative to the <strong><code>cdc.yaml</code> directory</strong>, not the process cwd — the same anchor <code>constraints</code> and <code>waivers</code> already use. The runner forwards the config's directory as <code>rtl-buddy-cdc --project-root &lt;dir&gt;</code> when the installed analyzer supports it (requires the rtl-buddy-cdc release carrying <a href="https://github.com/rtl-buddy/rtl-buddy-cdc/issues/245">rtl-buddy-cdc#245</a>; older analyzers run without it and fall back to cwd-relative resolution). Absolute paths are always used verbatim. Author <code>extra-args</code> paths relative to <code>cdc.yaml</code>, like the other path fields.</p>
 <h2 id="running-cdc">Running CDC</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># All analyses in the default ./cdc.yaml</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>cdc
