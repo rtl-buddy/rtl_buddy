@@ -28,9 +28,11 @@ def git_env(tmp_path, monkeypatch):
 
     def fake_run(cmd, *args, **kwargs):
         calls.append(cmd)
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        return types.SimpleNamespace(
+            returncode=0, stdout="", stderr="", timed_out=False
+        )
 
-    monkeypatch.setattr(nvim_install.subprocess, "run", fake_run)
+    monkeypatch.setattr(nvim_install, "run_managed_process", fake_run)
     return calls
 
 
@@ -168,9 +170,38 @@ def test_git_failure_raises_fatal(tmp_path, monkeypatch):
 
     def failing_run(cmd, *args, **kwargs):
         return types.SimpleNamespace(
-            returncode=128, stdout="", stderr="fatal: not found"
+            returncode=128, stdout="", stderr="fatal: not found", timed_out=False
         )
 
-    monkeypatch.setattr(nvim_install.subprocess, "run", failing_run)
+    monkeypatch.setattr(nvim_install, "run_managed_process", failing_run)
     with pytest.raises(FatalRtlBuddyError, match="not found"):
         nvim_install.install()
+
+
+def test_git_timeout_raises_fatal(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(nvim_install.shutil, "which", lambda _name: "/usr/bin/git")
+
+    def timed_out_run(cmd, *args, **kwargs):
+        return types.SimpleNamespace(
+            returncode=None, stdout="", stderr="", timed_out=True
+        )
+
+    monkeypatch.setattr(nvim_install, "run_managed_process", timed_out_run)
+    with pytest.raises(FatalRtlBuddyError, match="timed out"):
+        nvim_install.install()
+
+
+def test_pin_tracks_hub_protocol_version():
+    """Tripwire: the pinned rtl-buddy-nvim ref is vetted against this hub
+    PROTOCOL_VERSION. If the hub bumps the protocol, this fails in CI so the
+    maintainer re-pins (tag a compatible release + bump RTL_BUDDY_NVIM_REF and
+    _PIN_PROTOCOL_VERSION) instead of letting it surface at a user's handshake.
+    """
+    from rtl_buddy.hub.protocol import PROTOCOL_VERSION
+
+    assert nvim_install._PIN_PROTOCOL_VERSION == PROTOCOL_VERSION, (
+        "hub PROTOCOL_VERSION changed without re-vetting RTL_BUDDY_NVIM_REF — tag a "
+        "compatible rtl-buddy-nvim release, bump RTL_BUDDY_NVIM_REF to it, and bump "
+        "_PIN_PROTOCOL_VERSION. See docs/known-issues.md."
+    )

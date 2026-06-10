@@ -440,6 +440,8 @@ def _builtin_manifest() -> list[ToolSpec]:
                 "fpv-regression",
                 "wave",
                 "hier",
+                "nvim-install",
+                "wave-install-nvim",
             ),
             optional=False,
             description="Required for revision banners and regression reporting",

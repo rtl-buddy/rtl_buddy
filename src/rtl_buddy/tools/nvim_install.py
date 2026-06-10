@@ -23,12 +23,12 @@ changes.
 import logging
 import os
 import shutil
-import subprocess
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
+from ..process_utils import run_managed_process
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,20 @@ logger = logging.getLogger(__name__)
 # lockstep with hub/protocol.py::PROTOCOL_VERSION — see the module docstring.
 RTL_BUDDY_NVIM_REPO = "https://github.com/rtl-buddy/rtl-buddy-nvim"
 RTL_BUDDY_NVIM_REF = "v0.2.0"
+
+# The hub wire-protocol version the pinned plugin speaks. The hub enforces it
+# on the wire (``hub/protocol.py::decode`` rejects a mismatched ``v``), so a
+# pin/protocol drift would only surface at a user's handshake — never at build
+# time. When ``PROTOCOL_VERSION`` changes, tag a compatible rtl-buddy-nvim
+# release, bump ``RTL_BUDDY_NVIM_REF`` to it, and bump this constant.
+# ``test_pin_tracks_hub_protocol_version`` is the CI tripwire that fails if the
+# two drift apart. See docs/known-issues.md.
+_PIN_PROTOCOL_VERSION = 1
+
+# Generous ceiling for the one-shot git clone/fetch; the plugin repo is tiny, so
+# this only trips on a hung network — turning an indefinite hang into a clear
+# error that points at ``--source <local path>``.
+_GIT_TIMEOUT_S = 300.0
 
 # Env overrides, mainly for offline/dev installs against a sibling checkout
 # (``--source ../rtl-buddy-nvim --ref <branch>``) and for the test suite.
@@ -161,27 +175,43 @@ def _remove_legacy() -> Path | None:
 # ---------------------------------------------------------------------------
 
 
-def _git(git: str, args: list[str]) -> None:
+def _git(git: str, args: list[str], *, cwd: str) -> None:
+    # Routed through run_managed_process (the repo convention for external tools)
+    # so the networked clone gets an explicit cwd, a timeout, and process-group
+    # cleanup on Ctrl-C — rather than a bare subprocess.run that could hang.
     cmd = [git, *args]
     log_event(logger, logging.DEBUG, "nvim_install.git", cmd=" ".join(cmd))
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_managed_process(
+        cmd, capture_output=True, text=True, cwd=cwd, timeout=_GIT_TIMEOUT_S
+    )
+    label = " ".join(args[:2])
+    if result.timed_out:
+        raise FatalRtlBuddyError(
+            f"git {label} timed out after {_GIT_TIMEOUT_S:.0f}s — slow/hung remote? "
+            "Retry, or install offline with `--source <local path>`."
+        )
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         raise FatalRtlBuddyError(
-            f"git {' '.join(args[:2])} failed (exit {result.returncode}): {stderr}"
+            f"git {label} failed (exit {result.returncode}): {stderr}"
         )
 
 
 def _clone(git: str, source: str, ref: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    _git(git, ["clone", "--depth", "1", "--branch", ref, source, str(dest)])
+    # dest is absolute; run from its parent so the clone is explicitly rooted.
+    _git(
+        git,
+        ["clone", "--depth", "1", "--branch", ref, source, str(dest)],
+        cwd=str(dest.parent),
+    )
 
 
 def _update(git: str, source: str, ref: str, dest: Path) -> None:
     # Fetch the pinned ref from `source` explicitly (so --source on update can
     # re-point the origin) and hard-reset the managed clone to it.
-    _git(git, ["-C", str(dest), "fetch", "--depth", "1", source, ref])
-    _git(git, ["-C", str(dest), "reset", "--hard", "FETCH_HEAD"])
+    _git(git, ["-C", str(dest), "fetch", "--depth", "1", source, ref], cwd=str(dest))
+    _git(git, ["-C", str(dest), "reset", "--hard", "FETCH_HEAD"], cwd=str(dest))
 
 
 # ---------------------------------------------------------------------------

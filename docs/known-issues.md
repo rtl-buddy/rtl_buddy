@@ -127,3 +127,29 @@ Three consequences that can surprise:
   NFS depends on protocol version, mount options, and the server's lock
   daemon — rtl_buddy assumes it doesn't. Same-host concurrent runs are the
   protected case; cross-host coordination is on you.
+
+## `rb nvim-install` requires git + network, and pins the plugin by hand
+
+Unlike the old `rb wave-install-nvim` (which copied a bundled `.lua` offline),
+`rb nvim-install` (the new primary name; `wave-install-nvim` is now an alias)
+fetches the [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim)
+plugin with `git clone`. It therefore needs **`git` on PATH and network
+access**. For air-gapped machines, install from a local checkout instead:
+
+```bash
+rb nvim-install --source /path/to/rtl-buddy-nvim --ref <ref>
+```
+
+The revision it clones is pinned in `RTL_BUDDY_NVIM_REF`
+(`src/rtl_buddy/tools/nvim_install.py`). That pin and the hub wire-protocol
+version (`PROTOCOL_VERSION` in `src/rtl_buddy/hub/protocol.py`) are coupled but
+not mechanically linked: the pinned plugin speaks one protocol version, and the
+hub enforces it on the wire (`decode()` rejects a mismatched `v`), so a mismatch
+would surface only as a failed handshake on a *user's* machine — never at build
+time.
+
+The guard against that drift is a CI tripwire: `_PIN_PROTOCOL_VERSION` sits next
+to the pin and `test_pin_tracks_hub_protocol_version` asserts it equals the hub
+`PROTOCOL_VERSION`. When you bump `PROTOCOL_VERSION`, the test fails until you
+(1) tag a compatible `rtl-buddy-nvim` release, (2) bump `RTL_BUDDY_NVIM_REF` to
+it, and (3) bump `_PIN_PROTOCOL_VERSION`. Keep the three in lockstep.
