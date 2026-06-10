@@ -448,20 +448,20 @@ def test_axi_profile_vpd_converters_declared():
 
 
 def test_rtl_buddy_view_declares_floor_and_version_probe():
-    """rtl-buddy-view carries a 0.2.1 FLOOR (no upper cap) and a probe.
+    """rtl-buddy-view carries a 0.2.3 FLOOR (no upper cap) and a probe.
 
     rtl_buddy pins no rtl-buddy-view version in pyproject — the manifest
     floor plus the runtime guards are the policy. The probe depends on
     `rtl-buddy-view --version` (rtl-buddy-view#121); the regex must pull
-    X.Y.Z out of its `rtl-buddy-view 0.2.1` output.
+    X.Y.Z out of its `rtl-buddy-view 0.2.3` output.
     """
     by_name = {s.name: s for s in tm.get_manifest()}
     spec = by_name["rtl-buddy-view"]
-    assert spec.minimum_version == "0.2.1"
+    assert spec.minimum_version == "0.2.3"
     assert spec.version_cmd == ("rtl-buddy-view", "--version")
     assert spec.version_regex is not None
-    m = re.search(spec.version_regex, "rtl-buddy-view 0.2.1")
-    assert m is not None and m.group(1) == "0.2.1"
+    m = re.search(spec.version_regex, "rtl-buddy-view 0.2.3")
+    assert m is not None and m.group(1) == "0.2.3"
     # The tagless hatch-vcs dev build still resolves to its base version.
     m = re.search(spec.version_regex, "rtl-buddy-view 0.2.2.dev0+g0f37a432d")
     assert m is not None and m.group(1) == "0.2.2"
@@ -487,15 +487,15 @@ def test_rtl_buddy_view_outdated_below_floor(fake_bin: Path):
     too_old = tm.check_tool(probe_spec, probe_versions=True, cache={})
     assert too_old.status == "outdated"
     assert too_old.version == "0.2.0"
-    assert too_old.minimum_version == "0.2.1"
+    assert too_old.minimum_version == "0.2.3"
 
     _make_exe(
         fake_bin / "rtl-buddy-view",
-        body="#!/bin/sh\necho 'rtl-buddy-view 0.2.1'\n",
+        body="#!/bin/sh\necho 'rtl-buddy-view 0.2.3'\n",
     )
     at_floor = tm.check_tool(probe_spec, probe_versions=True, cache={})
     assert at_floor.status == "ok"
-    assert at_floor.version == "0.2.1"
+    assert at_floor.version == "0.2.3"
 
 
 def test_fpv_solvers_present_in_manifest():

@@ -505,9 +505,12 @@ def _builtin_manifest() -> list[ToolSpec]:
             version_regex=r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)",
             # Floor, not a cap: rtl_buddy declares no upper pin on view
             # (a pre-1.0 peer whose view.json is forward-compatible within
-            # schema 1.x). 0.2.1 is the first PyPI release that clears the
-            # 0.2.0 filelist IsADirectoryError bug and ships the SPA bundle.
-            minimum_version="0.2.1",
+            # schema 1.x). 0.2.3 is the first PyPI release with the coverage
+            # overlay (--overlay coverage=, --coverage-metric,
+            # --coverage-url-base; rtl-buddy-view#20) and correct Coverview
+            # deep links; it also carries the 0.2.1 filelist fix and the
+            # SPA bundle that earlier floors guarded.
+            minimum_version="0.2.3",
             detection=(PythonSiblingDetector("rtl-buddy-view"),),
             install_hint={
                 "any": "uv tool install rtl-buddy-view  (or pip install rtl-buddy-view)",
