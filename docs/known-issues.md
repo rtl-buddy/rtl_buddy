@@ -101,3 +101,23 @@ output. Porting to the streaming API is tracked in #263; the bound, the
 runtime guard (`tools/pywellen_compat.py`), and the CI surface test
 (`tests/test_surfer_wcp.py::TestPywellenApiSurface`) are lifted together when
 that lands.
+
+## The artefact-tree lock is per tree, and its lock file stays behind
+
+Every artifact-writing command takes an exclusive `flock` on
+`<artifact_root>/.rtl-buddy.lock` and **fails immediately** if another
+rtl-buddy process holds it ([#73](https://github.com/rtl-buddy/rtl_buddy/issues/73)) —
+see [Execution Context](concepts/execution-context.md#one-run-per-artefact-tree).
+Two consequences that can surprise:
+
+- **Contention is per artefact tree, not per command family.** When
+  `tests.yaml`, `cdc.yaml`, `synth.yaml`, etc. share a suite directory, they
+  share one `artefacts/` — so `rb hier` or `rb cdc` during a long `rb test`
+  in the same suite fails loud, even though their output subtrees are
+  disjoint. Deliberate: one coarse lock per tree, no partial-overlap edge
+  cases. Wait for the running command, or work from a different suite.
+- **A `.rtl-buddy.lock` file lingers in `artefacts/`.** It is holder
+  metadata only; the actual lock is kernel-managed and vanishes when the
+  holding process exits (crash and `kill` included). A leftover file means
+  nothing is locked — do not "clean it up" mid-run thinking it's stale
+  state, and don't be alarmed by it after runs finish.

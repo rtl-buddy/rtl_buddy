@@ -116,7 +116,9 @@ Two `rb` processes writing into the same `artefacts/` tree would interleave comp
 (pid 12345, rb test, started 2026-06-10T14:03:21) — wait for it to finish or kill it
 ```
 
-The lock is released by the kernel when the holding process exits, including on crashes, so there are no stale locks to clean up; the `.rtl-buddy.lock` file itself is just holder metadata and is harmless to leave behind. `rb regression` locks each suite it enters for the lifetime of the run. Metadata-only invocations (`--list`) never take the lock, so listing tests while a run is in flight always works. Suites with *different* artefact trees never contend — run as many in parallel as you like.
+The lock is released by the kernel when the holding process exits — normal completion, crash, or `kill` alike — so there are no stale locks to clean up; the `.rtl-buddy.lock` file itself is just holder metadata and is harmless to leave behind. `rb regression` locks each suite it enters for the lifetime of the run. Metadata-only invocations (`--list`) never take the lock, so listing tests while a run is in flight always works. Suites with *different* artefact trees never contend — run as many in parallel as you like.
+
+The lock covers the **whole artefact tree**, not just the subtree a command writes: when `tests.yaml`, `cdc.yaml`, `synth.yaml`, etc. share a suite directory, any two artifact-writing commands contend — `rb hier` during a long `rb test` in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the `--list` paths and commands anchored elsewhere (another suite, `rb docs`, `rb hub`) remain available.
 
 ## Future: redirecting the artifact root
 

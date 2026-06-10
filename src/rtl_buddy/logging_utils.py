@@ -288,14 +288,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"git: {fields.get('branch')} | commit {fields.get('commit')} | clean"
             )
         case "artifact_lock.contended":
-            holder_bits = []
-            if fields.get("holder_pid") is not None:
-                holder_bits.append(f"pid {fields.get('holder_pid')}")
-            if fields.get("holder_command"):
-                holder_bits.append(f"rb {fields.get('holder_command')}")
-            if fields.get("holder_started"):
-                holder_bits.append(f"started {fields.get('holder_started')}")
-            holder = f" ({', '.join(holder_bits)})" if holder_bits else ""
+            # Deferred import: artifact_lock imports log_event from this
+            # module, so a top-level import here would be circular.
+            from .artifact_lock import _describe_holder
+
+            holder = _describe_holder(
+                {
+                    "pid": fields.get("holder_pid"),
+                    "command": fields.get("holder_command"),
+                    "started": fields.get("holder_started"),
+                }
+            )
             return (
                 f"Another rtl-buddy run is already using {fields.get('path')}{holder}"
             )
