@@ -6,7 +6,6 @@ formatting, WCP frame I/O, and source resolver signal extraction.
 import logging
 import os
 import socket
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
@@ -755,80 +754,54 @@ class TestPushScopeValuesSameLineGrouping:
 
 
 class TestWaveLauncherCheckNvimPlugin:
-    def _make_launcher(self, surfer_cfg, tmp_plugin_path=None):
+    def _make_launcher(self, surfer_cfg):
         from rtl_buddy.tools.wave_launcher import WaveLauncher
 
-        test_cfg = MagicMock()
         launcher = object.__new__(WaveLauncher)
         launcher._surfer_cfg = surfer_cfg
-        launcher._test_cfg = test_cfg
+        launcher._test_cfg = MagicMock()
         launcher._suite_dir = "/fake/suite"
         launcher._fst_path = "/fake/dump.fst"
         launcher._surfer_file = None
         launcher._scope_annotation = True
-        if tmp_plugin_path is not None:
-            launcher.__class__._NVIM_PLUGIN = tmp_plugin_path
         return launcher
 
-    def test_warning_logged_when_plugin_missing(self, tmp_path):
-        plugin_path = str(tmp_path / "rtl_buddy_wave.lua")  # does NOT exist
+    def _warnings(self, launcher):
+        """Run the check, capturing WARNING-level log_event calls."""
+        log_calls = []
+        with patch(
+            "rtl_buddy.tools.wave_launcher.log_event",
+            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
+        ):
+            launcher._check_nvim_plugin()
+        return [c for c in log_calls if c[0][1] == logging.WARNING]
+
+    def test_warning_logged_when_plugin_missing(self):
         surfer_cfg = _make_surfer_cfg(
             editor_sock="~/.local/share/nvim/surfer.sock",
             editor_cmd="nvim +%l %f",
         )
-        launcher = self._make_launcher(surfer_cfg, plugin_path)
+        launcher = self._make_launcher(surfer_cfg)
+        with patch("rtl_buddy.tools.nvim_install.is_installed", return_value=False):
+            assert len(self._warnings(launcher)) >= 1
 
-        log_calls = []
-        with patch(
-            "rtl_buddy.tools.wave_launcher.log_event",
-            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
-        ):
-            launcher._check_nvim_plugin()
-
-        # At least one WARNING-level log_event call
-        warning_calls = [c for c in log_calls if c[0][1] == logging.WARNING]
-        assert len(warning_calls) >= 1
-
-    def test_no_warning_when_plugin_exists(self, tmp_path):
-        import logging as _logging
-
-        plugin_path = str(tmp_path / "rtl_buddy_wave.lua")
-        Path(plugin_path).touch()  # create the file
+    def test_no_warning_when_plugin_installed(self):
         surfer_cfg = _make_surfer_cfg(
             editor_sock="~/.local/share/nvim/surfer.sock",
             editor_cmd="nvim +%l %f",
         )
-        launcher = self._make_launcher(surfer_cfg, plugin_path)
+        launcher = self._make_launcher(surfer_cfg)
+        with patch("rtl_buddy.tools.nvim_install.is_installed", return_value=True):
+            assert len(self._warnings(launcher)) == 0
 
-        log_calls = []
-        with patch(
-            "rtl_buddy.tools.wave_launcher.log_event",
-            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
-        ):
-            launcher._check_nvim_plugin()
-
-        warning_calls = [c for c in log_calls if c[0][1] == _logging.WARNING]
-        assert len(warning_calls) == 0
-
-    def test_no_warning_when_editor_sock_empty(self, tmp_path):
-        import logging as _logging
-
-        plugin_path = str(tmp_path / "rtl_buddy_wave.lua")  # does NOT exist
+    def test_no_warning_when_editor_sock_empty(self):
         surfer_cfg = _make_surfer_cfg(
-            editor_sock="",  # no sock configured
+            editor_sock="",  # no sock configured — check returns before is_installed
             editor_cmd="nvim +%l %f",
         )
-        launcher = self._make_launcher(surfer_cfg, plugin_path)
-
-        log_calls = []
-        with patch(
-            "rtl_buddy.tools.wave_launcher.log_event",
-            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
-        ):
-            launcher._check_nvim_plugin()
-
-        warning_calls = [c for c in log_calls if c[0][1] == _logging.WARNING]
-        assert len(warning_calls) == 0
+        launcher = self._make_launcher(surfer_cfg)
+        with patch("rtl_buddy.tools.nvim_install.is_installed", return_value=False):
+            assert len(self._warnings(launcher)) == 0
 
 
 # ---------------------------------------------------------------------------

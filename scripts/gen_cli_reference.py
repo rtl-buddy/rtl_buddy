@@ -25,7 +25,7 @@ SUBCOMMANDS = [
     "hier",
     "wave",
     "wave-fpv",
-    "wave-install-nvim",
+    "nvim-install",
     "synth",
     "synth-regression",
     "pnr",

@@ -404,7 +404,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'verible: invalid command "{fields.get("command")}"'
         case "wave.nvim_plugin_missing":
             return (
-                f'nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations'
+                'nvim plugin not installed — run "rb nvim-install" to enable the hub'
+                " connection and wave annotations"
                 f" (expected: {fields.get('path')})"
             )
         case "wave.trace_missing":

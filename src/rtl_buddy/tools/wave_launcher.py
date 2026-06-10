@@ -55,10 +55,6 @@ class WaveLauncher:
         self._surfer_file = surfer_file
         self._scope_annotation = scope_annotation
 
-    _NVIM_PLUGIN = os.path.expanduser(
-        "~/.local/share/nvim/site/plugin/rtl_buddy_wave.lua"
-    )
-
     def _check_nvim_plugin(self) -> None:
         """Warn if editor-sock is configured but the nvim plugin is not installed."""
         if not self._surfer_cfg.resolved_editor_sock:
@@ -66,12 +62,14 @@ class WaveLauncher:
         cmd = self._surfer_cfg.editor_cmd.strip()
         if not (cmd.startswith("nvim") or "/nvim" in cmd):
             return
-        if not os.path.isfile(self._NVIM_PLUGIN):
+        from .nvim_install import is_installed, pack_dir
+
+        if not is_installed():
             log_event(
                 logger,
                 logging.WARNING,
                 "wave.nvim_plugin_missing",
-                path=self._NVIM_PLUGIN,
+                path=str(pack_dir()),
             )
 
     def launch(self) -> None:

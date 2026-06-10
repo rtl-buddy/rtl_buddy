@@ -89,11 +89,12 @@ When `editor-sock` is set and the nvim plugin is installed, `rb wave` annotates 
 **Installing the nvim plugin:**
 
 ```bash
-rb wave-install-nvim          # installs rtl_buddy_wave.lua to ~/.local/share/nvim/site/plugin/
-rb wave-install-nvim --force  # overwrite an existing installation
+rb nvim-install          # install the unified rtl-buddy-nvim plugin (hub + annotation)
+rb nvim-install --update # sync an existing install to the pinned revision
+rb nvim-install --force  # remove and re-install
 ```
 
-The plugin provides the `WaveValue` highlight group and a `VimEnter` hook required for annotation to work.
+This installs the [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim) plugin — the same plugin that provides the [hub](hub.md) connection — which supplies the `WaveValue` highlight group and the annotation hook. One command wires both the annotation and the hub auto-connect; see [the wave doc](wave.md#nvim-setup) for details.
 
 **`cfg-rtl-reg`**
 

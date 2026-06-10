@@ -218,8 +218,14 @@ class RtlBuddy:
             help="open SymbiYosys counterexample VCD for a failed FPV verification",
         )(self.do_cmd_wave_fpv)
         self.app.command(
-            "wave-install-nvim", help="install nvim plugin for rb wave annotation"
-        )(self.do_wave_install_nvim)
+            "nvim-install",
+            help="install/update the unified rtl-buddy-nvim editor plugin "
+            "(hub + wave annotation)",
+        )(self.do_nvim_install)
+        # Back-compat alias for the pre-#272 annotation-only command.
+        self.app.command("wave-install-nvim", help="alias for nvim-install")(
+            self.do_nvim_install
+        )
         self.app.command("synth", help="run synthesis")(self.do_cmd_synth)
         self.app.command("synth-regression", help="run synthesis regression")(
             self.do_synth_regression
@@ -3888,36 +3894,51 @@ class RtlBuddy:
             verification=verif_name,
         )
 
-    def do_wave_install_nvim(
+    def do_nvim_install(
         self,
         force: Annotated[
             bool,
-            typer.Option("--force", help="overwrite existing installation"),
+            typer.Option("--force", help="remove any existing install and re-clone"),
+        ] = False,
+        update: Annotated[
+            bool,
+            typer.Option(
+                "--update", help="sync an existing install to the pinned revision"
+            ),
+        ] = False,
+        ref: Annotated[
+            str | None,
+            typer.Option(
+                "--ref", help="override the pinned rtl-buddy-nvim git ref (tag/branch)"
+            ),
+        ] = None,
+        source: Annotated[
+            str | None,
+            typer.Option(
+                "--source",
+                help="override the rtl-buddy-nvim repo URL or local path "
+                "(for offline/dev installs)",
+            ),
+        ] = None,
+        no_lsp: Annotated[
+            bool,
+            typer.Option(
+                "--no-lsp",
+                help="omit the verible-verilog-ls autostart from the managed setup",
+            ),
         ] = False,
     ):
         """
-        install the rtl_buddy_wave.lua plugin into ~/.local/share/nvim/site/plugin/
+        install/update the unified rtl-buddy-nvim editor plugin (hub + wave annotation)
 
-        The plugin provides the WaveValue highlight group and VimEnter hook
-        needed for rb wave signal value annotation. It is auto-sourced by nvim
-        via runtimepath — no changes to init.lua required.
+        Clones the pinned, hub-compatible rtl-buddy-nvim revision into the nvim
+        pack dir and writes a managed setup file that auto-connects to the hub and
+        renders rb wave signal-value annotations — no manual git clone or init.lua
+        edits. (rb wave-install-nvim is a back-compat alias for this command.)
         """
-        from importlib.resources import files as _res
-        from importlib.metadata import version as _ver
-        from pathlib import Path
+        from .tools.nvim_install import install
 
-        dest_dir = Path(os.path.expanduser("~/.local/share/nvim/site/plugin"))
-        dest = dest_dir / "rtl_buddy_wave.lua"
-
-        if dest.exists() and not force:
-            emit_console_text(f"Already installed: {dest}  (use --force to overwrite)")
-            return
-
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        src = _res("rtl_buddy.nvim").joinpath("rtl_buddy_wave.lua").read_text()
-        dest.write_text(src)
-        emit_console_text(f"Installed: {dest}  (rtl-buddy {_ver('rtl-buddy')})")
-        emit_console_text("Restart nvim for the plugin to take effect.")
+        install(force=force, update=update, ref=ref, source=source, lsp=not no_lsp)
 
     def do_lint(self):
         assert False, "not yet impl"

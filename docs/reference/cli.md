@@ -49,7 +49,9 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ hier               render module hierarchy via rtl-buddy-view                        │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
-│ wave-install-nvim  install nvim plugin for rb wave annotation                        │
+│ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
+│                    wave annotation)                                                  │
+│ wave-install-nvim  alias for nvim-install                                            │
 │ synth              run synthesis                                                     │
 │ synth-regression   run synthesis regression                                          │
 │ pnr                run place-and-route                                               │
@@ -263,16 +265,21 @@ Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-## wave-install-nvim
+## nvim-install
 
 ```text
-Usage: rtl-buddy wave-install-nvim [OPTIONS]                                           
+Usage: rtl-buddy nvim-install [OPTIONS]                                                
                                                                                         
- install nvim plugin for rb wave annotation                                             
+ install/update the unified rtl-buddy-nvim editor plugin (hub + wave annotation)        
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --force          overwrite existing installation                                     │
-│ --help           Show this message and exit.                                         │
+│ --force               remove any existing install and re-clone                       │
+│ --update              sync an existing install to the pinned revision                │
+│ --ref           TEXT  override the pinned rtl-buddy-nvim git ref (tag/branch)        │
+│ --source        TEXT  override the rtl-buddy-nvim repo URL or local path (for        │
+│                       offline/dev installs)                                          │
+│ --no-lsp              omit the verible-verilog-ls autostart from the managed setup   │
+│ --help                Show this message and exit.                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

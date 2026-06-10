@@ -71,23 +71,30 @@ Clicking any signal in Surfer's signal list sets the **active scope** — the mo
 
 ### nvim setup
 
-The annotation feature requires a small nvim plugin. Install it once:
+The annotation feature lives in the [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim) plugin — the same plugin that connects your editor to the [hub](hub.md). Install it once with the unified command:
 
 ```bash
-rb wave-install-nvim
+rb nvim-install
 ```
 
-This copies `rtl_buddy_wave.lua` to `~/.local/share/nvim/site/plugin/`, which nvim auto-sources at startup. No `init.lua` changes are needed. Reinstall after rtl-buddy upgrades with `--force`:
+This clones the plugin (pinned to a revision compatible with this rtl-buddy's hub protocol) into `~/.local/share/nvim/site/pack/rtlbuddy/start/rtl-buddy-nvim` and writes a managed `~/.local/share/nvim/site/plugin/rtl_buddy_setup.lua` that nvim auto-sources at startup — no `init.lua` changes are needed. The managed setup also auto-connects to the hub and, when `verible-verilog-ls` is on `PATH`, starts it for symbol resolution.
+
+Keep it current after an rtl-buddy upgrade:
 
 ```bash
-rb wave-install-nvim --force
+rb nvim-install --update   # sync to the revision pinned by your rtl-buddy
+rb nvim-install --force    # remove and re-install
 ```
+
+`git` is required (the plugin is fetched via `git clone`). For an offline or sibling-checkout install, point at a local path: `rb nvim-install --source /path/to/rtl-buddy-nvim --ref <branch>`.
 
 If the plugin is missing when `rb wave` starts with `editor-sock` configured, a warning is shown:
 
 ```
-WARNING  nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations
+WARNING  nvim plugin not installed — run "rb nvim-install" to enable the hub connection and wave annotations
 ```
+
+Verify the install with `:checkhealth rtlbuddy` in nvim — it reports hub state, LSP attach, and whether wave annotation is enabled.
 
 ### Adding signals to Surfer from nvim
 
