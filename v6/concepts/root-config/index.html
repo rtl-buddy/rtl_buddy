@@ -1625,10 +1625,11 @@
 <li>Pass <code>--focused-signal</code> to <code>rb wave</code> to annotate only the signal explicitly selected via "Go to declaration" instead of the full module scope.</li>
 </ul>
 <p><strong>Installing the nvim plugin:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>wave-install-nvim<span class="w">          </span><span class="c1"># installs rtl_buddy_wave.lua to ~/.local/share/nvim/site/plugin/</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>wave-install-nvim<span class="w"> </span>--force<span class="w">  </span><span class="c1"># overwrite an existing installation</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>nvim-install<span class="w">          </span><span class="c1"># install the unified rtl-buddy-nvim plugin (hub + annotation)</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--update<span class="w"> </span><span class="c1"># sync an existing install to the pinned revision</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--force<span class="w">  </span><span class="c1"># remove and re-install</span>
 </code></pre></div>
-<p>The plugin provides the <code>WaveValue</code> highlight group and a <code>VimEnter</code> hook required for annotation to work.</p>
+<p>This installs the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a> plugin — the same plugin that provides the <a href="../hub/">hub</a> connection — which supplies the <code>WaveValue</code> highlight group and the annotation hook. One command wires both the annotation and the hub auto-connect; see <a href="../wave/#nvim-setup">the wave doc</a> for details.</p>
 <p><strong><code>cfg-rtl-reg</code></strong></p>
 <p>Sets the default path to <code>regression.yaml</code> used by <code>rtl-buddy regression</code> when <code>--reg-config</code> is not specified.</p>
 <h2 id="builder-and-mode-overrides">Builder and mode overrides</h2>

@@ -1696,6 +1696,12 @@
 <td>nvim for full annotation round-trip; any editor configurable via <code>editor-cmd</code> for one-way "open at line". Vaporview / VS Code support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/84">issue #84</a>. See <a href="../concepts/wave/">Waveform Viewer</a>.</td>
 </tr>
 <tr>
+<td><code>rb nvim-install</code> (alias <code>rb wave-install-nvim</code>)</td>
+<td>Integrated tool</td>
+<td><a href="https://github.com/rtl-buddy/rtl-buddy-nvim">rtl-buddy-nvim</a></td>
+<td>Requires <strong><code>git</code> + network</strong> — clones the pinned, hub-compatible plugin revision into the nvim pack dir and writes a managed setup file. For air-gapped installs point at a local checkout: <code>--source &lt;path&gt; --ref &lt;ref&gt;</code>. See <a href="../concepts/wave/#nvim-setup">Waveform Viewer → nvim setup</a>.</td>
+</tr>
+<tr>
 <td><code>rb power</code>, <code>rb power-regression</code></td>
 <td>Integrated tool</td>
 <td>OpenROAD ≥ <code>25Q1</code></td>
