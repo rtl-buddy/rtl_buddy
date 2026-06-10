@@ -24,6 +24,7 @@ from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
+from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
 from .logging_utils import (
@@ -296,6 +297,7 @@ class RtlBuddy:
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
         self._builder_override: str | None = None
+        self._artifact_locks = ArtifactLocks()
 
     def run(self):
         try:
@@ -477,6 +479,14 @@ class RtlBuddy:
 
         if list_only:
             return ctx
+
+        # Fail loud if another rtl-buddy process is already using this
+        # artefact tree (#73). Held until process exit; metadata-only
+        # --list paths above stay lock-free.
+        self._artifact_locks.acquire(
+            ctx.artifact_root,
+            command=getattr(self, "_pending_invoked_subcommand", None),
+        )
 
         # Build root_cfg on first entry; on later entries, only rebuild if
         # the new command root walks up to a different root_config.yaml —

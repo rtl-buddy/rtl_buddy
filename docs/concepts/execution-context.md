@@ -107,6 +107,17 @@ out = os.path.join(os.getcwd(), "gen.sv")    # wrong — invocation cwd
 
 A relative path inside a YAML file never depends on where you ran `rb`. Absolute paths pass through unchanged.
 
+## One run per artefact tree
+
+Two `rb` processes writing into the same `artefacts/` tree would interleave compile workspaces, `run-NNNN` directories, and the latest-run symlinks. To prevent this, every artifact-writing command takes an exclusive advisory lock (`flock`) on `<artifact_root>/.rtl-buddy.lock` when it starts, and **fails immediately** — it never waits — if another run already holds it:
+
+```text
+<suite>/artefacts: another rtl-buddy run is already using this artefact tree
+(pid 12345, rb test, started 2026-06-10T14:03:21) — wait for it to finish or kill it
+```
+
+The lock is released by the kernel when the holding process exits, including on crashes, so there are no stale locks to clean up; the `.rtl-buddy.lock` file itself is just holder metadata and is harmless to leave behind. `rb regression` locks each suite it enters for the lifetime of the run. Metadata-only invocations (`--list`) never take the lock, so listing tests while a run is in flight always works. Suites with *different* artefact trees never contend — run as many in parallel as you like.
+
 ## Future: redirecting the artifact root
 
 The artifact root defaults to `command_root/artefacts/`. The `ExecutionContext` carrier is built to accept an explicit override so a future `--artifact-root` flag (or `root_config.yaml` field) can redirect large artifacts — synthesis netlists, simulation waveforms — onto a separate disk without touching command code. None of this is wired today; this page will update when it ships.

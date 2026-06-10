@@ -287,6 +287,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"git: {fields.get('branch')} | commit {fields.get('commit')} | clean"
             )
+        case "artifact_lock.contended":
+            holder_bits = []
+            if fields.get("holder_pid") is not None:
+                holder_bits.append(f"pid {fields.get('holder_pid')}")
+            if fields.get("holder_command"):
+                holder_bits.append(f"rb {fields.get('holder_command')}")
+            if fields.get("holder_started"):
+                holder_bits.append(f"started {fields.get('holder_started')}")
+            holder = f" ({', '.join(holder_bits)})" if holder_bits else ""
+            return (
+                f"Another rtl-buddy run is already using {fields.get('path')}{holder}"
+            )
         case "command.test":
             return f"Running test {fields.get('test')}"
         case "command.randtest":
