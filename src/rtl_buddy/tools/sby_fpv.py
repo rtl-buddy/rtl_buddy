@@ -137,13 +137,18 @@ class SbyFpv:
             model_cfg=self.fpv_cfg.get_model(),
             output_path=fl_path,
         )
+        # strip=False: keep the option markers (+incdir+, -v, +libext+, ...) in
+        # the emitted filelist. _parse_filelist below dispatches on exactly
+        # those prefixes to separate include dirs from sources; stripping them
+        # collapses a `+incdir+<dir>` entry to a bare path, which
+        # _parse_filelist then misreads as a (non-existent) source file.
         vlog_fl.write_output(
-            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+            output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
         )
         return fl_path
 
     def _parse_filelist(self, fl_path: str) -> tuple[list[str], list[str]]:
-        """Return (source paths, include dirs) from a stripped filelist."""
+        """Return (source paths, include dirs) from the model filelist."""
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
         sources: list[str] = []
         incdirs: list[str] = []
