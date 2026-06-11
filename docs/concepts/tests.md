@@ -180,6 +180,9 @@ Caveats:
 - Changes inside `+incdir+` include directories are not tracked by the
   stamp; delete `artefacts/.shared-builds/` (or run without
   `--share-build`) to force a fresh compile after header-only edits.
+- Toolchain upgrades are likewise invisible to the stamp. See
+  [Known Issues](../known-issues.md#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades)
+  for the full list of untracked inputs.
 
 ## Randomization
 

@@ -338,6 +338,10 @@ class VlogSim:
         Runtime-only inputs (seed, plusargs, run-time opts, timeout,
         coverage output path) are deliberately excluded — they vary per
         test/run without changing the simv.
+
+        Must stay JSON-native (lists/dicts/str/int/None): the stamp check
+        compares this dict against a json.loads() round-trip, so a tuple
+        here would silently disable reuse rather than error.
         """
         return {
             "cmd": list(key_cmd),
