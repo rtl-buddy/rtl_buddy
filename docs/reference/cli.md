@@ -47,6 +47,9 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ regression         run rtl regression                                                │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
+│ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
+│                    subtree, instances-of, port-connections, source-snippet); JSON on │
+│                    stdout                                                            │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
