@@ -201,7 +201,8 @@ Pick one or more from the table below; an issue with no area label is fine for c
 | `area/fpv` | formal property verification (`rb fpv`, sby plus commercial backends) |
 | `area/abv` | assertion-based verification (SVA, properties) in sim |
 | `area/mut` | mutation testing (`rb mut`) |
-| `area/pd` | physical design: `synth`, `pnr`, `power`, and other implementation flows |
+| `area/pd` | ASIC physical design: `synth`, `pnr`, `power` |
+| `area/fpga` | FPGA implementation flow (`rb fpga`, Vivado + open backends) and FPGA-specific checks |
 | `area/hier` | `hier` viewer and `rtl-buddy-view` integration |
 | `area/axi-profile` | `axi-profile` discover, run, notebook, and monitor generation |
 | `area/hub` | the hub server, marimo integration, hub event plumbing |

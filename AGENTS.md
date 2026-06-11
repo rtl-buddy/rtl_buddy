@@ -15,7 +15,7 @@ Read these before opening issues or PRs, or before changing runtime behavior:
 Issue conventions worth knowing up front:
 
 - Type, Priority, and Effort are org-level GitHub Issue Fields, not labels. Templates under `.github/ISSUE_TEMPLATE/` pre-bind Type.
-- Area is captured with `area/*` labels, kept consistent across all rtl-buddy repos: `area/test`, `area/wave`, `area/cdc`, `area/fpv`, `area/abv`, `area/mut`, `area/pd`, `area/hier`, `area/axi-profile`, `area/hub`, `area/skill`, `area/workflow`, `area/config`, `area/tooling`, `area/infra`. Plus `discussion`. The taxonomy is defined once in `.github/labels.json` and propagated with `.github/sync-labels.sh`; see the guidelines table for what each covers.
+- Area is captured with `area/*` labels, kept consistent across all rtl-buddy repos: `area/test`, `area/wave`, `area/cdc`, `area/fpv`, `area/abv`, `area/mut`, `area/pd`, `area/fpga`, `area/hier`, `area/axi-profile`, `area/hub`, `area/skill`, `area/workflow`, `area/config`, `area/tooling`, `area/infra`. Plus `discussion`. The taxonomy is defined once in `.github/labels.json` and propagated with `.github/sync-labels.sh`; see the guidelines table for what each covers.
 - The `version/{patch,minor,major}` labels are PR-only and drive the release workflow. A `version/major` PR **must** add a `## vN to vM` section to `docs/migrations.md` before merge (see guidelines → [Releases](docs/development/guidelines.md#releases)); the label and the migration section are inseparable.
 - Multi-issue long-running efforts get a theme-named milestone (e.g. "Hub Phase 3"), not a version-named one.
 
