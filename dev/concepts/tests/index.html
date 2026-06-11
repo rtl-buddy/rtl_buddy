@@ -583,6 +583,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Running tests">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sharing-compiled-builds-across-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharing compiled builds across tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1644,6 +1661,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Running tests">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#sharing-compiled-builds-across-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sharing compiled builds across tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1882,6 +1916,39 @@
 <p>List tests without running:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
 </code></pre></div></p>
+<h3 id="sharing-compiled-builds-across-tests">Sharing compiled builds across tests</h3>
+<p>By default every test compiles into its own build directory
+(<code>artefacts/&lt;test&gt;/obj_dir_&lt;test&gt;</code>), so a suite of N tests that share one
+testbench verilates the design N times. For large designs the verilation
+step dominates wall-clock time.</p>
+<p><code>--share-build</code> opts into reusing one compiled <code>simv</code> across tests whose
+compile inputs are identical:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--share-build
+</code></pre></div>
+<p>The build directory is keyed on a hash of the compile inputs — builder
+executable, compile-time options, plusdefines, compile environment, and the
+resolved filelist — and lives at <code>artefacts/.shared-builds/obj_dir_&lt;hash&gt;/</code>.
+The first test with a given key compiles; subsequent tests find a valid
+<code>simv</code> and skip verilation entirely. Runtime-only inputs (plusargs, seeds,
+<code>timeout</code>) never affect the key, so tests that differ only in those always
+share. Tests with different <code>pd</code> plusdefines hash to different keys and
+compile separately.</p>
+<p>After a successful compile, a <code>rb-compile-stamp.json</code> recording the exact
+compile inputs (including each source file's size and modification time) is
+written next to the <code>simv</code>. Reuse only happens when the stamp matches, so
+editing any file listed in the filelist triggers a rebuild in place.</p>
+<p>Caveats:</p>
+<ul>
+<li>Verilator builders only. Other builders log a warning and compile per
+  test as before.</li>
+<li>Changes inside <code>+incdir+</code> include directories are not tracked by the
+  stamp; delete <code>artefacts/.shared-builds/</code> (or run without
+  <code>--share-build</code>) to force a fresh compile after header-only edits.</li>
+<li>Toolchain upgrades are likewise invisible to the stamp. See
+  <a href="../../known-issues/#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades">Known Issues</a>
+  for the full list of untracked inputs.</li>
+</ul>
 <h2 id="randomization">Randomization</h2>
 <p>Two seed options are available with the <code>test</code> subcommand:</p>
 <ul>

@@ -1574,6 +1574,10 @@
 <p>Specify a config file explicitly:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--reg-config<span class="w"> </span>path/to/regressions.yaml
 </code></pre></div>
+<p>When many tests in a suite share one testbench and compile configuration,
+add <code>--share-build</code> to compile once per unique set of compile inputs instead
+of once per test (Verilator builders only). See
+<a href="../tests/#sharing-compiled-builds-across-tests">Sharing compiled builds across tests</a>.</p>
 <h3 id="config-resolution-order">Config resolution order</h3>
 <p>When <code>--reg-config</code> is not given, <code>rtl_buddy</code> resolves the regression config in this order:</p>
 <ol>
