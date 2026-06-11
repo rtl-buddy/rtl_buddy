@@ -110,9 +110,9 @@ def test_check_view_version_skips_when_not_installed(monkeypatch):
 
 def test_check_view_version_passes_at_floor(monkeypatch):
     """Exactly the floor (and dev/rc suffixes of it) is accepted."""
-    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.3")
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.3.0")
     _check_view_version()
-    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.3.dev3+g0f37a43")
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.3.0.dev3+g0f37a43")
     _check_view_version()
     monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "1.0.0")
     _check_view_version()
@@ -120,8 +120,8 @@ def test_check_view_version_passes_at_floor(monkeypatch):
 
 def test_check_view_version_raises_when_too_old(monkeypatch):
     """Below the floor → FatalRtlBuddyError naming the floor + upgrade hint."""
-    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.2")
-    with pytest.raises(FatalRtlBuddyError, match=r"0\.2\.3"):
+    monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.3")
+    with pytest.raises(FatalRtlBuddyError, match=r"0\.3\.0"):
         _check_view_version()
 
 
@@ -136,5 +136,5 @@ def test_discover_bundle_enforces_floor(fake_viewer_pkg, monkeypatch, tmp_path: 
     bundle.mkdir()
     fake_viewer_pkg.path = lambda: bundle  # type: ignore[attr-defined]
     monkeypatch.setattr(hub_loop, "_pkg_version", lambda _name: "0.2.0")
-    with pytest.raises(FatalRtlBuddyError, match=r"rtl-buddy-view >= 0\.2\.3"):
+    with pytest.raises(FatalRtlBuddyError, match=r"rtl-buddy-view >= 0\.3\.0"):
         _discover_viewer_bundle()

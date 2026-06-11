@@ -507,17 +507,17 @@ def _builtin_manifest() -> list[ToolSpec]:
             version_regex=r"rtl-buddy-view\s+(\d+\.\d+(?:\.\d+)?)",
             # Floor, not a cap: rtl_buddy declares no upper pin on view
             # (a pre-1.0 peer whose view.json is forward-compatible within
-            # schema 1.x). 0.2.3 is the first PyPI release with the coverage
-            # overlay (--overlay coverage=, --coverage-metric,
-            # --coverage-url-base; rtl-buddy-view#20) and correct Coverview
-            # deep links; it also carries the 0.2.1 filelist fix and the
-            # SPA bundle that earlier floors guarded.
-            minimum_version="0.2.3",
+            # schema 1.x). 0.3.0 is the first release with the `query`
+            # subcommands that `rb hier-query` shells out to
+            # (rtl-buddy-view#125 / rtl_buddy#198); it also carries the
+            # 0.2.3 coverage overlay + Coverview deep links and the SPA
+            # bundle that earlier floors guarded.
+            minimum_version="0.3.0",
             detection=(PythonSiblingDetector("rtl-buddy-view"),),
             install_hint={
                 "any": "uv tool install rtl-buddy-view  (or pip install rtl-buddy-view)",
             },
-            used_by=("hier", "hub"),
+            used_by=("hier", "hier-query", "hub"),
             optional=False,
             description="Hierarchy viewer + JSON exporter for rtl_buddy",
         ),
