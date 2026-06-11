@@ -45,7 +45,7 @@ src/rtl_buddy/
 └── tools/
     ├── synth_yosys.py     # Yosys backend: filelist → synth.ys script → yosys invocation
     ├── cdc_rtl_buddy.py   # rtl-buddy-cdc subprocess wrapper, parses JSON report
-    ├── hier_rtl_buddy_view.py # rtl-buddy-view subprocess wrapper for `rb hier`
+    ├── hier_rtl_buddy_view.py # rtl-buddy-view subprocess wrapper for `rb hier` / `rb hier-query`
     ├── spec_trace.py      # discover_spec_configs, build_coverage_map, etc.
     └── ...                # filelist, sim, postproc, verible wrappers
 ```
@@ -62,6 +62,7 @@ src/rtl_buddy/
 - `SynthRunner` resolves a `SynthToolConfig` from `root_cfg.get_synth_tool_cfg(tool_name)`, merges any `tool_overrides` from the `SynthConfig`, then dispatches to `YosysSynth`. Opts resolution: root-config `opts` are the baseline; per-run `tool_overrides.<tool>` keys overwrite matching fields.
 - `YosysSynth` writes `synth.f` via `VlogFilelist` (with `unroll=True, strip=True, deduplicate=True`), then generates `synth.ys`. Source files are emitted as individual `read_verilog -sv -defer` commands (not `-f filelist`) so Yosys only elaborates the top hierarchy. Pass/fail is determined by exit code then `ERROR:` line scan.
 - `rb hier <model>` (`tools/hier_rtl_buddy_view.py`) writes a stripped+deduplicated filelist to `artefacts/hier/<model>/hier.f`, then shells out to `rtl-buddy-view` with `--top <model> --filelist hier.f --format <fmt>` plus optional `--output`, `--frontend`, `--cdc-annotations`, `--clock-legend`. The renderer's stdout passes through to the terminal when `-o` is not given (so `rb hier x --format dot | dot -Tsvg ...` works); stderr is captured to `hier.log`. The integration is at subprocess granularity — rtl_buddy is not coupled to the viewer's Python API. The viewer's JSON contract (`schema_version`, `tool.*`, `design.top`, `nodes`, `edges`) is guarded by `test_json_contract_keys_present_and_typed` in rtl-buddy-view.
+- `rb hier-query <model> <verb> <arg>` (same wrapper module, `RtlBuddyViewQuery`) shells out to `rtl-buddy-view query {find-module,subtree,instances-of,port-connections,source-snippet}` (rtl-buddy-view ≥ 0.3.0) and prints the JSON / snippet answer on stdout. It shares `rb hier`'s `artefacts/hier/<model>/hier.f` filelist; unlike `rb hier` it streams the viewer's **stderr through to the terminal** (a lookup miss is the answer, not a diagnostic) and logs the invocation to `query.log`.
 
 ## Validation
 

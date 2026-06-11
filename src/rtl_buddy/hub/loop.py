@@ -35,16 +35,15 @@ logger = logging.getLogger(__name__)
 
 
 # Minimum rtl-buddy-view release the hub's in-env SPA bundle path targets.
-# Mirrors the `rtl-buddy-view` floor in tool_manifest.py: 0.2.3 is the first
-# PyPI release whose SPA bundle renders the coverage overlay
-# (rtl-buddy-view#20) — an older bundle silently drops coverage tints from
-# a view.json that carries them, which is exactly the stale-SPA failure
-# this guard exists to surface. rtl_buddy declares no view pin in
-# pyproject.toml, so this runtime guard IS the floor for the in-process
-# viewer_bundle path — it catches editable / old in-env installs that
-# bypass any resolve-time floor. Kept in sync with tool_manifest's
-# minimum_version for the binary.
-_VIEW_MIN_VERSION = "0.2.3"
+# Mirrors the `rtl-buddy-view` floor in tool_manifest.py — the two are
+# bumped together by convention (#266) so "which view does rtl_buddy
+# need" has one answer. 0.3.0 adds the `query` CLI consumed by
+# `rb hier-query` (no SPA change over 0.2.3, whose bundle is what the
+# coverage overlay rendering still guards against going stale).
+# rtl_buddy declares no view pin in pyproject.toml, so this runtime
+# guard IS the floor for the in-process viewer_bundle path — it catches
+# editable / old in-env installs that bypass any resolve-time floor.
+_VIEW_MIN_VERSION = "0.3.0"
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:

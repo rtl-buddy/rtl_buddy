@@ -61,7 +61,7 @@ from .tools.axi_profile_rtl_buddy import (
 )
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
-from .tools.hier_rtl_buddy_view import RtlBuddyView
+from .tools.hier_rtl_buddy_view import RtlBuddyView, RtlBuddyViewQuery
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
@@ -99,6 +99,7 @@ class RtlBuddy:
         "fpv",
         "fpv-regression",
         "hier",
+        "hier-query",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -168,6 +169,12 @@ class RtlBuddy:
         self.app.command("hier", help="render module hierarchy via rtl-buddy-view")(
             self.do_cmd_hier
         )
+        self.app.command(
+            "hier-query",
+            help="query the module hierarchy via rtl-buddy-view "
+            "(find-module, subtree, instances-of, port-connections, "
+            "source-snippet); JSON on stdout",
+        )(self.do_cmd_hier_query)
         self.axi_profile_app.command(
             "run",
             help="ingest a test's FST and emit per-test axi-perf.json",
@@ -1605,6 +1612,94 @@ class RtlBuddy:
             cdc_annotations=cdc_annotations,
             rdc_annotations=rdc_annotations,
             clock_legend=clock_legend,
+            executable=tool,
+        )
+        raise typer.Exit(runner.run())
+
+    def do_cmd_hier_query(
+        self,
+        name: Annotated[str, typer.Argument(help="model name from models.yaml")],
+        verb: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "query verb: find-module, subtree, instances-of, "
+                    "port-connections, or source-snippet"
+                )
+            ),
+        ],
+        arg: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "verb argument: a module name (find-module, "
+                    "instances-of) or a dot-separated instance path "
+                    "rooted at the model (subtree, port-connections, "
+                    "source-snippet)"
+                )
+            ),
+        ],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="parser frontend (verible|slang)"),
+        ] = None,
+        fmt: Annotated[
+            str | None,
+            typer.Option(
+                "--format",
+                help="subtree only: json (default) or tree",
+            ),
+        ] = None,
+        context: Annotated[
+            int | None,
+            typer.Option(
+                "--context",
+                help="source-snippet only: context lines on each side",
+            ),
+        ] = None,
+        line_numbers: Annotated[
+            bool,
+            typer.Option(
+                "--line-numbers/--no-line-numbers",
+                help="source-snippet only: prefix lines with source "
+                "line numbers (default on)",
+            ),
+        ] = True,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+    ):
+        """
+        query the module hierarchy via rtl-buddy-view (rb hier's
+        machine-readable sibling): JSON answers on stdout for shell
+        pipelines and agent tool use; source-snippet emits
+        line-number-prefixed citation text
+        """
+        ctx = self._enter_command_context(primary_config=model_config)
+        model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.hier_query",
+            command="hier-query",
+            model=name,
+            verb=verb,
+            arg=arg,
+        )
+        runner = RtlBuddyViewQuery(
+            name=self.name + "/hier-query",
+            model_cfg=model_cfg,
+            suite_dir=str(ctx.command_root),
+            verb=verb,
+            arg=arg,
+            frontend=frontend,
+            subtree_format=fmt,
+            context=context,
+            line_numbers=line_numbers,
             executable=tool,
         )
         raise typer.Exit(runner.run())
