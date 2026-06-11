@@ -30,7 +30,7 @@ from .fpv_vacuity import (
     parse_vacuity_log,
     write_vacuity_module,
 )
-from .fpv_coi import run_coi_analysis
+from .fpv_coi import render_slang_read, run_coi_analysis
 
 
 # Sby's compatibility check requires a minimum yosys; we surface the
@@ -255,14 +255,10 @@ class SbyFpv:
             # emit the directive when slang is actually used so the
             # default verilog path stays plugin-free.
             lines.append(f"plugin -i {plugin}")
-        slang_inc_args = ""
-        if frontend == "slang":
-            # read_slang reads include dirs from its OWN command line.
-            # `verilog_defaults -add -I` only configures yosys's built-in
-            # verilog frontend and is ignored by read_slang, so incdirs must
-            # be appended to the read_slang command (below), not emitted here.
-            slang_inc_args = "".join(f" -I {inc}" for inc in incdirs)
-        else:
+        # Verilog-frontend incdirs go through verilog_defaults; for slang they
+        # are carried on the read_slang line by render_slang_read (read_slang
+        # ignores verilog_defaults -add -I).
+        if frontend != "slang":
             for inc in incdirs:
                 lines.append(f"verilog_defaults -add -I {inc}")
         constraints = cfg.get_constraints()
@@ -274,37 +270,14 @@ class SbyFpv:
             + list(extra_property_files)
         )
         if frontend == "slang":
-            # slang elaborates eagerly and handles SV `bind` directives,
-            # concurrent SVA implications, and full sequence operators
-            # that the native verilog frontend rejects. The `--top`
-            # arg is required for `bind` to resolve — slang's
-            # elaborator only pulls in bound modules under the
-            # designated top.
-            #
-            # `--single-unit` compiles every file in the filelist as ONE
-            # compilation unit. Without it, yosys-slang treats each file
-            # as its own unit, so `define macros (and `define-based config
-            # like a leading defines header) do NOT carry across files and
-            # a compilation-unit-scope `bind` cannot see modules from other
-            # files — neither matches how simulators / yosys's own verilog
-            # frontend treat a filelist. Single-unit is what makes the
-            # "all files read in one invocation" intent above actually hold,
-            # and it lets a vendored module's `include-based config (e.g.
-            # `define COMMON_CELLS_ASSERTS_OFF in a header read first) take
-            # effect on later files.
-            #
-            # `--no-synthesis-define -DFORMAL=1` mirrors what the
-            # verilog path's `read -formal` does: yosys's verilog
-            # frontend replaces its implicit SYNTHESIS=1 define with
-            # FORMAL=1 in formal mode, while yosys-slang defaults to
-            # SYNTHESIS=1. Without this, in-RTL asserts guarded by
-            # `ifdef FORMAL are preprocessed away and the proof
-            # passes vacuously (#246).
-            src_args = " ".join(os.path.basename(s) for s in all_sources)
-            lines.append(
-                f"read_slang --top {cfg.get_top()} --single-unit{slang_inc_args} "
-                f"--no-synthesis-define -DFORMAL=1 {src_args}"
-            )
+            # slang elaborates eagerly and handles SV `bind`, concurrent SVA
+            # implications, and sequence operators the native verilog frontend
+            # rejects. The whole filelist is one read_slang command (one
+            # compilation unit, incdirs, formal defines) — see render_slang_read
+            # in fpv_coi, which the COI walk shares so it parses the same design.
+            # Basenames: files are dropped into the sby workdir under [files].
+            slang_sources = [os.path.basename(s) for s in all_sources]
+            lines.append(render_slang_read(cfg.get_top(), incdirs, slang_sources))
         else:
             for src in all_sources:
                 # Use basename — files are dropped into the sby workdir under [files].

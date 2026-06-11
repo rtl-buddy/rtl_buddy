@@ -317,6 +317,23 @@ def test_render_sby_slang_passes_incdirs_on_read_slang(tmp_path):
     assert "verilog_defaults" not in text
 
 
+def test_render_slang_read_shell_quotes_paths_with_spaces():
+    """yosys tokenises each script line shell-style, so paths with spaces on the
+    single read_slang line must be shell-quoted or elaboration breaks. Simple
+    names stay bare (shlex.quote is a no-op there), keeping the common case
+    readable."""
+    from rtl_buddy.tools.fpv_coi import render_slang_read
+
+    line = render_slang_read("dut", ["/a b/inc"], ["/x y/dut.sv"])
+    assert "-I '/a b/inc'" in line
+    assert "'/x y/dut.sv'" in line
+
+    bare = render_slang_read("dut", ["/inc"], ["dut.sv"])
+    assert "-I /inc " in bare
+    assert bare.endswith(" dut.sv")
+    assert "'" not in bare
+
+
 def test_build_yosys_script_slang_requires_plugin_path():
     with pytest.raises(ValueError, match="plugin_path"):
         build_yosys_script(
