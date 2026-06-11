@@ -8,8 +8,11 @@ vlog_sim module handles verilog simulations for rtl-buddy
 
 """
 
+import hashlib
+import json
 import os
 import random
+import re
 import signal
 import logging
 
@@ -20,7 +23,7 @@ from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
 from .vlog_cov import VlogCov
-from .artifact_paths import test_artifact_dir, test_build_dir_name
+from .artifact_paths import shared_build_dir, test_artifact_dir, test_build_dir_name
 
 import time
 import pprint
@@ -36,6 +39,15 @@ def force_symlink(target, link_name):
         os.remove(link_name)
 
     os.symlink(target, link_name)
+
+
+# Stamp written into a shared build dir after a successful compile; records
+# the exact compile inputs the simv was built from so reuse can be validated.
+SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+
+# Matches the option prefixes VlogFilelist emits into run.f (see
+# VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
+_FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext)\+|-[vyF]\s+)?(.*)$")
 
 
 class VlogSim:
@@ -54,6 +66,7 @@ class VlogSim:
         run_id=None,
         replay_run_id=None,
         suite_dir=None,
+        share_build=False,
     ):
         """
         compile and execute sim for given test
@@ -70,6 +83,11 @@ class VlogSim:
         self.replay_run_id = replay_run_id
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
+        # Opt-in: key the build dir on a hash of the compile inputs so tests
+        # with identical inputs share one simv (#293). The resolved shared
+        # dir is only known once compile() has written the filelist.
+        self.share_build = share_build
+        self._shared_build_dir = None
         # CLI commands always pass suite_dir resolved from the test
         # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
         # is tests-only — `tests/test_setup_failures.py`,
@@ -107,6 +125,8 @@ class VlogSim:
         """
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
+            if self._shared_build_dir is not None:
+                return str(Path(self._shared_build_dir) / "simv")
             return str(
                 Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
             )
@@ -288,6 +308,73 @@ class VlogSim:
                     pd_list += [f"+define+{plusdefine}"]
         return pd_list
 
+    def _fingerprint_filelist_sources(self, filelist_path):
+        """Per-entry (line, size, mtime_ns) stamps for the generated run.f.
+
+        Entries that don't resolve to a plain file (+incdir+/-y directories,
+        +libext+ suffixes) keep only their raw line; changes inside include
+        directories are not tracked.
+        """
+        base = os.path.dirname(os.path.abspath(filelist_path))
+        stamps = []
+        with open(filelist_path) as filelist_fp:
+            for raw_line in filelist_fp:
+                line = raw_line.strip()
+                if not line or line.startswith("//"):
+                    continue
+                option_match = _FILELIST_OPTION_RE.match(line)
+                entry_path = option_match.group(1) if option_match else line
+                resolved = os.path.normpath(os.path.join(base, entry_path))
+                if os.path.isfile(resolved):
+                    stat = os.stat(resolved)
+                    stamps.append([line, stat.st_size, stat.st_mtime_ns])
+                else:
+                    stamps.append([line, None, None])
+        return stamps
+
+    def _compile_fingerprint(self, key_cmd, filelist_path):
+        """Everything that determines the compiled binary.
+
+        Runtime-only inputs (seed, plusargs, run-time opts, timeout,
+        coverage output path) are deliberately excluded — they vary per
+        test/run without changing the simv.
+        """
+        return {
+            "cmd": list(key_cmd),
+            "env": dict(sorted(self._get_extra_compile_env().items())),
+            "sources": self._fingerprint_filelist_sources(filelist_path),
+        }
+
+    @staticmethod
+    def _compile_config_key(fingerprint):
+        """Short stable hash naming the shared build dir.
+
+        Excludes source size/mtime so editing RTL rebuilds in place in the
+        same dir (the stamp comparison catches the staleness) instead of
+        accumulating a new obj_dir per edit.
+        """
+        config = {
+            "cmd": fingerprint["cmd"],
+            "env": fingerprint["env"],
+            "filelist": [entry[0] for entry in fingerprint["sources"]],
+        }
+        digest = hashlib.sha256(
+            json.dumps(config, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        return digest[:16]
+
+    @staticmethod
+    def _shared_build_is_valid(build_dir, fingerprint):
+        simv_path = Path(build_dir) / "simv"
+        stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+        if not simv_path.is_file() or not stamp_path.is_file():
+            return False
+        try:
+            stored = json.loads(stamp_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return stored == fingerprint
+
     def pre(self):
         script_path = self.test_cfg.get_preproc_path()
         if script_path is None:
@@ -341,19 +428,69 @@ class VlogSim:
         )
         compile_work_dir = self._ensure_artifact_dir()
 
-        run_cmd = [rtl_builder_cfg.get_exe()]
-
         builder_opts = self._filter_builder_opts(
             rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
         )
+        extra_compile_flags = self._get_extra_compile_flags()
+        assertion_flags = self._get_verilator_assertion_flags(builder_opts)
+        plusdefines = self._get_plusdefines()
+        is_verilator = os.path.basename(rtl_builder_cfg.get_exe()).startswith(
+            "verilator"
+        )
+
+        # Keep compile outputs in the suite work dir, but pass explicit paths so sim cwd can vary later.
+        filelist_path = self._get_filelist_path()
+        self._write_filelist(
+            filelist_path
+        )  # raises FilelistError on bad path; caught by TestRunner
+
+        build_dir = self._get_build_dir()
+        fingerprint = None
+        if self.share_build:
+            if is_verilator:
+                key_cmd = (
+                    [rtl_builder_cfg.get_exe()]
+                    + builder_opts
+                    + extra_compile_flags
+                    + assertion_flags
+                    + plusdefines
+                )
+                fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
+                shared_dir = shared_build_dir(
+                    self.suite_work_dir, self._compile_config_key(fingerprint)
+                )
+                self._shared_build_dir = str(shared_dir)
+                build_dir = str(shared_dir)
+                if self._shared_build_is_valid(shared_dir, fingerprint):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "compile.build_reused",
+                        test=self.test_name,
+                        build_dir=build_dir,
+                    )
+                    return 0
+                shared_dir.mkdir(parents=True, exist_ok=True)
+                # A crashed/killed compile must never leave a stamp that
+                # validates a broken simv.
+                (shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
+            else:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.share_build_unsupported",
+                    test=self.test_name,
+                    simulator=self._get_simulator_family(),
+                )
+
+        run_cmd = [rtl_builder_cfg.get_exe()]
         run_cmd += builder_opts
 
-        if os.path.basename(rtl_builder_cfg.get_exe()).startswith("verilator"):
-            run_cmd += ["--Mdir", self._get_build_dir()]
+        if is_verilator:
+            run_cmd += ["--Mdir", build_dir]
 
-        run_cmd += self._get_extra_compile_flags()
+        run_cmd += extra_compile_flags
 
-        assertion_flags = self._get_verilator_assertion_flags(builder_opts)
         if assertion_flags:
             run_cmd += assertion_flags
             log_event(
@@ -365,13 +502,8 @@ class VlogSim:
             )
 
         # add test plus-defines
-        run_cmd += self._get_plusdefines()
+        run_cmd += plusdefines
 
-        # Keep compile outputs in the suite work dir, but pass explicit paths so sim cwd can vary later.
-        filelist_path = self._get_filelist_path()
-        self._write_filelist(
-            filelist_path
-        )  # raises FilelistError on bad path; caught by TestRunner
         run_cmd += ["-f", filelist_path]
         run_str = " ".join(run_cmd)
         log_event(
@@ -432,6 +564,16 @@ class VlogSim:
             )
             if result.stdout:
                 logger.debug("compile stdout\n%s", result.stdout)
+            if fingerprint is not None:
+                stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+                stamp_path.write_text(json.dumps(fingerprint, sort_keys=True))
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_stamp_written",
+                    test=self.test_name,
+                    stamp=str(stamp_path),
+                )
         return result.returncode
 
     def execute(

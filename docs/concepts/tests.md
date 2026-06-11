@@ -144,6 +144,43 @@ List tests without running:
 rtl-buddy test --list
 ```
 
+### Sharing compiled builds across tests
+
+By default every test compiles into its own build directory
+(`artefacts/<test>/obj_dir_<test>`), so a suite of N tests that share one
+testbench verilates the design N times. For large designs the verilation
+step dominates wall-clock time.
+
+`--share-build` opts into reusing one compiled `simv` across tests whose
+compile inputs are identical:
+
+```bash
+rtl-buddy test --share-build
+rtl-buddy regression --share-build
+```
+
+The build directory is keyed on a hash of the compile inputs — builder
+executable, compile-time options, plusdefines, compile environment, and the
+resolved filelist — and lives at `artefacts/.shared-builds/obj_dir_<hash>/`.
+The first test with a given key compiles; subsequent tests find a valid
+`simv` and skip verilation entirely. Runtime-only inputs (plusargs, seeds,
+`timeout`) never affect the key, so tests that differ only in those always
+share. Tests with different `pd` plusdefines hash to different keys and
+compile separately.
+
+After a successful compile, a `rb-compile-stamp.json` recording the exact
+compile inputs (including each source file's size and modification time) is
+written next to the `simv`. Reuse only happens when the stamp matches, so
+editing any file listed in the filelist triggers a rebuild in place.
+
+Caveats:
+
+- Verilator builders only. Other builders log a warning and compile per
+  test as before.
+- Changes inside `+incdir+` include directories are not tracked by the
+  stamp; delete `artefacts/.shared-builds/` (or run without
+  `--share-build`) to force a fresh compile after header-only edits.
+
 ## Randomization
 
 Two seed options are available with the `test` subcommand:

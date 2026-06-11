@@ -350,6 +350,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'compile'}: compile failed (returncode {fields.get('returncode')}){suffix}"
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
+        case "compile.build_reused":
+            return f"{target or 'compile'}: reused shared build {fields.get('build_dir')} (compile skipped)"
+        case "compile.share_build_unsupported":
+            return f"{fields.get('test')}: --share-build only supports Verilator builders; {fields.get('simulator')} compiles per test"
         case "sim.start":
             return f"{target or 'sim'}: simulation started"
         case "sim.output_paths":

@@ -34,6 +34,11 @@ Specify a config file explicitly:
 rtl-buddy regression --reg-config path/to/regressions.yaml
 ```
 
+When many tests in a suite share one testbench and compile configuration,
+add `--share-build` to compile once per unique set of compile inputs instead
+of once per test (Verilator builders only). See
+[Sharing compiled builds across tests](tests.md#sharing-compiled-builds-across-tests).
+
 ### Config resolution order
 
 When `--reg-config` is not given, `rtl_buddy` resolves the regression config in this order:

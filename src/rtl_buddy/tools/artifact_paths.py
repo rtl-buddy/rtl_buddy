@@ -30,5 +30,16 @@ def test_build_dir_name(test_name: str) -> str:
     return f"obj_dir_{sanitize_artifact_component(test_name)}"
 
 
+def shared_build_dir(suite_dir: str | Path, compile_key: str) -> Path:
+    """
+    Return the compile-input-keyed build directory shared by all tests in a
+    suite whose compile inputs hash to ``compile_key``.
+
+    Lives under a dot-directory so it can never collide with a per-test
+    artifact directory derived from a test name.
+    """
+    return Path(suite_dir) / "artefacts" / ".shared-builds" / f"obj_dir_{compile_key}"
+
+
 test_artifact_dir.__test__ = False
 test_build_dir_name.__test__ = False

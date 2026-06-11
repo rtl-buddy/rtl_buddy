@@ -37,6 +37,7 @@ class TestRunner:
         replay_run_id=None,
         run_depth=None,
         suite_dir=None,
+        share_build=False,
     ):
         """
         Run tests based on config
@@ -60,6 +61,7 @@ class TestRunner:
         self.rtl_builder_mode = rtl_builder_mode
         self.test_runner_mode = test_runner_mode
         self.suite_dir = suite_dir
+        self.share_build = share_build
 
     def _create_vlog_sim(self):
         sim_mode = {"sim_to_stdout": True}
@@ -82,6 +84,7 @@ class TestRunner:
             run_id=self.run_id,
             replay_run_id=self.replay_run_id,
             suite_dir=self.suite_dir,
+            share_build=self.share_build,
         )
 
     def run(self):

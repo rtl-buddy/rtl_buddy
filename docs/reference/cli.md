@@ -108,6 +108,9 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]
 │ --rnd-new                      -n            use a randomly generated seed instead   │
 │                                              of root config seed                     │
 │ --rnd-last                     -l            reuse last generated seed               │
+│ --share-build                                reuse one compiled simv across tests    │
+│                                              with identical compile inputs           │
+│                                              (Verilator builders only)               │
 │ --help                                       Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -166,6 +169,9 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 may be repeated                      │
 │ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
 │                                                 directory prefixes, one per line     │
+│ --share-build                                   reuse one compiled simv across tests │
+│                                                 with identical compile inputs        │
+│                                                 (Verilator builders only)            │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

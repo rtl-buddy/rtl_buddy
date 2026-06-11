@@ -299,6 +299,7 @@ class RtlBuddy:
         self.root_cfg = None
         self.coverage = None
         self.run_depth = RunDepth.POST
+        self.share_build = False
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
@@ -747,6 +748,13 @@ class RtlBuddy:
                 "-l", "--rnd-last", help="reuse last generated seed", show_default=False
             ),
         ] = None,
+        share_build: Annotated[
+            bool,
+            typer.Option(
+                "--share-build",
+                help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
+            ),
+        ] = False,
     ):
         """
         run a simple test
@@ -802,6 +810,7 @@ class RtlBuddy:
             seed_mode = SeedMode.NEW
         elif rnd_last:
             seed_mode = SeedMode.REPLAY
+        self.share_build = share_build
 
         suite_results = self._do_test_suite(
             self.suite_cfg,
@@ -1016,6 +1025,7 @@ class RtlBuddy:
             rtl_builder_mode=self.rtl_builder_mode,
             run_depth=self.run_depth,
             suite_dir=suite_dir,
+            share_build=self.share_build,
         )
 
         if len(run_ids) == 1:
@@ -1202,6 +1212,13 @@ class RtlBuddy:
                 help="file containing repo-relative directory prefixes, one per line",
             ),
         ] = None,
+        share_build: Annotated[
+            bool,
+            typer.Option(
+                "--share-build",
+                help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
+            ),
+        ] = False,
     ):
         """
         run rtl regression
@@ -1227,6 +1244,7 @@ class RtlBuddy:
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
+        self.share_build = share_build
         log_event(
             logger,
             logging.INFO,
@@ -1234,6 +1252,7 @@ class RtlBuddy:
             reg_config=reg_config,
             reg_level=reg_level,
             start_level=start_level,
+            share_build=share_build,
         )
 
         start_dir = str(self.invocation_cwd)
