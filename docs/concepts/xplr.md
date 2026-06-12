@@ -151,6 +151,8 @@ All keys are optional; unknown keys are rejected. `knobs[].from`/`to` are untype
 
 If the manifest declares `source.git_sha` it is taken verbatim — the agent owns that pin. Otherwise the `cfg-xplr` commit policy applies: in the default `auto` mode a dirty source scope is snapshotted to an `exp/<id>` branch without disturbing your working tree (a clean scope just records `HEAD`); in `self-managed` mode an uncommitted scope is an error. Either way the recorded sha is exact and re-materializable. `source.diff_from` records the RTL-diff baseline; it defaults to the parent experiment's pinned sha, and `--baseline <ref>` overrides it.
 
+rb's own bookkeeping never counts as source, even with the default `source-scope: ["."]`: the xplr ledger dir (`artefacts/xplr/`), the worktree root, and `rtl_buddy.log` are always excluded from both the dirtiness check and the snapshot — registering twice with identical RTL pins the same sha, and `xplr diff` then reports "both experiments pin the same source revision" instead of ledger noise. Still gitignore `artefacts/` and `rtl_buddy.log` (and any scratch files your agent writes, e.g. `manifest.json`): non-ignored bookkeeping clutters `git status`, ends up in your own commits, and agent scratch files *do* get snapshotted. `register` warns (`xplr.ledger_not_ignored`) when the ledger dir or log file is inside the repo and not gitignored.
+
 ## Declaring an outcome (attach-outcome input)
 
 The `--json` document for `rb xplr attach-outcome <id>`:
@@ -383,6 +385,8 @@ One optional block in `root_config.yaml`; every key has a default:
 cfg-xplr:
   commit-mode: "auto"                # auto | self-managed
   source-scope: ["."]                # what auto-commit snapshots / dirt-checks
+                                     # (rb bookkeeping — the xplr ledger dir,
+                                     # worktrees, rtl_buddy.log — is always excluded)
   disk-high-watermark-gb: 50         # gc trigger
   disk-hard-cap-gb: 80               # backstop that blocks new registers
   eviction-policy: "keep-frontier"   # keep-frontier | oldest-first | manual

@@ -136,6 +136,7 @@ def pin_source(
     cfg: XplrConfig,
     baseline: str | None = None,
     parent_sha: str | None = None,
+    ledger_root: Path | None = None,
 ) -> dict[str, Any]:
     """Resolve the ``source`` block for a new experiment.
 
@@ -144,8 +145,10 @@ def pin_source(
     ``dirty`` bit is recorded since the working tree says nothing about
     an arbitrary sha. Otherwise the cfg-xplr commit policy applies
     (see :func:`rtl_buddy.xplr.gitprov.pin_with_policy`): the recorded
-    sha is exact in every mode, and ``diff_from`` defaults to the
-    parent experiment's pinned sha (HEAD-before-snapshot otherwise).
+    sha is exact in every mode, ``diff_from`` defaults to the parent
+    experiment's pinned sha (HEAD-before-snapshot otherwise), and rb
+    bookkeeping (``ledger_root``, worktrees, the rb log) is excluded
+    from the dirtiness check and any snapshot.
     """
 
     _check_keys(declared, _REGISTER_SOURCE_KEYS, "register: 'source'")
@@ -170,6 +173,7 @@ def pin_source(
         declared_diff_from=declared.get("diff_from"),
         baseline=baseline,
         parent_sha=parent_sha,
+        ledger_root=ledger_root,
     )
 
 
@@ -246,6 +250,7 @@ def register_experiment(
         cfg = load_xplr_config(project_root)
 
     gitprov.enforce_disk_backstop(project_root, root, cfg)
+    gitprov.warn_if_ledger_not_ignored(project_root, root)
 
     exp_id = ledger.next_id(root)
     parent_sha: str | None = None
@@ -264,6 +269,7 @@ def register_experiment(
         cfg=cfg,
         baseline=baseline,
         parent_sha=parent_sha,
+        ledger_root=root,
     )
 
     data: dict[str, Any] = {

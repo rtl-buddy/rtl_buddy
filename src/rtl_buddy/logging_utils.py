@@ -542,6 +542,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"xplr: worktree {fields.get('path')} is inside the repo but "
                 f"not gitignored — {fields.get('hint')}"
             )
+        case "xplr.ledger_not_ignored":
+            return (
+                f"xplr: {fields.get('path')} is inside the repo but not "
+                f"gitignored — {fields.get('hint')}"
+            )
         case "summary":
             return fields.get("title", "Summary")
         case _:

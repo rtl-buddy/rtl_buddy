@@ -12,6 +12,10 @@ Covered here:
   user's branch/index/working tree untouched (``git status`` before
   == after); a clean tree converges (records HEAD, no branch).
 * self-managed commit-mode: a dirty scope is a hard error (exit 2).
+* bookkeeping exclusion: the xplr ledger dir and rtl_buddy.log never
+  count as source (no snapshot, no dirt, no new sha), identical dirty
+  RTL reuses the prior snapshot sha, and register warns when the
+  ledger/log are inside the repo but not gitignored.
 * ``--baseline`` / parent-derived ``diff_from``.
 * materialize/release worktree round trip (idempotent both ways).
 * gc: keep-frontier protects frontier members + their direct lineage,
@@ -224,6 +228,122 @@ def test_self_managed_clean_tree_records_head(git_project: Path, monkeypatch, ca
     source = payload["record"]["source"]
     assert source["git_sha"] == head
     assert source["dirty"] is False
+
+
+# ---------------------------------------------------------------------------
+# bookkeeping exclusion: the ledger/log never count as source
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def unignored_git_project(minimal_project: Path) -> Path:
+    """minimal_project as a git repo with NO .gitignore at all (worst case)."""
+    _git(minimal_project, "init", "-q", "-b", "main", ".")
+    _git(minimal_project, "add", "-A")
+    _git(minimal_project, "commit", "-q", "-m", "init")
+    return minimal_project
+
+
+def test_ledger_and_log_dirt_records_head_and_diffs_as_same_source(
+    unignored_git_project: Path, monkeypatch, capsys
+):
+    project = unignored_git_project
+    head = _git(project, "rev-parse", "HEAD")
+    code, p1 = _register(project, monkeypatch, capsys)
+    assert code == 0
+    # exp-0001's record + lock now sit unignored under artefacts/xplr; the
+    # rb log file is bookkeeping too — none of it is source
+    (project / "rtl_buddy.log").write_text("rb log line\n")
+    code, p2 = _register(project, monkeypatch, capsys)
+    assert code == 0
+    assert p1["record"]["source"]["git_sha"] == head
+    assert p2["record"]["source"]["git_sha"] == head
+    assert _git(project, "branch", "--list", "exp/*") == ""
+    # so the agent's "did the source actually change?" signal works
+    code, out, _ = _run(
+        ["--machine", "xplr", "diff", "exp-0001", "exp-0002"], monkeypatch, capsys
+    )
+    assert code == 0
+    source = _envelope(out)["payload"]["source"]
+    assert "same source revision" in source["note"]
+
+
+def test_snapshot_excludes_ledger_and_log(
+    unignored_git_project: Path, monkeypatch, capsys
+):
+    project = unignored_git_project
+    head = _git(project, "rev-parse", "HEAD")
+    code, _ = _register(project, monkeypatch, capsys)  # populates the ledger
+    assert code == 0
+    (project / "rtl_buddy.log").write_text("rb log line\n")
+    (project / "src" / "example.sv").write_text("// tweaked rtl\n")
+    code, payload = _register(project, monkeypatch, capsys)
+    assert code == 0
+    snapshot = payload["record"]["source"]["git_sha"]
+    assert snapshot == _git(project, "rev-parse", "exp/exp-0002")
+    # only the RTL change is in the snapshot — no record.json, lock, or log
+    changed = _git(project, "diff", "--name-only", f"{head}..{snapshot}").splitlines()
+    assert changed == ["src/example.sv"]
+    tracked = _git(project, "ls-tree", "-r", "--name-only", snapshot).splitlines()
+    assert not [
+        p for p in tracked if p.startswith("artefacts/") or p == "rtl_buddy.log"
+    ]
+
+
+def test_identical_dirty_rtl_reuses_snapshot_sha(
+    git_project: Path, monkeypatch, capsys
+):
+    (git_project / "src" / "example.sv").write_text("// same dirty state\n")
+    code, p1 = _register(git_project, monkeypatch, capsys)
+    assert code == 0
+    code, p2 = _register(git_project, monkeypatch, capsys)  # RTL unchanged
+    assert code == 0
+    # identical source pins an identical sha; both exp branches share it
+    assert p1["record"]["source"]["git_sha"] == p2["record"]["source"]["git_sha"]
+    assert _git(git_project, "rev-parse", "exp/exp-0001") == _git(
+        git_project, "rev-parse", "exp/exp-0002"
+    )
+
+
+def test_self_managed_ledger_and_log_dirt_is_not_an_error(
+    unignored_git_project: Path, monkeypatch, capsys
+):
+    project = unignored_git_project
+    _set_cfg(project, ['commit-mode: "self-managed"'])
+    head = _git(project, "rev-parse", "HEAD")
+    code, p1 = _register(project, monkeypatch, capsys)
+    assert code == 0
+    (project / "rtl_buddy.log").write_text("rb log line\n")
+    code, p2 = _register(project, monkeypatch, capsys)  # only bookkeeping dirty
+    assert code == 0
+    assert p1["record"]["source"]["git_sha"] == head
+    assert p2["record"]["source"]["git_sha"] == head
+
+
+def test_register_warns_when_ledger_not_ignored(
+    unignored_git_project: Path, monkeypatch, capsys
+):
+    code, out, err = _run(
+        ["--machine", "xplr", "register", "--json", "-"],
+        monkeypatch,
+        capsys,
+        stdin="{}",
+    )
+    assert code == 0
+    assert "not gitignored" in err
+
+
+def test_register_does_not_warn_when_ledger_ignored(
+    git_project: Path, monkeypatch, capsys
+):
+    code, out, err = _run(
+        ["--machine", "xplr", "register", "--json", "-"],
+        monkeypatch,
+        capsys,
+        stdin="{}",
+    )
+    assert code == 0
+    assert "not gitignored" not in err
 
 
 # ---------------------------------------------------------------------------

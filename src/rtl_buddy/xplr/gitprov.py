@@ -9,7 +9,11 @@ makes it a first-class, reproducible knob:
   ``exp/<id>`` branch via plumbing (temporary ``GIT_INDEX_FILE`` +
   ``commit-tree``), so the user's working tree, index, and current
   branch are never disturbed; a clean tree just records ``HEAD`` — the
-  two paths converge and no redundant commit is created.
+  two paths converge and no redundant commit is created. rb's own
+  bookkeeping (the xplr ledger dir, the worktree root, and the rb log
+  file) is always excluded from both the dirtiness check and the
+  snapshot (:func:`bookkeeping_excludes`), gitignored or not — only
+  the user's source decides whether a new sha is minted.
   ``self-managed`` mode requires a clean scope and records ``HEAD``.
 * :func:`materialize` / :func:`release` — build each RTL variant in a
   disposable git worktree at its pinned sha (default under the
@@ -41,7 +45,7 @@ from typing import Any
 
 from ..config.xplr import EVICTION_POLICIES, XplrConfig
 from ..errors import FatalRtlBuddyError
-from ..logging_utils import log_event
+from ..logging_utils import DEFAULT_FILE_LOG, log_event
 from . import analysis, ledger
 from .schema import ABSENT, ExperimentRecord
 
@@ -108,10 +112,86 @@ def resolve_ref(project_root: Path, ref: str) -> str:
     return result.stdout.strip()
 
 
-def _scope_dirty(project_root: Path, scope: list[str]) -> bool:
+def _repo_relative(project_root: Path, path: Path) -> Path | None:
+    """``path`` relative to the project root, or None when outside it."""
+
+    try:
+        return path.resolve().relative_to(project_root.resolve())
+    except ValueError:
+        return None
+
+
+def bookkeeping_excludes(
+    project_root: Path, ledger_root: Path | None, cfg: XplrConfig
+) -> list[str]:
+    """Pathspecs that keep rb bookkeeping out of dirt checks and snapshots.
+
+    The xplr ledger dir (records, locks, prior experiments' artifacts),
+    the worktree root, and the rb log file are bookkeeping, not source.
+    Snapshotting them would mint a fresh ``git_sha`` on every register
+    even when the RTL is identical (breaking the "same source revision"
+    signal of ``xplr diff``), embed every prior record into each
+    ``exp/<id>`` branch (growing without bound), and leak stale ledger
+    copies into materialized worktrees — so they are excluded with
+    ``:(exclude)`` pathspec magic whether or not they are gitignored.
+
+    Paths git already ignores are skipped: ``status``/``add -A`` never
+    pick them up, and ``git add`` refuses a pathspec — even an exclude
+    one — that literally names an ignored path.
+    """
+
+    candidates = [cfg.worktree_dir(project_root), project_root / DEFAULT_FILE_LOG]
+    if ledger_root is not None:
+        candidates.insert(0, ledger_root)
+    excludes: list[str] = []
+    for path in candidates:
+        rel = _repo_relative(project_root, path)
+        if rel is None:
+            continue
+        ignored = _git(project_root, "check-ignore", "-q", str(path), check=False)
+        if ignored.returncode == 0:
+            continue
+        excludes.append(f":(exclude){rel.as_posix()}")
+    return excludes
+
+
+def warn_if_ledger_not_ignored(project_root: Path, ledger_root: Path) -> None:
+    """Register-time hygiene warning, mirroring ``xplr.worktree_not_ignored``.
+
+    Snapshots and dirt checks already exclude rb bookkeeping
+    (:func:`bookkeeping_excludes`), but a ledger dir or rb log file
+    that is inside the repo and not gitignored still clutters ``git
+    status`` and gets swept into the user's own commits — warn once
+    per offending path with the fix spelled out.
+    """
+
+    if head_sha(project_root) is None:
+        return  # not a git repo: nothing to ignore
+    for target in (ledger_root, project_root / DEFAULT_FILE_LOG):
+        if _repo_relative(project_root, target) is None or not target.exists():
+            continue
+        result = _git(project_root, "check-ignore", "-q", str(target), check=False)
+        if result.returncode != 0:
+            log_event(
+                logger,
+                logging.WARNING,
+                "xplr.ledger_not_ignored",
+                path=target,
+                hint="add it to .gitignore (the default artefacts/ ledger "
+                "location and rtl_buddy.log) — rb excludes its bookkeeping "
+                "from snapshots automatically, but your own commits and "
+                "git status will pick it up",
+            )
+
+
+def _scope_dirty(
+    project_root: Path, scope: list[str], excludes: list[str] | None = None
+) -> bool:
     """True when ``git status --porcelain`` reports changes inside scope."""
 
-    result = _git(project_root, "status", "--porcelain", "--", *scope)
+    result = _git(
+        project_root, "status", "--porcelain", "--", *scope, *(excludes or [])
+    )
     return bool(result.stdout.strip())
 
 
@@ -140,8 +220,39 @@ def _commit_ident_env(project_root: Path) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _existing_snapshot(project_root: Path, tree: str, base_sha: str) -> str | None:
+    """An existing ``exp/*`` snapshot commit with this tree off this base.
+
+    Lets :func:`snapshot_scope` reuse the prior commit when the scoped
+    source is byte-identical (e.g. two registers probing flow-layer
+    knobs over the same dirty RTL): identical source must pin an
+    identical sha, or "did the source actually change?" is unanswerable
+    from the ledger.
+    """
+
+    result = _git(
+        project_root,
+        "for-each-ref",
+        "--format=%(objectname) %(tree) %(parent)",
+        f"{SNAPSHOT_REF_PREFIX}*",
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[1] == tree and parts[2] == base_sha:
+            return parts[0]
+    return None
+
+
 def snapshot_scope(
-    project_root: Path, exp_id: str, scope: list[str], base_sha: str
+    project_root: Path,
+    exp_id: str,
+    scope: list[str],
+    base_sha: str,
+    *,
+    excludes: list[str] | None = None,
 ) -> str | None:
     """Snapshot the source scope to an ``exp/<exp_id>`` branch off ``base_sha``.
 
@@ -151,33 +262,41 @@ def snapshot_scope(
     state is staged into it (``add -A -- <scope>``, which also picks up
     untracked files and deletions), and the resulting tree is committed
     with ``commit-tree`` and pointed at by ``refs/heads/exp/<exp_id>``.
+    ``excludes`` (``:(exclude)`` pathspecs, see
+    :func:`bookkeeping_excludes`) are never staged.
 
     Returns the snapshot commit sha — or None when the scoped tree is
     identical to ``base_sha`` (dirtiness outside the scope), in which
-    case no commit and no branch are created.
+    case no commit and no branch are created. An existing ``exp/*``
+    snapshot with the same tree off the same base is reused (the new
+    branch points at it), so registering twice with identical RTL pins
+    the same sha and ``xplr diff`` can say so.
     """
 
     tmp_dir = tempfile.mkdtemp(prefix="rb-xplr-index-")
     try:
         env = {"GIT_INDEX_FILE": str(Path(tmp_dir) / "index")}
         _git(project_root, "read-tree", base_sha, env=env)
-        _git(project_root, "add", "-A", "--", *scope, env=env)
+        _git(project_root, "add", "-A", "--", *scope, *(excludes or []), env=env)
         tree = _git(project_root, "write-tree", env=env).stdout.strip()
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     base_tree = _git(project_root, "rev-parse", f"{base_sha}^{{tree}}").stdout.strip()
     if tree == base_tree:
         return None
-    commit = _git(
-        project_root,
-        "commit-tree",
-        tree,
-        "-p",
-        base_sha,
-        "-m",
-        f"rb xplr: source snapshot for {exp_id}",
-        env=_commit_ident_env(project_root),
-    ).stdout.strip()
+    commit = _existing_snapshot(project_root, tree, base_sha)
+    reused = commit is not None
+    if commit is None:
+        commit = _git(
+            project_root,
+            "commit-tree",
+            tree,
+            "-p",
+            base_sha,
+            "-m",
+            f"rb xplr: source snapshot for {exp_id}",
+            env=_commit_ident_env(project_root),
+        ).stdout.strip()
     _git(project_root, "update-ref", f"{SNAPSHOT_REF_PREFIX}{exp_id}", commit)
     log_event(
         logger,
@@ -188,6 +307,7 @@ def snapshot_scope(
         branch=f"exp/{exp_id}",
         base=base_sha,
         scope=scope,
+        reused=reused,
     )
     return commit
 
@@ -201,6 +321,7 @@ def pin_with_policy(
     declared_diff_from: str | None = None,
     baseline: str | None = None,
     parent_sha: str | None = None,
+    ledger_root: Path | None = None,
 ) -> dict[str, Any]:
     """Pin the source for a new experiment under the configured policy.
 
@@ -209,7 +330,9 @@ def pin_with_policy(
     declared ``source.diff_from`` (taken verbatim; the two may not
     disagree), else the parent experiment's pinned sha, else
     HEAD-before-snapshot — so the RTL-level diff of #299 is always
-    well-defined.
+    well-defined. rb bookkeeping (``ledger_root``, the worktree root,
+    the rb log file) never counts as source: it is excluded from both
+    the dirtiness check and any auto-commit snapshot.
     """
 
     head = head_sha(project_root)
@@ -233,7 +356,8 @@ def pin_with_policy(
         diff_from = declared_diff_from
 
     scope = list(cfg.source_scope)
-    dirty = _scope_dirty(project_root, scope)
+    excludes = bookkeeping_excludes(project_root, ledger_root, cfg)
+    dirty = _scope_dirty(project_root, scope, excludes)
     if cfg.commit_mode == "self-managed" and dirty:
         raise FatalRtlBuddyError(
             "register: the working tree has uncommitted changes inside the "
@@ -245,7 +369,7 @@ def pin_with_policy(
 
     snapshot = None
     if dirty:  # auto mode: snapshot the scope, leave the user's tree alone
-        snapshot = snapshot_scope(project_root, exp_id, scope, head)
+        snapshot = snapshot_scope(project_root, exp_id, scope, head, excludes=excludes)
 
     source: dict[str, Any] = {}
     if snapshot is not None:
