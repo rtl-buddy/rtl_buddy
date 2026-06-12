@@ -135,6 +135,15 @@ class RtlBuddyView:
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
 
+    def _event_fields(self) -> dict[str, object]:
+        """Command-specific structured fields for the ``.start`` event.
+
+        ``format`` is a render-only concept; the query subclass logs
+        ``verb``/``arg`` instead so ``hier_query.start`` events don't
+        carry a misleading constant ``format=tree``.
+        """
+        return {"format": self.format}
+
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "hier.f")
 
@@ -280,7 +289,7 @@ class RtlBuddyView:
                 f"{self._event_name}.start",
                 model=self.model_cfg.name,
                 tool=self.executable,
-                format=self.format,
+                **self._event_fields(),
             )
             with open(log_path, "w") as logf:
                 logf.write("$ " + " ".join(cmd) + "\n")
@@ -368,6 +377,9 @@ class RtlBuddyViewQuery(RtlBuddyView):
         self.subtree_format = subtree_format
         self.context = context
         self.line_numbers = line_numbers
+
+    def _event_fields(self) -> dict[str, object]:
+        return {"verb": self.verb, "arg": self.arg}
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "query.log")

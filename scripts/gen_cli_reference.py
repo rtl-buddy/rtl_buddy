@@ -23,6 +23,7 @@ SUBCOMMANDS = [
     "regression",
     "filelist",
     "hier",
+    "hier-query",
     "wave",
     "wave-fpv",
     "nvim-install",
