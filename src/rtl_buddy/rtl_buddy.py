@@ -15,7 +15,7 @@ from typing_extensions import Annotated
 import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
-from .config.root import _discover_root_cfg
+from .config.root import _discover_root_cfg, discover_project_root
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
@@ -72,6 +72,9 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
+from .xplr import commands as xplr_commands
+from .xplr import dumps_record
+from .xplr import ledger as xplr_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +287,41 @@ class RtlBuddy:
         )(self.do_spec_check_coverage)
         self.app.add_typer(
             self.spec_app, name="spec", help="spec traceability commands"
+        )
+        self.xplr_app = typer.Typer(
+            help=(
+                "tool-agnostic experiment ledger for design-space exploration. "
+                "rb xplr is a bookkeeper, not an optimizer: you declare the "
+                "knob deltas you made and the outcomes your flow produced; it "
+                "pins the source revision and records everything under "
+                "artefacts/xplr/<exp-id>/record.json. Agent-facing: pass the "
+                "global --machine flag for a JSON envelope on stdout, and feed "
+                "JSON manifests in via --json <file|->"
+            ),
+            no_args_is_help=True,
+        )
+        self.xplr_app.command(
+            "register",
+            help="open a new experiment: pin the current git ref, record the "
+            "agent-declared knob manifest, return its experiment id",
+        )(self.do_xplr_register)
+        self.xplr_app.command(
+            "attach-outcome",
+            help="attach flow-declared outcome metrics to an experiment "
+            "(pending/running -> success|failed)",
+        )(self.do_xplr_attach_outcome)
+        self.xplr_app.command(
+            "list",
+            help="list experiments in the ledger (one summary row each)",
+        )(self.do_xplr_list)
+        self.xplr_app.command(
+            "show",
+            help="show one experiment's full record",
+        )(self.do_xplr_show)
+        self.app.add_typer(
+            self.xplr_app,
+            name="xplr",
+            help="design-space exploration experiment ledger (agent-facing)",
         )
         self.app.command(
             "tool-check",
@@ -3742,6 +3780,183 @@ class RtlBuddy:
             self._emit_machine_result("mut score", 0, report=results.as_report())
         else:
             self._render_mut_summary("Mutation Score", results)
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb xplr — design-space exploration experiment ledger
+    # ------------------------------------------------------------------
+
+    def _enter_xplr_context(self) -> tuple[Path, Path]:
+        """Anchor an xplr command and return (project_root, ledger_root).
+
+        The ledger lives at the project root (``artefacts/xplr``), not a
+        suite directory, so every experiment ends up in one ledger no
+        matter where the agent invoked ``rb`` from. ``list_only=True``:
+        xplr needs no RootConfig/builder, and read commands stay
+        lock-free; write commands take a lock on the ledger root only,
+        so a running flow's suite artefact lock is never contended.
+        """
+        project_root = discover_project_root(start_dir=self.invocation_cwd)
+        ctx = self._enter_command_context(command_root=project_root, list_only=True)
+        return project_root, xplr_ledger.ledger_root(ctx)
+
+    def do_xplr_register(
+        self,
+        json_input: Annotated[
+            str,
+            typer.Option(
+                "--json",
+                help="JSON manifest file, or '-' for stdin: {knobs: [{name, "
+                "from, to, rationale?, layer?}], hypothesis?, parent?, "
+                "config_snapshot?, source?: {git_sha?, branch?, diff_from?}, "
+                "provenance?: {tools?, agent?}}",
+            ),
+        ] = None,
+    ):
+        """
+        open a new experiment: pin the git ref + record the knob manifest
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr register")
+        doc = {}
+        if json_input is not None:
+            doc = xplr_commands.load_json_doc(
+                json_input, cwd=self.invocation_cwd, what="register"
+            )
+        record, path = xplr_commands.register_experiment(
+            root, doc, project_root=project_root
+        )
+        if self.machine:
+            self._emit_machine_result(
+                "xplr register",
+                0,
+                id=record.id,
+                record_path=str(path),
+                record=record.to_dict(),
+            )
+        else:
+            emit_console_text(
+                f"registered {record.id} ({len(record.knobs)} knob(s), "
+                f"source {record.source.git_sha[:12]}) -> {path}",
+                style="green",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_attach_outcome(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+        json_input: Annotated[
+            str,
+            typer.Option(
+                "--json",
+                help="JSON outcome file, or '-' for stdin: {status: "
+                "'success'|'failed', metrics?, metric_meta?, artifacts?, "
+                "provenance?: {tools?, reused_state?}}",
+            ),
+        ],
+        force: Annotated[
+            bool,
+            typer.Option(
+                "--force",
+                help="overwrite an outcome that is already terminal (success/failed)",
+            ),
+        ] = False,
+    ):
+        """
+        attach flow-declared outcome metrics to an experiment
+        """
+        _, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr attach-outcome")
+        doc = xplr_commands.load_json_doc(
+            json_input, cwd=self.invocation_cwd, what="attach-outcome"
+        )
+        record, path = xplr_commands.attach_outcome(root, exp_id, doc, force=force)
+        if self.machine:
+            self._emit_machine_result(
+                "xplr attach-outcome",
+                0,
+                id=record.id,
+                record_path=str(path),
+                record=record.to_dict(),
+            )
+        else:
+            emit_console_text(
+                f"attached outcome '{record.outcome.status}' to {record.id} -> {path}",
+                style="green",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_list(
+        self,
+        status: Annotated[
+            str,
+            typer.Option(
+                "--status",
+                help="only experiments with this outcome status "
+                "(pending|running|success|failed)",
+            ),
+        ] = None,
+    ):
+        """
+        list experiments in the ledger
+        """
+        _, root = self._enter_xplr_context()
+        records = xplr_commands.list_experiments(root, status=status)
+        summaries = [xplr_commands.summarize(r) for r in records]
+        if self.machine:
+            self._emit_machine_result("xplr list", 0, experiments=summaries)
+        else:
+            rows = [
+                {
+                    "id": s["id"],
+                    "status": s["status"],
+                    "git_sha": s["git_sha"][:12],
+                    "knobs": str(s["n_knobs"]),
+                    "created": s["created"],
+                    "hypothesis": s.get("hypothesis", "-"),
+                }
+                for s in summaries
+            ]
+            render_summary(
+                title=f"xplr experiments ({len(rows)})",
+                columns=[
+                    ("id", "Experiment"),
+                    ("status", "Status"),
+                    ("git_sha", "Source"),
+                    ("knobs", "Knobs"),
+                    ("created", "Created"),
+                    ("hypothesis", "Hypothesis"),
+                ],
+                rows=rows,
+                logger=logger,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_show(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+    ):
+        """
+        show one experiment's full record
+        """
+        _, root = self._enter_xplr_context()
+        record, path = xplr_commands.get_experiment(root, exp_id)
+        if self.machine:
+            self._emit_machine_result(
+                "xplr show",
+                0,
+                id=record.id,
+                record_path=str(path),
+                record=record.to_dict(),
+            )
+        else:
+            print(dumps_record(record), end="")
         raise typer.Exit(0)
 
     def do_cmd_wave(

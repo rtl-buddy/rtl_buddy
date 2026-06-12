@@ -12,6 +12,8 @@ Modules:
   (vendored JSON Schema 1.0 + typed dataclasses).
 * :mod:`rtl_buddy.xplr.ledger` — the on-disk ledger layout
   (``artefacts/xplr/<exp-id>/record.json``).
+* :mod:`rtl_buddy.xplr.commands` — the ``rb xplr`` command layer
+  (register / attach-outcome / list / show).
 """
 
 from .schema import (
