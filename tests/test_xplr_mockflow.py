@@ -652,15 +652,22 @@ def test_mock_score_all_scenarios_and_empty_ledger(
 
 
 def test_mock_help_lists_subcommands():
+    import re
+
     from typer.testing import CliRunner
 
+    # CI terminals (GitHub Actions) get rich help with ANSI styling that
+    # splits option tokens; strip escapes before substring asserts.
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
     rb = RtlBuddy(name="test_mock_help")
     result = CliRunner().invoke(rb.app, ["xplr", "mock", "--help"])
     assert result.exit_code == 0
+    output = ansi.sub("", result.output)
     for sub in ("info", "run", "score"):
-        assert sub in result.output
+        assert sub in output
     result = CliRunner().invoke(rb.app, ["xplr", "mock", "run", "--help"])
     assert result.exit_code == 0
+    output = ansi.sub("", result.output)
     for opt in (
         "--scenario",
         "--json",
@@ -670,4 +677,4 @@ def test_mock_help_lists_subcommands():
         "--source-sha",
         "--source-branch",
     ):
-        assert opt in result.output
+        assert opt in output

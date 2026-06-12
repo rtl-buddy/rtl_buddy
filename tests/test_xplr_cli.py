@@ -140,16 +140,22 @@ def _register(
 
 
 def test_xplr_help_lists_subcommands():
+    import re
+
     from typer.testing import CliRunner
 
+    # CI terminals (GitHub Actions) get rich help with ANSI styling that
+    # splits option tokens; strip escapes before substring asserts.
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
     rb = RtlBuddy(name="test_xplr_help")
     result = CliRunner().invoke(rb.app, ["xplr", "--help"])
     assert result.exit_code == 0
+    output = ansi.sub("", result.output)
     for sub in ("register", "attach-outcome", "list", "show"):
-        assert sub in result.output
+        assert sub in output
     result = CliRunner().invoke(rb.app, ["xplr", "register", "--help"])
     assert result.exit_code == 0
-    assert "--json" in result.output
+    assert "--json" in ansi.sub("", result.output)
 
 
 # ---------------------------------------------------------------------------

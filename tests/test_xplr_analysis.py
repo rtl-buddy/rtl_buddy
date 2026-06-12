@@ -626,15 +626,22 @@ def test_knob_effect_human_mode(minimal_project: Path, monkeypatch, capsys):
 
 
 def test_xplr_help_lists_analysis_commands():
+    import re
+
     from typer.testing import CliRunner
 
+    # CI terminals (GitHub Actions) get rich help with ANSI styling that
+    # splits option tokens; strip escapes before substring asserts.
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
     rb = RtlBuddy(name="test_xplr_analysis_help")
     result = CliRunner().invoke(rb.app, ["xplr", "--help"])
     assert result.exit_code == 0
+    output = ansi.sub("", result.output)
     for sub in ("diff", "frontier", "knob-effect"):
-        assert sub in result.output
-    assert "--root" in result.output  # group-level project-root anchor
+        assert sub in output
+    assert "--root" in output  # group-level project-root anchor
     result = CliRunner().invoke(rb.app, ["xplr", "frontier", "--help"])
     assert result.exit_code == 0
-    assert "--metrics" in result.output
-    assert "--prefer" in result.output
+    output = ansi.sub("", result.output)
+    assert "--metrics" in output
+    assert "--prefer" in output
