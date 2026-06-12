@@ -39,13 +39,22 @@ def resolve_plugin_path(plugin_path: str | None, root_cfg) -> str | None:
     """Resolve a Yosys plugin path. Absolute paths pass through; relative
     paths are taken relative to the project root. When no path is
     configured, fall back to ``RTL_BUDDY_SLANG_PLUGIN`` from the
-    environment (used verbatim after ``~`` expansion); returns ``None``
-    when neither is set."""
+    environment, which must be absolute after ``~`` expansion — a
+    machine-level variable has no project anchor, and a relative value
+    would otherwise resolve against the tool subprocess CWD (failing
+    only as a silent COI-coverage warning on the FPV side). Returns
+    ``None`` when neither channel is set."""
     if plugin_path is None or not plugin_path.strip():
         env = os.environ.get(SLANG_PLUGIN_ENV, "").strip()
         if not env:
             return None
-        return str(Path(env).expanduser())
+        p = Path(env).expanduser()
+        if not p.is_absolute():
+            raise FatalRtlBuddyError(
+                f"{SLANG_PLUGIN_ENV} must be an absolute path to "
+                f"yosys-slang's slang.so, got {env!r}"
+            )
+        return str(p)
     p = Path(plugin_path)
     if p.is_absolute():
         return str(p)
