@@ -72,10 +72,78 @@ runs:
 | `model` | Model name from `model_path`'s `models.yaml`; the model name is the top module |
 | `model_path` | Path to the `models.yaml` defining `model`, resolved relative to `fpga.yaml` |
 | `tool` | Backend name; defaults to `"vivado"` |
-| `part` | Full device part name (e.g. `xczu7ev-ffvc1156-2-e`), passed to `synth_design -part` |
-| `xdc` | Optional list of XDC constraint files, resolved relative to `fpga.yaml` |
+| `part` | Full device part name (e.g. `xczu7ev-ffvc1156-2-e`), passed to `synth_design -part`. Mutually exclusive with `platform` |
+| `platform` | Name of a [`cfg-fpga-platforms`](#platforms-cfg-fpga-platforms) entry in `root_config.yaml`. Mutually exclusive with `part` |
+| `xdc` | Optional list of XDC constraint files, resolved relative to `fpga.yaml`. With `platform:`, these *extend* the platform's default XDC set (see [XDC ownership](#xdc-ownership-and-ordering)) |
 | `reglvl` | Regression level for filtering (same semantics as `rb synth`/`rb pnr`) |
 | `xfail` / `xfail_strict` | Expected-failure markers — see [Expected Failures](expected-failures.md) |
+
+Naming both `part:` and `platform:` on one run is a config error (exit 2) — there is no precedence rule.
+
+## Platforms: `cfg-fpga-platforms`
+
+A platform lifts the device choice out of individual runs into a reusable `root_config.yaml` entry, parallel to `cfg-pnr-platforms` on the ASIC side. This is how one suite sweeps the same RTL across several parts:
+
+```yaml
+cfg-fpga-platforms:
+  - name: "zu7ev_board"
+    part: "xczu7ev-ffvc1156-2-e"
+    board: "my-zu7ev-board"        # optional, informational
+    xdc:
+      - "constraints/board.xdc"    # platform default constraints
+  - name: "vu19p"
+    part: "xcvu19p-fsva3824-1-e"
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Platform identifier referenced by `platform:` in `fpga.yaml` |
+| `part` | Full device part name (required) |
+| `board` | Optional board name, informational only |
+| `package` | Optional package name, informational only — Vivado part names already encode the package (`ffvc1156` inside `xczu7ev-ffvc1156-2-e`), so this field is never re-attached to the part |
+| `xdc` | Optional default XDC list (board clocks, pinout), resolved relative to `root_config.yaml` |
+
+`fpga.yaml` runs then reference a platform instead of naming a part:
+
+```yaml
+runs:
+  - name: "counter_zu7ev"
+    desc: "counter on the ZU7EV board"
+    model: "fpga_counter"
+    model_path: "../src/models.yaml"
+    platform: "zu7ev_board"
+    xdc:
+      - "constraints/counter_timing.xdc"   # extends the platform set
+```
+
+### XDC ownership and ordering
+
+The platform owns the *default* constraint set (board-level clocks and pinout); `fpga.yaml` owns per-run selection — the same split as `pnr.yaml` owning the floorplan while `cfg-pnr-platforms` owns the technology. Per-run `xdc:` entries **extend** (never replace) the platform's list, and the read order is platform files first, run files after. Vivado applies XDC in read order with later commands winning, so a run-level constraint overrides a platform default for the same object.
+
+## Regression: `rb fpga-regression`
+
+Multiple `fpga.yaml` suites aggregate under one `fpga_regression.yaml`, exactly like `rb synth-regression` / `rb power-regression`:
+
+```yaml
+rtl-buddy-filetype: fpga_reg_config
+
+fpga-configs:
+  - "blocks/counter/fpga.yaml"
+  - "blocks/fifo/fpga.yaml"
+```
+
+```bash
+# All suites, reglvl-0 entries only (the default)
+rb fpga-regression
+
+# Deeper sweep: include entries up to reglvl 1000
+rb fpga-regression -l 1000
+
+# Explicit config path + bitstreams
+rb fpga-regression -c ci/fpga_regression.yaml --bitstream
+```
+
+Each run's `reglvl:` is compared against `-l/--reg-level`; entries above the level are reported SKIP. In machine mode every result row carries a `suite` key naming the originating `fpga.yaml`, and the envelope command is `fpga-regression`.
 
 ## Running
 
@@ -162,6 +230,5 @@ Otherwise FAIL is returned with the cause in the description. SKIP is returned w
 
 ## Out of scope (today)
 
-- Platform/board abstraction (`part:` is named directly per run; a `cfg-fpga-platforms` block is planned).
 - Include-directory (`+incdir+`) propagation into `synth_design`.
 - Methodology/CDC report integration and an openXC7 open-source backend (planned follow-ups).

@@ -18,7 +18,7 @@ from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.env_file import apply_env_file
 from .config.root import _discover_root_cfg, discover_project_root
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
-from .config.fpga import FpgaSuiteConfig
+from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
@@ -106,6 +106,7 @@ class RtlBuddy:
         "power",
         "power-regression",
         "fpga",
+        "fpga-regression",
         "cdc",
         "cdc-regression",
         "fpv",
@@ -257,6 +258,9 @@ class RtlBuddy:
         self.app.command(
             "fpga", help="run FPGA implementation (synth + place + route)"
         )(self.do_cmd_fpga)
+        self.app.command("fpga-regression", help="run FPGA implementation regression")(
+            self.do_fpga_regression
+        )
         self.app.command("saif", help="convert FST/VCD trace to SAIF v2.0")(
             self.do_cmd_saif
         )
@@ -3296,6 +3300,100 @@ class RtlBuddy:
             logger=logger,
             metadata=metadata,
         )
+
+    def do_fpga_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to fpga_regression.yaml",
+                show_default="Use ./fpga_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="FPGA regression level to stop at"),
+        ] = 0,
+        emit_bitstream: Annotated[
+            bool,
+            typer.Option(
+                "--bitstream",
+                help="generate bitstreams after route (write_bitstream); "
+                "off by default — a smoke/timing regression doesn't need bitgen",
+            ),
+        ] = False,
+    ):
+        """
+        run FPGA implementation regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpga_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+            bitstream=emit_bitstream,
+        )
+
+        if reg_config is not None:
+            reg_cfg_path = (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
+        else:
+            local = str(self.invocation_cwd / "fpga_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "fpga_regression.yaml not found; pass -c to specify a path"
+                )
+
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
+        fpga_reg = FpgaRegConfig(name=self.name + "/fpga_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running FPGA regression from {orchestration_ctx.command_root}",
+            style="cyan",
+        )
+
+        all_results = []
+        machine_rows = []
+        for suite_cfg in fpga_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "fpga_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_fpga_suite(
+                suite_cfg,
+                fpga_name=None,
+                reg_level=reg_level,
+                emit_bitstream=emit_bitstream,
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._fpga_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
+                )
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+
+        exit_code = 0 if all(r["results"].is_pass() for r in all_results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "fpga-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_fpga_summary(
+                "FPGA Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     def do_power_regression(
         self,

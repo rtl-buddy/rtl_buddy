@@ -38,6 +38,7 @@ class FpgaConfigFile:
     model: str
     model_path: str
     part: str = ""
+    platform: str = ""
     tool: str = "vivado"
     xdc: list[str] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
@@ -50,10 +51,21 @@ class FpgaConfigFile:
     xfail_strict: bool = field(rename="xfail_strict", default=False)
 
     def initialise(self, config_dir: str) -> "FpgaConfig":
-        if not self.part:
+        # `part:` (inline device, P1) and `platform:` (cfg-fpga-platforms
+        # ref, #286) are mutually exclusive — a run naming both is
+        # ambiguous, so it is a config error rather than a precedence
+        # rule.
+        if self.part and self.platform:
+            raise FatalRtlBuddyError(
+                f"fpga run '{self.name}': 'part' and 'platform' are "
+                "mutually exclusive — name the device inline OR "
+                "reference a cfg-fpga-platforms entry, not both"
+            )
+        if not self.part and not self.platform:
             raise FatalRtlBuddyError(
                 f"fpga run '{self.name}': missing 'part' "
-                "(full device part name, e.g. xczu7ev-ffvc1156-2-e)"
+                "(full device part name, e.g. xczu7ev-ffvc1156-2-e) "
+                "or 'platform' (name of a cfg-fpga-platforms entry)"
             )
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
@@ -65,6 +77,7 @@ class FpgaConfigFile:
             model=model,
             tool=self.tool,
             part=self.part,
+            platform=self.platform,
             xdc_files=xdc_files,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
@@ -83,6 +96,7 @@ class FpgaConfig:
     _reglvl: int | dict | None
     tool_overrides: dict | None
     xdc_files: list[str] = dc_field(default_factory=list)
+    platform: str = ""
     xfail: bool = False
     xfail_strict: bool = False
 
@@ -110,6 +124,10 @@ class FpgaConfig:
 
     def get_part(self) -> str:
         return self.part
+
+    def get_platform(self) -> str:
+        """Name of the cfg-fpga-platforms entry, or "" for an inline part."""
+        return self.platform
 
     def get_xdc_files(self) -> list[str]:
         return list(self.xdc_files)
@@ -204,6 +222,50 @@ class FpgaSuiteConfig:
 
     def get_path(self) -> str:
         return self.path
+
+    def __str__(self):
+        return pprint.pformat(self)
+
+
+@serde
+class FpgaRegConfigFile:
+    filetype: Literal["fpga_reg_config"] = field(rename="rtl-buddy-filetype")
+    fpga_configs: list[str] = field(rename="fpga-configs", default_factory=list)
+
+
+class FpgaRegConfig:
+    def __init__(self, name: str, path: str):
+        self.name = name
+        self.path = path
+        self.suite_configs: list[FpgaSuiteConfig] = []
+        try:
+            with open(path, "r") as f:
+                data = from_yaml(FpgaRegConfigFile, f.read())
+            self.suite_configs = [
+                FpgaSuiteConfig(os.path.join(os.path.dirname(path), p))
+                for p in data.fpga_configs
+            ]
+        except FatalRtlBuddyError:
+            raise
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "fpga_reg_config.load_failed",
+                name=name,
+                path=path,
+                error=e,
+            )
+            raise FatalRtlBuddyError(f'{name}: failed to load "{path}"') from e
+
+    def get_name(self) -> str:
+        return self.name
+
+    def get_path(self) -> str:
+        return self.path
+
+    def get_suite_configs(self) -> list[FpgaSuiteConfig]:
+        return self.suite_configs
 
     def __str__(self):
         return pprint.pformat(self)

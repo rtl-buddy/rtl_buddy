@@ -18,9 +18,14 @@ import pytest
 
 from rtl_buddy.config.fpga import (
     FpgaConfig,
+    FpgaRegConfig,
     FpgaSuiteConfig,
     FpgaToolConfig,
     FpgaToolConfigFile,
+)
+from rtl_buddy.config.fpga_platform import (
+    FpgaPlatformConfig,
+    FpgaPlatformConfigFile,
 )
 from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.errors import FatalRtlBuddyError
@@ -745,3 +750,394 @@ def test_cli_fpga_reglvl_gates_run(minimal_project: Path, capsys, monkeypatch):
     row = payload["payload"]["results"][0]
     assert row["result"] == "SKIP"
     assert "reglvl 1000 above 0" in row["desc"]
+
+
+# ---------------------------------------------------------------------------
+# P2 (#286): cfg-fpga-platforms, XDC ownership, regression/reglvl
+# ---------------------------------------------------------------------------
+
+
+def test_fpga_platform_cfg_fields_and_xdc_anchoring(tmp_path):
+    cfg = FpgaPlatformConfigFile(
+        name="zu7ev_board",
+        part="xczu7ev-ffvc1156-2-e",
+        board="generic-zu7ev",
+        package="ffvc1156",
+        xdc=["constraints/board.xdc"],
+    )
+    platform = FpgaPlatformConfig(cfg, str(tmp_path / "root_config.yaml"))
+    assert platform.get_name() == "zu7ev_board"
+    assert platform.get_part() == "xczu7ev-ffvc1156-2-e"
+    assert platform.get_board() == "generic-zu7ev"
+    assert platform.get_package() == "ffvc1156"
+    # default XDC paths anchor at root_config.yaml's directory
+    assert platform.get_xdc_files() == [str(tmp_path / "constraints" / "board.xdc")]
+
+
+def test_fpga_platform_cfg_optional_fields_default_empty(tmp_path):
+    cfg = FpgaPlatformConfigFile(name="bare", part="xczu7ev-ffvc1156-2-e")
+    platform = FpgaPlatformConfig(cfg, str(tmp_path / "root_config.yaml"))
+    assert platform.get_board() == ""
+    assert platform.get_package() == ""
+    assert platform.get_xdc_files() == []
+
+
+_PLATFORM_ROOT_EXTRA = dedent("""\
+
+    cfg-fpga-platforms:
+      - name: "zu7ev_board"
+        part: "xczu7ev-ffvc1156-2-e"
+        board: "generic-zu7ev"
+        xdc:
+          - "constraints/board.xdc"
+      - name: "vu19p_board"
+        part: "xcvu19p-fsva3824-1-e"
+""")
+
+
+def _add_platforms_to_root(project: Path) -> None:
+    root_yaml = project / "root_config.yaml"
+    root_yaml.write_text(root_yaml.read_text() + _PLATFORM_ROOT_EXTRA)
+
+
+def test_root_config_loads_fpga_platforms(minimal_project: Path):
+    from rtl_buddy.config.root import RootConfig
+
+    _add_platforms_to_root(minimal_project)
+    root_cfg = RootConfig(name="test_fpga_platforms")
+    platform = root_cfg.get_fpga_platform_cfg("zu7ev_board")
+    assert platform.get_part() == "xczu7ev-ffvc1156-2-e"
+    assert platform.get_xdc_files() == [
+        str(minimal_project / "constraints" / "board.xdc")
+    ]
+    with pytest.raises(FatalRtlBuddyError, match="not found in cfg-fpga-platforms"):
+        root_cfg.get_fpga_platform_cfg("nope")
+
+
+def test_fpga_suite_loads_platform_ref(tmp_path):
+    yaml = _FPGA_YAML.replace(
+        '    part: "xczu7ev-ffvc1156-2-e"\n', '    platform: "zu7ev_board"\n'
+    )
+    suite = FpgaSuiteConfig(str(_write_suite(tmp_path, yaml)))
+    run = suite.get_runs("demo_fpga")[0]
+    assert run.get_platform() == "zu7ev_board"
+    assert run.get_part() == ""
+
+
+def test_fpga_suite_part_and_platform_is_config_error(tmp_path):
+    yaml = _FPGA_YAML.replace(
+        '    part: "xczu7ev-ffvc1156-2-e"\n',
+        '    part: "xczu7ev-ffvc1156-2-e"\n    platform: "zu7ev_board"\n',
+    )
+    with pytest.raises(FatalRtlBuddyError, match="mutually exclusive"):
+        FpgaSuiteConfig(str(_write_suite(tmp_path, yaml)))
+
+
+def test_fpga_suite_neither_part_nor_platform_is_config_error(tmp_path):
+    yaml = _FPGA_YAML.replace('    part: "xczu7ev-ffvc1156-2-e"\n', "")
+    with pytest.raises(FatalRtlBuddyError, match="missing 'part'"):
+        FpgaSuiteConfig(str(_write_suite(tmp_path, yaml)))
+
+
+# ---------------------------------------------------------------------------
+# resolve_target — the platform/inline-part resolution seam
+# ---------------------------------------------------------------------------
+
+
+def _make_platform(tmp_path, *, part="xcvu19p-fsva3824-1-e", xdc=None):
+    cfg = FpgaPlatformConfigFile(name="plat", part=part, xdc=xdc or [])
+    return FpgaPlatformConfig(cfg, str(tmp_path / "root_config.yaml"))
+
+
+def test_resolve_target_inline_part(tmp_path):
+    from rtl_buddy.tools.fpga_base import resolve_target
+
+    cfg = _make_fpga_cfg(tmp_path, xdc=["/run/run.xdc"])
+    target = resolve_target(cfg, root_cfg=None)
+    assert target.part == "xczu7ev-ffvc1156-2-e"
+    assert list(target.xdc_files) == ["/run/run.xdc"]
+
+
+def test_resolve_target_platform_part_and_xdc_merge_order(tmp_path):
+    """Platform default XDC come first; per-run XDC extend (later wins)."""
+    from rtl_buddy.tools.fpga_base import resolve_target
+
+    platform = _make_platform(tmp_path, xdc=["constraints/board.xdc"])
+    root_cfg = MagicMock()
+    root_cfg.get_fpga_platform_cfg.return_value = platform
+    cfg = _make_fpga_cfg(tmp_path, xdc=["/run/run.xdc"])
+    cfg.platform = "plat"
+    cfg.part = ""
+    target = resolve_target(cfg, root_cfg)
+    root_cfg.get_fpga_platform_cfg.assert_called_once_with("plat")
+    assert target.part == "xcvu19p-fsva3824-1-e"
+    assert list(target.xdc_files) == [
+        str(tmp_path / "constraints" / "board.xdc"),
+        "/run/run.xdc",
+    ]
+
+
+def test_resolve_target_unknown_platform_raises(tmp_path):
+    from rtl_buddy.tools.fpga_base import resolve_target
+
+    root_cfg = MagicMock()
+    root_cfg.get_fpga_platform_cfg.side_effect = FatalRtlBuddyError(
+        "fpga platform 'nope' not found in cfg-fpga-platforms; available: []"
+    )
+    cfg = _make_fpga_cfg(tmp_path)
+    cfg.platform = "nope"
+    cfg.part = ""
+    with pytest.raises(FatalRtlBuddyError, match="not found in cfg-fpga-platforms"):
+        resolve_target(cfg, root_cfg)
+
+
+def test_resolve_target_platform_without_root_cfg_raises(tmp_path):
+    from rtl_buddy.tools.fpga_base import resolve_target
+
+    cfg = _make_fpga_cfg(tmp_path)
+    cfg.platform = "plat"
+    cfg.part = ""
+    with pytest.raises(FatalRtlBuddyError, match="requires a root_config.yaml"):
+        resolve_target(cfg, root_cfg=None)
+
+
+# ---------------------------------------------------------------------------
+# CLI — platform refs end-to-end (mocked Vivado)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_fpga_platform_ref_resolves_part_and_merges_xdc(
+    minimal_project: Path, capsys, monkeypatch
+):
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _add_platforms_to_root(minimal_project)
+    (minimal_project / "fpga.yaml").write_text(
+        dedent("""\
+            rtl-buddy-filetype: fpga_config
+            runs:
+              - name: "demo_fpga"
+                desc: "platform-ref run"
+                model: "example"
+                model_path: "models.yaml"
+                platform: "zu7ev_board"
+                xdc:
+                  - "constraints/run.xdc"
+        """)
+    )
+    _mock_vivado_env(monkeypatch, _fake_vivado(drop_bitstream=False))
+    monkeypatch.setattr("sys.argv", ["rb", "--machine", "fpga", "demo_fpga"])
+    rb = RtlBuddy(name="test_fpga_platform_ref")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured
+    payload = json.loads(captured.out)
+    assert payload["payload"]["results"][0]["result"] == "PASS"
+
+    script = (minimal_project / "artefacts" / "demo_fpga" / "flow.tcl").read_text()
+    # part comes from the platform, not the run
+    assert "-part xczu7ev-ffvc1156-2-e" in script
+    # platform XDC first, run XDC after (later read_xdc wins in Vivado)
+    board_xdc = str(minimal_project / "constraints" / "board.xdc")
+    run_xdc = str(minimal_project / "constraints" / "run.xdc")
+    assert script.index(board_xdc) < script.index(run_xdc)
+
+
+def test_cli_fpga_unknown_platform_exits_2(minimal_project: Path, capsys, monkeypatch):
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _add_platforms_to_root(minimal_project)
+    (minimal_project / "fpga.yaml").write_text(
+        dedent("""\
+            rtl-buddy-filetype: fpga_config
+            runs:
+              - name: "demo_fpga"
+                desc: "bad platform ref"
+                model: "example"
+                model_path: "models.yaml"
+                platform: "does_not_exist"
+        """)
+    )
+    _mock_vivado_env(monkeypatch)
+    monkeypatch.setattr("sys.argv", ["rb", "--machine", "fpga", "demo_fpga"])
+    rb = RtlBuddy(name="test_fpga_bad_platform")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    assert exit_code == 2, captured
+    payload = json.loads(captured.out)
+    assert "not found in cfg-fpga-platforms" in payload["payload"]["error"]
+
+
+def test_cli_fpga_part_and_platform_exits_2(minimal_project: Path, capsys, monkeypatch):
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    (minimal_project / "fpga.yaml").write_text(
+        dedent("""\
+            rtl-buddy-filetype: fpga_config
+            runs:
+              - name: "demo_fpga"
+                desc: "conflicting device selection"
+                model: "example"
+                model_path: "models.yaml"
+                part: "xczu7ev-ffvc1156-2-e"
+                platform: "zu7ev_board"
+        """)
+    )
+    monkeypatch.setattr("sys.argv", ["rb", "--machine", "fpga", "demo_fpga"])
+    rb = RtlBuddy(name="test_fpga_conflict")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    assert exit_code == 2, captured
+    payload = json.loads(captured.out)
+    assert "mutually exclusive" in payload["payload"]["error"]
+
+
+# ---------------------------------------------------------------------------
+# FpgaRegConfig + rb fpga-regression
+# ---------------------------------------------------------------------------
+
+
+def test_fpga_reg_config_loads_suite_paths(tmp_path):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "models.yaml").write_text(_MODELS_YAML)
+    (sandbox / "fpga.yaml").write_text(_FPGA_YAML)
+    reg_yaml = tmp_path / "fpga_regression.yaml"
+    reg_yaml.write_text(
+        dedent("""\
+            rtl-buddy-filetype: fpga_reg_config
+            fpga-configs:
+              - "sandbox/fpga.yaml"
+        """)
+    )
+    reg_cfg = FpgaRegConfig(name="reg", path=str(reg_yaml))
+    suites = reg_cfg.get_suite_configs()
+    assert len(suites) == 1
+    assert suites[0].get_run_names() == ["demo_fpga"]
+
+
+def test_fpga_reg_config_missing_file_raises(tmp_path):
+    with pytest.raises(FatalRtlBuddyError, match="failed to load"):
+        FpgaRegConfig(name="reg", path=str(tmp_path / "missing.yaml"))
+
+
+def _fpga_regression_project(minimal_project: Path) -> Path:
+    """Two suites running the same RTL on two parts via platform refs.
+
+    suite_a/run_zu7ev targets the ZU7EV platform at reglvl 0;
+    suite_b/run_vu19p targets the VU19P platform at reglvl 1000.
+    """
+    _add_platforms_to_root(minimal_project)
+    for suite, platform, reglvl in (
+        ("suite_a", "zu7ev_board", 0),
+        ("suite_b", "vu19p_board", 1000),
+    ):
+        suite_dir = minimal_project / suite
+        suite_dir.mkdir()
+        (suite_dir / "fpga.yaml").write_text(
+            dedent(f"""\
+                rtl-buddy-filetype: fpga_config
+                runs:
+                  - name: "run_{platform.removesuffix("_board")}"
+                    desc: "same RTL on {platform}"
+                    model: "example"
+                    model_path: "../models.yaml"
+                    platform: "{platform}"
+                    reglvl: {reglvl}
+            """)
+        )
+    (minimal_project / "fpga_regression.yaml").write_text(
+        dedent("""\
+            rtl-buddy-filetype: fpga_reg_config
+            fpga-configs:
+              - "suite_a/fpga.yaml"
+              - "suite_b/fpga.yaml"
+        """)
+    )
+    return minimal_project
+
+
+def test_cli_fpga_regression_filters_by_reg_level(
+    minimal_project: Path, capsys, monkeypatch
+):
+    """-l 0 runs only the reglvl-0 entry; the reglvl-1000 one is SKIP."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _fpga_regression_project(minimal_project)
+    _mock_vivado_env(monkeypatch, _fake_vivado(drop_bitstream=False))
+    monkeypatch.setattr("sys.argv", ["rb", "--machine", "fpga-regression"])
+    rb = RtlBuddy(name="test_fpga_reg_l0")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured
+    payload = json.loads(captured.out)
+    assert payload["command"] == "fpga-regression"
+    rows = {r["name"]: r for r in payload["payload"]["results"]}
+    assert rows["run_zu7ev"]["result"] == "PASS"
+    assert rows["run_zu7ev"]["suite"].endswith("suite_a/fpga.yaml")
+    assert rows["run_vu19p"]["result"] == "SKIP"
+    assert "reglvl 1000 above 0" in rows["run_vu19p"]["desc"]
+
+
+def test_cli_fpga_regression_runs_same_rtl_across_parts(
+    minimal_project: Path, capsys, monkeypatch
+):
+    """-l 1000 runs both platforms; each flow.tcl targets its own part."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _fpga_regression_project(minimal_project)
+    _mock_vivado_env(monkeypatch, _fake_vivado(drop_bitstream=False))
+    monkeypatch.setattr(
+        "sys.argv", ["rb", "--machine", "fpga-regression", "-l", "1000"]
+    )
+    rb = RtlBuddy(name="test_fpga_reg_l1000")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    assert exit_code == 0, captured
+    payload = json.loads(captured.out)
+    rows = {r["name"]: r for r in payload["payload"]["results"]}
+    assert rows["run_zu7ev"]["result"] == "PASS"
+    assert rows["run_vu19p"]["result"] == "PASS"
+
+    script_a = (
+        minimal_project / "suite_a" / "artefacts" / "run_zu7ev" / "flow.tcl"
+    ).read_text()
+    script_b = (
+        minimal_project / "suite_b" / "artefacts" / "run_vu19p" / "flow.tcl"
+    ).read_text()
+    assert "-part xczu7ev-ffvc1156-2-e" in script_a
+    assert "-part xcvu19p-fsva3824-1-e" in script_b
+
+
+def test_cli_fpga_regression_aggregates_failures(
+    minimal_project: Path, capsys, monkeypatch
+):
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _fpga_regression_project(minimal_project)
+    _mock_vivado_env(
+        monkeypatch,
+        _fake_vivado(returncode=1, drop_reports=False, drop_bitstream=False),
+    )
+    monkeypatch.setattr("sys.argv", ["rb", "--machine", "fpga-regression"])
+    rb = RtlBuddy(name="test_fpga_reg_fail")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    assert exit_code == 1, captured
+    payload = json.loads(captured.out)
+    rows = {r["name"]: r for r in payload["payload"]["results"]}
+    assert rows["run_zu7ev"]["result"] == "FAIL"
+
+
+def test_cli_fpga_regression_missing_config_exits_2(
+    minimal_project: Path, capsys, monkeypatch
+):
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    monkeypatch.setattr("sys.argv", ["rb", "--machine", "fpga-regression"])
+    rb = RtlBuddy(name="test_fpga_reg_noconfig")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    assert exit_code == 2, captured
+    payload = json.loads(captured.out)
+    assert "fpga_regression.yaml not found" in payload["payload"]["error"]

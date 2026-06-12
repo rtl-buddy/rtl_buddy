@@ -121,6 +121,8 @@ cfg-pnr-platforms:
 | `routing-layers.signal` | Layer range for signal routing (e.g. `metal2-metal8`) |
 | `routing-layers.clock` | Layer range for clock routing (typically higher metals) |
 
+The FPGA flow has an analogous device selector, `cfg-fpga-platforms` — see [FPGA implementation](fpga.md#platforms-cfg-fpga-platforms).
+
 ## Running P&R
 
 ```bash

@@ -17,7 +17,7 @@ from ..runner.fpga_results import (
     FpgaResults,
     FpgaSkipResults,
 )
-from .fpga_base import BaseFpga, resolve_part
+from .fpga_base import BaseFpga, resolve_target
 from .fpga_vivado_flow import REPORT_FILES, render_flow_tcl
 from .fpga_vivado_reports import (
     parse_drc,
@@ -124,12 +124,15 @@ class VivadoFpga(BaseFpga):
 
     def _write_script(self, fl_path: str) -> str:
         top = self.fpga_cfg.get_top()
-        part = resolve_part(self.fpga_cfg, self.root_cfg)
+        # Platform vs inline part is resolved behind this seam; the
+        # effective XDC list is platform defaults first, run files after
+        # (later read_xdc wins in Vivado).
+        target = resolve_target(self.fpga_cfg, self.root_cfg)
         script = render_flow_tcl(
             top=top,
-            part=part,
+            part=target.part,
             verilog_sources=self._source_files_from_filelist(fl_path),
-            xdc_files=self.fpga_cfg.get_xdc_files(),
+            xdc_files=list(target.xdc_files),
             bitstream=f"{top}.bit",
             emit_bitstream=self.emit_bitstream,
         )
@@ -170,6 +173,9 @@ class VivadoFpga(BaseFpga):
     # ------------------------------------------------------------------
 
     def run(self) -> FpgaResults:
+        # Resolve up front: an unknown `platform:` ref is a config error
+        # (FatalRtlBuddyError, exit 2), even when vivado is absent.
+        target = resolve_target(self.fpga_cfg, self.root_cfg)
         log_event(
             logger,
             logging.INFO,
@@ -177,7 +183,7 @@ class VivadoFpga(BaseFpga):
             fpga=self.fpga_cfg.get_name(),
             tool=self.executable,
             top=self.fpga_cfg.get_top(),
-            part=resolve_part(self.fpga_cfg, self.root_cfg),
+            part=target.part,
             bitstream=self.emit_bitstream,
         )
 
