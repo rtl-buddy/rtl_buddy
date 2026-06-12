@@ -335,6 +335,29 @@ def test_frontier_bad_inputs_exit_2(minimal_project: Path, monkeypatch, capsys):
     assert "lut_pct" in payload["error"]  # names what is available
 
 
+def test_error_envelope_reports_full_subcommand(
+    minimal_project: Path, monkeypatch, capsys
+):
+    """Exit-2 envelopes name the subcommand, matching the success path."""
+    _write_ledger(minimal_project, _primer_records())
+
+    code, out, _ = _run(
+        ["--machine", "xplr", "frontier", "--metrics", "lut_pct:upward"],
+        monkeypatch,
+        capsys,
+    )
+    assert code == 2  # bad direction in the --metrics override
+    envelope = _envelope(out)
+    assert envelope["command"] == "xplr frontier"
+
+    code, out, _ = _run(
+        ["--machine", "xplr", "diff", "exp-0001", "exp-9999"], monkeypatch, capsys
+    )
+    assert code == 2
+    envelope = _envelope(out)
+    assert envelope["command"] == "xplr diff"
+
+
 def test_frontier_empty_ledger(minimal_project: Path, monkeypatch, capsys):
     payload = _machine(["xplr", "frontier"], monkeypatch, capsys)
     assert payload == {

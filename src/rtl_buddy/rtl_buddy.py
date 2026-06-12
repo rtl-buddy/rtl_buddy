@@ -76,7 +76,6 @@ from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
 from .xplr import dumps_record
 from .xplr import ledger as xplr_ledger
-from .xplr import mockflow as xplr_mockflow
 
 logger = logging.getLogger(__name__)
 
@@ -336,37 +335,7 @@ class RtlBuddy:
             help="per-knob effect history: every experiment that declared "
             "the knob, with metric deltas vs its parent when available",
         )(self.do_xplr_knob_effect)
-        self.xplr_mock_app = typer.Typer(
-            help=(
-                "synthetic DSE backend with known optima (dev/CI harness). "
-                "mockflow evaluates EDA-flavored knobs against seeded "
-                "benchmark landscapes (Rastrigin, ZDT1) with analytic ground "
-                "truth, so agent loops and analysis can be developed and "
-                "scored instantly without real EDA tools or licenses"
-            ),
-            no_args_is_help=True,
-        )
-        self.xplr_mock_app.command(
-            "info",
-            help="describe the synthetic scenarios: knob specs, metrics, "
-            "feasibility cliffs, cost model, and ground-truth optimum/front",
-        )(self.do_xplr_mock_info)
-        self.xplr_mock_app.command(
-            "run",
-            help="evaluate a knob vector against a scenario; with --register "
-            "also record it as a ledger experiment with the outcome attached",
-        )(self.do_xplr_mock_run)
-        self.xplr_mock_app.command(
-            "score",
-            help="score the ledger's mockflow experiments against ground "
-            "truth: regret (single-objective) or hypervolume + "
-            "distance-to-front (multi-objective)",
-        )(self.do_xplr_mock_score)
-        self.xplr_app.add_typer(
-            self.xplr_mock_app,
-            name="mock",
-            help="synthetic DSE backend with known optima (dev/CI harness)",
-        )
+        self.xplr_app.callback()(self._xplr_group_options)
         self.app.add_typer(
             self.xplr_app,
             name="xplr",
@@ -3835,6 +3804,18 @@ class RtlBuddy:
     # rb xplr — design-space exploration experiment ledger
     # ------------------------------------------------------------------
 
+    def _xplr_group_options(self, ctx: typer.Context):
+        """Group callback: record the full ``xplr <sub>`` command name.
+
+        ``root_options`` only sees the group (``xplr``), so the exit-2
+        machine envelope emitted by :meth:`run` would attribute errors
+        to the bare group name while the success path reports the full
+        subcommand (e.g. ``xplr frontier``). Refining it here keeps the
+        error surface consistent with the success surface.
+        """
+        if ctx.invoked_subcommand:
+            self._pending_invoked_subcommand = f"xplr {ctx.invoked_subcommand}"
+
     def _enter_xplr_context(self) -> tuple[Path, Path]:
         """Anchor an xplr command and return (project_root, ledger_root).
 
@@ -4217,139 +4198,6 @@ class RtlBuddy:
                 rows=rows,
                 logger=logger,
             )
-        raise typer.Exit(0)
-
-    # ------------------------------------------------------------------
-    # rb xplr mock — synthetic DSE backend with known optima (dev/CI)
-    # ------------------------------------------------------------------
-
-    def do_xplr_mock_info(
-        self,
-        scenario: Annotated[
-            str,
-            typer.Option(
-                "--scenario",
-                help="only this scenario (rastrigin|zdt1); default: all",
-            ),
-        ] = None,
-    ):
-        """
-        describe the synthetic scenarios, knob specs, and ground truth
-        """
-        infos = xplr_mockflow.scenario_infos(scenario)
-        if self.machine:
-            self._emit_machine_result("xplr mock info", 0, scenarios=infos)
-        else:
-            print(json.dumps({"scenarios": infos}, indent=2))
-        raise typer.Exit(0)
-
-    def do_xplr_mock_run(
-        self,
-        scenario: Annotated[
-            str,
-            typer.Option("--scenario", help="scenario name (rastrigin|zdt1)"),
-        ],
-        json_input: Annotated[
-            str,
-            typer.Option(
-                "--json",
-                help="JSON knob values file, or '-' for stdin: {knob_name: "
-                "value, ...}; omitted knobs take their scenario default",
-            ),
-        ] = None,
-        seed: Annotated[
-            int,
-            typer.Option(
-                "--seed", help="determinism seed (only matters with --noise > 0)"
-            ),
-        ] = 0,
-        noise: Annotated[
-            float,
-            typer.Option(
-                "--noise",
-                help="Gaussian sigma added to objective metrics (seeded, "
-                "reproducible); 0 = exact analytic values",
-            ),
-        ] = 0.0,
-        register: Annotated[
-            bool,
-            typer.Option(
-                "--register",
-                help="also register a ledger experiment and attach the "
-                "outcome in one step",
-            ),
-        ] = False,
-    ):
-        """
-        evaluate a knob vector against a synthetic scenario
-        """
-        sc = xplr_mockflow.get_scenario(scenario)
-        doc = {}
-        if json_input is not None:
-            doc = xplr_commands.load_json_doc(
-                json_input, cwd=self.invocation_cwd, what="mock run"
-            )
-        values = xplr_mockflow.resolve_knobs(sc, doc)
-        outcome = xplr_mockflow.evaluate(sc, values, seed=seed, noise=noise)
-        payload: dict = {
-            "scenario": sc.name,
-            "knobs": values,
-            "seed": seed,
-            "noise": noise,
-            "routed": outcome.routed,
-            "metrics": outcome.metrics,
-            "metric_meta": outcome.metric_meta,
-        }
-        if register:
-            project_root, root = self._enter_xplr_context()
-            self._artifact_locks.acquire(root, command="xplr mock run")
-            reg_doc = xplr_mockflow.register_manifest(
-                sc, doc, values, seed=seed, noise=noise
-            )
-            record, _ = xplr_commands.register_experiment(
-                root, reg_doc, project_root=project_root
-            )
-            record, path = xplr_commands.attach_outcome(
-                root, record.id, xplr_mockflow.outcome_manifest(outcome)
-            )
-            payload["id"] = record.id
-            payload["record_path"] = str(path)
-            payload["record"] = record.to_dict()
-        if self.machine:
-            self._emit_machine_result("xplr mock run", 0, **payload)
-        else:
-            metrics = ", ".join(
-                f"{name}={value}" for name, value in outcome.metrics.items()
-            )
-            suffix = f" -> {payload['id']}" if register else ""
-            emit_console_text(
-                f"mockflow {sc.name}: {metrics}{suffix}",
-                style="green" if outcome.routed else "yellow",
-                markup=False,
-            )
-        raise typer.Exit(0)
-
-    def do_xplr_mock_score(
-        self,
-        scenario: Annotated[
-            str,
-            typer.Option(
-                "--scenario",
-                help="only this scenario; default: every scenario with "
-                "mockflow experiments in the ledger",
-            ),
-        ] = None,
-    ):
-        """
-        score the ledger's mockflow experiments against ground truth
-        """
-        _, root = self._enter_xplr_context()
-        records = xplr_ledger.list_records(root)
-        scores = xplr_mockflow.score_ledger(records, scenario)
-        if self.machine:
-            self._emit_machine_result("xplr mock score", 0, scores=scores)
-        else:
-            print(json.dumps({"scores": scores}, indent=2))
         raise typer.Exit(0)
 
     def do_cmd_wave(
