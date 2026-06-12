@@ -112,6 +112,12 @@ def test_parse_timing_summary_pass():
     assert timing["timing_met"] is True
 
 
+def test_parse_timing_summary_pass_has_no_failing_paths():
+    timing = parse_timing_summary(_fixture("timing_summary.rpt"))
+    assert timing["failing_endpoints"] == 0
+    assert timing["failing_paths"] == []
+
+
 def test_parse_timing_summary_per_clock_rows():
     timing = parse_timing_summary(_fixture("timing_summary.rpt"))
     assert len(timing["clocks"]) == 1
@@ -142,6 +148,27 @@ def test_parse_timing_summary_failing():
     assert clk["wns_ns"] == -0.882
 
 
+def test_parse_timing_summary_failing_carries_loop_fields():
+    """The timing-closure loop fields (#288): endpoint count + worst paths."""
+    timing = parse_timing_summary(_fixture("timing_summary_fail.rpt"))
+
+    # Setup (101) + hold (0) endpoints with negative slack.
+    assert timing["failing_endpoints"] == 101
+
+    # Only the VIOLATED block surfaces; the MET hold path does not.
+    assert len(timing["failing_paths"]) == 1
+    path = timing["failing_paths"][0]
+    assert path["slack_ns"] == -0.882
+    assert path["met"] is False
+    assert path["source"] == "product_reg/DSP_A_B_DATA_INST/CLK"
+    assert path["destination"] == "product_reg/DSP_M_DATA_INST/V[0]"
+    assert path["path_group"] == "clk"
+    assert path["path_type"] == "Setup"
+    assert path["requirement_ns"] == 0.05
+    assert path["data_path_delay_ns"] == 0.894
+    assert path["logic_levels"] == 2
+
+
 def test_parse_timing_summary_fallback_verdict_without_vivado_line():
     # No explicit verdict line: derived from WNS/WHS signs.
     text = (
@@ -158,6 +185,10 @@ def test_parse_timing_summary_fallback_verdict_without_vivado_line():
     assert timing["whs_ns"] == 0.1
     assert timing["timing_met"] is False
     assert timing["clocks"] == []
+    # Loop fields degrade gracefully: setup endpoints only (no hold
+    # column in the truncated row), no Timing Details section at all.
+    assert timing["failing_endpoints"] == 2
+    assert timing["failing_paths"] == []
 
 
 def test_parse_timing_summary_rejects_garbage():

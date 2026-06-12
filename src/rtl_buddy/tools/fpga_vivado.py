@@ -26,7 +26,6 @@ from .fpga_vivado_reports import (
     parse_timing_summary,
     parse_utilization,
 )
-from .vlog_filelist import VlogFilelist
 
 # Vivado error lines look like `ERROR: [Synth 8-439] module ...` — match
 # on the bracketed message-id form so the word ERROR inside user puts
@@ -65,16 +64,10 @@ class VivadoFpga(BaseFpga):
             executable=executable,
             emit_bitstream=emit_bitstream,
         )
-        artefact_root = Path(suite_dir) / "artefacts" / fpga_cfg.get_name()
-        artefact_root.mkdir(parents=True, exist_ok=True)
-        self.artefact_dir = str(artefact_root)
 
     # ------------------------------------------------------------------
     # Artefact paths
     # ------------------------------------------------------------------
-
-    def _filelist_path(self) -> str:
-        return os.path.join(self.artefact_dir, "fpga.f")
 
     def _script_path(self) -> str:
         return os.path.join(self.artefact_dir, "flow.tcl")
@@ -84,40 +77,6 @@ class VivadoFpga(BaseFpga):
 
     def _bitstream_path(self) -> str:
         return os.path.join(self.artefact_dir, f"{self.fpga_cfg.get_top()}.bit")
-
-    # ------------------------------------------------------------------
-    # Filelist handling
-    # ------------------------------------------------------------------
-
-    def _write_filelist(self) -> str:
-        fl_path = self._filelist_path()
-        vlog_fl = VlogFilelist(
-            name=self.name + "/filelist",
-            model_cfg=self.fpga_cfg.get_model(),
-            output_path=fl_path,
-        )
-        vlog_fl.write_output(
-            output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
-        )
-        return fl_path
-
-    def _source_files_from_filelist(self, fl_path: str) -> list[str]:
-        """Return absolute source file paths from a generated filelist."""
-        fl_dir = os.path.dirname(os.path.abspath(fl_path))
-        _SKIP = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
-        _SOURCE_PREFIX = "-v "
-        paths = []
-        with open(fl_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("//"):
-                    continue
-                if any(line.startswith(opt) for opt in _SKIP):
-                    continue
-                if line.startswith(_SOURCE_PREFIX):
-                    line = line[len(_SOURCE_PREFIX) :]
-                paths.append(os.path.normpath(os.path.join(fl_dir, line)))
-        return paths
 
     # ------------------------------------------------------------------
     # Tcl script generation
@@ -344,6 +303,10 @@ class VivadoFpga(BaseFpga):
             tns_ns=timing.get("tns_ns"),
             whs_ns=timing.get("whs_ns"),
             timing_met=timing.get("timing_met"),
+            failing_endpoints=timing.get("failing_endpoints"),
+            # Omitted entirely when there are none — agents key off
+            # timing_met first, then dig into the paths.
+            failing_paths=timing.get("failing_paths") or None,
             total_power_w=power.get("total_on_chip_w"),
             dynamic_power_w=power.get("dynamic_w"),
             static_power_w=power.get("static_w"),

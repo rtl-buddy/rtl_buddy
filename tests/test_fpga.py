@@ -654,6 +654,42 @@ def test_cli_fpga_bitstream_flag_carries_path(
     assert payload["payload"]["results"][0]["bitstream"].endswith("example.bit")
 
 
+def test_cli_fpga_failing_timing_payload_carries_loop_fields(
+    minimal_project: Path, capsys, monkeypatch
+):
+    """Machine JSON for a timing-failing run feeds the closure loop (#288)."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _fpga_project(minimal_project)
+
+    def _run(cmd, **kwargs):
+        cwd = Path(kwargs["cwd"])
+        (cwd / "vivado.log").write_text("")
+        for filename in REPORT_FILES.values():
+            shutil.copy(FIXTURES / filename, cwd / filename)
+        shutil.copy(FIXTURES / "timing_summary_fail.rpt", cwd / "timing_summary.rpt")
+        return ManagedProcessResult(returncode=0)
+
+    _mock_vivado_env(monkeypatch, _run)
+    monkeypatch.setattr("sys.argv", ["rb", "--machine", "fpga", "demo_fpga"])
+    rb = RtlBuddy(name="test_fpga_timing_loop")
+    exit_code = rb.run()
+    captured = capsys.readouterr()
+    # Failing timing is not a flow failure — the metrics carry the truth.
+    assert exit_code == 0, captured
+    row = json.loads(captured.out)["payload"]["results"][0]
+    assert row["result"] == "PASS"
+    assert row["timing_met"] is False
+    assert row["wns_ns"] == -0.882
+    assert row["tns_ns"] == -81.047
+    assert row["failing_endpoints"] == 101
+    path = row["failing_paths"][0]
+    assert path["slack_ns"] == -0.882
+    assert path["source"] == "product_reg/DSP_A_B_DATA_INST/CLK"
+    assert path["destination"] == "product_reg/DSP_M_DATA_INST/V[0]"
+    assert path["path_type"] == "Setup"
+
+
 def test_cli_fpga_fail_path_exits_1(minimal_project: Path, capsys, monkeypatch):
     from rtl_buddy.rtl_buddy import RtlBuddy
 

@@ -30,6 +30,16 @@ class FpgaPassResults(FpgaResults):
     from ``fpga_vivado_reports.parse_utilization``). ``bitstream`` is
     always present on a pass — ``None`` when bitstream generation was
     not requested (`rb fpga` without ``--bitstream``).
+
+    Backends differ in what they can measure (openXC7 has no power /
+    DRC / methodology reports, Vivado has no single-number Fmax) — every
+    metric is optional and a ``None`` simply omits the key, so machine
+    consumers must treat all metric keys as optional.
+
+    ``failing_endpoints`` / ``failing_paths`` are the timing-closure
+    loop fields: the count of endpoints with negative slack and the
+    worst failing paths (``{"slack_ns", "source", "destination", ...}``
+    dicts) so an agent can hypothesize a fix without re-parsing reports.
     """
 
     def __init__(
@@ -44,6 +54,9 @@ class FpgaPassResults(FpgaResults):
         tns_ns: float | None = None,
         whs_ns: float | None = None,
         timing_met: bool | None = None,
+        fmax_mhz: float | None = None,
+        failing_endpoints: int | None = None,
+        failing_paths: list | None = None,
         total_power_w: float | None = None,
         dynamic_power_w: float | None = None,
         static_power_w: float | None = None,
@@ -72,6 +85,12 @@ class FpgaPassResults(FpgaResults):
             self.results["whs_ns"] = whs_ns
         if timing_met is not None:
             self.results["timing_met"] = timing_met
+        if fmax_mhz is not None:
+            self.results["fmax_mhz"] = fmax_mhz
+        if failing_endpoints is not None:
+            self.results["failing_endpoints"] = failing_endpoints
+        if failing_paths is not None:
+            self.results["failing_paths"] = failing_paths
         if total_power_w is not None:
             self.results["total_power_w"] = total_power_w
         if dynamic_power_w is not None:

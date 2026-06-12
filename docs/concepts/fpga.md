@@ -1,26 +1,66 @@
 ---
-description: How to run an FPGA implementation flow (synthesis, place, route, optional bitstream) with rtl_buddy via the rb fpga command and fpga.yaml, driving AMD/Xilinx Vivado in batch mode.
+description: How to run an FPGA implementation flow (synthesis, place, route, optional bitstream) with rtl_buddy via the rb fpga command and fpga.yaml, driving AMD/Xilinx Vivado in batch mode or the open openXC7 toolchain, including an agent-driven timing-closure loop.
 ---
 
 # FPGA Implementation
 
-> **Integration type:** Pluggable. `rb fpga` is built around Vivado today; further backends register in the same backend table.
+> **Integration type:** Pluggable. `rb fpga` ships two backends — `vivado` (default) and `openxc7` (open-source, 7-series only); further backends register in the same backend table.
 >
-> **External binary required:** `vivado` — see [Installing Vivado](#installing-vivado).
+> **External binaries required:** `vivado` — see [Installing Vivado](#installing-vivado) — or, for the open alternative, `yosys` + `nextpnr-xilinx` + prjxray — see [The openXC7 backend](#the-openxc7-backend-open-source-7-series-only).
 >
 > See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
 
-`rb fpga` drives a full FPGA implementation flow — RTL synthesis, placement, routing, post-route reports, and (on request) a bitstream — for one target part per run. The value-add over driving Vivado by hand: a stable `artefacts/<run>/` layout, structured pass/fail with utilization/timing/power/DRC metrics distilled from multi-thousand-line logs, machine-mode JSON for agents, and the same regression/reglvl model as `rb synth`/`rb pnr`.
+`rb fpga` drives a full FPGA implementation flow — RTL synthesis, placement, routing, post-route reports, and (on request) a bitstream — for one target part per run. The value-add over driving the tools by hand: a stable `artefacts/<run>/` layout, structured pass/fail with utilization/timing/power/DRC metrics distilled from multi-thousand-line logs, machine-mode JSON for agents, and the same regression/reglvl model as `rb synth`/`rb pnr`.
 
-## Supported backend
+## Supported backends
 
-Today only `vivado` is wired up; it is also the default when `tool:` is omitted. The `tool:` field in `fpga.yaml` selects the backend; an unknown value is a config error (exit 2). Vivado is driven in non-project batch mode:
+The `tool:` field in `fpga.yaml` selects the backend; an unknown value is a config error (exit 2).
+
+| `tool:` | Engine | Parts | Notes |
+|---|---|---|---|
+| `vivado` (default) | AMD/Xilinx Vivado | all Vivado-supported | proprietary; full report set |
+| `openxc7` | Yosys + nextpnr-xilinx + prjxray | 7-series only (`xc7...`) | open source; reduced metric set |
+
+`vivado` is the default because openXC7 covers only the 7-series families — an open default would break every UltraScale+/Versal platform out of the box. **openXC7 is the open alternative for 7-series parts; select it per run with `tool: openxc7`.** Where `rb synth` can default open because Yosys reads any RTL, an FPGA backend is only usable when it can target your silicon.
+
+Vivado is driven in non-project batch mode:
 
 ```text
 vivado -mode batch -source flow.tcl -nojournal -log vivado.log
 ```
 
 with `read_verilog`/`read_xdc` → `synth_design` → `opt_design` → `place_design` → `route_design`, followed by `report_utilization`, `report_timing_summary`, `report_power`, `report_drc`, and `report_methodology`, and finally `write_bitstream` when `--bitstream` is passed.
+
+### The openXC7 backend (open source, 7-series only)
+
+`tool: openxc7` runs the [openXC7](https://github.com/openXC7) flow as a stage pipeline in the same run directory:
+
+1. `yosys -s synth.ys` — `synth_xilinx` to a JSON netlist (`synth.ys` is generated from the model's filelist, like `rb synth`).
+2. `nextpnr-xilinx --chipdb <part>.bin --xdc ... --json <top>.json --fasm <top>.fasm` — place and route; utilization and per-clock Fmax come from its log.
+3. With `--bitstream` only: prjxray's `fasm2frames` then `xc7frames2bit` produce `<top>.bit`.
+
+Install the whole chain with the [openXC7 toolchain installer](https://github.com/openXC7/toolchain-installer); `rb tool-check` reports `yosys`, `nextpnr-xilinx`, and `prjxray` individually. Beyond binaries the flow needs two data inputs:
+
+- **nextpnr chipdb** — the per-device `.bin`. Point `tool_overrides.openxc7.chipdb` at the file, or set `$CHIPDB` to the directory holding `<part>.bin` files.
+- **prjxray database** (bitstream only) — set `tool_overrides.openxc7.prjxray_db` or `$PRJXRAY_DB_DIR` to the database root (containing `artix7/`, `zynq7/`, ...).
+
+```yaml
+runs:
+  - name: "counter_a35t"
+    desc: "counter on an Arty A7-35"
+    tool: "openxc7"
+    model: "fpga_counter"
+    model_path: "../src/models.yaml"
+    part: "xc7a35tcsg324-1"
+    xdc: ["constraints/arty.xdc"]
+    tool_overrides:
+      openxc7:
+        chipdb: "/opt/nextpnr-xilinx/xc7a35t.bin"
+```
+
+A non-7-series part with `tool: openxc7` is a config error (exit 2). Missing binaries or an unconfigured chipdb/database report SKIP with a pointer to `rb tool-check`, exactly like a missing `vivado`.
+
+The result shape is the same `FpgaPassResults` contract, but the open flow measures less: LUT/FF/BRAM/DSP utilization (from nextpnr's device-utilisation log), `fmax_mhz`, `wns_ns` (derived per clock from achieved vs. target frequency), `timing_met`, and `failing_paths`. There is no power, DRC, methodology, TNS, or hold-slack reporting — those keys are simply absent from the payload, never fabricated. Machine consumers must treat every metric key as optional.
 
 ## Installing Vivado
 
@@ -71,7 +111,7 @@ runs:
 | `desc` | Human-readable description |
 | `model` | Model name from `model_path`'s `models.yaml`; the model name is the top module |
 | `model_path` | Path to the `models.yaml` defining `model`, resolved relative to `fpga.yaml` |
-| `tool` | Backend name; defaults to `"vivado"` |
+| `tool` | Backend name (`"vivado"` or `"openxc7"`); defaults to `"vivado"` |
 | `part` | Full device part name (e.g. `xczu7ev-ffvc1156-2-e`), passed to `synth_design -part`. Mutually exclusive with `platform` |
 | `platform` | Name of a [`cfg-fpga-platforms`](#platforms-cfg-fpga-platforms) entry in `root_config.yaml`. Mutually exclusive with `part` |
 | `xdc` | Optional list of XDC constraint files, resolved relative to `fpga.yaml`. With `platform:`, these *extend* the platform's default XDC set (see [XDC ownership](#xdc-ownership-and-ordering)) |
@@ -208,9 +248,53 @@ With the global `--machine` flag the command emits a single JSON envelope on std
 }
 ```
 
+On a run that completed but missed timing, the payload additionally carries the [timing-closure loop fields](#timing-closure-with-an-agent): `timing_met: false`, the negative `wns_ns`/`tns_ns`, `failing_endpoints`, and `failing_paths` — the worst violated paths with their start/endpoints.
+
+## Timing closure with an agent
+
+Failing timing is **not** a flow failure: the run completes, exits 0, and the machine payload carries everything a closure loop needs. The loop an agent (or a human with `jq`) drives:
+
+1. **Run** in machine mode: `rb --machine fpga <run>`.
+2. **Read** `timing_met`. If `true`, done — record `wns_ns` as margin. If `false`, read `wns_ns`, `tns_ns`, `failing_endpoints`, and `failing_paths`.
+3. **Hypothesize** from the worst path's shape:
+    - `requirement_ns` far below what the logic can do → the clock constraint is simply too fast; relax `create_clock -period` to ≈ `requirement_ns - wns_ns` (the implied achievable period).
+    - Source and destination in different clock domains or a quasi-static config path → a missing `set_false_path` / `set_multicycle_path` exception.
+    - High `logic_levels` and `data_path_delay_ns` dominated by logic → a pipeline candidate: add a register stage between the path's `source` and `destination`.
+    - Delay dominated by routing → congestion; look at utilization and placement constraints.
+4. **Edit** the XDC (constraint fixes) or the RTL (pipelining), then **rerun** the same command.
+5. **Compare** `wns_ns` across iterations; stop when `timing_met` flips or improvement stalls.
+
+A worked example, from a deliberately over-constrained run of the small counter/multiplier design the test fixtures are generated from (`xczu7ev`, `create_clock -period 0.050` — 20 GHz, hopeless by construction):
+
+```json
+{
+  "timing_met": false,
+  "wns_ns": -0.882,
+  "tns_ns": -81.047,
+  "failing_endpoints": 101,
+  "failing_paths": [
+    {
+      "slack_ns": -0.882,
+      "source": "product_reg/DSP_A_B_DATA_INST/CLK",
+      "destination": "product_reg/DSP_M_DATA_INST/V[0]",
+      "path_group": "clk",
+      "path_type": "Setup",
+      "requirement_ns": 0.05,
+      "data_path_delay_ns": 0.894,
+      "logic_levels": 2,
+      "met": false
+    }
+  ]
+}
+```
+
+Reading it: the worst path is *inside the DSP48 multiplier* (`product_reg/DSP_*`), only 2 logic levels, 0.894 ns of pure logic delay against a 0.05 ns requirement. No XDC exception applies and no pipelining can beat the DSP's internal delay — the only fix is the constraint: the implied achievable period is `0.05 - (-0.882) ≈ 0.93 ns` plus margin, so set `create_clock -period 1.1` (≈900 MHz) and rerun; alternatively enable the DSP's `MREG`/`PREG` pipeline registers in RTL and accept the latency. With the relaxed clock the same design closes with `wns_ns: 8.452` at a 10 ns period (the passing fixture).
+
+On `openxc7` the same loop reads `timing_met`, `wns_ns`, `fmax_mhz`, and `failing_paths` (each entry carries `clock`, achieved `fmax_mhz` vs `target_mhz`, derived `slack_ns`, and the critical path's `source`/`destination`); `failing_endpoints` and per-path requirement/levels are not available.
+
 ## Artefacts
 
-Per-run outputs land under `<suite>/artefacts/<run>/`:
+Per-run outputs land under `<suite>/artefacts/<run>/`. With `tool: vivado`:
 
 | File | Contents |
 |---|---|
@@ -223,6 +307,18 @@ Per-run outputs land under `<suite>/artefacts/<run>/`:
 | `drc.rpt` | `report_drc` |
 | `methodology.rpt` | `report_methodology` |
 | `<top>.bit` | Bitstream — only with `--bitstream` |
+
+With `tool: openxc7`:
+
+| File | Contents |
+|---|---|
+| `fpga.f` | Generated model filelist |
+| `synth.ys` | Generated Yosys synthesis script |
+| `yosys.log` | Yosys log |
+| `<top>.json` | Yosys JSON netlist |
+| `nextpnr.log` | nextpnr-xilinx log (utilization + timing source) |
+| `<top>.fasm` | Routed FASM |
+| `fasm2frames.log`, `xc7frames2bit.log`, `<top>.frames`, `<top>.bit` | Bitstream stages — only with `--bitstream` |
 
 ## Power
 
@@ -238,14 +334,14 @@ Treat the absolute numbers with the report's own caveats: a post-route vector-le
 
 A run is PASS when:
 
-1. `vivado` exits with code 0.
-2. The log has no `ERROR: [...]` lines.
-3. All post-route reports were produced and parse.
+1. The tool exits with code 0 (on `openxc7`: every pipeline stage).
+2. The log has no error lines (`ERROR: [...]` for Vivado, `ERROR:` for the open tools).
+3. All reports/logs were produced and parse.
 4. With `--bitstream`: the `.bit` file exists.
 
-Otherwise FAIL is returned with the cause in the description. SKIP is returned when `vivado` is not installed or when the run's `reglvl` is above the `-l` filter. Note that failing timing is **not** a FAIL by itself — the run completes and `wns_ns` / `timing_met` carry the truth, so a timing-closure loop can read the metrics and iterate.
+Otherwise FAIL is returned with the cause (on `openxc7`, naming the failed stage) in the description. SKIP is returned when the backend's tooling is not installed/configured or when the run's `reglvl` is above the `-l` filter. Note that failing timing is **not** a FAIL by itself — the run completes and `wns_ns` / `timing_met` carry the truth, so the [timing-closure loop](#timing-closure-with-an-agent) can read the metrics and iterate.
 
 ## Out of scope (today)
 
-- Include-directory (`+incdir+`) propagation into `synth_design`.
-- An openXC7 open-source backend (planned follow-up). Vivado's `report_cdc` is integrated as a second-opinion backend of [`rb cdc`](cdc.md#vivado-backend-second-opinion-not-authority), not of `rb fpga`.
+- Include-directory (`+incdir+`) propagation into `synth_design` / `synth_xilinx`.
+- Vivado's `report_cdc` is integrated as a second-opinion backend of [`rb cdc`](cdc.md#vivado-backend-second-opinion-not-authority), not of `rb fpga`.

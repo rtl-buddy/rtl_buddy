@@ -194,6 +194,70 @@ def _timing_values(tokens: list[str]) -> dict:
     return values
 
 
+# Path detail blocks in the "Timing Details" section. Each path opens
+# with `Slack (VIOLATED) :        -0.882ns  (...)` followed by indented
+# `Key:                  value` lines until the location table.
+_PATH_SLACK_RE = re.compile(r"^Slack \((VIOLATED|MET)\)\s*:\s*(-?[\d.]+)ns")
+_PATH_FIELD_RE = re.compile(
+    r"^(Source|Destination|Path Group|Path Type|Requirement|"
+    r"Data Path Delay|Logic Levels):\s+(\S.*)$"
+)
+
+
+def _parse_detail_paths(lines: list[str]) -> list[dict]:
+    """Extract the per-path blocks from the "Timing Details" section.
+
+    Returns one dict per ``Slack (VIOLATED|MET)`` block (Max *and* Min
+    Delay Paths — ``path_type`` distinguishes Setup from Hold).
+    Continuation lines (the parenthesized cell/clock annotations under
+    ``Source:`` / ``Destination:``) don't match the field pattern and
+    are skipped; the location-delay table never matches either, so the
+    scan is safe to run over the whole report tail.
+    """
+    paths: list[dict] = []
+    current: dict | None = None
+    for line in lines:
+        stripped = line.strip()
+        m = _PATH_SLACK_RE.match(stripped)
+        if m:
+            current = {
+                "slack_ns": _num(m.group(2)),
+                "met": m.group(1) == "MET",
+                "source": None,
+                "destination": None,
+                "path_group": None,
+                "path_type": None,
+                "requirement_ns": None,
+                "data_path_delay_ns": None,
+                "logic_levels": None,
+            }
+            paths.append(current)
+            continue
+        if current is None:
+            continue
+        m = _PATH_FIELD_RE.match(stripped)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2).strip()
+        match key:
+            case "Source" if current["source"] is None:
+                current["source"] = value
+            case "Destination" if current["destination"] is None:
+                current["destination"] = value
+            case "Path Group" if current["path_group"] is None:
+                current["path_group"] = value
+            case "Path Type" if current["path_type"] is None:
+                # "Setup (Max at Slow Process Corner)" -> "Setup"
+                current["path_type"] = value.split()[0]
+            case "Requirement" if current["requirement_ns"] is None:
+                current["requirement_ns"] = _num(value.split("ns")[0])
+            case "Data Path Delay" if current["data_path_delay_ns"] is None:
+                current["data_path_delay_ns"] = _num(value.split("ns")[0])
+            case "Logic Levels" if current["logic_levels"] is None:
+                current["logic_levels"] = _num(value.split()[0])
+    return paths
+
+
 def parse_timing_summary(text: str) -> dict:
     """Parse a ``report_timing_summary`` report.
 
@@ -203,6 +267,15 @@ def parse_timing_summary(text: str) -> dict:
     derived from Vivado's own verdict line ("All user specified timing
     constraints are met." / "Timing constraints are not met."), falling
     back to a non-negative WNS/WHS check when neither line is present.
+
+    For the timing-closure loop two derived keys are included:
+    ``failing_endpoints`` (setup + hold endpoints with negative slack,
+    from the headline TNS/THS counts) and ``failing_paths`` — the
+    ``Slack (VIOLATED)`` path blocks from the report's "Timing Details"
+    section as ``{"slack_ns", "source", "destination", "path_group",
+    "path_type", "requirement_ns", "data_path_delay_ns",
+    "logic_levels", "met"}`` dicts (the report carries the single worst
+    path per clock pair by default).
 
     Raises:
       ValueError: if the text has no "Design Timing Summary" section.
@@ -265,7 +338,23 @@ def parse_timing_summary(text: str) -> dict:
         whs = summary["whs_ns"]
         timing_met = (wns is None or wns >= 0) and (whs is None or whs >= 0)
 
-    return {**summary, "timing_met": timing_met, "clocks": clocks}
+    # --- timing-closure loop fields ----------------------------------------
+    endpoint_counts = [
+        summary["tns_failing_endpoints"],
+        summary["ths_failing_endpoints"],
+    ]
+    known = [c for c in endpoint_counts if c is not None]
+    failing_endpoints = int(sum(known)) if known else None
+
+    failing_paths = [p for p in _parse_detail_paths(lines) if not p["met"]]
+
+    return {
+        **summary,
+        "timing_met": timing_met,
+        "clocks": clocks,
+        "failing_endpoints": failing_endpoints,
+        "failing_paths": failing_paths,
+    }
 
 
 # ---------------------------------------------------------------------------

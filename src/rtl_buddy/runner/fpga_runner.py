@@ -7,13 +7,18 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..runner.fpga_results import FpgaResults, FpgaSkipResults
 from ..tools.fpga_base import BaseFpga
+from ..tools.fpga_openxc7 import OpenXc7Fpga
 from ..tools.fpga_vivado import VivadoFpga
 
 
-# Backend registry. Adding another flow (openXC7, Quartus, ...) is a
-# one-line entry here plus a BaseFpga subclass in tools/fpga_<tool>.py.
+# Backend registry. Adding another flow (Quartus, ...) is a one-line
+# entry here plus a BaseFpga subclass in tools/fpga_<tool>.py. The
+# default stays "vivado" (FpgaConfigFile.tool): openxc7 covers only
+# 7-series parts, so an open default would break every other platform
+# out of the box — select it per run with `tool: openxc7`.
 _FPGA_BACKENDS: dict[str, type[BaseFpga]] = {
     "vivado": VivadoFpga,
+    "openxc7": OpenXc7Fpga,
 }
 
 

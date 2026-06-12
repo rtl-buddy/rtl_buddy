@@ -11,12 +11,15 @@ diverges on tool-specific command emission.
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..config.fpga import FpgaConfig
 from ..errors import FatalRtlBuddyError
 from ..runner.fpga_results import FpgaResults
+from .vlog_filelist import VlogFilelist
 
 
 @dataclass(frozen=True)
@@ -80,6 +83,48 @@ class BaseFpga(ABC):
         self.root_cfg = root_cfg
         self.executable = executable
         self.emit_bitstream = emit_bitstream
+        artefact_root = Path(suite_dir) / "artefacts" / fpga_cfg.get_name()
+        artefact_root.mkdir(parents=True, exist_ok=True)
+        self.artefact_dir = str(artefact_root)
+
+    # ------------------------------------------------------------------
+    # Shared filelist handling — every backend resolves the model's
+    # sources the same way; only the tool-specific command emission
+    # differs.
+    # ------------------------------------------------------------------
+
+    def _filelist_path(self) -> str:
+        return os.path.join(self.artefact_dir, "fpga.f")
+
+    def _write_filelist(self) -> str:
+        fl_path = self._filelist_path()
+        vlog_fl = VlogFilelist(
+            name=self.name + "/filelist",
+            model_cfg=self.fpga_cfg.get_model(),
+            output_path=fl_path,
+        )
+        vlog_fl.write_output(
+            output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
+        )
+        return fl_path
+
+    def _source_files_from_filelist(self, fl_path: str) -> list[str]:
+        """Return absolute source file paths from a generated filelist."""
+        fl_dir = os.path.dirname(os.path.abspath(fl_path))
+        _SKIP = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+        _SOURCE_PREFIX = "-v "
+        paths = []
+        with open(fl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("//"):
+                    continue
+                if any(line.startswith(opt) for opt in _SKIP):
+                    continue
+                if line.startswith(_SOURCE_PREFIX):
+                    line = line[len(_SOURCE_PREFIX) :]
+                paths.append(os.path.normpath(os.path.join(fl_dir, line)))
+        return paths
 
     @abstractmethod
     def run(self) -> FpgaResults:  # pragma: no cover - abstract

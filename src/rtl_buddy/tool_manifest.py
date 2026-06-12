@@ -426,6 +426,47 @@ def _builtin_manifest() -> list[ToolSpec]:
             "a license served at runtime.",
         ),
         ToolSpec(
+            name="nextpnr-xilinx",
+            binaries=("nextpnr-xilinx",),
+            version_cmd=("nextpnr-xilinx", "--version"),
+            # `nextpnr-xilinx --version` banner: "nextpnr-xilinx" --
+            # Next Generation Place and Route (Version nextpnr-0.x-...).
+            version_regex=r"Version\s+([\w.+\-]+)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "source": "https://github.com/openXC7/nextpnr-xilinx",
+                "any": "install the openXC7 toolchain "
+                "(https://github.com/openXC7/toolchain-installer) which "
+                "bundles yosys, nextpnr-xilinx, prjxray, and the chipdbs",
+            },
+            used_by=("fpga",),
+            optional=True,
+            description="nextpnr place-and-route for AMD/Xilinx 7-series (openXC7)",
+            notes="Used by rb fpga's openxc7 backend together with yosys "
+            "and prjxray. Needs a per-device chipdb (.bin): point "
+            "tool_overrides.openxc7.chipdb in fpga.yaml or $CHIPDB at it.",
+        ),
+        ToolSpec(
+            name="prjxray",
+            binaries=("fasm2frames", "xc7frames2bit"),
+            version_cmd=None,
+            version_regex=None,
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "source": "https://github.com/f4pga/prjxray",
+                "any": "ships with the openXC7 toolchain installer "
+                "(https://github.com/openXC7/toolchain-installer)",
+            },
+            used_by=("fpga",),
+            optional=True,
+            description="Project X-Ray bitstream tools (fasm2frames, xc7frames2bit)",
+            notes="Only needed for rb fpga --bitstream on the openxc7 "
+            "backend. The database root comes from "
+            "tool_overrides.openxc7.prjxray_db or $PRJXRAY_DB_DIR.",
+        ),
+        ToolSpec(
             name="sby",
             binaries=("sby",),
             version_cmd=("sby", "--version"),
