@@ -72,9 +72,11 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
+from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
 from .xplr import dumps_record
 from .xplr import ledger as xplr_ledger
+from .xplr import mockflow as xplr_mockflow
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +320,53 @@ class RtlBuddy:
             "show",
             help="show one experiment's full record",
         )(self.do_xplr_show)
+        self.xplr_app.command(
+            "diff",
+            help="pairwise experiment diff: knob delta, direction-aware "
+            "outcome delta, and the git diff between the pinned sources",
+        )(self.do_xplr_diff)
+        self.xplr_app.command(
+            "frontier",
+            help="curate the Pareto frontier (non-dominated set) over the "
+            "declared numeric outcome metrics; dominated, infeasible "
+            "(routed=false), and excluded experiments are reported alongside",
+        )(self.do_xplr_frontier)
+        self.xplr_app.command(
+            "knob-effect",
+            help="per-knob effect history: every experiment that declared "
+            "the knob, with metric deltas vs its parent when available",
+        )(self.do_xplr_knob_effect)
+        self.xplr_mock_app = typer.Typer(
+            help=(
+                "synthetic DSE backend with known optima (dev/CI harness). "
+                "mockflow evaluates EDA-flavored knobs against seeded "
+                "benchmark landscapes (Rastrigin, ZDT1) with analytic ground "
+                "truth, so agent loops and analysis can be developed and "
+                "scored instantly without real EDA tools or licenses"
+            ),
+            no_args_is_help=True,
+        )
+        self.xplr_mock_app.command(
+            "info",
+            help="describe the synthetic scenarios: knob specs, metrics, "
+            "feasibility cliffs, cost model, and ground-truth optimum/front",
+        )(self.do_xplr_mock_info)
+        self.xplr_mock_app.command(
+            "run",
+            help="evaluate a knob vector against a scenario; with --register "
+            "also record it as a ledger experiment with the outcome attached",
+        )(self.do_xplr_mock_run)
+        self.xplr_mock_app.command(
+            "score",
+            help="score the ledger's mockflow experiments against ground "
+            "truth: regret (single-objective) or hypervolume + "
+            "distance-to-front (multi-objective)",
+        )(self.do_xplr_mock_score)
+        self.xplr_app.add_typer(
+            self.xplr_mock_app,
+            name="mock",
+            help="synthetic DSE backend with known optima (dev/CI harness)",
+        )
         self.app.add_typer(
             self.xplr_app,
             name="xplr",
@@ -3957,6 +4006,350 @@ class RtlBuddy:
             )
         else:
             print(dumps_record(record), end="")
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb xplr analysis — frontier / diff / knob-effect (curation only)
+    # ------------------------------------------------------------------
+
+    def do_xplr_frontier(
+        self,
+        metrics: Annotated[
+            str,
+            typer.Option(
+                "--metrics",
+                help="override/declare dominance directions: "
+                "'name:min,name2:max' (record-level metric_meta otherwise)",
+            ),
+        ] = None,
+        prefer: Annotated[
+            str,
+            typer.Option(
+                "--prefer",
+                help="scalar preference to sort the frontier (never drops "
+                "non-dominated points): comma/plus-separated weight*metric, "
+                "e.g. '0.7*lut_pct+0.3*delay_ns'; lower score = better "
+                "after direction normalization",
+            ),
+        ] = None,
+    ):
+        """
+        curate the Pareto frontier over the ledger's outcome metrics
+        """
+        _, root = self._enter_xplr_context()
+        overrides = (
+            xplr_analysis.parse_metric_directions(metrics)
+            if metrics is not None
+            else None
+        )
+        preference = (
+            xplr_analysis.parse_preference(prefer) if prefer is not None else None
+        )
+        records = xplr_ledger.list_records(root)
+        payload = xplr_analysis.pareto_frontier(
+            records, direction_overrides=overrides, preference=preference
+        )
+        if self.machine:
+            self._emit_machine_result("xplr frontier", 0, **payload)
+        else:
+            metric_names = [m["name"] for m in payload["metrics"]]
+            columns = [("id", "Experiment")] + [
+                (
+                    m["name"],
+                    f"{m['name']} ({m['direction']})",
+                )
+                for m in payload["metrics"]
+            ]
+            if preference is not None:
+                columns.append(("score", "Preference"))
+            rows = []
+            for member in payload["frontier"]:
+                row = {"id": member["id"]}
+                for name in metric_names:
+                    row[name] = str(member["metrics"].get(name, "-"))
+                if preference is not None:
+                    row["score"] = f"{member['preference_score']:.4g}"
+                rows.append(row)
+            render_summary(
+                title=f"Pareto frontier ({len(rows)} non-dominated)",
+                columns=columns,
+                rows=rows,
+                logger=logger,
+            )
+            for entry in payload["dominated"]:
+                emit_console_text(
+                    f"dominated: {entry['id']} by {', '.join(entry['dominated_by'])}",
+                    markup=False,
+                )
+            if payload["infeasible"]:
+                emit_console_text(
+                    f"infeasible (routed=false): {', '.join(payload['infeasible'])}",
+                    style="yellow",
+                    markup=False,
+                )
+            for entry in payload["excluded"]:
+                emit_console_text(
+                    f"excluded: {entry['id']} — {entry['reason']}",
+                    style="yellow",
+                    markup=False,
+                )
+        raise typer.Exit(0)
+
+    def do_xplr_diff(
+        self,
+        exp_a: Annotated[
+            str, typer.Argument(metavar="EXP_A", help="first experiment id")
+        ],
+        exp_b: Annotated[
+            str, typer.Argument(metavar="EXP_B", help="second experiment id")
+        ],
+        patch: Annotated[
+            bool,
+            typer.Option(
+                "--patch",
+                help="include the full git diff patch between the pinned "
+                "sources (not just --stat)",
+            ),
+        ] = False,
+    ):
+        """
+        diff two experiments: knob delta, outcome delta, source diff
+        """
+        project_root, root = self._enter_xplr_context()
+        record_a, _ = xplr_commands.get_experiment(root, exp_a)
+        record_b, _ = xplr_commands.get_experiment(root, exp_b)
+        payload = xplr_analysis.diff_records(record_a, record_b)
+        payload["source"] = xplr_commands.source_diff(
+            project_root,
+            record_a.source.to_dict(),
+            record_b.source.to_dict(),
+            patch=patch,
+        )
+        if self.machine:
+            self._emit_machine_result("xplr diff", 0, **payload)
+        else:
+            print(self._render_xplr_diff(payload))
+        raise typer.Exit(0)
+
+    @staticmethod
+    def _render_xplr_diff(payload: dict) -> str:
+        """Readable text rendering of the ``rb xplr diff`` payload."""
+        lines = [f"diff {payload['a']}..{payload['b']}", "knobs:"]
+        knobs = payload["knob_delta"]
+        for knob in knobs["added"]:
+            lines.append(f"  + {knob['name']}: {knob['from']!r} -> {knob['to']!r}")
+        for entry in knobs["changed"]:
+            lines.append(
+                f"  ~ {entry['name']}: {entry['a']['to']!r} -> {entry['b']['to']!r}"
+            )
+        for knob in knobs["reverted"]:
+            lines.append(f"  - {knob['name']} (was -> {knob['to']!r})")
+        for name in knobs["unchanged"]:
+            lines.append(f"  = {name}")
+        if len(lines) == 2:
+            lines.append("  (no knobs declared in either experiment)")
+        outcome = payload["outcome_delta"]
+        lines.append(f"outcome ({outcome['status_a']} -> {outcome['status_b']}):")
+        for row in outcome["metrics"]:
+            direction = row["direction"] or "?"
+            lines.append(
+                f"  {row['name']}: {row['a']} -> {row['b']} "
+                f"(delta {row['delta']:+g}, {direction}, {row['assessment']})"
+            )
+        for name, value in outcome["only_a"].items():
+            lines.append(f"  {name}: {value} -> (absent)")
+        for name, value in outcome["only_b"].items():
+            lines.append(f"  {name}: (absent) -> {value}")
+        source = payload["source"]
+        lines.append(f"source: {source['a']['git_sha']} -> {source['b']['git_sha']}")
+        if source.get("note"):
+            lines.append(f"  note: {source['note']}")
+        if source.get("stat"):
+            lines.extend(f"  {line}" for line in source["stat"].splitlines())
+        if source.get("patch"):
+            lines.append(source["patch"])
+        return "\n".join(lines)
+
+    def do_xplr_knob_effect(
+        self,
+        name: Annotated[
+            str,
+            typer.Argument(
+                metavar="KNOB", help="knob name, e.g. synth.target_freq_mhz"
+            ),
+        ],
+    ):
+        """
+        per-knob effect history across the ledger
+        """
+        _, root = self._enter_xplr_context()
+        records = xplr_ledger.list_records(root)
+        payload = xplr_analysis.knob_effect(records, name)
+        if self.machine:
+            self._emit_machine_result("xplr knob-effect", 0, **payload)
+        else:
+            rows = []
+            for entry in payload["effects"]:
+                deltas = entry.get("metrics_parent_delta", {})
+                rows.append(
+                    {
+                        "exp": entry["exp"],
+                        "status": entry["status"],
+                        "change": f"{entry['from']!r} -> {entry['to']!r}",
+                        "parent": entry.get("parent", "-"),
+                        "delta": ", ".join(
+                            f"{metric}{value:+g}" for metric, value in deltas.items()
+                        )
+                        or "-",
+                        "rationale": entry.get("rationale", "-"),
+                    }
+                )
+            render_summary(
+                title=f"knob-effect: {name} ({len(rows)} experiment(s))",
+                columns=[
+                    ("exp", "Experiment"),
+                    ("status", "Status"),
+                    ("change", "Change"),
+                    ("parent", "Parent"),
+                    ("delta", "Delta vs parent"),
+                    ("rationale", "Rationale"),
+                ],
+                rows=rows,
+                logger=logger,
+            )
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb xplr mock — synthetic DSE backend with known optima (dev/CI)
+    # ------------------------------------------------------------------
+
+    def do_xplr_mock_info(
+        self,
+        scenario: Annotated[
+            str,
+            typer.Option(
+                "--scenario",
+                help="only this scenario (rastrigin|zdt1); default: all",
+            ),
+        ] = None,
+    ):
+        """
+        describe the synthetic scenarios, knob specs, and ground truth
+        """
+        infos = xplr_mockflow.scenario_infos(scenario)
+        if self.machine:
+            self._emit_machine_result("xplr mock info", 0, scenarios=infos)
+        else:
+            print(json.dumps({"scenarios": infos}, indent=2))
+        raise typer.Exit(0)
+
+    def do_xplr_mock_run(
+        self,
+        scenario: Annotated[
+            str,
+            typer.Option("--scenario", help="scenario name (rastrigin|zdt1)"),
+        ],
+        json_input: Annotated[
+            str,
+            typer.Option(
+                "--json",
+                help="JSON knob values file, or '-' for stdin: {knob_name: "
+                "value, ...}; omitted knobs take their scenario default",
+            ),
+        ] = None,
+        seed: Annotated[
+            int,
+            typer.Option(
+                "--seed", help="determinism seed (only matters with --noise > 0)"
+            ),
+        ] = 0,
+        noise: Annotated[
+            float,
+            typer.Option(
+                "--noise",
+                help="Gaussian sigma added to objective metrics (seeded, "
+                "reproducible); 0 = exact analytic values",
+            ),
+        ] = 0.0,
+        register: Annotated[
+            bool,
+            typer.Option(
+                "--register",
+                help="also register a ledger experiment and attach the "
+                "outcome in one step",
+            ),
+        ] = False,
+    ):
+        """
+        evaluate a knob vector against a synthetic scenario
+        """
+        sc = xplr_mockflow.get_scenario(scenario)
+        doc = {}
+        if json_input is not None:
+            doc = xplr_commands.load_json_doc(
+                json_input, cwd=self.invocation_cwd, what="mock run"
+            )
+        values = xplr_mockflow.resolve_knobs(sc, doc)
+        outcome = xplr_mockflow.evaluate(sc, values, seed=seed, noise=noise)
+        payload: dict = {
+            "scenario": sc.name,
+            "knobs": values,
+            "seed": seed,
+            "noise": noise,
+            "routed": outcome.routed,
+            "metrics": outcome.metrics,
+            "metric_meta": outcome.metric_meta,
+        }
+        if register:
+            project_root, root = self._enter_xplr_context()
+            self._artifact_locks.acquire(root, command="xplr mock run")
+            reg_doc = xplr_mockflow.register_manifest(
+                sc, doc, values, seed=seed, noise=noise
+            )
+            record, _ = xplr_commands.register_experiment(
+                root, reg_doc, project_root=project_root
+            )
+            record, path = xplr_commands.attach_outcome(
+                root, record.id, xplr_mockflow.outcome_manifest(outcome)
+            )
+            payload["id"] = record.id
+            payload["record_path"] = str(path)
+            payload["record"] = record.to_dict()
+        if self.machine:
+            self._emit_machine_result("xplr mock run", 0, **payload)
+        else:
+            metrics = ", ".join(
+                f"{name}={value}" for name, value in outcome.metrics.items()
+            )
+            suffix = f" -> {payload['id']}" if register else ""
+            emit_console_text(
+                f"mockflow {sc.name}: {metrics}{suffix}",
+                style="green" if outcome.routed else "yellow",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_mock_score(
+        self,
+        scenario: Annotated[
+            str,
+            typer.Option(
+                "--scenario",
+                help="only this scenario; default: every scenario with "
+                "mockflow experiments in the ledger",
+            ),
+        ] = None,
+    ):
+        """
+        score the ledger's mockflow experiments against ground truth
+        """
+        _, root = self._enter_xplr_context()
+        records = xplr_ledger.list_records(root)
+        scores = xplr_mockflow.score_ledger(records, scenario)
+        if self.machine:
+            self._emit_machine_result("xplr mock score", 0, scores=scores)
+        else:
+            print(json.dumps({"scores": scores}, indent=2))
         raise typer.Exit(0)
 
     def do_cmd_wave(

@@ -14,6 +14,10 @@ Modules:
   (``artefacts/xplr/<exp-id>/record.json``).
 * :mod:`rtl_buddy.xplr.commands` — the ``rb xplr`` command layer
   (register / attach-outcome / list / show).
+* :mod:`rtl_buddy.xplr.mockflow` — the ``rb xplr mock`` synthetic DSE
+  backend with known optima (dev/CI harness).
+* :mod:`rtl_buddy.xplr.analysis` — pure analysis views over the ledger
+  (Pareto frontier / pairwise diff / per-knob effect history).
 """
 
 from .schema import (

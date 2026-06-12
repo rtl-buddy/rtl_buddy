@@ -163,6 +163,44 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def source_diff(
+    project_root: Path,
+    source_a: dict[str, Any],
+    source_b: dict[str, Any],
+    *,
+    patch: bool = False,
+) -> dict[str, Any]:
+    """The ``source`` block of ``rb xplr diff``: both refs + the git diff.
+
+    Runs ``git diff --stat <shaA>..<shaB>`` (plus ``-p`` with ``patch``)
+    in the project root. When either sha is unknown to the repo — a
+    pinned ref from another clone, a shallow checkout, no git at all —
+    the diff degrades gracefully to a ``note`` instead of failing.
+    """
+
+    sha_a, sha_b = source_a["git_sha"], source_b["git_sha"]
+    out: dict[str, Any] = {"a": dict(source_a), "b": dict(source_b)}
+    if sha_a == sha_b:
+        out["stat"] = ""
+        out["note"] = "both experiments pin the same source revision"
+        if patch:
+            out["patch"] = ""
+        return out
+    stat = _git(project_root, "diff", "--stat", f"{sha_a}..{sha_b}")
+    if stat is None:
+        out["stat"] = None
+        out["note"] = (
+            f"git diff {sha_a}..{sha_b} failed in {project_root} — one or "
+            "both pinned revisions are unknown to this repository"
+        )
+        return out
+    out["stat"] = stat.rstrip("\n")
+    if patch:
+        diff = _git(project_root, "diff", f"{sha_a}..{sha_b}")
+        out["patch"] = diff if diff is not None else None
+    return out
+
+
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
