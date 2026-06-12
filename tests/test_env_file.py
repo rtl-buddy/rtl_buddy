@@ -120,6 +120,25 @@ def test_apply_is_idempotent_first_value_wins(tmp_path, monkeypatch):
     assert os.environ["RB_TEST_ENVFILE_C"] == "first"
 
 
+def test_apply_logs_info_only_when_vars_injected(tmp_path, monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    os.environ.pop("RB_TEST_ENVFILE_D", None)
+    _write_project_env(tmp_path, "RB_TEST_ENVFILE_D=x\n")
+
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.env_file"):
+        apply_env_file(tmp_path)  # injects -> INFO
+        apply_env_file(tmp_path)  # nothing new -> DEBUG
+
+    levels = [
+        r.levelno
+        for r in caplog.records
+        if getattr(r, "rtl_event", None) == "env_file.applied"
+    ]
+    assert levels == [logging.INFO, logging.DEBUG]
+
+
 def test_apply_feeds_slang_plugin_resolver(tmp_path, monkeypatch):
     """End-to-end through the consumer that motivated the feature."""
     from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV, resolve_plugin_path

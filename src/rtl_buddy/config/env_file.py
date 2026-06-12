@@ -72,9 +72,12 @@ def apply_env_file(project_root: str | Path) -> dict[str, str]:
     parsed = parse_env_file(path)
     applied = {k: v for k, v in parsed.items() if k not in os.environ}
     os.environ.update(applied)
+    # INFO when something was actually injected — this mutates the
+    # environment of every downstream tool subprocess, so it should be
+    # discoverable in rtl_buddy.log; DEBUG otherwise to stay quiet.
     log_event(
         logger,
-        logging.DEBUG,
+        logging.INFO if applied else logging.DEBUG,
         "env_file.applied",
         path=str(path),
         applied=sorted(applied),
