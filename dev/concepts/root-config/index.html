@@ -514,6 +514,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#project-local-env-defaults-rtl-buddyenv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project-local env defaults: .rtl-buddy/.env
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#full-schema" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1554,6 +1565,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#project-local-env-defaults-rtl-buddyenv" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project-local env defaults: .rtl-buddy/.env
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#full-schema" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1667,6 +1689,20 @@
 <li><code>--builder-mode m</code>: use a different named option set (e.g. <code>--builder-mode reg</code>)</li>
 </ul>
 <p>See the <a href="../../reference/cli/">CLI reference</a> for the full option list.</p>
+<h2 id="project-local-env-defaults-rtl-buddyenv">Project-local env defaults: <code>.rtl-buddy/.env</code></h2>
+<p>Some values are project-scoped but machine-local — they belong with the project, yet committing them would break every other checkout (an absolute <code>RTL_BUDDY_SLANG_PLUGIN</code>, a <code>SYSTEMC_HOME</code>). Put them in <code>.rtl-buddy/.env</code> next to <code>root_config.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># .rtl-buddy/.env — KEY=VALUE per line; # comments; `export ` prefix tolerated</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">RTL_BUDDY_SLANG_PLUGIN</span><span class="o">=</span>/opt/rtl-buddy-tools/yosys-slang/build/slang.so
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nv">SYSTEMC_HOME</span><span class="o">=</span>/opt/homebrew/opt/systemc
+</code></pre></div>
+<p>Every <code>rb</code> command loads the file as soon as the project root is discovered and injects the variables into its environment, so both rtl_buddy itself and every tool subprocess (yosys, sby, verilator, the compiled simv) see them.</p>
+<p>Semantics:</p>
+<ul>
+<li><strong>Fallback only.</strong> A variable already present in the process environment is never overridden — the shell, CI, and sourced toolchain env scripts always win, and explicit YAML config (e.g. <code>plugin-path</code>) beats any environment source.</li>
+<li><strong>Literal values.</strong> No <code>$VAR</code> interpolation, no escapes; surrounding matching quotes are stripped. A line that is not <code>KEY=VALUE</code> fails loud with the file and line number.</li>
+<li><strong>Untracked by design.</strong> Add <code>.rtl-buddy/.env</code> to <code>.gitignore</code> (<code>rtl-buddy skill print-gitignore</code> includes it). A committed env file would inject machine paths — or worse, loader variables — into every clone's runs.</li>
+</ul>
+<p>This completes the lookup chain that <a href="../../reference/yaml/#root_configyaml"><code>plugin-path</code></a> uses: per-project YAML config, then the process environment (set machine-wide by a toolchain env script), then <code>.rtl-buddy/.env</code> for project-scoped machine-local values.</p>
 <h2 id="full-schema">Full schema</h2>
 <p>See <a href="../../reference/yaml/#root_configyaml">YAML Formats: root_config.yaml</a> for the complete field reference.</p>
 
