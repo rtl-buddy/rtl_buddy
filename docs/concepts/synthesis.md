@@ -231,7 +231,7 @@ cfg-synth-tools:
 | `"verilog"` (default) | `read_verilog -sv -defer` per source — lazy elaboration, fast, supports the SystemVerilog subset built into the rtl-buddy Yosys fork. |
 | `"slang"` | Loads the [yosys-slang](https://github.com/povik/yosys-slang) plugin and calls `read_slang --top <top> --std 1800-2017` — full SV-2017 (`import pkg::*`, packed-struct typedefs, virtual interfaces, complex generates). Elaboration is eager, so `params:` are folded into `read_slang -GNAME=VAL` and `defines:` into `-DNAME=VAL` (subsequent `chparam` is skipped). |
 
-When `frontend: slang`, `opts.plugin-path` must be set to the location of yosys-slang's `slang.so`. Absolute paths pass through unchanged; relative paths resolve against the project root (the directory containing `root_config.yaml`). Build instructions for the plugin are in [`yosys-slang's README`](https://github.com/povik/yosys-slang#building).
+When `frontend: slang`, `opts.plugin-path` must point at yosys-slang's `slang.so`. Absolute paths pass through unchanged; relative paths resolve against the project root (the directory containing `root_config.yaml`). When `plugin-path` is unset, the `RTL_BUDDY_SLANG_PLUGIN` environment variable is consulted instead — set it once per machine (e.g. from a toolchain env script) to keep project configs free of machine-specific paths; an explicitly configured `plugin-path` always wins over the environment. Build instructions for the plugin are in [`yosys-slang's README`](https://github.com/povik/yosys-slang#building).
 
 Per-block opt-in (leaves other blocks on the legacy frontend):
 

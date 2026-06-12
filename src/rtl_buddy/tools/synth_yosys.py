@@ -29,9 +29,23 @@ _ABC_SCRIPT_NO_TIMING = (
 _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
 
 
-def resolve_plugin_path(plugin_path: str, root_cfg) -> str:
+# Machine-level fallback for the yosys-slang plugin location, so toolchain
+# env scripts can provide it once per machine instead of every project
+# hard-coding an absolute path. Explicit config always wins.
+SLANG_PLUGIN_ENV = "RTL_BUDDY_SLANG_PLUGIN"
+
+
+def resolve_plugin_path(plugin_path: str | None, root_cfg) -> str | None:
     """Resolve a Yosys plugin path. Absolute paths pass through; relative
-    paths are taken relative to the project root."""
+    paths are taken relative to the project root. When no path is
+    configured, fall back to ``RTL_BUDDY_SLANG_PLUGIN`` from the
+    environment (used verbatim after ``~`` expansion); returns ``None``
+    when neither is set."""
+    if plugin_path is None or not plugin_path.strip():
+        env = os.environ.get(SLANG_PLUGIN_ENV, "").strip()
+        if not env:
+            return None
+        return str(Path(env).expanduser())
     p = Path(plugin_path)
     if p.is_absolute():
         return str(p)
@@ -81,12 +95,13 @@ def emit_frontend_read_cmds(
         return cmds
 
     if opts.frontend == "slang":
-        if not opts.plugin_path.strip():
+        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
+        if not plugin_abs:
             raise FatalRtlBuddyError(
                 "frontend: slang requires opts.plugin-path to be set "
-                "(path to yosys-slang's slang.so)"
+                "(path to yosys-slang's slang.so), or the "
+                f"{SLANG_PLUGIN_ENV} environment variable to point at it"
             )
-        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
         cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
         flags: list[str] = []
         if defines:

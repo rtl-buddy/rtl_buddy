@@ -31,6 +31,7 @@ from .fpv_vacuity import (
     write_vacuity_module,
 )
 from .fpv_coi import render_slang_read, run_coi_analysis
+from .synth_yosys import SLANG_PLUGIN_ENV, resolve_plugin_path
 
 
 # Sby's compatibility check requires a minimum yosys; we surface the
@@ -107,20 +108,13 @@ class SbyFpv:
     def _resolve_plugin_path(self, plugin_path: str | None) -> str | None:
         """Resolve a yosys plugin path against the project root.
 
-        Mirrors :func:`tools.synth_yosys.resolve_plugin_path`. Absolute
-        paths pass through; relative paths are taken relative to the
-        project root (the directory containing ``root_config.yaml``).
-        ``None`` returns ``None`` so callers can distinguish
-        unconfigured from configured-but-empty.
+        Delegates to :func:`tools.synth_yosys.resolve_plugin_path`:
+        absolute paths pass through; relative paths are taken relative
+        to the project root (the directory containing
+        ``root_config.yaml``); unconfigured falls back to the
+        ``RTL_BUDDY_SLANG_PLUGIN`` environment variable, then ``None``.
         """
-        if not plugin_path:
-            return None
-        p = Path(plugin_path)
-        if p.is_absolute():
-            return str(p)
-        if self.root_cfg is None:
-            return str(p.resolve())
-        return str((Path(self.root_cfg.get_project_rootdir()) / p).resolve())
+        return resolve_plugin_path(plugin_path, self.root_cfg)
 
     def _coi_script_path(self) -> str:
         return os.path.join(self.artefact_dir, "coi.ys")
@@ -248,8 +242,9 @@ class SbyFpv:
             if not plugin:
                 raise FatalRtlBuddyError(
                     f"{cfg.get_name()}: fpv frontend=slang requires "
-                    f"`cfg-fpv-tools[].opts.plugin-path` to point at the "
-                    f"built yosys-slang shared library"
+                    f"`cfg-fpv-tools[].opts.plugin-path` (or the "
+                    f"{SLANG_PLUGIN_ENV} environment variable) to point "
+                    f"at the built yosys-slang shared library"
                 )
             # `plugin -i` is idempotent within a yosys session — only
             # emit the directive when slang is actually used so the

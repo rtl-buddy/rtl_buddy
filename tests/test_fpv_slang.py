@@ -226,9 +226,13 @@ def test_render_sby_slang_passes_single_unit(tmp_path):
     assert text.count("read_slang") == 1
 
 
-def test_render_sby_slang_without_plugin_path_errors(tmp_path):
+def test_render_sby_slang_without_plugin_path_errors(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
     sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path=None)
     out_path = str(tmp_path / "fpv.sby")
+    # The error must name both configuration channels.
     with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
         sby._render_sby(
             output_path=out_path,
@@ -237,6 +241,51 @@ def test_render_sby_slang_without_plugin_path_errors(tmp_path):
             mode="bmc",
             extra_property_files=[],
         )
+    with pytest.raises(FatalRtlBuddyError, match=SLANG_PLUGIN_ENV):
+        sby._render_sby(
+            output_path=out_path,
+            sources=["/abs/dut.sv"],
+            incdirs=[],
+            mode="bmc",
+            extra_property_files=[],
+        )
+
+
+def test_render_sby_slang_env_fallback(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, "/env/slang.so")
+    sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path=None)
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert "plugin -i /env/slang.so" in text
+
+
+def test_render_sby_slang_config_wins_over_env(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, "/env/slang.so")
+    sby = _sby_with_frontend(
+        tmp_path, frontend="slang", plugin_path="/configured/slang.so"
+    )
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert "plugin -i /configured/slang.so" in text
+    assert "/env/slang.so" not in text
 
 
 # ---------------------------------------------------------------------------

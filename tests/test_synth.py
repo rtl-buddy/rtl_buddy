@@ -620,10 +620,12 @@ def test_write_script_frontend_slang_folds_defines_into_D(tmp_path):
     assert "-DFOO=bar" in script
 
 
-def test_write_script_frontend_slang_missing_plugin_path_raises(tmp_path):
+def test_write_script_frontend_slang_missing_plugin_path_raises(tmp_path, monkeypatch):
     from rtl_buddy.config.synth import SynthToolOptsFile
     from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
 
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
     sv = tmp_path / "top.sv"
     sv.write_text("")
     fl = tmp_path / "synth.f"
@@ -635,8 +637,44 @@ def test_write_script_frontend_slang_missing_plugin_path_raises(tmp_path):
         opts=SynthToolOptsFile(frontend="slang", plugin_path=""),
     )
     ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    # The error must name both configuration channels.
     with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
         ys._write_script(str(fl))
+    with pytest.raises(FatalRtlBuddyError, match=SLANG_PLUGIN_ENV):
+        ys._write_script(str(fl))
+
+
+def test_write_script_frontend_slang_env_fallback(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, str(plugin))
+    ys = _make_yosys(tmp_path, tool_cfg=_slang_tool_cfg(""))
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"plugin -i {plugin}" in script
+
+
+def test_write_script_frontend_slang_config_wins_over_env(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    configured = tmp_path / "configured.so"
+    configured.write_text("")
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, str(tmp_path / "env.so"))
+    ys = _make_yosys(tmp_path, tool_cfg=_slang_tool_cfg(str(configured)))
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"plugin -i {configured}" in script
+    assert "env.so" not in script
 
 
 def test_write_script_frontend_unknown_raises(tmp_path):
