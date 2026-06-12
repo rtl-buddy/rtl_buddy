@@ -30,12 +30,16 @@ logger = logging.getLogger(__name__)
 class CdcToolOpts:
     sync_depth: int | None = None
     extra_args: str = ""
+    # Vivado-backend only: the device part used for ``synth_design``
+    # elaboration before ``report_cdc``. Ignored by rtl-buddy-cdc.
+    part: str | None = None
 
 
 @serde
 class CdcToolOptsFile:
     sync_depth: int | None = field(rename="sync-depth", default=None)
     extra_args: str = field(rename="extra-args", default="")
+    part: str | None = None
 
 
 @serde
@@ -60,10 +64,12 @@ class CdcToolConfig:
     def get_opts(self, overrides: dict | None = None) -> CdcToolOpts:
         sync_depth = self._cfg.opts.sync_depth
         extra_args = self._cfg.opts.extra_args
+        part = self._cfg.opts.part
         if overrides:
             sync_depth = overrides.get("sync_depth", sync_depth)
             extra_args = overrides.get("extra_args", extra_args)
-        return CdcToolOpts(sync_depth=sync_depth, extra_args=extra_args)
+            part = overrides.get("part", part)
+        return CdcToolOpts(sync_depth=sync_depth, extra_args=extra_args, part=part)
 
 
 # ---- per-analysis config ---------------------------------------------------

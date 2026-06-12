@@ -2502,8 +2502,11 @@ class RtlBuddy:
             "whs_ns",
             "timing_met",
             "total_power_w",
+            "dynamic_power_w",
+            "static_power_w",
             "drc_violations",
             "drc_by_severity",
+            "methodology_warnings",
         ):
             if k in res and res[k] is not None:
                 row[k] = res[k]
@@ -2518,7 +2521,7 @@ class RtlBuddy:
         row = {"name": r["cdc_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("violations", "suppressed", "crossings"):
+        for k in ("violations", "suppressed", "crossings", "backend", "findings"):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row
@@ -3245,6 +3248,9 @@ class RtlBuddy:
         has_whs = any("whs_ns" in r["results"].results for r in fpga_results)
         has_power = any("total_power_w" in r["results"].results for r in fpga_results)
         has_drcs = any("drc_violations" in r["results"].results for r in fpga_results)
+        has_meth = any(
+            "methodology_warnings" in r["results"].results for r in fpga_results
+        )
         has_bit = any(r["results"].results.get("bitstream") for r in fpga_results)
         rows = []
         for r in fpga_results:
@@ -3269,6 +3275,9 @@ class RtlBuddy:
             if has_drcs:
                 drcs = res.get("drc_violations")
                 row["drcs"] = str(drcs) if drcs is not None else "-"
+            if has_meth:
+                meth = res.get("methodology_warnings")
+                row["meth"] = str(len(meth)) if meth is not None else "-"
             if has_bit:
                 row["bit"] = "bit" if res.get("bitstream") else "-"
             rows.append(row)
@@ -3291,6 +3300,8 @@ class RtlBuddy:
             columns.append(("power", "Power"))
         if has_drcs:
             columns.append(("drcs", "DRCs"))
+        if has_meth:
+            columns.append(("meth", "Meth"))
         if has_bit:
             columns.append(("bit", "Outputs"))
         render_summary(

@@ -21,6 +21,7 @@ from .fpga_base import BaseFpga, resolve_target
 from .fpga_vivado_flow import REPORT_FILES, render_flow_tcl
 from .fpga_vivado_reports import (
     parse_drc,
+    parse_methodology,
     parse_power,
     parse_timing_summary,
     parse_utilization,
@@ -43,8 +44,8 @@ class VivadoFpga(BaseFpga):
 
         vivado -mode batch -source flow.tcl -nojournal -log vivado.log
 
-    with ``cwd=artefacts/<run>/``, and parses the four post-route
-    reports (:mod:`.fpga_vivado_reports`) into the results dataclasses.
+    with ``cwd=artefacts/<run>/``, and parses the post-route reports
+    (:mod:`.fpga_vivado_reports`) into the results dataclasses.
     """
 
     def __init__(
@@ -145,7 +146,7 @@ class VivadoFpga(BaseFpga):
     # ------------------------------------------------------------------
 
     def _parse_reports(self) -> dict:
-        """Read + parse the four post-route reports from the run dir.
+        """Read + parse the post-route reports from the run dir.
 
         Raises:
           RuntimeError: when a report is missing or unparsable — the
@@ -156,6 +157,7 @@ class VivadoFpga(BaseFpga):
             "timing_summary": parse_timing_summary,
             "power": parse_power,
             "drc": parse_drc,
+            "methodology": parse_methodology,
         }
         parsed: dict = {}
         for key, filename in REPORT_FILES.items():
@@ -315,6 +317,7 @@ class VivadoFpga(BaseFpga):
         timing = reports["timing_summary"]
         power = reports["power"]
         drc = reports["drc"]
+        methodology = reports["methodology"]
 
         log_event(
             logger,
@@ -327,6 +330,7 @@ class VivadoFpga(BaseFpga):
             timing_met=timing.get("timing_met"),
             total_power_w=power.get("total_on_chip_w"),
             drc_violations=drc.get("total_violations"),
+            methodology_warnings=methodology.get("total_warnings"),
             bitstream=bitstream,
             log=log_path,
         )
@@ -341,7 +345,10 @@ class VivadoFpga(BaseFpga):
             whs_ns=timing.get("whs_ns"),
             timing_met=timing.get("timing_met"),
             total_power_w=power.get("total_on_chip_w"),
+            dynamic_power_w=power.get("dynamic_w"),
+            static_power_w=power.get("static_w"),
             drc_violations=drc.get("total_violations"),
             drc_by_severity=drc.get("by_severity"),
+            methodology_warnings=methodology.get("warnings"),
             bitstream=bitstream,
         )

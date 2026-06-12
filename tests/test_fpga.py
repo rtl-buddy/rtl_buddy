@@ -401,13 +401,22 @@ def test_vivado_fpga_pass_parses_fixture_reports(tmp_path, monkeypatch):
     assert res.results["whs_ns"] == 0.059
     assert res.results["timing_met"] is True
     assert res.results["total_power_w"] == 0.636
+    assert res.results["dynamic_power_w"] == 0.044
+    assert res.results["static_power_w"] == 0.592
     assert res.results["drc_violations"] == 3
     assert res.results["drc_by_severity"] == {"Critical Warning": 2, "Warning": 1}
+    assert len(res.results["methodology_warnings"]) == 49
+    assert res.results["methodology_warnings"][0] == {
+        "id": "TIMING-18#1",
+        "severity": "Warning",
+        "description": "Missing input or output delay",
+    }
     assert res.results["bitstream"].endswith("demo_top.bit")
 
     # The rendered flow.tcl carries the part, the XDC, and the source.
     script = (Path(backend.artefact_dir) / "flow.tcl").read_text()
     assert "synth_design -top demo_top -part xczu7ev-ffvc1156-2-e" in script
+    assert "report_methodology -file methodology.rpt" in script
     assert "read_xdc" in script
     assert "demo_top.sv" in script
     assert "write_bitstream -force demo_top.bit" in script
@@ -606,8 +615,14 @@ def test_cli_fpga_machine_envelope(minimal_project: Path, capsys, monkeypatch):
     assert row["result"] == "PASS"
     assert row["wns_ns"] == 8.452
     assert row["lut"]["used"] == 1
+    # Power: total/dynamic/static watts — the FPGA answer to #103.
     assert row["total_power_w"] == 0.636
+    assert row["dynamic_power_w"] == 0.044
+    assert row["static_power_w"] == 0.592
     assert row["drc_violations"] == 3
+    # Methodology findings ride through as {id, severity, description}.
+    assert len(row["methodology_warnings"]) == 49
+    assert row["methodology_warnings"][0]["id"] == "TIMING-18#1"
     # bitstream is explicit null when --bitstream was not passed.
     assert row["bitstream"] is None
 

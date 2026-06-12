@@ -1,10 +1,11 @@
 """Parsers for Vivado post-route report files (``rb fpga``).
 
-Pure text -> dict parsing for the four reports the batch flow in
+Pure text -> dict parsing for the reports the batch flow in
 :mod:`.fpga_vivado_flow` emits: ``report_utilization``,
-``report_timing_summary``, ``report_power``, ``report_drc``. No
-subprocess code lives here — the P1 backend reads the ``.rpt`` files
-from ``artefacts/<run>/`` and feeds the text through these functions.
+``report_timing_summary``, ``report_power``, ``report_drc``,
+``report_methodology``. No subprocess code lives here — the P1 backend
+reads the ``.rpt`` files from ``artefacts/<run>/`` and feeds the text
+through these functions.
 
 The contract is tested against real, sanitized Vivado 2022.1.2 reports
 under ``tests/fixtures/fpga/`` (part ``xczu7ev-ffvc1156-2-e``). Each
@@ -318,6 +319,54 @@ _DRC_SEVERITIES = ("Advisory", "Warning", "Critical Warning", "Error", "Fatal")
 _DRC_DETAIL_RE = re.compile(r"^([\w-]+#\d+)\s+(" + "|".join(_DRC_SEVERITIES) + r")\s*$")
 
 
+def _parse_rule_report(text: str) -> tuple[int, dict[str, int], list[dict]]:
+    """Shared machinery for the DRC-shaped rule reports.
+
+    ``report_drc`` and ``report_methodology`` share one layout: a
+    ``Violations found: N`` headline, a REPORT SUMMARY table
+    (Rule | Severity | Description | Violations) and REPORT DETAILS
+    entries (``NSTD-1#1``-style ids). Returns
+    ``(total, by_severity, entries)`` with the summary table aggregated
+    by severity, falling back to the details when the table is absent.
+    """
+    total = 0
+    m = re.search(r"Violations found:\s*(\d+)", text)
+    if m:
+        total = int(m.group(1))
+
+    by_severity: dict[str, int] = {}
+    for header, rows in _iter_ascii_tables(text):
+        if header[:2] != ["Rule", "Severity"]:
+            continue
+        for row in rows:
+            if len(row) < 4:
+                continue
+            count = _num(row[3])
+            if count is None:
+                continue
+            by_severity[row[1]] = by_severity.get(row[1], 0) + int(count)
+
+    # Details: "<RULE>#<n> <Severity>" followed by a description line.
+    entries: list[dict] = []
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = _DRC_DETAIL_RE.match(line.strip())
+        if not m:
+            continue
+        description = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        entries.append(
+            {"id": m.group(1), "severity": m.group(2), "description": description}
+        )
+
+    if not by_severity and entries:
+        for entry in entries:
+            severity = entry["severity"]
+            by_severity[severity] = by_severity.get(severity, 0) + 1
+    if not total:
+        total = sum(by_severity.values())
+    return total, by_severity, entries
+
+
 def parse_drc(text: str) -> dict:
     """Parse a ``report_drc`` report.
 
@@ -341,45 +390,44 @@ def parse_drc(text: str) -> dict:
     if "Report DRC" not in text and "REPORT SUMMARY" not in text:
         raise ValueError("not a Vivado DRC report")
 
-    total = 0
-    m = re.search(r"Violations found:\s*(\d+)", text)
-    if m:
-        total = int(m.group(1))
-
-    # Summary table: Rule | Severity | Description | Violations
-    by_severity: dict[str, int] = {}
-    for header, rows in _iter_ascii_tables(text):
-        if header[:2] != ["Rule", "Severity"]:
-            continue
-        for row in rows:
-            if len(row) < 4:
-                continue
-            count = _num(row[3])
-            if count is None:
-                continue
-            by_severity[row[1]] = by_severity.get(row[1], 0) + int(count)
-
-    # Details: "<RULE>#<n> <Severity>" followed by a description line.
-    violations: list[dict] = []
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        m = _DRC_DETAIL_RE.match(line.strip())
-        if not m:
-            continue
-        description = lines[i + 1].strip() if i + 1 < len(lines) else ""
-        violations.append(
-            {"id": m.group(1), "severity": m.group(2), "description": description}
-        )
-
-    if not by_severity and violations:
-        for violation in violations:
-            severity = violation["severity"]
-            by_severity[severity] = by_severity.get(severity, 0) + 1
-    if not total:
-        total = sum(by_severity.values())
-
+    total, by_severity, violations = _parse_rule_report(text)
     return {
         "total_violations": total,
         "by_severity": by_severity,
         "violations": violations,
+    }
+
+
+# ---------------------------------------------------------------------------
+# report_methodology
+
+
+def parse_methodology(text: str) -> dict:
+    """Parse a ``report_methodology`` report.
+
+    Returns::
+
+        {
+          "total_warnings": int,
+          "by_severity": {"Warning": 49, ...},
+          "warnings": [{"id", "severity", "description"}, ...],
+        }
+
+    A methodology report shares the DRC report layout (REPORT SUMMARY
+    rule table + ``TIMING-18#1``-style REPORT DETAILS entries), so the
+    same machinery applies. The vendor's rule ids and severities are
+    surfaced verbatim — informational, not adopted as rtl_buddy's own
+    taxonomy. A clean report yields zero counts and an empty list.
+
+    Raises:
+      ValueError: if the text is not a Vivado methodology report.
+    """
+    if "Report Methodology" not in text:
+        raise ValueError("not a Vivado methodology report")
+
+    total, by_severity, warnings = _parse_rule_report(text)
+    return {
+        "total_warnings": total,
+        "by_severity": by_severity,
+        "warnings": warnings,
     }

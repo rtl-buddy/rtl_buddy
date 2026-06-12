@@ -42,6 +42,7 @@ REPORT_FILES: dict[str, str] = {
     "timing_summary": "timing_summary.rpt",
     "power": "power.rpt",
     "drc": "drc.rpt",
+    "methodology": "methodology.rpt",
 }
 
 # Tcl command emitted for each report key.
@@ -50,6 +51,7 @@ _REPORT_TCL: dict[str, str] = {
     "timing_summary": "report_timing_summary -file {file}",
     "power": "report_power -file {file}",
     "drc": "report_drc -file {file}",
+    "methodology": "report_methodology -file {file}",
 }
 
 

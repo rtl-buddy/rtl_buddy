@@ -45,8 +45,11 @@ class FpgaPassResults(FpgaResults):
         whs_ns: float | None = None,
         timing_met: bool | None = None,
         total_power_w: float | None = None,
+        dynamic_power_w: float | None = None,
+        static_power_w: float | None = None,
         drc_violations: int | None = None,
         drc_by_severity: dict | None = None,
+        methodology_warnings: list | None = None,
         bitstream: str | None = None,
     ):
         super().__init__(
@@ -71,10 +74,18 @@ class FpgaPassResults(FpgaResults):
             self.results["timing_met"] = timing_met
         if total_power_w is not None:
             self.results["total_power_w"] = total_power_w
+        if dynamic_power_w is not None:
+            self.results["dynamic_power_w"] = dynamic_power_w
+        if static_power_w is not None:
+            self.results["static_power_w"] = static_power_w
         if drc_violations is not None:
             self.results["drc_violations"] = drc_violations
         if drc_by_severity is not None:
             self.results["drc_by_severity"] = drc_by_severity
+        # Vendor methodology findings ({id, severity, description} dicts),
+        # surfaced verbatim — informational, never a pass/fail input.
+        if methodology_warnings is not None:
+            self.results["methodology_warnings"] = methodology_warnings
         # Deliberately set even when None so machine consumers can
         # distinguish "no bitstream requested" from older payloads.
         self.results["bitstream"] = bitstream

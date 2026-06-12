@@ -20,7 +20,7 @@ Today only `vivado` is wired up; it is also the default when `tool:` is omitted.
 vivado -mode batch -source flow.tcl -nojournal -log vivado.log
 ```
 
-with `read_verilog`/`read_xdc` → `synth_design` → `opt_design` → `place_design` → `route_design`, followed by `report_utilization`, `report_timing_summary`, `report_power`, and `report_drc`, and finally `write_bitstream` when `--bitstream` is passed.
+with `read_verilog`/`read_xdc` → `synth_design` → `opt_design` → `place_design` → `route_design`, followed by `report_utilization`, `report_timing_summary`, `report_power`, `report_drc`, and `report_methodology`, and finally `write_bitstream` when `--bitstream` is passed.
 
 ## Installing Vivado
 
@@ -193,8 +193,14 @@ With the global `--machine` flag the command emits a single JSON envelope on std
         "whs_ns": 0.059,
         "timing_met": true,
         "total_power_w": 0.636,
+        "dynamic_power_w": 0.044,
+        "static_power_w": 0.592,
         "drc_violations": 3,
         "drc_by_severity": {"Critical Warning": 2, "Warning": 1},
+        "methodology_warnings": [
+          {"id": "TIMING-18#1", "severity": "Warning",
+           "description": "Missing input or output delay"}
+        ],
         "bitstream": null
       }
     ]
@@ -215,7 +221,18 @@ Per-run outputs land under `<suite>/artefacts/<run>/`:
 | `timing_summary.rpt` | `report_timing_summary` |
 | `power.rpt` | `report_power` |
 | `drc.rpt` | `report_drc` |
+| `methodology.rpt` | `report_methodology` |
 | `<top>.bit` | Bitstream — only with `--bitstream` |
+
+## Power
+
+`report_power` runs post-route on every pass, and the results carry the headline watts: `total_power_w` (total on-chip), `dynamic_power_w`, and `static_power_w` (device static). This is the FPGA realization of [issue #103](https://github.com/rtl-buddy/rtl_buddy/issues/103) — where `rb power` answers "what does this netlist burn on an ASIC flow", `rb fpga` answers the same question for an FPGA target, from the vendor's own post-route power model. The human summary table shows the total; machine mode carries all three.
+
+Treat the absolute numbers with the report's own caveats: a post-route vector-less estimate (the raw `power.rpt` records Vivado's confidence level, typically *Low* without simulation activity data) is for trend-tracking across runs, not signoff.
+
+## Methodology warnings
+
+`report_methodology` runs alongside the other post-route reports and its findings surface as `methodology_warnings` — a list of `{id, severity, description}` entries with Vivado's rule ids (`TIMING-18`, `SYNTH-*`, ...) and severities kept verbatim. The same framing as the [CDC second-opinion backend](cdc.md#vivado-backend-second-opinion-not-authority) applies: these are vendor findings rtl_buddy surfaces, not a ruleset it adopts as canonical — they are **informational and never flip pass/fail**. The human summary shows the count (the `Meth` column); machine mode carries the full list; the raw report stays in `methodology.rpt` for digging.
 
 ## Pass/fail detection
 
@@ -223,7 +240,7 @@ A run is PASS when:
 
 1. `vivado` exits with code 0.
 2. The log has no `ERROR: [...]` lines.
-3. All four post-route reports were produced and parse.
+3. All post-route reports were produced and parse.
 4. With `--bitstream`: the `.bit` file exists.
 
 Otherwise FAIL is returned with the cause in the description. SKIP is returned when `vivado` is not installed or when the run's `reglvl` is above the `-l` filter. Note that failing timing is **not** a FAIL by itself — the run completes and `wns_ns` / `timing_met` carry the truth, so a timing-closure loop can read the metrics and iterate.
@@ -231,4 +248,4 @@ Otherwise FAIL is returned with the cause in the description. SKIP is returned w
 ## Out of scope (today)
 
 - Include-directory (`+incdir+`) propagation into `synth_design`.
-- Methodology/CDC report integration and an openXC7 open-source backend (planned follow-ups).
+- An openXC7 open-source backend (planned follow-up). Vivado's `report_cdc` is integrated as a second-opinion backend of [`rb cdc`](cdc.md#vivado-backend-second-opinion-not-authority), not of `rb fpga`.

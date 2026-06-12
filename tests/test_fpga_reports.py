@@ -15,6 +15,7 @@ import pytest
 from rtl_buddy.tools import fpga_vivado_flow as flow
 from rtl_buddy.tools.fpga_vivado_reports import (
     parse_drc,
+    parse_methodology,
     parse_power,
     parse_timing_summary,
     parse_utilization,
@@ -224,6 +225,51 @@ def test_parse_drc_rejects_garbage():
 
 
 # ---------------------------------------------------------------------------
+# parse_methodology
+# ---------------------------------------------------------------------------
+
+
+def test_parse_methodology_counts_and_warnings():
+    meth = parse_methodology(_fixture("methodology.rpt"))
+
+    # The fixture design constrains the clock but no I/O delays, so every
+    # port flags TIMING-18.
+    assert meth["total_warnings"] == 49
+    assert meth["by_severity"] == {"Warning": 49}
+    assert len(meth["warnings"]) == 49
+
+    first = meth["warnings"][0]
+    assert first["id"] == "TIMING-18#1"
+    assert first["severity"] == "Warning"
+    assert first["description"] == "Missing input or output delay"
+    # Vendor rule ids are surfaced verbatim, one entry per instance.
+    assert {w["id"] for w in meth["warnings"]} == {
+        f"TIMING-18#{n}" for n in range(1, 50)
+    }
+
+
+def test_parse_methodology_clean_report():
+    text = (
+        "Report Methodology\n\n"
+        "1. REPORT SUMMARY\n"
+        "-----------------\n"
+        "             Violations found: 0\n"
+    )
+    meth = parse_methodology(text)
+    assert meth["total_warnings"] == 0
+    assert meth["by_severity"] == {}
+    assert meth["warnings"] == []
+
+
+def test_parse_methodology_rejects_garbage():
+    with pytest.raises(ValueError, match="not a Vivado methodology report"):
+        parse_methodology("all according to plan\n")
+    # A DRC report is not a methodology report (and vice versa).
+    with pytest.raises(ValueError, match="not a Vivado methodology report"):
+        parse_methodology(_fixture("drc.rpt"))
+
+
+# ---------------------------------------------------------------------------
 # Flow Tcl template
 # ---------------------------------------------------------------------------
 
@@ -242,6 +288,7 @@ def test_flow_template_stage_and_report_contract():
         "timing_summary": "timing_summary.rpt",
         "power": "power.rpt",
         "drc": "drc.rpt",
+        "methodology": "methodology.rpt",
     }
 
 
@@ -261,6 +308,7 @@ def test_render_flow_tcl_full_script():
     assert "report_timing_summary -file timing_summary.rpt" in script
     assert "report_power -file power.rpt" in script
     assert "report_drc -file drc.rpt" in script
+    assert "report_methodology -file methodology.rpt" in script
     assert "write_bitstream -force fpga_counter.bit" in script
     # No leftover placeholders.
     assert "{{" not in script
@@ -312,13 +360,13 @@ def test_render_flow_tcl_validates_inputs():
         flow.render_flow_tcl(top="t", part="", verilog_sources=["a.v"], xdc_files=[])
     with pytest.raises(RuntimeError, match="at least one HDL source"):
         flow.render_flow_tcl(top="t", part="p", verilog_sources=[], xdc_files=[])
-    with pytest.raises(RuntimeError, match="unknown report 'methodology'"):
+    with pytest.raises(RuntimeError, match="unknown report 'qor'"):
         flow.render_flow_tcl(
             top="t",
             part="p",
             verilog_sources=["a.v"],
             xdc_files=[],
-            report_files={"methodology": "meth.rpt"},
+            report_files={"qor": "qor.rpt"},
         )
 
 
