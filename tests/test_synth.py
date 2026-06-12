@@ -660,6 +660,21 @@ def test_write_script_frontend_slang_env_fallback(tmp_path, monkeypatch):
     assert f"plugin -i {plugin}" in script
 
 
+def test_write_script_frontend_slang_relative_env_rejected(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, "build/slang.so")
+    ys = _make_yosys(tmp_path, tool_cfg=_slang_tool_cfg(""))
+    with pytest.raises(FatalRtlBuddyError, match="absolute"):
+        ys._write_script(str(fl))
+
+
 def test_write_script_frontend_slang_config_wins_over_env(tmp_path, monkeypatch):
     from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
 

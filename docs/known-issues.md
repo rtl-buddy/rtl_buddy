@@ -181,3 +181,9 @@ safety are separate concerns and *are* handled — same-key tests share by
 construction, and cross-process races are excluded by the
 [per-tree artefact lock](#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)
 (with that quirk's NFS caveat applying here too).
+
+## A wrong FPV plugin path degrades COI coverage silently
+
+`rb fpv` / `rb fpv-regression` treat the cone-of-influence pass as best-effort: when the yosys COI script fails — most commonly because the yosys-slang plugin path is wrong (stale `plugin-path`, an unbuilt `slang.so`, or a sibling-checkout convention that doesn't hold on this machine) — the run only emits `fpv coi_yosys_failed` WARNINGs and drops the COI column. The verification verdict itself still PASSes, because the proof pipeline loads the plugin separately, so a broken plugin location can sit unnoticed while COI coverage quietly reports nothing.
+
+If COI numbers disappear or `coi_yosys_failed` shows up in the log, check the resolved plugin location first: `cfg-fpv-tools[].opts.plugin-path` in `root_config.yaml`, or — when that is unset — the `RTL_BUDDY_SLANG_PLUGIN` environment variable. The per-verification `coi.log` under `artefacts/<name>/` records the exact yosys error (e.g. `Can't load module ...slang.so`).
