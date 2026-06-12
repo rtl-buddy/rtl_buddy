@@ -574,11 +574,41 @@ def test_knob_effect_history_with_parent_deltas(
     assert third["metrics_after"] == {}
     assert "metrics_parent_delta" not in third  # parent unknown to the ledger
 
+    # the knob was tried: no self-correction hints in the payload
+    assert "known_knobs" not in payload
+    assert "suggestions" not in payload
+
+
+def test_knob_effect_typo_gets_known_knobs_and_suggestions(
+    minimal_project: Path, monkeypatch, capsys
+):
+    """A knob declared nowhere exits 0 with empty effects + correction hints."""
+    _write_ledger(minimal_project, _effect_chain())
+    payload = _machine(["xplr", "knob-effect", "rtl.DEPHT"], monkeypatch, capsys)
+    assert payload["knob"] == "rtl.DEPHT"
+    assert payload["effects"] == []
+    assert payload["known_knobs"] == ["rtl.DEPTH", "synth.strategy"]
+    assert payload["suggestions"] == ["rtl.DEPTH"]
+
 
 def test_knob_effect_unknown_knob_is_empty(minimal_project: Path, monkeypatch, capsys):
     _write_ledger(minimal_project, _effect_chain())
     payload = _machine(["xplr", "knob-effect", "no.such.knob"], monkeypatch, capsys)
-    assert payload == {"knob": "no.such.knob", "effects": []}
+    assert payload["knob"] == "no.such.knob"
+    assert payload["effects"] == []
+    assert payload["known_knobs"] == ["rtl.DEPTH", "synth.strategy"]
+    assert payload["suggestions"] == []  # nothing close: list everything instead
+
+
+def test_knob_effect_unknown_knob_human_hint(
+    minimal_project: Path, monkeypatch, capsys
+):
+    _write_ledger(minimal_project, _effect_chain())
+    code, out, err = _run(["xplr", "knob-effect", "rtl.DEPHT"], monkeypatch, capsys)
+    assert code == 0
+    text = out + err
+    assert "no experiment" in text
+    assert "rtl.DEPTH" in text  # the close match is suggested
 
 
 def test_knob_effect_human_mode(minimal_project: Path, monkeypatch, capsys):
@@ -603,6 +633,7 @@ def test_xplr_help_lists_analysis_commands():
     assert result.exit_code == 0
     for sub in ("diff", "frontier", "knob-effect"):
         assert sub in result.output
+    assert "--root" in result.output  # group-level project-root anchor
     result = CliRunner().invoke(rb.app, ["xplr", "frontier", "--help"])
     assert result.exit_code == 0
     assert "--metrics" in result.output

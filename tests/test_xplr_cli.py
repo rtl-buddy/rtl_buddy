@@ -516,6 +516,70 @@ def test_show_unknown_experiment_exits_2(minimal_project: Path, monkeypatch, cap
 
 
 # ---------------------------------------------------------------------------
+# --root: anchoring project-root discovery from an unrelated cwd
+# ---------------------------------------------------------------------------
+
+
+def test_xplr_root_option_works_from_unrelated_cwd(
+    git_project: Path, monkeypatch, capsys, tmp_path: Path
+):
+    _register(git_project, monkeypatch, capsys)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    code, out, _ = _run(
+        ["--machine", "xplr", "--root", str(git_project), "list"],
+        monkeypatch,
+        capsys,
+    )
+    assert code == 0, out
+    envelope = _envelope(out)
+    assert envelope["command"] == "xplr list"
+    assert [e["id"] for e in envelope["payload"]["experiments"]] == ["exp-0001"]
+    # the ledger stayed under the --root project, nothing landed in cwd
+    assert not (elsewhere / "artefacts").exists()
+
+
+def test_xplr_root_option_bad_root_exits_2(
+    minimal_project: Path, monkeypatch, capsys, tmp_path: Path
+):
+    no_project = tmp_path / "no_project"
+    no_project.mkdir()
+    monkeypatch.chdir(no_project)
+
+    # a directory with no root_config.yaml/.git above it: clear exit-2
+    code, out, _ = _run(
+        ["--machine", "xplr", "--root", str(no_project), "list"],
+        monkeypatch,
+        capsys,
+    )
+    assert code == 2
+    error = _envelope(out)["payload"]["error"]
+    assert "cannot locate project root" in error
+
+    # a path that is not a directory at all
+    code, out, _ = _run(
+        ["--machine", "xplr", "--root", str(no_project / "nope"), "list"],
+        monkeypatch,
+        capsys,
+    )
+    assert code == 2
+    assert "not a directory" in _envelope(out)["payload"]["error"]
+
+
+def test_xplr_outside_project_error_mentions_root_flag(
+    monkeypatch, capsys, tmp_path: Path
+):
+    nowhere = tmp_path / "nowhere"
+    nowhere.mkdir()
+    monkeypatch.chdir(nowhere)
+    code, out, _ = _run(["--machine", "xplr", "list"], monkeypatch, capsys)
+    assert code == 2
+    assert "--root" in _envelope(out)["payload"]["error"]
+
+
+# ---------------------------------------------------------------------------
 # fixture records (the P0 contract corpus) read back through the CLI
 # ---------------------------------------------------------------------------
 

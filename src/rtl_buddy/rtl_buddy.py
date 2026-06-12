@@ -415,6 +415,7 @@ class RtlBuddy:
         self.exec_ctx: ExecutionContext | None = None
         self._builder_override: str | None = None
         self._artifact_locks = ArtifactLocks()
+        self._xplr_root_override: Path | None = None
 
     def run(self):
         try:
@@ -3858,8 +3859,22 @@ class RtlBuddy:
     # rb xplr — design-space exploration experiment ledger
     # ------------------------------------------------------------------
 
-    def _xplr_group_options(self, ctx: typer.Context):
-        """Group callback: record the full ``xplr <sub>`` command name.
+    def _xplr_group_options(
+        self,
+        ctx: typer.Context,
+        root: Annotated[
+            str,
+            typer.Option(
+                "--root",
+                help="anchor project-root discovery at this path instead of "
+                "the current directory (root_config.yaml/.git are resolved "
+                "from here). Group-level: place it between 'xplr' and the "
+                "subcommand, e.g. `rb xplr --root <project> list`. For "
+                "driving a ledger from outside its project checkout",
+            ),
+        ] = None,
+    ):
+        """Group callback: ``--root`` + the full ``xplr <sub>`` command name.
 
         ``root_options`` only sees the group (``xplr``), so the exit-2
         machine envelope emitted by :meth:`run` would attribute errors
@@ -3869,18 +3884,37 @@ class RtlBuddy:
         """
         if ctx.invoked_subcommand:
             self._pending_invoked_subcommand = f"xplr {ctx.invoked_subcommand}"
+        if ctx.resilient_parsing:
+            return
+        self._xplr_root_override = None
+        if root is not None:
+            path = Path(root)
+            if not path.is_absolute():
+                path = self.invocation_cwd / path
+            path = path.resolve()
+            if not path.is_dir():
+                raise FatalRtlBuddyError(f"xplr --root: {path} is not a directory")
+            self._xplr_root_override = path
 
     def _enter_xplr_context(self) -> tuple[Path, Path]:
         """Anchor an xplr command and return (project_root, ledger_root).
 
         The ledger lives at the project root (``artefacts/xplr``), not a
         suite directory, so every experiment ends up in one ledger no
-        matter where the agent invoked ``rb`` from. ``list_only=True``:
-        xplr needs no RootConfig/builder, and read commands stay
-        lock-free; write commands take a lock on the ledger root only,
-        so a running flow's suite artefact lock is never contended.
+        matter where the agent invoked ``rb`` from. ``rb xplr --root
+        <path>`` anchors the discovery at that path instead of the
+        invocation cwd. ``list_only=True``: xplr needs no
+        RootConfig/builder, and read commands stay lock-free; write
+        commands take a lock on the ledger root only, so a running
+        flow's suite artefact lock is never contended.
         """
-        project_root = discover_project_root(start_dir=self.invocation_cwd)
+        start = self._xplr_root_override or self.invocation_cwd
+        try:
+            project_root = discover_project_root(start_dir=start)
+        except FatalRtlBuddyError as exc:
+            raise FatalRtlBuddyError(
+                f"{exc} For xplr commands: rb xplr --root <project> <subcommand>."
+            ) from None
         ctx = self._enter_command_context(command_root=project_root, list_only=True)
         return project_root, xplr_ledger.ledger_root(ctx)
 
@@ -4261,6 +4295,23 @@ class RtlBuddy:
                 rows=rows,
                 logger=logger,
             )
+            if "known_knobs" in payload:
+                emit_console_text(
+                    f"knob '{name}' appears in no experiment's manifest",
+                    style="yellow",
+                    markup=False,
+                )
+                if payload["suggestions"]:
+                    emit_console_text(
+                        "did you mean: " + ", ".join(payload["suggestions"]),
+                        style="yellow",
+                        markup=False,
+                    )
+                if payload["known_knobs"]:
+                    emit_console_text(
+                        "known knobs: " + ", ".join(payload["known_knobs"]),
+                        markup=False,
+                    )
         raise typer.Exit(0)
 
     # ------------------------------------------------------------------
@@ -4498,10 +4549,38 @@ class RtlBuddy:
                 "one step (knobs recorded as from=scenario default)",
             ),
         ] = False,
+        source_sha: Annotated[
+            str,
+            typer.Option(
+                "--source-sha",
+                help="with --register: record this sha verbatim as "
+                "source.git_sha (the agent-declared pin path; no dirty bit). "
+                "The escape hatch for sandboxes where the project root is "
+                "not a git repository",
+            ),
+        ] = None,
+        source_branch: Annotated[
+            str,
+            typer.Option(
+                "--source-branch",
+                help="with --source-sha: optional source.branch label, "
+                "recorded verbatim",
+            ),
+        ] = None,
     ):
         """
         evaluate one knob vector against a mockflow scenario
         """
+        if source_sha is not None and not register:
+            raise FatalRtlBuddyError(
+                "mock run: --source-sha only makes sense with --register "
+                "(a stateless evaluation pins no source)"
+            )
+        if source_branch is not None and source_sha is None:
+            raise FatalRtlBuddyError(
+                "mock run: --source-branch requires --source-sha (a branch "
+                "label alone does not pin a revision)"
+            )
         values = {}
         if json_input is not None:
             values = xplr_commands.load_json_doc(
@@ -4509,14 +4588,32 @@ class RtlBuddy:
             )
         result = xplr_mockflow.evaluate(scenario, values, seed=seed, noise=noise)
         payload = dict(result)
+        # `outcome` is shaped exactly as an attach-outcome --json input so
+        # a stateless `mock run` can be piped straight into attach-outcome.
+        payload["outcome"] = xplr_mockflow.outcome_doc(result)
         if register:
             project_root, root = self._enter_xplr_context()
             self._artifact_locks.acquire(root, command="xplr mock run")
-            record, _ = xplr_commands.register_experiment(
-                root,
-                xplr_mockflow.register_doc(scenario, values, result["knobs"]),
-                project_root=project_root,
-            )
+            doc = xplr_mockflow.register_doc(scenario, values, result["knobs"])
+            if source_sha is not None:
+                source: dict = {"git_sha": source_sha}
+                if source_branch is not None:
+                    source["branch"] = source_branch
+                doc["source"] = source
+            try:
+                record, _ = xplr_commands.register_experiment(
+                    root, doc, project_root=project_root
+                )
+            except FatalRtlBuddyError as exc:
+                if source_sha is None and "not a git repository" in str(exc):
+                    raise FatalRtlBuddyError(
+                        f"mock run --register: the project root "
+                        f"({project_root}) is not a git repository with "
+                        "commits, so the source cannot be pinned — pass "
+                        "--source-sha <sha> (and optionally --source-branch) "
+                        "to declare the pin verbatim"
+                    ) from None
+                raise
             record, path = xplr_commands.attach_outcome(
                 root, record.id, xplr_mockflow.outcome_doc(result)
             )

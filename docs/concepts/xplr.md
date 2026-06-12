@@ -255,6 +255,8 @@ These are the views an agent reasons over. All payloads below are real outputs f
 }
 ```
 
+A knob name that appears in **no** experiment's manifest still exits 0 with `effects: []` — an empty history is an answer, not an error — but the payload then also carries `known_knobs` (every distinct knob name declared anywhere in the ledger, sorted) and `suggestions` (close matches to the requested name), so a typo self-corrects in one round trip. When the knob was tried at least once, those keys are absent.
+
 `rb --machine xplr list` returns `{experiments: [{id, status, git_sha, n_knobs, created, hypothesis?}]}` summaries; `rb --machine xplr show <id>` returns `{id, record_path, record}` with the full record — including `config_snapshot`, which is how an agent recovers the absolute knob state of a frontier point.
 
 ## Hypothesis and rationale conventions
@@ -319,12 +321,16 @@ $ rb --machine xplr register --json - <<'EOF'
 EOF
 ```
 
-Returns `{"id": "exp-0002", ...}` with `outcome.status: "pending"`. Run and attach:
+Returns `{"id": "exp-0002", ...}` with `outcome.status: "pending"`. Run and attach — the `mock run` payload carries an `outcome` member shaped exactly as a valid `attach-outcome --json` input (`{status, metrics, metric_meta}`), so `outcome.json` is one extraction away:
 
 ```console
-$ echo '{"unroll_factor": 1}' | rb --machine xplr mock run --scenario zdt1 --json -
+$ echo '{"unroll_factor": 1}' | rb --machine xplr mock run --scenario zdt1 --json - \
+    | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["payload"]["outcome"]))' \
+    > outcome.json   # or: jq .payload.outcome
 $ rb --machine xplr attach-outcome exp-0002 --json outcome.json
 ```
+
+`outcome.status` is always `"success"` — the synthetic flow ran to completion (an unroutable point is `routed: false`, not a failure). The agent may override `status` with its own judgment before attaching.
 
 `delay_ns` drops 19.75 → 10.94 at unchanged `lut_pct` — the `diff exp-0001 exp-0002` payload shown in [Reading the ledger](#reading-the-ledger-frontier-diff-knob-effect) assesses exactly that (`"assessment": "better"`), and the hypothesis is confirmed.
 
@@ -364,7 +370,7 @@ Four experiments, 89.7% of the analytic front's hypervolume, and both frontier p
 `rb xplr mock` is the only flow rb xplr ships, and it is deliberately fake: EDA-flavored knobs in, EDA-flavored metrics out, instant and deterministic, backed by benchmark functions whose optimum is known analytically. Use it to dry-run the agent loop, develop analysis tooling, or benchmark an optimizer — without EDA turnaround.
 
 - **`rb xplr mock info [--scenario s]`** — knob specs, cost model, infeasible combinations, and the analytic `ground_truth`.
-- **`rb xplr mock run --scenario s [--json knobs] [--seed N] [--noise sigma] [--register]`** — evaluate one knob vector. `--register` writes the ledger experiment and attaches the outcome in one step; without it the evaluation is stateless (use register/attach yourself, as a real flow would). Metrics are a pure function of `(scenario, knobs, seed)`; `--noise` adds seeded Gaussian variance to the objective metrics only.
+- **`rb xplr mock run --scenario s [--json knobs] [--seed N] [--noise sigma] [--register]`** — evaluate one knob vector. `--register` writes the ledger experiment and attaches the outcome in one step; without it the evaluation is stateless (use register/attach yourself, as a real flow would — the payload's `outcome` member is a ready-made `attach-outcome --json` input, see the worked example). Metrics are a pure function of `(scenario, knobs, seed)`; `--noise` adds seeded Gaussian variance to the objective metrics only. With `--register` in a sandbox whose project root is **not a git repo**, pass `--source-sha <sha>` (and optionally `--source-branch <label>`): it follows the agent-declared-pin path — recorded verbatim, no dirty bit — exactly like a register manifest declaring `source.git_sha`.
 - **`rb xplr mock score [--scenario s]`** — grade the ledger against the ground truth: **regret** (`|best_found - optimum|`) for single-objective scenarios, **hypervolume** vs the documented reference point plus **distance-to-front** for multi-objective ones.
 
 Two scenarios ship: `rastrigin` (single-objective, `wns_ns` max — a lattice of local optima around one global optimum at the numeric-knob midpoints) and `zdt1` (multi-objective, `lut_pct`/`delay_ns` min/min with an analytic Pareto front). Both have one infeasible categorical combination (`routed: false`) and a layer-based cost model: every knob moved off its default adds its layer cost to `wall_clock_s` (source 600s, flow 240s, impl 60s) — touching RTL is 10x the cost of a tool directive, so a cost-aware agent should prefer impl-layer probes when exploring.
@@ -393,4 +399,4 @@ cfg-xplr:
   worktree-root: "artefacts/xplr/worktrees"   # keep it gitignored
 ```
 
-`rb xplr` reads this block without loading the rest of the root config, so it works in any project with a `root_config.yaml` or a git root — no builder or platform setup required.
+`rb xplr` reads this block without loading the rest of the root config, so it works in any project with a `root_config.yaml` or a git root — no builder or platform setup required. To drive a ledger from outside its project checkout, anchor the discovery explicitly with the group-level `--root` option: `rb xplr --root <project> <subcommand> ...`.

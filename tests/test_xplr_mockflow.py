@@ -454,6 +454,113 @@ def test_mock_run_register_infeasible_point(git_project: Path, monkeypatch, caps
     assert "wns_ns" not in record["outcome"]["metrics"]
 
 
+def test_mock_run_outcome_pipes_into_attach_outcome(
+    git_project: Path, monkeypatch, capsys
+):
+    """payload.outcome is a verbatim-valid attach-outcome --json input."""
+    code, out, _ = _run(
+        ["--machine", "xplr", "register", "--json", "-"],
+        monkeypatch,
+        capsys,
+        stdin="{}",
+    )
+    assert code == 0, out
+    exp_id = _envelope(out)["payload"]["id"]
+
+    payload = _mock_run(monkeypatch, capsys, "zdt1", {"unroll_factor": 1})
+    outcome = payload["outcome"]
+    assert outcome["status"] == "success"
+    assert outcome["metrics"] == payload["metrics"]
+    assert outcome["metric_meta"] == payload["metric_meta"]
+    # exactly the attach-outcome shape, nothing attach-outcome would reject
+    assert set(outcome) == {"status", "metrics", "metric_meta"}
+
+    code, out, _ = _run(
+        ["--machine", "xplr", "attach-outcome", exp_id, "--json", "-"],
+        monkeypatch,
+        capsys,
+        stdin=json.dumps(outcome),
+    )
+    assert code == 0, out
+    record = _envelope(out)["payload"]["record"]
+    validate_record(record)
+    assert record["outcome"]["status"] == "success"
+    assert record["outcome"]["metrics"] == payload["metrics"]
+    assert record["outcome"]["metric_meta"] == payload["metric_meta"]
+
+
+def test_mock_run_register_source_sha_in_non_git_sandbox(
+    minimal_project: Path, monkeypatch, capsys
+):
+    """--source-sha is the agent-declared pin path: verbatim, no dirty bit."""
+    payload = _mock_run(
+        monkeypatch,
+        capsys,
+        "rastrigin",
+        {"unroll_factor": 5},
+        register=True,
+        extra=["--source-sha", "deadbeefcafe", "--source-branch", "sandbox"],
+    )
+    assert payload["id"] == "exp-0001"
+    record = payload["record"]
+    validate_record(record)
+    assert record["source"] == {"git_sha": "deadbeefcafe", "branch": "sandbox"}
+    assert "dirty" not in record["source"]  # unknowable for a declared sha
+
+
+def test_mock_run_register_non_git_without_source_sha_exits_2(
+    minimal_project: Path, monkeypatch, capsys
+):
+    code, out, _ = _run(
+        ["--machine", "xplr", "mock", "run", "--scenario", "rastrigin", "--register"],
+        monkeypatch,
+        capsys,
+    )
+    assert code == 2
+    error = _envelope(out)["payload"]["error"]
+    assert "not a git repository" in error
+    assert "--source-sha" in error  # the sandbox escape hatch is named
+
+
+def test_mock_run_source_options_misuse_exits_2(
+    minimal_project: Path, monkeypatch, capsys
+):
+    code, out, _ = _run(
+        [
+            "--machine",
+            "xplr",
+            "mock",
+            "run",
+            "--scenario",
+            "rastrigin",
+            "--source-sha",
+            "deadbeefcafe",
+        ],
+        monkeypatch,
+        capsys,
+    )
+    assert code == 2
+    assert "--register" in _envelope(out)["payload"]["error"]
+
+    code, out, _ = _run(
+        [
+            "--machine",
+            "xplr",
+            "mock",
+            "run",
+            "--scenario",
+            "rastrigin",
+            "--register",
+            "--source-branch",
+            "sandbox",
+        ],
+        monkeypatch,
+        capsys,
+    )
+    assert code == 2
+    assert "--source-sha" in _envelope(out)["payload"]["error"]
+
+
 def test_mock_run_invalid_knob_exits_2(minimal_project: Path, monkeypatch, capsys):
     code, out, _ = _run(
         [
@@ -554,5 +661,13 @@ def test_mock_help_lists_subcommands():
         assert sub in result.output
     result = CliRunner().invoke(rb.app, ["xplr", "mock", "run", "--help"])
     assert result.exit_code == 0
-    for opt in ("--scenario", "--json", "--seed", "--noise", "--register"):
+    for opt in (
+        "--scenario",
+        "--json",
+        "--seed",
+        "--noise",
+        "--register",
+        "--source-sha",
+        "--source-branch",
+    ):
         assert opt in result.output

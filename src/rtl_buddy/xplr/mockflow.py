@@ -511,7 +511,16 @@ def register_doc(
 
 
 def outcome_doc(result: dict[str, Any]) -> dict[str, Any]:
-    """Build the ``rb xplr attach-outcome`` document for one evaluation."""
+    """Build the ``rb xplr attach-outcome`` document for one evaluation.
+
+    Shaped exactly as a valid ``attach-outcome --json`` input, and
+    exposed verbatim as the ``outcome`` member of the ``mock run``
+    machine payload so a stateless evaluation can be piped straight
+    into ``attach-outcome``. ``status`` is always ``"success"`` — the
+    synthetic flow ran to completion; an infeasible point is
+    ``routed: false``, not a failure (the agent may override ``status``
+    with its own judgment before attaching).
+    """
 
     return {
         "status": "success",

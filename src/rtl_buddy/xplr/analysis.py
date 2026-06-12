@@ -29,6 +29,7 @@ Dominance rules (settled in #299):
 
 from __future__ import annotations
 
+import difflib
 import re
 from typing import Any
 
@@ -410,6 +411,13 @@ def knob_effect(records: list[ExperimentRecord], name: str) -> dict[str, Any]:
     that exists in the ledger with metrics, ``metrics_parent_delta``
     carries per-metric numeric deltas (child - parent) — that is the
     "effect"; no fitting, the agent does the reasoning.
+
+    A knob that appears in **no** experiment's manifest is not an error
+    (an empty history is a legitimate answer), but it is also exactly
+    what a typo looks like — so the payload then carries ``known_knobs``
+    (every distinct knob name declared anywhere in the ledger, sorted)
+    and ``suggestions`` (close matches to the requested name) so an
+    agent can self-correct without a second round trip.
     """
 
     by_id = {record.id: record for record in records}
@@ -444,4 +452,9 @@ def knob_effect(records: list[ExperimentRecord], name: str) -> dict[str, Any]:
                 if deltas:
                     entry["metrics_parent_delta"] = deltas
         effects.append(entry)
-    return {"knob": name, "effects": effects}
+    payload: dict[str, Any] = {"knob": name, "effects": effects}
+    if not effects:
+        known = sorted({knob.name for record in records for knob in record.knobs})
+        payload["known_knobs"] = known
+        payload["suggestions"] = difflib.get_close_matches(name, known, n=3)
+    return payload
