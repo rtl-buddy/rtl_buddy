@@ -217,10 +217,23 @@ def test_register_without_json_opens_baseline_experiment(
     assert record["outcome"]["status"] == "pending"
 
 
-def test_register_records_dirty_tree_honestly(git_project: Path, monkeypatch, capsys):
+def test_register_snapshots_dirty_tree_to_exp_branch(
+    git_project: Path, monkeypatch, capsys
+):
+    """P2 commit policy (auto, the default): a dirty tree is snapshotted
+    to an exp/<id> branch so the pin is exact — never recorded dirty.
+    The full policy matrix lives in test_xplr_gitprov.py."""
+    head_before = _head_sha(git_project)
     (git_project / "tests.yaml").write_text("# mutated tracked file\n")
     record = _register(git_project, monkeypatch, capsys)["record"]
-    assert record["source"]["dirty"] is True
+    assert record["source"]["dirty"] is False
+    assert record["source"]["branch"] == "exp/exp-0001"
+    assert record["source"]["diff_from"] == head_before
+    assert record["source"]["git_sha"] == _git(git_project, "rev-parse", "exp/exp-0001")
+    # the user's checkout is untouched: still on main at the old HEAD,
+    # the mutation still uncommitted
+    assert _head_sha(git_project) == head_before
+    assert "tests.yaml" in _git(git_project, "status", "--porcelain")
 
 
 def test_register_with_declared_sha_needs_no_git(

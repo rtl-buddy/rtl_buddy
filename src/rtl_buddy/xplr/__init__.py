@@ -16,6 +16,9 @@ Modules:
   (register / attach-outcome / list / show).
 * :mod:`rtl_buddy.xplr.analysis` — pure analysis views over the ledger
   (Pareto frontier / pairwise diff / per-knob effect history).
+* :mod:`rtl_buddy.xplr.gitprov` — git-pinned source provenance: the
+  register commit policy, worktree isolation (materialize/release),
+  and the frontier-aware gc.
 * :mod:`rtl_buddy.xplr.mockflow` — synthetic DSE backend with known
   optima (the ``rb xplr mock`` dev/CI harness).
 """

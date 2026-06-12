@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 LEDGER_DIRNAME = "xplr"
 RECORD_FILENAME = "record.json"
+# Non-experiment dirs that legitimately live under the ledger root: the
+# default cfg-xplr worktree-root is artefacts/xplr/worktrees/ (P2).
+RESERVED_DIRNAMES = ("worktrees",)
 
 _AUTO_ID_RE = re.compile(r"^exp-(\d{4,})$")
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -126,7 +129,7 @@ def list_records(root: Path) -> list[ExperimentRecord]:
         return []
     records: list[ExperimentRecord] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        if not entry.is_dir():
+        if not entry.is_dir() or entry.name in RESERVED_DIRNAMES:
             continue
         if not (entry / RECORD_FILENAME).is_file():
             log_event(

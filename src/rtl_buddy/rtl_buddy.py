@@ -72,9 +72,11 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
+from .config.xplr import load_xplr_config
 from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
 from .xplr import dumps_record
+from .xplr import gitprov as xplr_gitprov
 from .xplr import ledger as xplr_ledger
 from .xplr import mockflow as xplr_mockflow
 
@@ -336,6 +338,25 @@ class RtlBuddy:
             help="per-knob effect history: every experiment that declared "
             "the knob, with metric deltas vs its parent when available",
         )(self.do_xplr_knob_effect)
+        self.xplr_app.command(
+            "materialize",
+            help="check the experiment's pinned sha out into its own git "
+            "worktree (isolated build dir; disposable — the branch is the "
+            "durable artifact). Idempotent",
+        )(self.do_xplr_materialize)
+        self.xplr_app.command(
+            "release",
+            help="remove the experiment's worktree (worktree remove + "
+            "prune); the exp branch and the ledger record are kept",
+        )(self.do_xplr_release)
+        self.xplr_app.command(
+            "gc",
+            help="reclaim experiment disk space, non-interactively: evict "
+            "heavy artifacts + worktrees per policy (default keep-frontier "
+            "never touches Pareto-frontier members or their lineage); "
+            "record.json and the pinned sha always survive, so evicted "
+            "experiments can be re-materialized",
+        )(self.do_xplr_gc)
         self.xplr_mock_app = typer.Typer(
             help=(
                 "synthetic DSE backend with known optima (dev/CI harness). "
@@ -3875,6 +3896,15 @@ class RtlBuddy:
                 "provenance?: {tools?, agent?}}",
             ),
         ] = None,
+        baseline: Annotated[
+            str,
+            typer.Option(
+                "--baseline",
+                help="git ref to record as source.diff_from (the RTL-diff "
+                "baseline). Default: the parent experiment's pinned sha "
+                "when 'parent' is given, else HEAD before any snapshot",
+            ),
+        ] = None,
     ):
         """
         open a new experiment: pin the git ref + record the knob manifest
@@ -3887,7 +3917,7 @@ class RtlBuddy:
                 json_input, cwd=self.invocation_cwd, what="register"
             )
         record, path = xplr_commands.register_experiment(
-            root, doc, project_root=project_root
+            root, doc, project_root=project_root, baseline=baseline
         )
         if self.machine:
             self._emit_machine_result(
@@ -4231,6 +4261,145 @@ class RtlBuddy:
                 rows=rows,
                 logger=logger,
             )
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb xplr provenance — worktree isolation + frontier-aware gc (#298)
+    # ------------------------------------------------------------------
+
+    def do_xplr_materialize(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+        path: Annotated[
+            str,
+            typer.Option(
+                "--path",
+                help="worktree location (default: <worktree-root>/<exp>/, "
+                "worktree-root from cfg-xplr, under artefacts/ — keep it "
+                "gitignored)",
+            ),
+        ] = None,
+    ):
+        """
+        create a git worktree at the experiment's pinned sha (idempotent)
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr materialize")
+        record, _ = xplr_commands.get_experiment(root, exp_id)
+        cfg = load_xplr_config(project_root)
+        worktree_path = None
+        if path is not None:
+            worktree_path = Path(path)
+            if not worktree_path.is_absolute():
+                worktree_path = self.invocation_cwd / worktree_path
+        info = xplr_gitprov.materialize(
+            project_root, root, record, cfg, path=worktree_path
+        )
+        if self.machine:
+            self._emit_machine_result("xplr materialize", 0, **info)
+        else:
+            verb = "reusing" if info["reused"] else "materialized"
+            emit_console_text(
+                f"{verb} {record.id} at {info['path']} "
+                f"(source {record.source.git_sha[:12]})",
+                style="green",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_release(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+    ):
+        """
+        remove the experiment's worktree; branch + record are kept
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr release")
+        xplr_commands.get_experiment(root, exp_id)  # fail loudly on unknown id
+        info = xplr_gitprov.release(project_root, root, exp_id)
+        if self.machine:
+            self._emit_machine_result("xplr release", 0, **info)
+        else:
+            message = (
+                f"released worktree of {exp_id} ({info['path']})"
+                if info["removed"]
+                else f"{exp_id} has no worktree to release"
+            )
+            emit_console_text(message, style="green", markup=False)
+        raise typer.Exit(0)
+
+    def do_xplr_gc(
+        self,
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run",
+                help="report what would be evicted without touching anything",
+            ),
+        ] = False,
+        policy: Annotated[
+            str,
+            typer.Option(
+                "--policy",
+                help="eviction policy for this run: keep-frontier (default; "
+                "frontier members + lineage are never evicted) | "
+                "oldest-first | manual (list candidates, evict nothing)",
+            ),
+        ] = None,
+        target_gb: Annotated[
+            float,
+            typer.Option(
+                "--target-gb",
+                help="gc down to this usage (default: cfg-xplr disk-high-watermark-gb)",
+            ),
+        ] = None,
+    ):
+        """
+        evict heavy artifacts/worktrees to keep disk under the threshold
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr gc")
+        cfg = load_xplr_config(project_root)
+        payload = xplr_gitprov.gc(
+            project_root,
+            root,
+            cfg,
+            policy=policy,
+            target_gb=target_gb,
+            dry_run=dry_run,
+        )
+        if self.machine:
+            self._emit_machine_result("xplr gc", 0, **payload)
+        else:
+            gb = xplr_gitprov.GB
+            verb = "would evict" if dry_run else "evicted"
+            emit_console_text(
+                f"xplr gc ({payload['policy']}): "
+                f"{payload['usage_bytes_before'] / gb:.3f} GB used, target "
+                f"{payload['target_bytes'] / gb:.3f} GB — {verb} "
+                f"{len(payload['evicted'])} experiment(s), "
+                f"{payload['bytes_freed_total'] / gb:.3f} GB",
+                markup=False,
+            )
+            for entry in payload["evicted"]:
+                emit_console_text(
+                    f"  {verb} {entry['id']}: {entry['bytes_freed']} bytes "
+                    f"(record.json kept)",
+                    markup=False,
+                )
+            if payload["protected"]:
+                emit_console_text(
+                    "protected (frontier/lineage/non-terminal): "
+                    + ", ".join(payload["protected"]),
+                    markup=False,
+                )
+            for note in payload["notes"]:
+                emit_console_text(f"note: {note}", style="yellow", markup=False)
         raise typer.Exit(0)
 
     # ------------------------------------------------------------------

@@ -537,6 +537,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"xplr: experiment dir '{fields.get('id')}' has no record.json "
                 f"({fields.get('path')}); skipped in listing"
             )
+        case "xplr.worktree_not_ignored":
+            return (
+                f"xplr: worktree {fields.get('path')} is inside the repo but "
+                f"not gitignored — {fields.get('hint')}"
+            )
         case "summary":
             return fields.get("title", "Summary")
         case _:

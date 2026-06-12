@@ -10,10 +10,14 @@ list), then the resulting record is validated against the strict P0
 schema before anything touches disk — an agent that sends a malformed
 manifest gets a message naming exactly what was wrong.
 
-P1 source pinning is deliberately simple: if the agent does not declare
-``source.git_sha``, the project repo's current ``HEAD`` is pinned and
-``dirty`` is computed honestly from ``git status --porcelain``. The
-full commit/worktree isolation policy is P2.
+Source pinning (P2): when the agent declares ``source.git_sha`` it is
+taken verbatim — the agent owns that pin. Otherwise the cfg-xplr commit
+policy applies (:func:`rtl_buddy.xplr.gitprov.pin_with_policy`): in the
+default ``auto`` mode a dirty source scope is snapshotted to an
+``exp/<id>`` branch without disturbing the user's tree, a clean scope
+just records ``HEAD``; ``self-managed`` mode requires the user to have
+committed. Either way the recorded sha is exact, and ``diff_from``
+records the baseline so two experiments can be diffed at the RTL level.
 """
 
 from __future__ import annotations
@@ -26,9 +30,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..config.xplr import XplrConfig, load_xplr_config
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
-from . import ledger
+from . import gitprov, ledger
 from .schema import ABSENT, SCHEMA_VERSION, ExperimentRecord
 
 logger = logging.getLogger(__name__)
@@ -104,7 +109,7 @@ def _check_keys(doc: Any, allowed: tuple[str, ...], where: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# source pinning (P1: pin HEAD, honest dirty bit; worktree policy is P2)
+# source pinning (P2: cfg-xplr commit policy; plumbing lives in gitprov)
 # ---------------------------------------------------------------------------
 
 
@@ -123,40 +128,49 @@ def _git(project_root: Path, *args: str) -> str | None:
     return result.stdout
 
 
-def pin_source(project_root: Path, declared: dict[str, Any]) -> dict[str, Any]:
+def pin_source(
+    project_root: Path,
+    declared: dict[str, Any],
+    *,
+    exp_id: str,
+    cfg: XplrConfig,
+    baseline: str | None = None,
+    parent_sha: str | None = None,
+) -> dict[str, Any]:
     """Resolve the ``source`` block for a new experiment.
 
     An agent-declared ``git_sha`` is taken verbatim (with optional
-    ``branch``/``diff_from``) — no ``dirty`` bit, since the working tree
-    says nothing about an arbitrary pinned sha. Otherwise the project
-    repo's ``HEAD`` is pinned, ``branch`` is filled in when not
-    detached, and ``dirty`` is computed from ``git status --porcelain``.
+    ``branch``/``diff_from``) — the agent owns that pin, and no
+    ``dirty`` bit is recorded since the working tree says nothing about
+    an arbitrary sha. Otherwise the cfg-xplr commit policy applies
+    (see :func:`rtl_buddy.xplr.gitprov.pin_with_policy`): the recorded
+    sha is exact in every mode, and ``diff_from`` defaults to the
+    parent experiment's pinned sha (HEAD-before-snapshot otherwise).
     """
 
     _check_keys(declared, _REGISTER_SOURCE_KEYS, "register: 'source'")
     if "git_sha" in declared:
-        return dict(declared)
+        source = dict(declared)
+        if baseline is not None:
+            resolved = gitprov.resolve_ref(project_root, baseline)
+            if "diff_from" in source and source["diff_from"] != resolved:
+                raise FatalRtlBuddyError(
+                    f"register: --baseline resolves to {resolved} but the "
+                    "manifest declares source.diff_from "
+                    f"{source['diff_from']!r} — drop one of them"
+                )
+            source["diff_from"] = resolved
+        return source
 
-    head = _git(project_root, "rev-parse", "HEAD")
-    if head is None:
-        raise FatalRtlBuddyError(
-            "register: no source.git_sha declared and the project root "
-            f"({project_root}) is not a git repository with commits — "
-            "pass source.git_sha in the --json manifest"
-        )
-    source: dict[str, Any] = {"git_sha": head.strip()}
-    branch = declared.get("branch")
-    if branch is None:
-        ref = _git(project_root, "rev-parse", "--abbrev-ref", "HEAD")
-        if ref is not None and ref.strip() != "HEAD":  # HEAD == detached
-            branch = ref.strip()
-    if branch is not None:
-        source["branch"] = branch
-    if "diff_from" in declared:
-        source["diff_from"] = declared["diff_from"]
-    porcelain = _git(project_root, "status", "--porcelain")
-    source["dirty"] = bool(porcelain.strip()) if porcelain is not None else False
-    return source
+    return gitprov.pin_with_policy(
+        project_root,
+        exp_id,
+        cfg,
+        declared_branch=declared.get("branch"),
+        declared_diff_from=declared.get("diff_from"),
+        baseline=baseline,
+        parent_sha=parent_sha,
+    )
 
 
 def _now() -> str:
@@ -207,23 +221,54 @@ def source_diff(
 
 
 def register_experiment(
-    root: Path, doc: dict[str, Any], *, project_root: Path
+    root: Path,
+    doc: dict[str, Any],
+    *,
+    project_root: Path,
+    cfg: XplrConfig | None = None,
+    baseline: str | None = None,
 ) -> tuple[ExperimentRecord, Path]:
     """Open a new experiment from a register manifest.
 
-    Allocates the next ``exp-NNNN`` id, pins the source, sets
-    ``outcome.status = "pending"`` and ``provenance.created`` = now,
-    validates the assembled record against the schema, and writes it.
+    Allocates the next ``exp-NNNN`` id, pins the source under the
+    cfg-xplr commit policy (loaded from the project root when ``cfg``
+    is not given), sets ``outcome.status = "pending"`` and
+    ``provenance.created`` = now, validates the assembled record
+    against the schema, and writes it. The disk backstop runs first:
+    over the high watermark gc is triggered by policy, and the hard
+    cap blocks the new run only when gc could not free enough.
     """
 
     _check_keys(doc, _REGISTER_KEYS, "register")
     prov_in = doc.get("provenance", {})
     _check_keys(prov_in, _REGISTER_PROVENANCE_KEYS, "register: 'provenance'")
-    source = pin_source(project_root, doc.get("source", {}))
+    if cfg is None:
+        cfg = load_xplr_config(project_root)
+
+    gitprov.enforce_disk_backstop(project_root, root, cfg)
+
+    exp_id = ledger.next_id(root)
+    parent_sha: str | None = None
+    parent_id = doc.get("parent")
+    if isinstance(parent_id, str):
+        try:  # the schema allows any string parent; only ledger ids resolve
+            parent_known = ledger.record_path(root, parent_id).is_file()
+        except FatalRtlBuddyError:
+            parent_known = False
+        if parent_known:
+            parent_sha = ledger.read_record(root, parent_id).source.git_sha
+    source = pin_source(
+        project_root,
+        doc.get("source", {}),
+        exp_id=exp_id,
+        cfg=cfg,
+        baseline=baseline,
+        parent_sha=parent_sha,
+    )
 
     data: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "id": ledger.next_id(root),
+        "id": exp_id,
     }
     if "parent" in doc:
         data["parent"] = doc["parent"]
@@ -316,7 +361,11 @@ def get_experiment(root: Path, exp_id: str) -> tuple[ExperimentRecord, Path]:
     path = ledger.record_path(root, exp_id)
     if not path.is_file():
         known = (
-            sorted(e.name for e in root.iterdir() if e.is_dir())
+            sorted(
+                e.name
+                for e in root.iterdir()
+                if e.is_dir() and e.name not in ledger.RESERVED_DIRNAMES
+            )
             if root.is_dir()
             else []
         )

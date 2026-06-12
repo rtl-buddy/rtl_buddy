@@ -34,6 +34,7 @@ from .cdc import CdcToolConfig, CdcToolConfigFile
 from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
+from .xplr import XplrConfig, XplrConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -144,6 +145,7 @@ class RootConfigFile:
     )
     systemc: SystemCConfigFile | None = field(rename="cfg-systemc", default=None)
     tools: list[ToolVersionConfigFile] = field(rename="cfg-tools", default_factory=list)
+    xplr: XplrConfigFile | None = field(rename="cfg-xplr", default=None)
 
 
 class RootConfig:
@@ -201,6 +203,7 @@ class RootConfig:
         self.synth_effort_cfgs: dict = {}
         self.systemc_cfg: SystemCConfig | None = None
         self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
+        self.xplr_cfg: XplrConfig = XplrConfigFile().initialise()
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -304,6 +307,10 @@ class RootConfig:
             self.tool_version_cfgs = {
                 cfg.name: ToolVersionConfig.from_file(cfg) for cfg in data.tools
             }
+
+            # cfg-xplr experiment-ledger policy (optional, single block)
+            if data.xplr is not None:
+                self.xplr_cfg = data.xplr.initialise()
 
             # Record the regression config path; the RegConfig itself is
             # loaded lazily in get_rtl_reg_cfg() so non-simulation commands
@@ -642,6 +649,20 @@ class RootConfig:
     def get_tool_version_cfg(self, name: str) -> ToolVersionConfig | None:
         """Get optional ``cfg-tools`` min-version pin for the given tool name."""
         return self.tool_version_cfgs.get(name)
+
+    def get_xplr_cfg(self) -> XplrConfig:
+        """
+        Get the xplr experiment-ledger configuration.
+
+        Returns:
+          cfg (XplrConfig): The cfg-xplr block, or the documented
+            defaults when the block is absent. Note xplr commands
+            themselves load this block leniently via
+            ``config.xplr.load_xplr_config`` (they never construct a
+            full RootConfig); this accessor is for code that already
+            holds one.
+        """
+        return self.xplr_cfg
 
     def get_systemc_cfg(self) -> SystemCConfig | None:
         """
