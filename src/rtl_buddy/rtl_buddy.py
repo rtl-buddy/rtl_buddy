@@ -18,6 +18,7 @@ from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.env_file import apply_env_file
 from .config.root import _discover_root_cfg, discover_project_root
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
+from .config.fpga import FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
@@ -45,6 +46,8 @@ from .runner.mut_results import MutResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.xfail import apply_xfail
+from .runner.fpga_runner import FpgaRunner
+from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrRunner
 from .runner.pnr_results import PnrSkipResults
 from .runner.power_runner import PowerRunner
@@ -102,6 +105,7 @@ class RtlBuddy:
         "synth-regression",
         "power",
         "power-regression",
+        "fpga",
         "cdc",
         "cdc-regression",
         "fpv",
@@ -250,6 +254,9 @@ class RtlBuddy:
         self.app.command("power-regression", help="run power analysis regression")(
             self.do_power_regression
         )
+        self.app.command(
+            "fpga", help="run FPGA implementation (synth + place + route)"
+        )(self.do_cmd_fpga)
         self.app.command("saif", help="convert FST/VCD trace to SAIF v2.0")(
             self.do_cmd_saif
         )
@@ -457,7 +464,7 @@ class RtlBuddy:
     # configured names from the primary config file. The `--list` paths
     # do not need RootConfig, the selected builder, or CoverageReporter,
     # so list-only invocations short-circuit those setup steps.
-    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "cdc", "fpv"}
+    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "fpga", "cdc", "fpv"}
 
     def _is_list_invocation(self, ctx: typer.Context) -> bool:
         return (
@@ -2476,6 +2483,32 @@ class RtlBuddy:
                 row[k] = res[k]
         return row
 
+    def _fpga_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["fpga_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in (
+            "lut",
+            "ff",
+            "bram",
+            "dsp",
+            "wns_ns",
+            "tns_ns",
+            "whs_ns",
+            "timing_met",
+            "total_power_w",
+            "drc_violations",
+            "drc_by_severity",
+        ):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        # bitstream rides through even when None: machine consumers can
+        # tell "bitgen not requested" apart from a pre-fpga payload.
+        if "bitstream" in res:
+            row["bitstream"] = res["bitstream"]
+        return row
+
     def _cdc_result_row(self, r, *, suite: str | None = None) -> dict:
         res = r["results"].results
         row = {"name": r["cdc_name"], "result": res["result"], "desc": res["desc"]}
@@ -3063,6 +3096,206 @@ class RtlBuddy:
 
     def _exit_code_from_power_results(self, power_results):
         return 0 if all(r["results"].is_pass() for r in power_results) else 1
+
+    def do_cmd_fpga(
+        self,
+        fpga_config: Annotated[
+            str,
+            typer.Option("-c", "--fpga-config", help="fpga.yaml to use"),
+        ] = "fpga.yaml",
+        fpga_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of fpga run",
+                show_default="run all entries in the suite",
+            ),
+        ] = None,
+        list_runs: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list fpga runs in the selected config and exit"
+            ),
+        ] = False,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l",
+                "--reg-level",
+                help="run only entries with reglvl at or below this value",
+            ),
+        ] = 0,
+        emit_bitstream: Annotated[
+            bool,
+            typer.Option(
+                "--bitstream",
+                help="generate a bitstream after route (write_bitstream); "
+                "off by default — a smoke/timing run doesn't need bitgen",
+            ),
+        ] = False,
+    ):
+        """run FPGA implementation (synth + place + route)"""
+        ctx = self._enter_command_context(
+            primary_config=fpga_config, list_only=list_runs
+        )
+        suite_cfg = FpgaSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpga",
+            command="fpga",
+            fpga=fpga_name or "all",
+            fpga_config=fpga_config,
+            bitstream=emit_bitstream,
+        )
+
+        if list_runs:
+            if self.machine:
+                self._emit_machine_result(
+                    "fpga --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        results = self._do_fpga_suite(
+            suite_cfg,
+            fpga_name=fpga_name,
+            reg_level=reg_level,
+            emit_bitstream=emit_bitstream,
+        )
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "fpga",
+                exit_code,
+                results=[self._fpga_result_row(r) for r in results],
+            )
+        else:
+            self._render_fpga_summary("FPGA Results Summary", results)
+        raise typer.Exit(exit_code)
+
+    def _do_fpga_suite(
+        self,
+        suite_cfg,
+        *,
+        fpga_name=None,
+        reg_level=0,
+        emit_bitstream: bool = False,
+    ):
+        root_cfg = self.root_cfg
+        runs = suite_cfg.get_runs(fpga_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for run in runs:
+            fpga_level = run.get_reglvl(run.get_tool_name())
+            if reg_level is not None and fpga_level > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpga_suite.skip",
+                    fpga=run.get_name(),
+                    reason="above_regression_level",
+                    fpga_level=fpga_level,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "fpga_name": run.get_name(),
+                        "results": FpgaSkipResults(
+                            name=f"{run.get_name()}/results",
+                            desc=f"reglvl {fpga_level} above {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = FpgaRunner(
+                name=run.get_name(),
+                root_cfg=root_cfg,
+                fpga_cfg=run,
+                suite_dir=suite_dir,
+                reglvl_filter=reg_level if reg_level else None,
+                emit_bitstream=emit_bitstream,
+            )
+            res = runner.run()
+            if run.is_xfail():
+                self._apply_xfail_logged(res, run, "fpga_suite.xfail")
+            results.append({"fpga_name": run.get_name(), "results": res})
+        return results
+
+    def _render_fpga_summary(self, title, fpga_results, *, metadata=None):
+        def _fmt_util(entry):
+            if not entry or entry.get("used") is None:
+                return "-"
+            used = entry["used"]
+            pct = entry.get("util_pct")
+            return f"{used} ({pct}%)" if pct is not None else str(used)
+
+        def _fmt_ns(v):
+            return f"{'+' if v >= 0 else ''}{v:.3f} ns" if v is not None else "-"
+
+        has_util = any(
+            any(k in r["results"].results for k in ("lut", "ff", "bram", "dsp"))
+            for r in fpga_results
+        )
+        has_wns = any("wns_ns" in r["results"].results for r in fpga_results)
+        has_whs = any("whs_ns" in r["results"].results for r in fpga_results)
+        has_power = any("total_power_w" in r["results"].results for r in fpga_results)
+        has_drcs = any("drc_violations" in r["results"].results for r in fpga_results)
+        has_bit = any(r["results"].results.get("bitstream") for r in fpga_results)
+        rows = []
+        for r in fpga_results:
+            res = r["results"].results
+            row = {
+                "fpga_name": r["fpga_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+            }
+            if has_util:
+                row["luts"] = _fmt_util(res.get("lut"))
+                row["ffs"] = _fmt_util(res.get("ff"))
+                row["brams"] = _fmt_util(res.get("bram"))
+                row["dsps"] = _fmt_util(res.get("dsp"))
+            if has_wns:
+                row["wns"] = _fmt_ns(res.get("wns_ns"))
+            if has_whs:
+                row["whs"] = _fmt_ns(res.get("whs_ns"))
+            if has_power:
+                power = res.get("total_power_w")
+                row["power"] = f"{power:.3f} W" if power is not None else "-"
+            if has_drcs:
+                drcs = res.get("drc_violations")
+                row["drcs"] = str(drcs) if drcs is not None else "-"
+            if has_bit:
+                row["bit"] = "bit" if res.get("bitstream") else "-"
+            rows.append(row)
+
+        columns = [
+            ("fpga_name", "FPGA Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+        ]
+        if has_util:
+            columns.append(("luts", "LUTs"))
+            columns.append(("ffs", "FFs"))
+            columns.append(("brams", "BRAMs"))
+            columns.append(("dsps", "DSPs"))
+        if has_wns:
+            columns.append(("wns", "WNS"))
+        if has_whs:
+            columns.append(("whs", "WHS"))
+        if has_power:
+            columns.append(("power", "Power"))
+        if has_drcs:
+            columns.append(("drcs", "DRCs"))
+        if has_bit:
+            columns.append(("bit", "Outputs"))
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
 
     def do_power_regression(
         self,

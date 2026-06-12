@@ -31,6 +31,7 @@ from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
+from .fpga import FpgaToolConfig, FpgaToolConfigFile
 from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
@@ -134,6 +135,9 @@ class RootConfigFile:
     power_tools: list[PowerToolConfigFile] = field(
         rename="cfg-power-tools", default_factory=list
     )
+    fpga_tools: list[FpgaToolConfigFile] = field(
+        rename="cfg-fpga-tools", default_factory=list
+    )
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
     )
@@ -198,6 +202,7 @@ class RootConfig:
         self.pnr_platform_cfgs: dict = {}
         self.pnr_tool_cfgs: dict = {}
         self.power_tool_cfgs: dict = {}
+        self.fpga_tool_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
         self.fpv_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
@@ -282,6 +287,11 @@ class RootConfig:
             # Populate power tool configs
             self.power_tool_cfgs = {
                 cfg.name: PowerToolConfig(cfg) for cfg in data.power_tools
+            }
+
+            # Populate FPGA tool configs
+            self.fpga_tool_cfgs = {
+                cfg.name: FpgaToolConfig(cfg) for cfg in data.fpga_tools
             }
 
             # Populate CDC tool configs
@@ -552,6 +562,19 @@ class RootConfig:
                 f"power tool '{name}' not found in cfg-power-tools"
             )
         return cfg
+
+    def get_fpga_tool_cfg(self, name: str):
+        """
+        Get FPGA tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-fpga-tools.
+        Returns:
+          cfg (FpgaToolConfig|None): Matching FPGA tool configuration, or
+            None if no entry with that name is configured. Callers fall
+            back to the bare tool name on PATH when None is returned.
+        """
+        return self.fpga_tool_cfgs.get(name)
 
     def get_cdc_tool_cfg(self, name: str):
         """

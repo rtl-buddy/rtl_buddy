@@ -93,7 +93,7 @@ def _build_template() -> str:
     lines.append("{{ reports }}")
     lines.append("")
     lines.append('puts ">>> Bitstream"')
-    lines.append("write_bitstream -force {{ bitstream }}")
+    lines.append("{{ bitstream_cmd }}")
     lines.append("")
     lines.append('puts ">>> DONE"')
     lines.append("")
@@ -128,6 +128,7 @@ def render_flow_tcl(
     verilog_sources: list[str],
     xdc_files: list[str],
     bitstream: str | None = None,
+    emit_bitstream: bool = True,
     report_files: dict[str, str] | None = None,
 ) -> str:
     """Render the batch-Tcl flow script for one ``rb fpga`` run.
@@ -138,6 +139,8 @@ def render_flow_tcl(
       verilog_sources: HDL sources, read in order.
       xdc_files: Constraint files, read in order.
       bitstream: Output bitstream filename. Defaults to ``<top>.bit``.
+      emit_bitstream: When False, the ``write_bitstream`` stage is
+        replaced with a comment (smoke/timing runs don't need bitgen).
       report_files: Override the default report-file mapping
         (:data:`REPORT_FILES`); keys must be known report names.
 
@@ -155,13 +158,31 @@ def render_flow_tcl(
     if not xdc_files:
         read_constraints = "# (no XDC constraints provided)"
 
+    if emit_bitstream:
+        bitstream_cmd = "\n".join(
+            [
+                # write_bitstream's precondition DRC escalates NSTD-1 /
+                # UCIO-1 (no IOSTANDARD / no pin LOC) to errors. rb fpga
+                # targets IP-level models that usually have no board
+                # pinout, so downgrade the two checks to warnings just
+                # for bitgen — report_drc above already ran and records
+                # them at their original severity. Board projects that
+                # constrain every pin are unaffected.
+                "set_property SEVERITY {Warning} [get_drc_checks NSTD-1]",
+                "set_property SEVERITY {Warning} [get_drc_checks UCIO-1]",
+                f"write_bitstream -force {bitstream or f'{top}.bit'}",
+            ]
+        )
+    else:
+        bitstream_cmd = "# (bitstream generation not requested)"
+
     substitutions = {
         "top": top,
         "part": part,
         "read_sources": "\n".join(_read_source_commands(verilog_sources)),
         "read_constraints": read_constraints,
         "reports": "\n".join(report_tcl_commands(report_files)),
-        "bitstream": bitstream or f"{top}.bit",
+        "bitstream_cmd": bitstream_cmd,
     }
 
     script = FLOW_TCL_TEMPLATE
