@@ -1467,6 +1467,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#a-wrong-fpv-plugin-path-degrades-coi-coverage-silently" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A wrong FPV plugin path degrades COI coverage silently
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1638,6 +1649,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#a-wrong-fpv-plugin-path-degrades-coi-coverage-silently" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A wrong FPV plugin path degrades COI coverage silently
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1800,6 +1822,9 @@ safety are separate concerns and <em>are</em> handled — same-key tests share b
 construction, and cross-process races are excluded by the
 <a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">per-tree artefact lock</a>
 (with that quirk's NFS caveat applying here too).</p>
+<h2 id="a-wrong-fpv-plugin-path-degrades-coi-coverage-silently">A wrong FPV plugin path degrades COI coverage silently</h2>
+<p><code>rb fpv</code> / <code>rb fpv-regression</code> treat the cone-of-influence pass as best-effort: when the yosys COI script fails — most commonly because the yosys-slang plugin path is wrong (stale <code>plugin-path</code>, an unbuilt <code>slang.so</code>, or a sibling-checkout convention that doesn't hold on this machine) — the run only emits <code>fpv coi_yosys_failed</code> WARNINGs and drops the COI column. The verification verdict itself still PASSes, because the proof pipeline loads the plugin separately, so a broken plugin location can sit unnoticed while COI coverage quietly reports nothing.</p>
+<p>If COI numbers disappear or <code>coi_yosys_failed</code> shows up in the log, check the resolved plugin location first: <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>, or — when that is unset — the <code>RTL_BUDDY_SLANG_PLUGIN</code> environment variable. The per-verification <code>coi.log</code> under <code>artefacts/&lt;name&gt;/</code> records the exact yosys error (e.g. <code>Can't load module ...slang.so</code>).</p>
 
 
 
