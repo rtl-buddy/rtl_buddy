@@ -404,6 +404,28 @@ def _builtin_manifest() -> list[ToolSpec]:
             description="GDS viewer (optional, used by rb pnr to render layout)",
         ),
         ToolSpec(
+            name="vivado",
+            binaries=("vivado",),
+            version_cmd=("vivado", "-version"),
+            # First line of `vivado -version`: "Vivado v2022.1.2 (64-bit)".
+            # Reports stylize it as "Vivado v.2022.1.2" — accept both.
+            version_regex=r"Vivado\s+v\.?(\d{4}\.\d+(?:\.\d+)?)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "any": "download the installer from "
+                "https://www.xilinx.com/support/download.html and source "
+                "<install>/Vivado/<ver>/settings64.sh; larger parts may "
+                "need a purchased license",
+            },
+            used_by=("fpga",),
+            optional=True,
+            description="AMD/Xilinx Vivado FPGA synthesis + implementation suite",
+            notes="Driven in non-project batch mode by rb fpga. The free "
+            "ML/WebPACK device set covers smaller parts; others require "
+            "a license served at runtime.",
+        ),
+        ToolSpec(
             name="sby",
             binaries=("sby",),
             version_cmd=("sby", "--version"),
