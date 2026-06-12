@@ -2267,7 +2267,7 @@
 </tr>
 <tr>
 <td><code>frontend</code></td>
-<td>SystemVerilog frontend: <code>"verilog"</code> (default — fast, no plugin, immediate-assert + simple-concurrent SVA only) or <code>"slang"</code> (yosys-slang plugin — required for concurrent SVA <code>\|-&gt;</code> / <code>\|=&gt;</code> / sequence operators and for <code>bind</code> to elaborate). <code>slang</code> requires <code>cfg-fpv-tools[].opts.plugin-path</code> in root_config.yaml. See <a href="#choosing-a-frontend">Choosing a frontend</a>.</td>
+<td>SystemVerilog frontend: <code>"verilog"</code> (default — fast, no plugin, immediate-assert + simple-concurrent SVA only) or <code>"slang"</code> (yosys-slang plugin — required for concurrent SVA <code>\|-&gt;</code> / <code>\|=&gt;</code> / sequence operators and for <code>bind</code> to elaborate). <code>slang</code> requires <code>cfg-fpv-tools[].opts.plugin-path</code> in root_config.yaml (or the <code>RTL_BUDDY_SLANG_PLUGIN</code> env var). See <a href="#choosing-a-frontend">Choosing a frontend</a>.</td>
 </tr>
 <tr>
 <td><code>xfail</code></td>
@@ -2335,7 +2335,7 @@ property that is true but not inductive under <code>mode: prove</code>.</p>
 <p>Two SystemVerilog frontends are supported under <code>rb fpv</code>:</p>
 <ul>
 <li><strong><code>frontend: verilog</code></strong> (default) — yosys's native verilog reader. No plugin needed. Handles immediate <code>assert (expr);</code> inside <code>always</code> blocks plus simple concurrent assertions (<code>assert property (@clk expr);</code>). Rejects <code>|-&gt;</code> / <code>|=&gt;</code>, <code>##N</code>, and sequence operators outright. A compilation-unit-scope SV <code>bind</code> is <strong>not</strong> rejected — it parses, but the bound checker module is silently dropped (stored as <code>$abstract</code>, then removed as unused), so the proof elaborates <strong>zero</strong> formal cells. <code>rb fpv</code> guards against this: a <code>properties:</code>-listed suite that produces no assert/assume/cover cells fails loud with an error pointing you at <code>frontend: slang</code>, rather than reporting a vacuous PASS — see <a href="../../known-issues/#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells">Quirks &amp; Known Issues</a>.</li>
-<li><strong><code>frontend: slang</code></strong> — yosys-slang plugin. Required for concurrent SVA implications (<code>a |-&gt; b</code>, <code>a |=&gt; b</code>), sequence operators, and SV <code>bind</code> directives to elaborate. Requires <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>.</li>
+<li><strong><code>frontend: slang</code></strong> — yosys-slang plugin. Required for concurrent SVA implications (<code>a |-&gt; b</code>, <code>a |=&gt; b</code>), sequence operators, and SV <code>bind</code> directives to elaborate. Requires <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>, or — when that is unset — the <code>RTL_BUDDY_SLANG_PLUGIN</code> environment variable (set once per machine, e.g. from a toolchain env script; explicit <code>plugin-path</code> wins).</li>
 </ul>
 <p>When in doubt, <strong>start with <code>verilog</code></strong> — it's the path most rtl_buddy demos use. Move to <code>slang</code> only when you need <code>|-&gt;</code> / <code>|=&gt;</code> for vacuity covers or a richer SVA dialect.</p>
 <h4 id="which-yosys-slang-build-to-use">Which yosys-slang build to use</h4>

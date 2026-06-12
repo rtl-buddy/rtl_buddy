@@ -2243,7 +2243,7 @@
 </tr>
 </tbody>
 </table>
-<p>When <code>frontend: slang</code>, <code>opts.plugin-path</code> must be set to the location of yosys-slang's <code>slang.so</code>. Absolute paths pass through unchanged; relative paths resolve against the project root (the directory containing <code>root_config.yaml</code>). Build instructions for the plugin are in <a href="https://github.com/povik/yosys-slang#building"><code>yosys-slang's README</code></a>.</p>
+<p>When <code>frontend: slang</code>, <code>opts.plugin-path</code> must point at yosys-slang's <code>slang.so</code>. Absolute paths pass through unchanged; relative paths resolve against the project root (the directory containing <code>root_config.yaml</code>). When <code>plugin-path</code> is unset, the <code>RTL_BUDDY_SLANG_PLUGIN</code> environment variable is consulted instead — set it once per machine (e.g. from a toolchain env script) to keep project configs free of machine-specific paths; an explicitly configured <code>plugin-path</code> always wins over the environment. Build instructions for the plugin are in <a href="https://github.com/povik/yosys-slang#building"><code>yosys-slang's README</code></a>.</p>
 <p>Per-block opt-in (leaves other blocks on the legacy frontend):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># synth.yaml</span>
 <a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&lt;block&gt;_synth&quot;</span>
