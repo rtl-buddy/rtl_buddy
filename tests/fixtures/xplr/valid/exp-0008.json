@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "id": "exp-0008",
+  "parent": "exp-0007",
+  "hypothesis": "Drop write_bitstream and reuse sg0 to get a faster turn on the directive sweep; QoR metrics should match exp-0007 within noise.",
+  "source": {
+    "git_sha": "9f3a1c4",
+    "branch": "exp/blk-c-to-fb2",
+    "dirty": false
+  },
+  "knobs": [
+    {
+      "name": "vivado.write_bitstream",
+      "from": true,
+      "to": false,
+      "rationale": "smoke turn only needs post_route.dcp",
+      "layer": "impl"
+    },
+    {
+      "name": "vivado.place.seed",
+      "from": 3,
+      "to": 7,
+      "rationale": "seed sweep to gauge placement variance",
+      "layer": "impl"
+    }
+  ],
+  "outcome": {
+    "status": "pending"
+  },
+  "provenance": {
+    "created": "2026-06-11T15:20:41+08:00",
+    "tools": [
+      {
+        "name": "vivado",
+        "version": "2022.1"
+      }
+    ],
+    "agent": "claude-opus-4-8"
+  }
+}

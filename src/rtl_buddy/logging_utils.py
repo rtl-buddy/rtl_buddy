@@ -532,6 +532,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"'{fields.get('model')}' needs rtl-buddy-view on PATH "
                 f"(rtl-buddy-view exited rc={fields.get('rc')})"
             )
+        case "xplr.record_missing":
+            return (
+                f"xplr: experiment dir '{fields.get('id')}' has no record.json "
+                f"({fields.get('path')}); skipped in listing"
+            )
         case "summary":
             return fields.get("title", "Summary")
         case _:
