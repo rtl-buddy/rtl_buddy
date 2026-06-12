@@ -1,3 +1,6 @@
 # rtl_buddy skill (materialized by `rtl-buddy skill install --project`)
 .claude/skills/rtl_buddy/
 .agents/skills/rtl_buddy/
+
+# rtl_buddy project-local env defaults (machine-specific; never commit)
+.rtl-buddy/.env

@@ -109,6 +109,26 @@ Use command-line flags to override the platform defaults for a run:
 
 See the [CLI reference](../reference/cli.md) for the full option list.
 
+## Project-local env defaults: `.rtl-buddy/.env`
+
+Some values are project-scoped but machine-local — they belong with the project, yet committing them would break every other checkout (an absolute `RTL_BUDDY_SLANG_PLUGIN`, a `SYSTEMC_HOME`). Put them in `.rtl-buddy/.env` next to `root_config.yaml`:
+
+```sh
+# .rtl-buddy/.env — KEY=VALUE per line; # comments; `export ` prefix tolerated
+RTL_BUDDY_SLANG_PLUGIN=/opt/rtl-buddy-tools/yosys-slang/build/slang.so
+SYSTEMC_HOME=/opt/homebrew/opt/systemc
+```
+
+Every `rb` command loads the file as soon as the project root is discovered and injects the variables into its environment, so both rtl_buddy itself and every tool subprocess (yosys, sby, verilator, the compiled simv) see them.
+
+Semantics:
+
+- **Fallback only.** A variable already present in the process environment is never overridden — the shell, CI, and sourced toolchain env scripts always win, and explicit YAML config (e.g. `plugin-path`) beats any environment source.
+- **Literal values.** No `$VAR` interpolation, no escapes; surrounding matching quotes are stripped. A line that is not `KEY=VALUE` fails loud with the file and line number.
+- **Untracked by design.** Add `.rtl-buddy/.env` to `.gitignore` (`rtl-buddy skill print-gitignore` includes it). A committed env file would inject machine paths — or worse, loader variables — into every clone's runs.
+
+This completes the lookup chain that [`plugin-path`](../reference/yaml.md#root_configyaml) uses: per-project YAML config, then the process environment (set machine-wide by a toolchain env script), then `.rtl-buddy/.env` for project-scoped machine-local values.
+
 ## Full schema
 
 See [YAML Formats: root_config.yaml](../reference/yaml.md#root_configyaml) for the complete field reference.

@@ -15,6 +15,7 @@ from typing_extensions import Annotated
 import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
+from .config.env_file import apply_env_file
 from .config.root import _discover_root_cfg, discover_project_root
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
@@ -626,6 +627,12 @@ class RtlBuddy:
                 builder_override=self._builder_override,
                 start_dir=ctx.command_root,
             )
+            # Project-local env defaults (.rtl-buddy/.env): applied as
+            # soon as the project root is known, before any tool config
+            # or subprocess reads the environment. Never overrides vars
+            # already set, so within one process the first project's
+            # values win for cross-root regressions.
+            apply_env_file(self.root_cfg.get_project_rootdir())
             self.builder = self.root_cfg.get_builder_name()
             self.coverage = CoverageReporter(self.root_cfg)
             log_event(
