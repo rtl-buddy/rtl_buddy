@@ -738,6 +738,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#querying-with-rb-hier-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Querying with rb hier-query
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#parser-frontend" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1553,6 +1564,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#querying-with-rb-hier-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Querying with rb hier-query
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#parser-frontend" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1706,20 +1728,39 @@
 <a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>rb<span class="w"> </span>hier<span class="w"> </span>basic_traffic<span class="w"> </span>--view<span class="w"> </span>tb
 </code></pre></div>
 <p>The model argument matches the <code>name:</code> of an entry in <code>models.yaml</code>. The runner uses that entry's filelist verbatim — same source of truth that <code>rb test</code>, <code>rb synth</code>, and <code>rb cdc</code> consume. In <code>--view tb</code> mode the positional argument is a test name from <code>tests.yaml</code> instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from <code>--tb-top</code>.</p>
+<h2 id="querying-with-rb-hier-query">Querying with <code>rb hier-query</code></h2>
+<p><code>rb hier-query &lt;model&gt; &lt;verb&gt; &lt;arg&gt;</code> is <code>rb hier</code>'s machine-readable sibling: instead of rendering a diagram, it answers a structural question about the model's hierarchy with JSON on stdout, ready for <code>jq</code>, shell pipelines, and agent tool use. It shells out to <code>rtl-buddy-view query</code> (requires rtl-buddy-view ≥ 0.3.0) and shares <code>rb hier</code>'s generated filelist artefact.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># the full definition of a module: ports, parameters, instances</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>find-module<span class="w"> </span>axi_arbiter
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># the hierarchy subtree below an instance path (add --format tree for ASCII)</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>subtree<span class="w"> </span>demo_top.u_fabric
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># every instance of a module, as instance paths</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>instances-of<span class="w"> </span>axi_arbiter<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.[].instance_path&#39;</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># the .port(net) connection list of one instance</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>port-connections<span class="w"> </span>demo_top.u_fabric.u_arb0
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="c1"># the module-definition source of an instance, line-number-prefixed for citation</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>source-snippet<span class="w"> </span>demo_top.u_fabric.u_arb0<span class="w"> </span>--context<span class="w"> </span><span class="m">4</span>
+</code></pre></div>
+<p>Verb arguments are a module name (<code>find-module</code>, <code>instances-of</code>) or a dot-separated instance path rooted at the model name (<code>subtree</code>, <code>port-connections</code>, <code>source-snippet</code>). <code>source-snippet</code> prints plain text rather than JSON — its output is the line-number-prefixed citation block itself (<code>--no-line-numbers</code> disables the prefixes, <code>--context N</code> widens the window).</p>
+<p>Exit codes follow the query semantics: <code>0</code> for an answer (an empty <code>instances-of</code> list is a valid answer), <code>1</code> for a lookup miss or parse failure — the viewer's diagnostic (e.g. <code>query: instance path '…' not found</code>) streams to stderr rather than being captured into a log. <code>artefacts/hier/&lt;model&gt;/query.log</code> records the underlying invocation.</p>
 <h2 id="parser-frontend">Parser frontend</h2>
 <p><code>--frontend</code> is forwarded as-is to <code>rtl-buddy-view</code>. The default frontend ships with the renderer; <code>--frontend slang</code> uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.</p>
 <h2 id="cdc-and-rdc-annotations">CDC and RDC annotations</h2>
 <p><code>rb hier</code> can overlay clock-domain and reset-domain information when the corresponding analyzer pass has emitted a JSON map:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Clock-domain overlay — colors each module by its primary clock</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rtl-buddy-cdc<span class="w"> </span>--emit-domain-map<span class="w"> </span>-o<span class="w"> </span>clocks.json<span class="w"> </span>...
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="c1"># With a side legend mapping color → clock name (dot format only)</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span>--clock-legend<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="c1"># Reset-domain overlay — colors each module by its primary reset</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>rtl-buddy-cdc<span class="w"> </span>--emit-reset-domain-map<span class="w"> </span>-o<span class="w"> </span>resets.json<span class="w"> </span>...
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--rdc-annotations<span class="w"> </span>resets.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Clock-domain overlay — colors each module by its primary clock</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rtl-buddy-cdc<span class="w"> </span>--emit-domain-map<span class="w"> </span>-o<span class="w"> </span>clocks.json<span class="w"> </span>...
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># With a side legend mapping color → clock name (dot format only)</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span>--clock-legend<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># Reset-domain overlay — colors each module by its primary reset</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>rtl-buddy-cdc<span class="w"> </span>--emit-reset-domain-map<span class="w"> </span>-o<span class="w"> </span>resets.json<span class="w"> </span>...
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--rdc-annotations<span class="w"> </span>resets.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
 </code></pre></div>
 <p>Both annotation files are JSON keyed by hierarchical instance path. <code>rb hier</code> validates that the files exist before invoking the renderer; the renderer's JSON contract (<code>schema_version</code>, <code>tool.*</code>, <code>design.top</code>, <code>nodes</code>, <code>edges</code>) is the integration boundary.</p>
 <p><code>--clock-legend</code> is honored only for <code>--format dot</code>; the tree and Mermaid renderers ignore it.</p>
