@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, CDC lint, formal property verification, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, cdc.yaml, fpv.yaml, or mut.yaml.
+description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, CDC lint, formal property verification, design-space exploration experiments, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, cdc.yaml, fpv.yaml, or mut.yaml.
 ---
 
 # rtl_buddy
@@ -42,6 +42,14 @@ Use `rtl-buddy --machine docs show reference/yaml` for exact fields.
 
 - `rb mut list|run|score` drive a campaign from `mut.yaml`. Needs `rtl-buddy-xeno`; a non-empty `scope` also needs `rtl-buddy-view` on `PATH`.
 - Score is `killed / (killed + survived)`; errored mutants are dropped. Survivors are verification holes. Details: `rtl-buddy docs show concepts/mut`.
+
+## rb xplr (design-space exploration)
+
+- `rb xplr` is the experiment ledger for DSE loops: it records what YOU changed, pins the source sha, and curates the Pareto frontier. It never proposes the next experiment — you do.
+- The loop: `rb --machine xplr frontier` (+ `xplr show <id>` for a member's `config_snapshot`) -> reason -> apply the change (RTL/tool knob, outside rb) -> `rb --machine xplr register --json manifest.json` -> run the flow -> `rb --machine xplr attach-outcome <id> --json outcome.json` -> repeat.
+- Always declare an experiment `hypothesis` and a per-knob `rationale`, plus `parent` — the ledger is a reasoning trail. Run `rb --machine xplr knob-effect <knob>` before re-trying a knob and `rb --machine xplr diff <a> <b>` to compare candidates.
+- Declare `direction` in `metric_meta` for every metric that should join dominance; report a completed-but-unroutable point as `status=success` with `routed: false` (`failed` means the flow crashed).
+- Dry-run the whole loop with `rb xplr mock run --scenario rastrigin|zdt1` and grade yourself with `rb xplr mock score`. Contract + worked example: `rtl-buddy docs show concepts/xplr`.
 
 ## Execution context
 

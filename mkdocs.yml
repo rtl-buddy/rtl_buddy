@@ -55,6 +55,7 @@ nav:
       - Formal Property Verification: concepts/fpv.md
       - Assertion-Based Verification (sim): concepts/abv-simulation.md
       - Mutation Testing: concepts/mut.md
+      - Design-Space Exploration: concepts/xplr.md
       - AXI Profiling: concepts/axi-profile.md
       - Tool Check: concepts/tool-check.md
   - Reference:

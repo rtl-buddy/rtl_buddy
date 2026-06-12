@@ -70,6 +70,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
 │ spec               spec traceability commands                                        │
+│ xplr               design-space exploration experiment ledger (agent-facing)         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
