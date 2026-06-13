@@ -46,7 +46,7 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 
 ## rb fpga timing closure
 
-- `rb --machine fpga <run>` runs synth→place→route per `fpga.yaml` (Vivado default; `tool: openxc7` for 7-series parts). Missed timing is NOT a FAIL: the run passes and the JSON carries `timing_met`, `wns_ns`, `failing_endpoints`, `failing_paths`.
+- Gate first with `rb --machine tool-check --required-for fpga` (global `--machine` gives the JSON envelope; `payload.subcommands.fpga.status == "ok"` means ready, else `rb tool-check --explain vivado`). Then `rb --machine fpga <run>` runs synth→place→route per `fpga.yaml` (Vivado default; `tool: openxc7` for 7-series). Missed timing is NOT a FAIL: the run passes and the JSON carries `timing_met`, `wns_ns`, `failing_endpoints`, `failing_paths`.
 - Closure loop: run → if `timing_met` is false, read `failing_paths[0]` (`source`/`destination`/`requirement_ns`/`logic_levels`) → hypothesize (clock too fast → relax `create_clock` toward `requirement_ns - wns_ns`; cross-domain or quasi-static path → missing false-path/multicycle exception; many logic levels → pipeline source→destination in RTL) → edit XDC/RTL → rerun → compare `wns_ns`. Worked example: `rtl-buddy docs show concepts/fpga`.
 
 ## Execution context

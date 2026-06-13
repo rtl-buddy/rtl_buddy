@@ -625,6 +625,59 @@ def test_cli_tool_check_json(tmp_path: Path):
     assert len(payload["tools"]) > 0
 
 
+def test_cli_tool_check_machine_emits_envelope(tmp_path: Path):
+    """The global --machine flag yields a single JSON envelope on stdout.
+
+    Regression for the cross-phase finding: an agent driving the SKILL.md
+    loop calls `rb --machine tool-check`; the first stdout byte must be `{`
+    (a parseable envelope), not the human text table.
+    """
+    result = _run_rb("--machine", "tool-check", "--no-probe-versions", cwd=tmp_path)
+    assert result.returncode == 0
+    assert result.stdout.lstrip().startswith("{")
+    env = json.loads(result.stdout)
+    assert env["command"] == "tool-check"
+    assert env["exit_code"] == 0
+    payload = env["payload"]
+    assert "tools" in payload and "subcommands" in payload
+    # Bare tool-check is informational: process exits 0 regardless of the
+    # manifest readiness verdict, which rides separately in the payload.
+    assert "readiness_exit_code" in payload
+    assert len(payload["tools"]) > 0
+
+
+def test_cli_tool_check_machine_required_for_missing_exits_2(tmp_path: Path):
+    """--machine + --required-for surfaces the gate verdict in the envelope."""
+    if shutil.which("axi-profiler") is not None:
+        pytest.skip("axi-profiler is installed; cannot exercise miss path")
+    try:
+        from importlib import metadata as md
+
+        md.version("rtl-buddy-axi-profiler")
+        pytest.skip("rtl-buddy-axi-profiler is installed; cannot exercise miss path")
+    except md.PackageNotFoundError:
+        pass
+
+    result = _run_rb(
+        "--machine", "tool-check", "--required-for", "axi-profile", cwd=tmp_path
+    )
+    assert result.returncode == 2
+    env = json.loads(result.stdout)
+    assert env["command"] == "tool-check"
+    assert env["exit_code"] == 2
+    assert env["payload"]["subcommands"]["axi-profile"]["status"] != "ok"
+
+
+def test_cli_tool_check_machine_explain(tmp_path: Path):
+    """--machine --explain wraps the per-tool view + install text in an envelope."""
+    result = _run_rb("--machine", "tool-check", "--explain", "vivado", cwd=tmp_path)
+    assert result.returncode == 0
+    env = json.loads(result.stdout)
+    assert env["command"] == "tool-check"
+    assert "vivado" in env["payload"]["tools"]
+    assert "rb fpga" in env["payload"]["instructions"]
+
+
 def test_cli_tool_check_explain(tmp_path: Path):
     result = _run_rb("tool-check", "--explain", "verible", cwd=tmp_path)
     assert result.returncode == 0

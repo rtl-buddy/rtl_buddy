@@ -1201,12 +1201,19 @@ def render_text(
     return "\n".join([header, *rows, *sub_lines, hint])
 
 
-def render_json(
+def build_json_payload(
     statuses: list[ToolStatus],
     subcommands: dict[str, dict],
-    *,
-    exit_code: int,
-) -> str:
+) -> dict:
+    """Build the ``tools`` / ``subcommands`` view as native dicts.
+
+    Shared by ``render_json`` (which serializes it for ``--format json`` and
+    appends the top-level ``exit_code``) and by the global ``--machine``
+    envelope (whose envelope already carries ``exit_code``), so both surface
+    identical tool/subcommand structure. ``exit_code`` is intentionally NOT
+    included here so the result spreads cleanly into ``_emit_machine_result``
+    without colliding with its own ``exit_code`` argument.
+    """
     tools_out: dict[str, dict] = {}
     for st in statuses:
         entry: dict = {
@@ -1230,11 +1237,18 @@ def render_json(
             entry["optional_feature"] = True
         subs_out[sub] = entry
 
-    return json.dumps(
-        {"tools": tools_out, "subcommands": subs_out, "exit_code": exit_code},
-        indent=2,
-        sort_keys=False,
-    )
+    return {"tools": tools_out, "subcommands": subs_out}
+
+
+def render_json(
+    statuses: list[ToolStatus],
+    subcommands: dict[str, dict],
+    *,
+    exit_code: int,
+) -> str:
+    payload = build_json_payload(statuses, subcommands)
+    payload["exit_code"] = exit_code
+    return json.dumps(payload, indent=2, sort_keys=False)
 
 
 def compute_exit_code(

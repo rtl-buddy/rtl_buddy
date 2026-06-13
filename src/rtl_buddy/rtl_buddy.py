@@ -5568,6 +5568,14 @@ class RtlBuddy:
         if explain_tool is not None:
             spec = next((s for s in specs if s.name == explain_tool), None)
             if spec is None:
+                if self.machine:
+                    self._emit_machine_result(
+                        "tool-check",
+                        1,
+                        error=f"unknown tool '{explain_tool}'",
+                        known=[s.name for s in specs],
+                    )
+                    raise typer.Exit(1)
                 emit_console_text(
                     f"tool-check: unknown tool '{explain_tool}'. "
                     f"Known: {', '.join(s.name for s in specs)}",
@@ -5578,6 +5586,17 @@ class RtlBuddy:
             status = tm.check_tool(
                 spec, project_root=project_root, probe_versions=probe_versions
             )
+            if self.machine:
+                self._emit_machine_result(
+                    "tool-check",
+                    0,
+                    **tm.build_json_payload(
+                        [status],
+                        tm.subcommand_readiness([status], [spec]),
+                    ),
+                    instructions=tm.explain(spec, status),
+                )
+                raise typer.Exit(0)
             # Plain stdout — Rich's word-wrap would mangle paths.
             print(tm.explain(spec, status))
             raise typer.Exit(0)
@@ -5592,6 +5611,17 @@ class RtlBuddy:
 
         if required_for is not None:
             if required_for not in subcommands:
+                if self.machine:
+                    self._emit_machine_result(
+                        "tool-check",
+                        0,
+                        **tm.build_json_payload([], {}),
+                        note=(
+                            f"subcommand '{required_for}' has no declared "
+                            f"tool dependencies"
+                        ),
+                    )
+                    raise typer.Exit(0)
                 emit_console_text(
                     f"tool-check: subcommand '{required_for}' has no "
                     f"declared tool dependencies",
@@ -5608,6 +5638,26 @@ class RtlBuddy:
             subcommands=tm.subcommand_readiness(statuses, specs),
         )
 
+        # --required-for always enforces (exit 2 on miss); --strict enforces
+        # the global "any required tool missing" check (exit 1). Without
+        # either flag the command is purely informational.
+        envelope_exit = (
+            reported_exit_code if (required_for is not None or strict) else 0
+        )
+
+        # The global --machine flag wins: emit a single JSON envelope on
+        # stdout like every other command (SKILL.md's top rule). The
+        # command-specific --format json is kept for back-compat / non-machine
+        # callers who want the bare manifest dict.
+        if self.machine:
+            self._emit_machine_result(
+                "tool-check",
+                envelope_exit,
+                **tm.build_json_payload(statuses, subcommands),
+                readiness_exit_code=reported_exit_code,
+            )
+            raise typer.Exit(envelope_exit)
+
         # Use raw stdout — Rich's word-wrap would mangle JSON and break the
         # alignment of the tool table.
         if fmt.lower() == "json":
@@ -5617,9 +5667,6 @@ class RtlBuddy:
                 tm.render_text(statuses, subcommands, include_optional=include_optional)
             )
 
-        # --required-for always enforces (exit 2 on miss); --strict enforces
-        # the global "any required tool missing" check (exit 1). Without
-        # either flag the command is purely informational.
         if required_for is not None or strict:
             raise typer.Exit(reported_exit_code)
         raise typer.Exit(0)
