@@ -4,9 +4,9 @@ description: How to run CDC lint with rtl_buddy via the rb cdc command, cdc.yaml
 
 # CDC Lint
 
-> **Integration type:** Pluggable — curated. `rb cdc` is built around [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) today; a SpyGlass-style commercial backend would plug in as a sibling driver (see [issue #85](https://github.com/rtl-buddy/rtl_buddy/issues/85)).
+> **Integration type:** Pluggable — curated. `rb cdc` is built around [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc), with Vivado's `report_cdc` available as a second-opinion backend; a SpyGlass-style commercial backend would plug in as a sibling driver (see [issue #85](https://github.com/rtl-buddy/rtl_buddy/issues/85)).
 >
-> **External binary required:** `rtl-buddy-cdc` — install with `uv tool install rtl-buddy-cdc` (or `pip install rtl-buddy-cdc`).
+> **External binary required:** `rtl-buddy-cdc` — install with `uv tool install rtl-buddy-cdc` (or `pip install rtl-buddy-cdc`). The optional `vivado` backend needs a Vivado install (see [FPGA Implementation](fpga.md#installing-vivado)).
 >
 > See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
 
@@ -14,9 +14,51 @@ description: How to run CDC lint with rtl_buddy via the rb cdc command, cdc.yaml
 
 The flow is intentionally compact and config-driven — per-analysis knobs (model, SDC, waivers, frontend) live in `cdc.yaml`, tool-wide defaults live in `cfg-cdc-tools` in `root_config.yaml`.
 
-## Supported backend
+## Supported backends
 
-Today only `rtl-buddy-cdc` is wired up. The `tool:` field in `cdc.yaml` selects it; the runner raises a clear error if no matching `cfg-cdc-tools` entry exists. Adding a commercial backend parallels how `rb fpv` is structured — implement a sibling driver under `src/rtl_buddy/tools/`, then dispatch from `CdcRunner`.
+Two backends are registered today; the `tool:` field in `cdc.yaml` selects one, and the runner errors cleanly on an unknown name or a missing `cfg-cdc-tools` entry:
+
+- **`rtl-buddy-cdc`** — the primary analyzer, documented through the rest of this page.
+- **`vivado`** — AMD/Xilinx Vivado's `report_cdc`, a [second-opinion backend](#vivado-backend-second-opinion-not-authority).
+
+Adding another backend (SpyGlass, Questa CDC, ...) is a wrapper class under `src/rtl_buddy/tools/` plus a one-line entry in `CdcRunner`'s backend registry.
+
+## Vivado backend (second opinion, not authority)
+
+With `tool: "vivado"` an analysis elaborates the model with `synth_design` (no place/route) and runs `report_cdc -details` — useful as an independent cross-check on `rtl-buddy-cdc`, or where a Vivado license is already part of the flow. Two framing rules:
+
+- **rtl_buddy surfaces Vivado's findings; it does not adopt Vivado's ruleset as canonical.** Each finding keeps Vivado's rule id (`CDC-1`, `CDC-3`, ...), severity (`Critical`/`Warning`/`Info`), and description verbatim, tagged with `backend: "vivado"` in the machine payload. They are vendor opinions, not rtl_buddy taxonomy.
+- **Severity mapping to the pass/fail surface:** `Critical` and `Warning` findings count as violations (non-zero count = FAIL); `Info` findings (e.g. `CDC-3`, a properly `ASYNC_REG`-synchronized crossing) are informational and ride along in the findings list only.
+
+Configuration: the `cfg-cdc-tools` entry carries the device part used for elaboration (any part your Vivado install can elaborate works — it only anchors the primitive library):
+
+```yaml
+cfg-cdc-tools:
+  - name: "vivado"
+    tool: "vivado"                  # binary on PATH, or absolute path
+    opts:
+      part: "xc7a35ticsg324-1L"    # required for the vivado backend
+```
+
+```yaml
+analyses:
+  - name: "demo_cdc_vivado"
+    desc: "Second opinion via Vivado report_cdc"
+    tool: "vivado"
+    model: "demo_top"
+    model_path: "../../design/demo_top/models.yaml"
+    constraints: "demo_top.sdc"
+    tool_overrides:
+      vivado:
+        part: "xczu7ev-ffvc1156-2-e"   # optional per-analysis override
+```
+
+Notes:
+
+- The SDC is read with `read_xdc` (`create_clock` and friends are valid XDC); clocks must be defined for Vivado to see domains.
+- `waivers:` is not supported by this backend — a configured waiver file logs a warning and is ignored. Filter on the verbatim findings downstream instead.
+- If `vivado` is not on `PATH` the analysis is reported SKIP (the backend is optional); a missing `opts.part` is a config error (exit 2).
+- Artefacts land in `<suite>/artefacts/<analysis>/`: `cdc.f` (filelist), `cdc.tcl` (rendered batch script), `vivado.log`, and `cdc.rpt` (the raw `report_cdc -details` output).
 
 ## Installing rtl-buddy-cdc
 
@@ -53,7 +95,7 @@ analyses:
 |-------|-------------|
 | `name` | Analysis identifier used on the command line and in `artefacts/<name>/` |
 | `desc` | Human-readable description |
-| `tool` | Backend tool name — must match a `cfg-cdc-tools` entry (only `rtl-buddy-cdc` today) |
+| `tool` | Backend tool name — must match a `cfg-cdc-tools` entry (`rtl-buddy-cdc` or `vivado`) |
 | `model` | Model name from `models.yaml` |
 | `model_path` | Path to `models.yaml`, resolved relative to `cdc.yaml` |
 | `constraints` | SDC path (required), resolved relative to `cdc.yaml` |
@@ -83,8 +125,9 @@ cfg-cdc-tools:
 |-------|-------------|
 | `name` | Referenced by `tool:` in `cdc.yaml` |
 | `tool` | Binary name (PATH-resolved) or absolute path |
-| `opts.sync-depth` | Default synchronizer depth, forwarded via `--sync-depth` |
-| `opts.extra-args` | Passed through verbatim to the analyzer command line |
+| `opts.sync-depth` | Default synchronizer depth, forwarded via `--sync-depth` (rtl-buddy-cdc only) |
+| `opts.extra-args` | Passed through verbatim to the analyzer command line (rtl-buddy-cdc only) |
+| `opts.part` | Device part for `synth_design` elaboration (vivado backend only) |
 
 **Relative paths in `extra-args`.** A relative path inside `extra-args` (e.g. `--yosys-plugin ../slang.so`, `--emit-domain-map overlays/map.json`) is resolved by the analyzer relative to the **`cdc.yaml` directory**, not the process cwd — the same anchor `constraints` and `waivers` already use. The runner forwards the config's directory as `rtl-buddy-cdc --project-root <dir>` when the installed analyzer supports it (requires the rtl-buddy-cdc release carrying [rtl-buddy-cdc#245](https://github.com/rtl-buddy/rtl-buddy-cdc/issues/245); older analyzers run without it and fall back to cwd-relative resolution). Absolute paths are always used verbatim. Author `extra-args` paths relative to `cdc.yaml`, like the other path fields.
 
@@ -124,7 +167,7 @@ A summary table prints after each run, with one row per analysis:
 
 `rb cdc-regression` prints the same columns under the title **CDC Regression Summary** with a `Reg Level: N` metadata line.
 
-Pass `--machine` (a global flag, before the subcommand: `rb --machine cdc`) to get a JSON envelope on stdout instead of the table. Each result row carries `name`, `result`, `desc`, and — when available — `violations`, `suppressed`, and `crossings`; `cdc-regression` rows additionally carry `suite`. `rb --machine cdc --list` emits a `names` array.
+Pass `--machine` (a global flag, before the subcommand: `rb --machine cdc`) to get a JSON envelope on stdout instead of the table. Each result row carries `name`, `result`, `desc`, and — when available — `violations`, `suppressed`, and `crossings`; vivado-backend rows additionally carry `backend: "vivado"` and a `findings` list with the verbatim `{id, severity, description, depth, exception, source, destination, source_clock, destination_clock}` entries. `cdc-regression` rows additionally carry `suite`. `rb --machine cdc --list` emits a `names` array.
 
 ## Artefacts
 
@@ -152,7 +195,7 @@ SKIP is returned when the analysis's `reglvl` is above the `-l` filter passed to
 
 ## Hub integration
 
-When the [coordination hub](hub.md) is running for the current project, every successful `rb cdc` analysis publishes its violations to the hub as a `diagnostics_set` event under the source key `rb-cdc:<analysis_name>`. The rtl-buddy-view SPA's on-canvas badge layer and `rtl-buddy-nvim`'s `rtlbuddy` diagnostics namespace light up immediately — no `rb hub send` copy-paste.
+When the [coordination hub](hub.md) is running for the current project, every successful `rb cdc` analysis on the `rtl-buddy-cdc` backend publishes its violations to the hub as a `diagnostics_set` event under the source key `rb-cdc:<analysis_name>`. The rtl-buddy-view SPA's on-canvas badge layer and `rtl-buddy-nvim`'s `rtlbuddy` diagnostics namespace light up immediately — no `rb hub send` copy-paste.
 
 The publish step is best-effort: missing hub, no live PID, connect failure, or a malformed JSON payload all silently no-op with a debug-level log line. The CDC analysis itself is never failed by a sidecar UI being unreachable.
 
@@ -160,5 +203,5 @@ Re-running an analysis after a fix replaces (or clears) just that source-key slo
 
 ## Out of scope (today)
 
-- **rtl-buddy-cdc only.** Commercial CDC tools (SpyGlass CDC, JasperGold CDC, Questa CDC) are not yet wired up — adding them follows the same pattern documented for `rb fpv`'s SymbiYosys backend.
+- **Commercial CDC signoff tools.** SpyGlass CDC, JasperGold CDC, and Questa CDC are not yet wired up — adding one is a wrapper class plus a registry entry, the same shape the vivado backend used.
 - **Reset-domain crossing (RDC).** Reset-domain analysis is a planned extension of `rtl-buddy-cdc`; once it lands there, `rb cdc` will surface its findings alongside CDC. Today RDC overlays surface in `rb hier --rdc-annotations` via a separate analyzer pass.

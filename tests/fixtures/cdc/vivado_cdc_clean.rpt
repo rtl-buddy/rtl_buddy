@@ -1,0 +1,26 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+-------------------------------------------------------------------------------------------
+| Tool Version      : Vivado v.2022.1.2 (lin64) Build 3605665 Fri Aug  5 22:52:02 MDT 2022
+| Date              : Fri Jun 12 23:22:15 2026
+| Host              : build-host running 64-bit Rocky Linux release 8.10 (Green Obsidian)
+| Command           : report_cdc -details -file cdc.rpt
+| Design            : cdc_sync
+| Device            : xczu7ev-ffvc1156
+| Speed File        : -2  PRODUCTION 1.29 08-03-2020
+| Temperature Grade : E
+-------------------------------------------------------------------------------------------
+
+CDC Report
+
+ID     Severity  Count  Description
+-----  --------  -----  ------------------------------------------
+CDC-3  Info          1  1-bit synchronized with ASYNC_REG property
+
+Source Clock: clk_a
+Destination Clock: clk_b
+CDC Type: No Common Primary Clock
+
+Row  ID     Severity  Description                                 Depth  Exception  Source (From)  Destination (To)
+---  -----  --------  ------------------------------------------  -----  ---------  -------------  ----------------
+  1  CDC-3  Info      1-bit synchronized with ASYNC_REG property      2  None       a_reg_reg/C    sync_ff_reg[0]/D
+

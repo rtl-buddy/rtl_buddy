@@ -1,6 +1,6 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, CDC lint, formal property verification, design-space exploration experiments, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, cdc.yaml, fpv.yaml, or mut.yaml.
+description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, FPGA implementation, CDC lint, formal property verification, design-space exploration experiments, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, fpga.yaml, cdc.yaml, fpv.yaml, or mut.yaml.
 ---
 
 # rtl_buddy
@@ -20,7 +20,7 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 - `root_config.yaml` configures platforms, builders, coverage, waveform, synth, P&R, CDC, FPV, and default regression paths.
 - `tests.yaml` is suite-local and defines testbenches plus tests; invoke from anywhere with `-c <path>` (outputs anchor on the config dir — see Execution context below).
 - `models.yaml` defines design filelists referenced by tests, synth, CDC, and FPV.
-- `synth.yaml`, `pnr.yaml`, `power.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows; `regression.yaml`, `synth_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists.
+- `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows; `regression.yaml`, `synth_regression.yaml`, `fpga_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists.
 - `mut.yaml` defines one mutation-testing campaign for `rb mut`; `specs.yaml` feeds `rb spec` traceability commands.
 
 ## Pass/fail detection
@@ -43,6 +43,11 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 - Always declare an experiment `hypothesis` and a per-knob `rationale`, plus `parent` — the ledger is a reasoning trail. Run `rb --machine xplr knob-effect <knob>` before re-trying a knob and `rb --machine xplr diff <a> <b>` to compare candidates.
 - Declare `direction` in `metric_meta` for every metric that should join dominance; report a completed-but-unroutable point as `status=success` with `routed: false` (`failed` means the flow crashed).
 - Dry-run the whole loop with `rb xplr mock run --scenario rastrigin|zdt1` and grade yourself with `rb xplr mock score`. Contract + worked example: `rtl-buddy docs show concepts/xplr`.
+
+## rb fpga timing closure
+
+- Gate first with `rb --machine tool-check --required-for fpga` (global `--machine` gives the JSON envelope; `payload.subcommands.fpga.status == "ok"` means ready, else `rb tool-check --explain vivado`). Then `rb --machine fpga <run>` runs synth→place→route per `fpga.yaml` (Vivado default; `tool: openxc7` for 7-series). Missed timing is NOT a FAIL: the run passes and the JSON carries `timing_met`, `wns_ns`, `failing_endpoints`, `failing_paths`.
+- Closure loop: run → if `timing_met` is false, read `failing_paths[0]` (`source`/`destination`/`requirement_ns`/`logic_levels`) → hypothesize (clock too fast → relax `create_clock` toward `requirement_ns - wns_ns`; cross-domain or quasi-static path → missing false-path/multicycle exception; many logic levels → pipeline source→destination in RTL) → edit XDC/RTL → rerun → compare `wns_ns`. Worked example: `rtl-buddy docs show concepts/fpga`.
 
 ## Execution context
 

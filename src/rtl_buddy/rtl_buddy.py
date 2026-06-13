@@ -18,6 +18,7 @@ from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.env_file import apply_env_file
 from .config.root import _discover_root_cfg, discover_project_root
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
+from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
@@ -45,6 +46,8 @@ from .runner.mut_results import MutResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.xfail import apply_xfail
+from .runner.fpga_runner import FpgaRunner
+from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrRunner
 from .runner.pnr_results import PnrSkipResults
 from .runner.power_runner import PowerRunner
@@ -102,6 +105,8 @@ class RtlBuddy:
         "synth-regression",
         "power",
         "power-regression",
+        "fpga",
+        "fpga-regression",
         "cdc",
         "cdc-regression",
         "fpv",
@@ -249,6 +254,12 @@ class RtlBuddy:
         self.app.command("power", help="run power analysis")(self.do_cmd_power)
         self.app.command("power-regression", help="run power analysis regression")(
             self.do_power_regression
+        )
+        self.app.command(
+            "fpga", help="run FPGA implementation (synth + place + route)"
+        )(self.do_cmd_fpga)
+        self.app.command("fpga-regression", help="run FPGA implementation regression")(
+            self.do_fpga_regression
         )
         self.app.command("saif", help="convert FST/VCD trace to SAIF v2.0")(
             self.do_cmd_saif
@@ -457,7 +468,7 @@ class RtlBuddy:
     # configured names from the primary config file. The `--list` paths
     # do not need RootConfig, the selected builder, or CoverageReporter,
     # so list-only invocations short-circuit those setup steps.
-    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "cdc", "fpv"}
+    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "fpga", "cdc", "fpv"}
 
     def _is_list_invocation(self, ctx: typer.Context) -> bool:
         return (
@@ -2476,12 +2487,44 @@ class RtlBuddy:
                 row[k] = res[k]
         return row
 
+    def _fpga_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["fpga_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in (
+            "lut",
+            "ff",
+            "bram",
+            "dsp",
+            "wns_ns",
+            "tns_ns",
+            "whs_ns",
+            "timing_met",
+            "fmax_mhz",
+            "failing_endpoints",
+            "failing_paths",
+            "total_power_w",
+            "dynamic_power_w",
+            "static_power_w",
+            "drc_violations",
+            "drc_by_severity",
+            "methodology_warnings",
+        ):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        # bitstream rides through even when None: machine consumers can
+        # tell "bitgen not requested" apart from a pre-fpga payload.
+        if "bitstream" in res:
+            row["bitstream"] = res["bitstream"]
+        return row
+
     def _cdc_result_row(self, r, *, suite: str | None = None) -> dict:
         res = r["results"].results
         row = {"name": r["cdc_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("violations", "suppressed", "crossings"):
+        for k in ("violations", "suppressed", "crossings", "backend", "findings"):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row
@@ -3063,6 +3106,308 @@ class RtlBuddy:
 
     def _exit_code_from_power_results(self, power_results):
         return 0 if all(r["results"].is_pass() for r in power_results) else 1
+
+    def do_cmd_fpga(
+        self,
+        fpga_config: Annotated[
+            str,
+            typer.Option("-c", "--fpga-config", help="fpga.yaml to use"),
+        ] = "fpga.yaml",
+        fpga_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of fpga run",
+                show_default="run all entries in the suite",
+            ),
+        ] = None,
+        list_runs: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list fpga runs in the selected config and exit"
+            ),
+        ] = False,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l",
+                "--reg-level",
+                help="run only entries with reglvl at or below this value",
+            ),
+        ] = 0,
+        emit_bitstream: Annotated[
+            bool,
+            typer.Option(
+                "--bitstream",
+                help="generate a bitstream after route (write_bitstream); "
+                "off by default — a smoke/timing run doesn't need bitgen",
+            ),
+        ] = False,
+    ):
+        """run FPGA implementation (synth + place + route)"""
+        ctx = self._enter_command_context(
+            primary_config=fpga_config, list_only=list_runs
+        )
+        suite_cfg = FpgaSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpga",
+            command="fpga",
+            fpga=fpga_name or "all",
+            fpga_config=fpga_config,
+            bitstream=emit_bitstream,
+        )
+
+        if list_runs:
+            if self.machine:
+                self._emit_machine_result(
+                    "fpga --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        results = self._do_fpga_suite(
+            suite_cfg,
+            fpga_name=fpga_name,
+            reg_level=reg_level,
+            emit_bitstream=emit_bitstream,
+        )
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "fpga",
+                exit_code,
+                results=[self._fpga_result_row(r) for r in results],
+            )
+        else:
+            self._render_fpga_summary("FPGA Results Summary", results)
+        raise typer.Exit(exit_code)
+
+    def _do_fpga_suite(
+        self,
+        suite_cfg,
+        *,
+        fpga_name=None,
+        reg_level=0,
+        emit_bitstream: bool = False,
+    ):
+        root_cfg = self.root_cfg
+        runs = suite_cfg.get_runs(fpga_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for run in runs:
+            fpga_level = run.get_reglvl(run.get_tool_name())
+            if reg_level is not None and fpga_level > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpga_suite.skip",
+                    fpga=run.get_name(),
+                    reason="above_regression_level",
+                    fpga_level=fpga_level,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "fpga_name": run.get_name(),
+                        "results": FpgaSkipResults(
+                            name=f"{run.get_name()}/results",
+                            desc=f"reglvl {fpga_level} above {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = FpgaRunner(
+                name=run.get_name(),
+                root_cfg=root_cfg,
+                fpga_cfg=run,
+                suite_dir=suite_dir,
+                reglvl_filter=reg_level if reg_level else None,
+                emit_bitstream=emit_bitstream,
+            )
+            res = runner.run()
+            if run.is_xfail():
+                self._apply_xfail_logged(res, run, "fpga_suite.xfail")
+            results.append({"fpga_name": run.get_name(), "results": res})
+        return results
+
+    def _render_fpga_summary(self, title, fpga_results, *, metadata=None):
+        def _fmt_util(entry):
+            if not entry or entry.get("used") is None:
+                return "-"
+            used = entry["used"]
+            pct = entry.get("util_pct")
+            return f"{used} ({pct}%)" if pct is not None else str(used)
+
+        def _fmt_ns(v):
+            return f"{'+' if v >= 0 else ''}{v:.3f} ns" if v is not None else "-"
+
+        has_util = any(
+            any(k in r["results"].results for k in ("lut", "ff", "bram", "dsp"))
+            for r in fpga_results
+        )
+        has_wns = any("wns_ns" in r["results"].results for r in fpga_results)
+        has_whs = any("whs_ns" in r["results"].results for r in fpga_results)
+        has_power = any("total_power_w" in r["results"].results for r in fpga_results)
+        has_drcs = any("drc_violations" in r["results"].results for r in fpga_results)
+        has_meth = any(
+            "methodology_warnings" in r["results"].results for r in fpga_results
+        )
+        has_bit = any(r["results"].results.get("bitstream") for r in fpga_results)
+        rows = []
+        for r in fpga_results:
+            res = r["results"].results
+            row = {
+                "fpga_name": r["fpga_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+            }
+            if has_util:
+                row["luts"] = _fmt_util(res.get("lut"))
+                row["ffs"] = _fmt_util(res.get("ff"))
+                row["brams"] = _fmt_util(res.get("bram"))
+                row["dsps"] = _fmt_util(res.get("dsp"))
+            if has_wns:
+                row["wns"] = _fmt_ns(res.get("wns_ns"))
+            if has_whs:
+                row["whs"] = _fmt_ns(res.get("whs_ns"))
+            if has_power:
+                power = res.get("total_power_w")
+                row["power"] = f"{power:.3f} W" if power is not None else "-"
+            if has_drcs:
+                drcs = res.get("drc_violations")
+                row["drcs"] = str(drcs) if drcs is not None else "-"
+            if has_meth:
+                meth = res.get("methodology_warnings")
+                row["meth"] = str(len(meth)) if meth is not None else "-"
+            if has_bit:
+                row["bit"] = "bit" if res.get("bitstream") else "-"
+            rows.append(row)
+
+        columns = [
+            ("fpga_name", "FPGA Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+        ]
+        if has_util:
+            columns.append(("luts", "LUTs"))
+            columns.append(("ffs", "FFs"))
+            columns.append(("brams", "BRAMs"))
+            columns.append(("dsps", "DSPs"))
+        if has_wns:
+            columns.append(("wns", "WNS"))
+        if has_whs:
+            columns.append(("whs", "WHS"))
+        if has_power:
+            columns.append(("power", "Power"))
+        if has_drcs:
+            columns.append(("drcs", "DRCs"))
+        if has_meth:
+            columns.append(("meth", "Meth"))
+        if has_bit:
+            columns.append(("bit", "Outputs"))
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def do_fpga_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to fpga_regression.yaml",
+                show_default="Use ./fpga_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="FPGA regression level to stop at"),
+        ] = 0,
+        emit_bitstream: Annotated[
+            bool,
+            typer.Option(
+                "--bitstream",
+                help="generate bitstreams after route (write_bitstream); "
+                "off by default — a smoke/timing regression doesn't need bitgen",
+            ),
+        ] = False,
+    ):
+        """
+        run FPGA implementation regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpga_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+            bitstream=emit_bitstream,
+        )
+
+        if reg_config is not None:
+            reg_cfg_path = (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
+        else:
+            local = str(self.invocation_cwd / "fpga_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "fpga_regression.yaml not found; pass -c to specify a path"
+                )
+
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
+        fpga_reg = FpgaRegConfig(name=self.name + "/fpga_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running FPGA regression from {orchestration_ctx.command_root}",
+            style="cyan",
+        )
+
+        all_results = []
+        machine_rows = []
+        for suite_cfg in fpga_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "fpga_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_fpga_suite(
+                suite_cfg,
+                fpga_name=None,
+                reg_level=reg_level,
+                emit_bitstream=emit_bitstream,
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._fpga_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
+                )
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+
+        exit_code = 0 if all(r["results"].is_pass() for r in all_results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "fpga-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_fpga_summary(
+                "FPGA Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
 
     def do_power_regression(
         self,
@@ -5223,6 +5568,14 @@ class RtlBuddy:
         if explain_tool is not None:
             spec = next((s for s in specs if s.name == explain_tool), None)
             if spec is None:
+                if self.machine:
+                    self._emit_machine_result(
+                        "tool-check",
+                        1,
+                        error=f"unknown tool '{explain_tool}'",
+                        known=[s.name for s in specs],
+                    )
+                    raise typer.Exit(1)
                 emit_console_text(
                     f"tool-check: unknown tool '{explain_tool}'. "
                     f"Known: {', '.join(s.name for s in specs)}",
@@ -5233,6 +5586,17 @@ class RtlBuddy:
             status = tm.check_tool(
                 spec, project_root=project_root, probe_versions=probe_versions
             )
+            if self.machine:
+                self._emit_machine_result(
+                    "tool-check",
+                    0,
+                    **tm.build_json_payload(
+                        [status],
+                        tm.subcommand_readiness([status], [spec]),
+                    ),
+                    instructions=tm.explain(spec, status),
+                )
+                raise typer.Exit(0)
             # Plain stdout — Rich's word-wrap would mangle paths.
             print(tm.explain(spec, status))
             raise typer.Exit(0)
@@ -5247,6 +5611,17 @@ class RtlBuddy:
 
         if required_for is not None:
             if required_for not in subcommands:
+                if self.machine:
+                    self._emit_machine_result(
+                        "tool-check",
+                        0,
+                        **tm.build_json_payload([], {}),
+                        note=(
+                            f"subcommand '{required_for}' has no declared "
+                            f"tool dependencies"
+                        ),
+                    )
+                    raise typer.Exit(0)
                 emit_console_text(
                     f"tool-check: subcommand '{required_for}' has no "
                     f"declared tool dependencies",
@@ -5263,6 +5638,26 @@ class RtlBuddy:
             subcommands=tm.subcommand_readiness(statuses, specs),
         )
 
+        # --required-for always enforces (exit 2 on miss); --strict enforces
+        # the global "any required tool missing" check (exit 1). Without
+        # either flag the command is purely informational.
+        envelope_exit = (
+            reported_exit_code if (required_for is not None or strict) else 0
+        )
+
+        # The global --machine flag wins: emit a single JSON envelope on
+        # stdout like every other command (SKILL.md's top rule). The
+        # command-specific --format json is kept for back-compat / non-machine
+        # callers who want the bare manifest dict.
+        if self.machine:
+            self._emit_machine_result(
+                "tool-check",
+                envelope_exit,
+                **tm.build_json_payload(statuses, subcommands),
+                readiness_exit_code=reported_exit_code,
+            )
+            raise typer.Exit(envelope_exit)
+
         # Use raw stdout — Rich's word-wrap would mangle JSON and break the
         # alignment of the tool table.
         if fmt.lower() == "json":
@@ -5272,9 +5667,6 @@ class RtlBuddy:
                 tm.render_text(statuses, subcommands, include_optional=include_optional)
             )
 
-        # --required-for always enforces (exit 2 on miss); --strict enforces
-        # the global "any required tool missing" check (exit 1). Without
-        # either flag the command is purely informational.
         if required_for is not None or strict:
             raise typer.Exit(reported_exit_code)
         raise typer.Exit(0)

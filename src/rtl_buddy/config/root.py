@@ -31,6 +31,8 @@ from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
+from .fpga import FpgaToolConfig, FpgaToolConfigFile
+from .fpga_platform import FpgaPlatformConfig, FpgaPlatformConfigFile
 from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
@@ -134,6 +136,12 @@ class RootConfigFile:
     power_tools: list[PowerToolConfigFile] = field(
         rename="cfg-power-tools", default_factory=list
     )
+    fpga_tools: list[FpgaToolConfigFile] = field(
+        rename="cfg-fpga-tools", default_factory=list
+    )
+    fpga_platforms: list[FpgaPlatformConfigFile] = field(
+        rename="cfg-fpga-platforms", default_factory=list
+    )
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
     )
@@ -198,6 +206,8 @@ class RootConfig:
         self.pnr_platform_cfgs: dict = {}
         self.pnr_tool_cfgs: dict = {}
         self.power_tool_cfgs: dict = {}
+        self.fpga_tool_cfgs: dict = {}
+        self.fpga_platform_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
         self.fpv_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
@@ -282,6 +292,17 @@ class RootConfig:
             # Populate power tool configs
             self.power_tool_cfgs = {
                 cfg.name: PowerToolConfig(cfg) for cfg in data.power_tools
+            }
+
+            # Populate FPGA tool configs
+            self.fpga_tool_cfgs = {
+                cfg.name: FpgaToolConfig(cfg) for cfg in data.fpga_tools
+            }
+
+            # Populate FPGA platform configs (device part + default XDC)
+            self.fpga_platform_cfgs = {
+                cfg.name: FpgaPlatformConfig(cfg, self.root_cfg_path)
+                for cfg in data.fpga_platforms
             }
 
             # Populate CDC tool configs
@@ -550,6 +571,29 @@ class RootConfig:
         if cfg is None:
             raise FatalRtlBuddyError(
                 f"power tool '{name}' not found in cfg-power-tools"
+            )
+        return cfg
+
+    def get_fpga_tool_cfg(self, name: str):
+        """
+        Get FPGA tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-fpga-tools.
+        Returns:
+          cfg (FpgaToolConfig|None): Matching FPGA tool configuration, or
+            None if no entry with that name is configured. Callers fall
+            back to the bare tool name on PATH when None is returned.
+        """
+        return self.fpga_tool_cfgs.get(name)
+
+    def get_fpga_platform_cfg(self, name: str) -> FpgaPlatformConfig:
+        """Get an FPGA platform configuration by name (cfg-fpga-platforms entry)."""
+        cfg = self.fpga_platform_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"fpga platform '{name}' not found in cfg-fpga-platforms; "
+                f"available: {sorted(self.fpga_platform_cfgs)}"
             )
         return cfg
 

@@ -404,6 +404,69 @@ def _builtin_manifest() -> list[ToolSpec]:
             description="GDS viewer (optional, used by rb pnr to render layout)",
         ),
         ToolSpec(
+            name="vivado",
+            binaries=("vivado",),
+            version_cmd=("vivado", "-version"),
+            # First line of `vivado -version`: "Vivado v2022.1.2 (64-bit)".
+            # Reports stylize it as "Vivado v.2022.1.2" — accept both.
+            version_regex=r"Vivado\s+v\.?(\d{4}\.\d+(?:\.\d+)?)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "any": "download the installer from "
+                "https://www.xilinx.com/support/download.html and source "
+                "<install>/Vivado/<ver>/settings64.sh; larger parts may "
+                "need a purchased license",
+            },
+            used_by=("fpga",),
+            optional=True,
+            description="AMD/Xilinx Vivado FPGA synthesis + implementation suite",
+            notes="Driven in non-project batch mode by rb fpga. The free "
+            "ML/WebPACK device set covers smaller parts; others require "
+            "a license served at runtime.",
+        ),
+        ToolSpec(
+            name="nextpnr-xilinx",
+            binaries=("nextpnr-xilinx",),
+            version_cmd=("nextpnr-xilinx", "--version"),
+            # `nextpnr-xilinx --version` banner: "nextpnr-xilinx" --
+            # Next Generation Place and Route (Version nextpnr-0.x-...).
+            version_regex=r"Version\s+([\w.+\-]+)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "source": "https://github.com/openXC7/nextpnr-xilinx",
+                "any": "install the openXC7 toolchain "
+                "(https://github.com/openXC7/toolchain-installer) which "
+                "bundles yosys, nextpnr-xilinx, prjxray, and the chipdbs",
+            },
+            used_by=("fpga",),
+            optional=True,
+            description="nextpnr place-and-route for AMD/Xilinx 7-series (openXC7)",
+            notes="Used by rb fpga's openxc7 backend together with yosys "
+            "and prjxray. Needs a per-device chipdb (.bin): point "
+            "tool_overrides.openxc7.chipdb in fpga.yaml or $CHIPDB at it.",
+        ),
+        ToolSpec(
+            name="prjxray",
+            binaries=("fasm2frames", "xc7frames2bit"),
+            version_cmd=None,
+            version_regex=None,
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "source": "https://github.com/f4pga/prjxray",
+                "any": "ships with the openXC7 toolchain installer "
+                "(https://github.com/openXC7/toolchain-installer)",
+            },
+            used_by=("fpga",),
+            optional=True,
+            description="Project X-Ray bitstream tools (fasm2frames, xc7frames2bit)",
+            notes="Only needed for rb fpga --bitstream on the openxc7 "
+            "backend. The database root comes from "
+            "tool_overrides.openxc7.prjxray_db or $PRJXRAY_DB_DIR.",
+        ),
+        ToolSpec(
             name="sby",
             binaries=("sby",),
             version_cmd=("sby", "--version"),
@@ -1138,12 +1201,19 @@ def render_text(
     return "\n".join([header, *rows, *sub_lines, hint])
 
 
-def render_json(
+def build_json_payload(
     statuses: list[ToolStatus],
     subcommands: dict[str, dict],
-    *,
-    exit_code: int,
-) -> str:
+) -> dict:
+    """Build the ``tools`` / ``subcommands`` view as native dicts.
+
+    Shared by ``render_json`` (which serializes it for ``--format json`` and
+    appends the top-level ``exit_code``) and by the global ``--machine``
+    envelope (whose envelope already carries ``exit_code``), so both surface
+    identical tool/subcommand structure. ``exit_code`` is intentionally NOT
+    included here so the result spreads cleanly into ``_emit_machine_result``
+    without colliding with its own ``exit_code`` argument.
+    """
     tools_out: dict[str, dict] = {}
     for st in statuses:
         entry: dict = {
@@ -1167,11 +1237,18 @@ def render_json(
             entry["optional_feature"] = True
         subs_out[sub] = entry
 
-    return json.dumps(
-        {"tools": tools_out, "subcommands": subs_out, "exit_code": exit_code},
-        indent=2,
-        sort_keys=False,
-    )
+    return {"tools": tools_out, "subcommands": subs_out}
+
+
+def render_json(
+    statuses: list[ToolStatus],
+    subcommands: dict[str, dict],
+    *,
+    exit_code: int,
+) -> str:
+    payload = build_json_payload(statuses, subcommands)
+    payload["exit_code"] = exit_code
+    return json.dumps(payload, indent=2, sort_keys=False)
 
 
 def compute_exit_code(

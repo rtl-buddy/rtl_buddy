@@ -1,0 +1,54 @@
+"nextpnr-xilinx" -- Next Generation Place and Route (Version nextpnr-0.6-30-g1f5e266e)
+
+Info: Series: xc7
+Info: Importing module fpga_counter
+Info: Found 41 top-level IO ports
+Info: Constraining clock net 'clk' to 100.00 MHz
+
+Info: Packing IOs..
+Info: Packing constants..
+Info: Packing carries..
+Info: Packing LUT-FFs..
+Info:     879 LUTs used as logic.
+Info:     97 FFs used.
+Info: Packing BRAMs..
+Info: Packing DSPs..
+
+Info: Device utilisation:
+Info: 	          SLICE_LUTX:   142/32600     0%
+Info: 	           SLICE_FFX:    97/65200     0%
+Info: 	              CARRY4:    16/ 8150     0%
+Info: 	            RAMB18E1:     1/  100     1%
+Info: 	             DSP48E1:     1/   90     1%
+Info: 	               IOB33:    41/  150    27%
+Info: 	           BUFGCTRL:     1/   32     3%
+Info: 	                PULL:     0/  150     0%
+
+Info: Placed 42 cells based on constraints.
+Info: Creating initial analytic placement for 215 cells, random placement wirelen = 8123.
+Info:     at initial placer iter 0, wirelen = 612
+Info: Running simulated annealing placer.
+Info:   at iteration #1, type ALL: temp = 0.000000, timing cost = 412, wirelen = 590
+Info: SA placement time 0.42s
+Info: Running router2...
+Info: Routing..
+Info:     route arcs: 1893 success, 0 fail
+Info: Routing complete.
+Info: Router2 time 1.87s
+
+Info: Critical path report for clock 'clk' (posedge -> posedge):
+Info: curr total
+Info:  0.8  0.8  Source count_reg.0_SLICE_FFX.Q
+Info:  1.1  1.9    Net count[0] budget 9.200 ns (24,18) -> (24,19)
+Info:                Sink count_adder_CARRY4.DI[0]
+Info:  0.6  2.5  Source count_adder_CARRY4.CO[3]
+Info:  1.3  3.8    Net count_next[7] budget 9.200 ns (24,19) -> (25,19)
+Info:                Sink count_reg.7_SLICE_FFX.D
+
+Info: Max frequency for clock 'clk': 160.00 MHz (PASS at 100.00 MHz)
+
+Info: Max delay <async>                  -> posedge clk     : 3.21 ns
+Info: Max delay posedge clk     -> <async>                  : 4.65 ns
+
+Info: Checksum: 0x5e4d3c2b
+Info: Program finished normally.

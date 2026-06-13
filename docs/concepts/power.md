@@ -12,6 +12,8 @@ description: How to run OpenROAD-driven gate-level power analysis with rtl_buddy
 
 `rb power` runs OpenROAD's `report_power` on the tech-mapped netlist produced by an upstream `rb synth` run. It supports three activity sources — built-in static defaults, synthetic global toggle/duty, and per-signal activity from a SAIF or VCD trace — and reports total / internal / switching / leakage power.
 
+For **FPGA targets**, power comes from a different source: every passing [`rb fpga`](fpga.md#power) run carries Vivado's post-route `report_power` numbers (`total_power_w` / `dynamic_power_w` / `static_power_w`) in its results — no separate power command needed.
+
 ## Where the numbers come from
 
 `rb power` runs on either the **post-synth** netlist (default) or the **post-PnR** routed design read back from the OpenROAD database (`<top>.routed.odb`). The `netlist-source:` field in `power.yaml` selects which.
