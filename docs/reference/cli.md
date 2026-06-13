@@ -60,6 +60,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ pnr                run place-and-route                                               │
 │ power              run power analysis                                                │
 │ power-regression   run power analysis regression                                     │
+│ fpga               run FPGA implementation (synth + place + route)                   │
+│ fpga-regression    run FPGA implementation regression                                │
 │ saif               convert FST/VCD trace to SAIF v2.0                                │
 │ cdc                run CDC lint                                                      │
 │ cdc-regression     run CDC lint regression                                           │
