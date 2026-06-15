@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from ..errors import FatalRtlBuddyError
+
 # CDC-relevant XDC commands. Everything else (set_property, IO/placement,
 # create_pblock, ...) is ignored on purpose.
 _RE_CREATE_CLOCK = re.compile(r"^\s*create_clock\b(?P<args>.*)$", re.MULTILINE)
@@ -252,7 +254,16 @@ def audit_xdc(
     over-waive. (Completeness still applies — it is a real crossing.)
     """
     res = AuditResult()
-    recognized = [re.compile(p) for p in (recognized_syncs or [])]
+    recognized = []
+    for p in recognized_syncs or []:
+        try:
+            recognized.append(re.compile(p))
+        except re.error as e:
+            # User-supplied (cdc.yaml recognized-syncs / --recognize-sync) — a
+            # bad pattern is a config error, not a traceback.
+            raise FatalRtlBuddyError(
+                f"--check-xdc: invalid recognized-syncs regex {p!r}: {e}"
+            ) from e
     crossings = [
         c for c in domain_map.get("crossings", []) if c.get("async_per_sdc", True)
     ]

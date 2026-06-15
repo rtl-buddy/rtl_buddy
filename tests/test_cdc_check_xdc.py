@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 from rtl_buddy.tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
 
@@ -244,6 +246,15 @@ def test_recognized_syncs_parses_from_cdc_yaml():
     # default is an empty list when the key is absent
     y2 = y.replace('    recognized-syncs: ["u_xpm.*", "xpm_cdc_single"]\n', "")
     assert from_yaml(CdcSuiteConfigFile, y2).analyses[0].recognized_syncs == []
+
+
+def test_invalid_recognized_sync_regex_is_config_error():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    dm = json.loads((FIX / "cdc_xpm_domain_map.json").read_text())
+    rep = json.loads((FIX / "cdc_xpm_report.json").read_text())
+    with pytest.raises(FatalRtlBuddyError, match="invalid recognized-syncs regex"):
+        audit_xdc(dm, rep, extract_cdc_constraints(""), recognized_syncs=["u_xpm_["])
 
 
 def test_machine_payload_shape():
