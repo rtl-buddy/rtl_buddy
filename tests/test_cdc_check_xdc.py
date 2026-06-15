@@ -127,6 +127,46 @@ def test_max_delay_on_unsync_crossing_is_not_over_waive():
     assert _kinds(res)["over_waive"] == 0
 
 
+def test_bare_max_delay_does_not_count_as_coverage():
+    # A `set_max_delay` WITHOUT -datapath_only still times the launch->capture
+    # clock relationship, so it is not a valid async CDC exception and must not
+    # count as covering the crossing.
+    dm = {
+        "design": {"top": "t"},
+        "clocks": [
+            {"name": "clk_a", "period": 8.0},
+            {"name": "clk_b", "period": 10.0},
+        ],
+        "clock_groups": [],
+        "crossings": [
+            {
+                "src_clock": "clk_a",
+                "dst_clock": "clk_b",
+                "src_source_instance_path": "t.a",
+                "dst_source_instance_path": "t.u_sync",
+                "width": 1,
+                "async_per_sdc": True,
+            }
+        ],
+    }
+    clocks = (
+        "create_clock -name clk_a -period 8 [get_ports clk_a]\n"
+        "create_clock -name clk_b -period 10 [get_ports clk_b]\n"
+    )
+    bare = (
+        clocks + "set_max_delay 10.0 -from [get_clocks clk_a] -to [get_clocks clk_b]\n"
+    )
+    res = audit_xdc(dm, {}, extract_cdc_constraints(bare))
+    assert _kinds(res)["unconstrained_crossing"] == 1  # bare max_delay != coverage
+
+    dp = clocks + (
+        "set_max_delay -datapath_only 10.0 -from [get_clocks clk_a] "
+        "-to [get_clocks clk_b]\n"
+    )
+    res2 = audit_xdc(dm, {}, extract_cdc_constraints(dp))
+    assert _kinds(res2)["unconstrained_crossing"] == 0  # -datapath_only covers it
+
+
 # --------------------------------------------------------------------------
 # clock-graph consistency
 # --------------------------------------------------------------------------

@@ -255,9 +255,14 @@ def audit_xdc(domain_map: dict, cdc_report: dict, xc: XdcConstraints) -> AuditRe
             e.kind == "false_path" and _cell_match(e.to_cells, inst)
             for e in xc.path_exceptions
         )
-        by_md = _covers_clock_pair(pair, xc.path_exceptions, {"max_delay"}) or any(
-            e.kind == "max_delay" and _cell_match(e.to_cells, inst)
-            for e in xc.path_exceptions
+        # Only a `-datapath_only` max_delay is a valid async CDC exception; a
+        # bare max_delay still times the launch->capture clock relationship,
+        # so it does NOT count as covering a crossing.
+        md_dp = [
+            e for e in xc.path_exceptions if e.kind == "max_delay" and e.datapath_only
+        ]
+        by_md = _covers_clock_pair(pair, md_dp, {"max_delay"}) or any(
+            _cell_match(e.to_cells, inst) for e in md_dp
         )
         covered = by_group or by_fp or by_md
         if not covered:
