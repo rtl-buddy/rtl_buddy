@@ -18,7 +18,7 @@
         <link rel="prev" href="../pnr/">
       
       
-        <link rel="next" href="../cdc/">
+        <link rel="next" href="../fpga/">
       
       
         
@@ -976,6 +976,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../fpga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../cdc/" class="md-nav__link">
         
   
@@ -1735,6 +1763,7 @@
 <p>See also: <a href="../pnr/">Place-and-Route</a>, <a href="../synthesis/">Synthesis</a>.</p>
 </blockquote>
 <p><code>rb power</code> runs OpenROAD's <code>report_power</code> on the tech-mapped netlist produced by an upstream <code>rb synth</code> run. It supports three activity sources — built-in static defaults, synthetic global toggle/duty, and per-signal activity from a SAIF or VCD trace — and reports total / internal / switching / leakage power.</p>
+<p>For <strong>FPGA targets</strong>, power comes from a different source: every passing <a href="../fpga/#power"><code>rb fpga</code></a> run carries Vivado's post-route <code>report_power</code> numbers (<code>total_power_w</code> / <code>dynamic_power_w</code> / <code>static_power_w</code>) in its results — no separate power command needed.</p>
 <h2 id="where-the-numbers-come-from">Where the numbers come from</h2>
 <p><code>rb power</code> runs on either the <strong>post-synth</strong> netlist (default) or the <strong>post-PnR</strong> routed design read back from the OpenROAD database (<code>&lt;top&gt;.routed.odb</code>). The <code>netlist-source:</code> field in <code>power.yaml</code> selects which.</p>
 <table>

@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cdc/">
       
       
-        <link rel="prev" href="../power/">
+        <link rel="prev" href="../fpga/">
       
       
         <link rel="next" href="../fpv/">
@@ -782,6 +782,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../fpga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -845,10 +873,21 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#supported-backend" class="md-nav__link">
+  <a href="#supported-backends" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Supported backend
+        Supported backends
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vivado-backend-second-opinion-not-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vivado backend (second opinion, not authority)
       
     </span>
   </a>
@@ -1559,10 +1598,21 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#supported-backend" class="md-nav__link">
+  <a href="#supported-backends" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Supported backend
+        Supported backends
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vivado-backend-second-opinion-not-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Vivado backend (second opinion, not authority)
       
     </span>
   </a>
@@ -1718,34 +1768,70 @@
 
 <h1 id="cdc-lint">CDC Lint</h1>
 <blockquote>
-<p><strong>Integration type:</strong> Pluggable — curated. <code>rb cdc</code> is built around <a href="https://github.com/rtl-buddy/rtl-buddy-cdc">rtl-buddy-cdc</a> today; a SpyGlass-style commercial backend would plug in as a sibling driver (see <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">issue #85</a>).</p>
-<p><strong>External binary required:</strong> <code>rtl-buddy-cdc</code> — install with <code>uv tool install rtl-buddy-cdc</code> (or <code>pip install rtl-buddy-cdc</code>).</p>
+<p><strong>Integration type:</strong> Pluggable — curated. <code>rb cdc</code> is built around <a href="https://github.com/rtl-buddy/rtl-buddy-cdc">rtl-buddy-cdc</a>, with Vivado's <code>report_cdc</code> available as a second-opinion backend; a SpyGlass-style commercial backend would plug in as a sibling driver (see <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">issue #85</a>).</p>
+<p><strong>External binary required:</strong> <code>rtl-buddy-cdc</code> — install with <code>uv tool install rtl-buddy-cdc</code> (or <code>pip install rtl-buddy-cdc</code>). The optional <code>vivado</code> backend needs a Vivado install (see <a href="../fpga/#installing-vivado">FPGA Implementation</a>).</p>
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
 <p><code>rb cdc</code> drives the standalone <code>rtl-buddy-cdc lint</code> CLI: it generates a filelist from the model's <code>models.yaml</code>, hands the SystemVerilog sources, SDC, and optional waivers to the analyzer, and parses the JSON report into a pass/fail verdict.</p>
 <p>The flow is intentionally compact and config-driven — per-analysis knobs (model, SDC, waivers, frontend) live in <code>cdc.yaml</code>, tool-wide defaults live in <code>cfg-cdc-tools</code> in <code>root_config.yaml</code>.</p>
-<h2 id="supported-backend">Supported backend</h2>
-<p>Today only <code>rtl-buddy-cdc</code> is wired up. The <code>tool:</code> field in <code>cdc.yaml</code> selects it; the runner raises a clear error if no matching <code>cfg-cdc-tools</code> entry exists. Adding a commercial backend parallels how <code>rb fpv</code> is structured — implement a sibling driver under <code>src/rtl_buddy/tools/</code>, then dispatch from <code>CdcRunner</code>.</p>
+<h2 id="supported-backends">Supported backends</h2>
+<p>Two backends are registered today; the <code>tool:</code> field in <code>cdc.yaml</code> selects one, and the runner errors cleanly on an unknown name or a missing <code>cfg-cdc-tools</code> entry:</p>
+<ul>
+<li><strong><code>rtl-buddy-cdc</code></strong> — the primary analyzer, documented through the rest of this page.</li>
+<li><strong><code>vivado</code></strong> — AMD/Xilinx Vivado's <code>report_cdc</code>, a <a href="#vivado-backend-second-opinion-not-authority">second-opinion backend</a>.</li>
+</ul>
+<p>Adding another backend (SpyGlass, Questa CDC, ...) is a wrapper class under <code>src/rtl_buddy/tools/</code> plus a one-line entry in <code>CdcRunner</code>'s backend registry.</p>
+<h2 id="vivado-backend-second-opinion-not-authority">Vivado backend (second opinion, not authority)</h2>
+<p>With <code>tool: "vivado"</code> an analysis elaborates the model with <code>synth_design</code> (no place/route) and runs <code>report_cdc -details</code> — useful as an independent cross-check on <code>rtl-buddy-cdc</code>, or where a Vivado license is already part of the flow. Two framing rules:</p>
+<ul>
+<li><strong>rtl_buddy surfaces Vivado's findings; it does not adopt Vivado's ruleset as canonical.</strong> Each finding keeps Vivado's rule id (<code>CDC-1</code>, <code>CDC-3</code>, ...), severity (<code>Critical</code>/<code>Warning</code>/<code>Info</code>), and description verbatim, tagged with <code>backend: "vivado"</code> in the machine payload. They are vendor opinions, not rtl_buddy taxonomy.</li>
+<li><strong>Severity mapping to the pass/fail surface:</strong> <code>Critical</code> and <code>Warning</code> findings count as violations (non-zero count = FAIL); <code>Info</code> findings (e.g. <code>CDC-3</code>, a properly <code>ASYNC_REG</code>-synchronized crossing) are informational and ride along in the findings list only.</li>
+</ul>
+<p>Configuration: the <code>cfg-cdc-tools</code> entry carries the device part used for elaboration (any part your Vivado install can elaborate works — it only anchors the primitive library):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">cfg-cdc-tools</span><span class="p">:</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vivado&quot;</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vivado&quot;</span><span class="w">                  </span><span class="c1"># binary on PATH, or absolute path</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">      </span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xc7a35ticsg324-1L&quot;</span><span class="w">    </span><span class="c1"># required for the vivado backend</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">analyses</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_cdc_vivado&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Second</span><span class="nv"> </span><span class="s">opinion</span><span class="nv"> </span><span class="s">via</span><span class="nv"> </span><span class="s">Vivado</span><span class="nv"> </span><span class="s">report_cdc&quot;</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vivado&quot;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top&quot;</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top.sdc&quot;</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="nt">vivado</span><span class="p">:</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">        </span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xczu7ev-ffvc1156-2-e&quot;</span><span class="w">   </span><span class="c1"># optional per-analysis override</span>
+</code></pre></div>
+<p>Notes:</p>
+<ul>
+<li>The SDC is read with <code>read_xdc</code> (<code>create_clock</code> and friends are valid XDC); clocks must be defined for Vivado to see domains.</li>
+<li><code>waivers:</code> is not supported by this backend — a configured waiver file logs a warning and is ignored. Filter on the verbatim findings downstream instead.</li>
+<li>If <code>vivado</code> is not on <code>PATH</code> the analysis is reported SKIP (the backend is optional); a missing <code>opts.part</code> is a config error (exit 2).</li>
+<li>Artefacts land in <code>&lt;suite&gt;/artefacts/&lt;analysis&gt;/</code>: <code>cdc.f</code> (filelist), <code>cdc.tcl</code> (rendered batch script), <code>vivado.log</code>, and <code>cdc.rpt</code> (the raw <code>report_cdc -details</code> output).</li>
+</ul>
 <h2 id="installing-rtl-buddy-cdc">Installing rtl-buddy-cdc</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-cdc<span class="w">    </span><span class="c1"># recommended — isolated tool env</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># or</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>rtl-buddy-cdc<span class="w">     </span><span class="c1"># into the project venv</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-cdc<span class="w">    </span><span class="c1"># recommended — isolated tool env</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1"># or</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>rtl-buddy-cdc<span class="w">     </span><span class="c1"># into the project venv</span>
 </code></pre></div>
 <p>Once installed, the binary lands on <code>PATH</code> as <code>rtl-buddy-cdc</code>. The default <code>cfg-cdc-tools</code> entry in <code>root_config.yaml</code> resolves it from <code>PATH</code>; override with an absolute path if you need a specific version.</p>
 <h2 id="cdc-config-cdcyaml">CDC config: <code>cdc.yaml</code></h2>
 <p><code>cdc.yaml</code> declares one or more CDC analyses. Each entry references a model from <code>models.yaml</code>, an SDC describing the clocks, and an optional waivers file:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc_config</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nt">analyses</span><span class="p">:</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_cdc_full&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Full-design</span><span class="nv"> </span><span class="s">CDC</span><span class="nv"> </span><span class="s">lint,</span><span class="nv"> </span><span class="s">no</span><span class="nv"> </span><span class="s">waivers&quot;</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top&quot;</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top.sdc&quot;</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">waivers</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top_waivers.yaml&quot;</span><span class="w">     </span><span class="c1"># optional</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">frontend</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;slang&quot;</span><span class="w">                    </span><span class="c1"># optional — overrides default</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc_config</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nt">analyses</span><span class="p">:</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_cdc_full&quot;</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Full-design</span><span class="nv"> </span><span class="s">CDC</span><span class="nv"> </span><span class="s">lint,</span><span class="nv"> </span><span class="s">no</span><span class="nv"> </span><span class="s">waivers&quot;</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top&quot;</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top.sdc&quot;</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">    </span><span class="nt">waivers</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_top_waivers.yaml&quot;</span><span class="w">     </span><span class="c1"># optional</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">    </span><span class="nt">frontend</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;slang&quot;</span><span class="w">                    </span><span class="c1"># optional — overrides default</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
 </code></pre></div>
 <h3 id="fields">Fields</h3>
 <table>
@@ -1766,7 +1852,7 @@
 </tr>
 <tr>
 <td><code>tool</code></td>
-<td>Backend tool name — must match a <code>cfg-cdc-tools</code> entry (only <code>rtl-buddy-cdc</code> today)</td>
+<td>Backend tool name — must match a <code>cfg-cdc-tools</code> entry (<code>rtl-buddy-cdc</code> or <code>vivado</code>)</td>
 </tr>
 <tr>
 <td><code>model</code></td>
@@ -1802,12 +1888,12 @@
 <p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb fpv</code> use), strips down to plain source paths (no <code>+incdir+</code>, no <code>-y</code>, no <code>-f</code>), and passes them as positional arguments to <code>rtl-buddy-cdc lint</code> alongside <code>--top</code>, <code>--sdc</code>, and optionally <code>--waivers</code>. The top module is taken from the model's <code>name:</code> field.</p>
 <h2 id="root-config-cfg-cdc-tools">Root config: <code>cfg-cdc-tools</code></h2>
 <p><code>cfg-cdc-tools</code> declares the CDC tools available to all suites in this project:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">cfg-cdc-tools</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span><span class="w">           </span><span class="c1"># binary on PATH, or absolute path</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">      </span><span class="nt">sync-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">                 </span><span class="c1"># optional — passed via --sync-depth</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">                </span><span class="c1"># optional — appended verbatim</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">cfg-cdc-tools</span><span class="p">:</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span><span class="w">           </span><span class="c1"># binary on PATH, or absolute path</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">      </span><span class="nt">sync-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">                 </span><span class="c1"># optional — passed via --sync-depth</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">                </span><span class="c1"># optional — appended verbatim</span>
 </code></pre></div>
 <table>
 <thead>
@@ -1827,36 +1913,40 @@
 </tr>
 <tr>
 <td><code>opts.sync-depth</code></td>
-<td>Default synchronizer depth, forwarded via <code>--sync-depth</code></td>
+<td>Default synchronizer depth, forwarded via <code>--sync-depth</code> (rtl-buddy-cdc only)</td>
 </tr>
 <tr>
 <td><code>opts.extra-args</code></td>
-<td>Passed through verbatim to the analyzer command line</td>
+<td>Passed through verbatim to the analyzer command line (rtl-buddy-cdc only)</td>
+</tr>
+<tr>
+<td><code>opts.part</code></td>
+<td>Device part for <code>synth_design</code> elaboration (vivado backend only)</td>
 </tr>
 </tbody>
 </table>
 <p><strong>Relative paths in <code>extra-args</code>.</strong> A relative path inside <code>extra-args</code> (e.g. <code>--yosys-plugin ../slang.so</code>, <code>--emit-domain-map overlays/map.json</code>) is resolved by the analyzer relative to the <strong><code>cdc.yaml</code> directory</strong>, not the process cwd — the same anchor <code>constraints</code> and <code>waivers</code> already use. The runner forwards the config's directory as <code>rtl-buddy-cdc --project-root &lt;dir&gt;</code> when the installed analyzer supports it (requires the rtl-buddy-cdc release carrying <a href="https://github.com/rtl-buddy/rtl-buddy-cdc/issues/245">rtl-buddy-cdc#245</a>; older analyzers run without it and fall back to cwd-relative resolution). Absolute paths are always used verbatim. Author <code>extra-args</code> paths relative to <code>cdc.yaml</code>, like the other path fields.</p>
 <h2 id="running-cdc">Running CDC</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># All analyses in the default ./cdc.yaml</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>cdc
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># A single analysis from a specific config</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rb<span class="w"> </span>cdc<span class="w"> </span>demo_cdc_full<span class="w"> </span>-c<span class="w"> </span>cdc/demo_top/cdc.yaml
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># List analyses without executing</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>rb<span class="w"> </span>cdc<span class="w"> </span>-c<span class="w"> </span>cdc/demo_top/cdc.yaml<span class="w"> </span>--list
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># Regression across multiple cdc.yaml suites, filtered by reglvl</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>rb<span class="w"> </span>cdc-regression<span class="w"> </span>-c<span class="w"> </span>cdc_regression.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># All analyses in the default ./cdc.yaml</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rb<span class="w"> </span>cdc
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># A single analysis from a specific config</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>rb<span class="w"> </span>cdc<span class="w"> </span>demo_cdc_full<span class="w"> </span>-c<span class="w"> </span>cdc/demo_top/cdc.yaml
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># List analyses without executing</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>rb<span class="w"> </span>cdc<span class="w"> </span>-c<span class="w"> </span>cdc/demo_top/cdc.yaml<span class="w"> </span>--list
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="c1"># Regression across multiple cdc.yaml suites, filtered by reglvl</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>rb<span class="w"> </span>cdc-regression<span class="w"> </span>-c<span class="w"> </span>cdc_regression.yaml<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
 </code></pre></div>
 <h2 id="results-table">Results table</h2>
 <p>A summary table prints after each run, with one row per analysis:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>                                      CDC Lint Results Summary
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>┏━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>┃ CDC Analysis  ┃ Result ┃ Description                       ┃ Violations ┃ Suppressed ┃ Crossings ┃
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>┡━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>│ demo_cdc_full │ PASS   │ no rule violations (3 suppressed) │ 0          │ 3          │ 142       │
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>└───────────────┴────────┴───────────────────────────────────┴────────────┴────────────┴───────────┘
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>                                      CDC Lint Results Summary
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>┏━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>┃ CDC Analysis  ┃ Result ┃ Description                       ┃ Violations ┃ Suppressed ┃ Crossings ┃
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>┡━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>│ demo_cdc_full │ PASS   │ no rule violations (3 suppressed) │ 0          │ 3          │ 142       │
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>└───────────────┴────────┴───────────────────────────────────┴────────────┴────────────┴───────────┘
 </code></pre></div>
 <ul>
 <li><strong>Description</strong> — short human-readable status (<code>no rule violations</code>, <code>no rule violations (N suppressed)</code>, or the failure reason for FAIL/SKIP rows).</li>
@@ -1865,7 +1955,7 @@
 <li><strong>Crossings</strong> — total clock-domain crossings detected (informational, parsed from <code>summary.crossings</code>).</li>
 </ul>
 <p><code>rb cdc-regression</code> prints the same columns under the title <strong>CDC Regression Summary</strong> with a <code>Reg Level: N</code> metadata line.</p>
-<p>Pass <code>--machine</code> (a global flag, before the subcommand: <code>rb --machine cdc</code>) to get a JSON envelope on stdout instead of the table. Each result row carries <code>name</code>, <code>result</code>, <code>desc</code>, and — when available — <code>violations</code>, <code>suppressed</code>, and <code>crossings</code>; <code>cdc-regression</code> rows additionally carry <code>suite</code>. <code>rb --machine cdc --list</code> emits a <code>names</code> array.</p>
+<p>Pass <code>--machine</code> (a global flag, before the subcommand: <code>rb --machine cdc</code>) to get a JSON envelope on stdout instead of the table. Each result row carries <code>name</code>, <code>result</code>, <code>desc</code>, and — when available — <code>violations</code>, <code>suppressed</code>, and <code>crossings</code>; vivado-backend rows additionally carry <code>backend: "vivado"</code> and a <code>findings</code> list with the verbatim <code>{id, severity, description, depth, exception, source, destination, source_clock, destination_clock}</code> entries. <code>cdc-regression</code> rows additionally carry <code>suite</code>. <code>rb --machine cdc --list</code> emits a <code>names</code> array.</p>
 <h2 id="artefacts">Artefacts</h2>
 <p>Per-analysis outputs land under <code>&lt;suite&gt;/artefacts/&lt;analysis&gt;/</code>:</p>
 <table>
@@ -1903,12 +1993,12 @@
 <p>A run is FAIL when violations are present, when the JSON report is missing or malformed, or when the analyzer exits with any other code (typically 2 = elaboration failure). The failure description includes the violation count and points at <code>cdc.log</code> for diagnosis.</p>
 <p>SKIP is returned when the analysis's <code>reglvl</code> is above the <code>-l</code> filter passed to <code>rb cdc-regression</code>.</p>
 <h2 id="hub-integration">Hub integration</h2>
-<p>When the <a href="../hub/">coordination hub</a> is running for the current project, every successful <code>rb cdc</code> analysis publishes its violations to the hub as a <code>diagnostics_set</code> event under the source key <code>rb-cdc:&lt;analysis_name&gt;</code>. The rtl-buddy-view SPA's on-canvas badge layer and <code>rtl-buddy-nvim</code>'s <code>rtlbuddy</code> diagnostics namespace light up immediately — no <code>rb hub send</code> copy-paste.</p>
+<p>When the <a href="../hub/">coordination hub</a> is running for the current project, every successful <code>rb cdc</code> analysis on the <code>rtl-buddy-cdc</code> backend publishes its violations to the hub as a <code>diagnostics_set</code> event under the source key <code>rb-cdc:&lt;analysis_name&gt;</code>. The rtl-buddy-view SPA's on-canvas badge layer and <code>rtl-buddy-nvim</code>'s <code>rtlbuddy</code> diagnostics namespace light up immediately — no <code>rb hub send</code> copy-paste.</p>
 <p>The publish step is best-effort: missing hub, no live PID, connect failure, or a malformed JSON payload all silently no-op with a debug-level log line. The CDC analysis itself is never failed by a sidecar UI being unreachable.</p>
 <p>Re-running an analysis after a fix replaces (or clears) just that source-key slot, so a project with several analyses doesn't have one fix wiping all the others.</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
-<li><strong>rtl-buddy-cdc only.</strong> Commercial CDC tools (SpyGlass CDC, JasperGold CDC, Questa CDC) are not yet wired up — adding them follows the same pattern documented for <code>rb fpv</code>'s SymbiYosys backend.</li>
+<li><strong>Commercial CDC signoff tools.</strong> SpyGlass CDC, JasperGold CDC, and Questa CDC are not yet wired up — adding one is a wrapper class plus a registry entry, the same shape the vivado backend used.</li>
 <li><strong>Reset-domain crossing (RDC).</strong> Reset-domain analysis is a planned extension of <code>rtl-buddy-cdc</code>; once it lands there, <code>rb cdc</code> will surface its findings alongside CDC. Today RDC overlays surface in <code>rb hier --rdc-annotations</code> via a separate analyzer pass.</li>
 </ul>
 

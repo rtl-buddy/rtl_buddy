@@ -785,6 +785,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../fpga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../cdc/" class="md-nav__link">
         
   
@@ -1764,6 +1792,7 @@
 <a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="p">}</span>
 </code></pre></div>
 <p>JSON output is the wire format for CI agents and IDE integrations — <code>rb tool-check --format json</code> is stable enough to script against. Combine with <code>--required-for</code> to narrow the result to a single subcommand.</p>
+<p>The global <code>--machine</code> flag is also honored: <code>rb --machine tool-check ...</code> wraps the same <code>tools</code> / <code>subcommands</code> / <code>exit_code</code> structure inside the standard machine-mode envelope (<code>{"command": "tool-check", "exit_code": ..., "payload": {...}}</code>) on stdout, exactly like every other command. Agents driving the <a href="../../agents/"><code>--machine</code> loop</a> should use this form — they get one parseable envelope without needing the command-specific <code>--format json</code> flag. <code>--format json</code> remains for non-machine callers who want the bare manifest dict.</p>
 <h2 id="how-the-manifest-works">How the manifest works</h2>
 <p>The single source of truth lives in <code>src/rtl_buddy/tool_manifest.py</code>. Each <code>ToolSpec</code> declares:</p>
 <table>

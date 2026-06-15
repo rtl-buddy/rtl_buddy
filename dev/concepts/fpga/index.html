@@ -1,0 +1,2400 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="How to run an FPGA implementation flow (synthesis, place, route, optional bitstream) with rtl_buddy via the rb fpga command and fpga.yaml, driving AMD/Xilinx Vivado in batch mode or the open openXC7 toolchain, including an agent-driven timing-closure loop.">
+      
+      
+        <meta name="author" content="RTL Buddy contributors">
+      
+      
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/">
+      
+      
+        <link rel="prev" href="../power/">
+      
+      
+        <link rel="next" href="../cdc/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>FPGA Implementation - RTL Buddy</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#fpga-implementation" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            RTL Buddy
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              FPGA Implementation
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    RTL Buddy
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../execution-context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../root-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Root Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expected-failures/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expected Failures (xfail)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coverage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coverage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cocotb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cocotb
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec-traceability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wave/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchy Rendering
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hub/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pnr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Place-and-Route
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#supported-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported backends
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Supported backends">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-openxc7-backend-open-source-7-series-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The openXC7 backend (open source, 7-series only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#installing-vivado" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing Vivado
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Installing Vivado">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#licensing-and-ci-caveats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Licensing and CI caveats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fpga-config-fpgayaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FPGA config: fpga.yaml
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="FPGA config: fpga.yaml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#timing-closure-and-the-default-pass-on-unmet-timing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing closure and the default pass-on-unmet-timing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#platforms-cfg-fpga-platforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Platforms: cfg-fpga-platforms
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Platforms: cfg-fpga-platforms">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#xdc-ownership-and-ordering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        XDC ownership and ordering
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#regression-rb-fpga-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Regression: rb fpga-regression
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#machine-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timing-closure-with-an-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing closure with an agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artefacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#power" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Power
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#methodology-warnings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methodology warnings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#passfail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope (today)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cdc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CDC Lint
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fpv/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formal Property Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../abv-simulation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../xplr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design-Space Exploration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../axi-profile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AXI Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-check/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Check
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    YAML Formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/guidelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/docs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Documentation Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../known-issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quirks & Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#supported-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported backends
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Supported backends">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-openxc7-backend-open-source-7-series-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The openXC7 backend (open source, 7-series only)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#installing-vivado" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Installing Vivado
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Installing Vivado">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#licensing-and-ci-caveats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Licensing and CI caveats
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fpga-config-fpgayaml" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FPGA config: fpga.yaml
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="FPGA config: fpga.yaml">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#timing-closure-and-the-default-pass-on-unmet-timing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing closure and the default pass-on-unmet-timing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#platforms-cfg-fpga-platforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Platforms: cfg-fpga-platforms
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Platforms: cfg-fpga-platforms">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#xdc-ownership-and-ordering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        XDC ownership and ordering
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#regression-rb-fpga-regression" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Regression: rb fpga-regression
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#machine-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#timing-closure-with-an-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Timing closure with an agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#artefacts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Artefacts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#power" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Power
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#methodology-warnings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methodology warnings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#passfail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pass/fail detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-today" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope (today)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="fpga-implementation">FPGA Implementation</h1>
+<blockquote>
+<p><strong>Integration type:</strong> Pluggable. <code>rb fpga</code> ships two backends — <code>vivado</code> (default) and <code>openxc7</code> (open-source, 7-series only); further backends register in the same backend table.</p>
+<p><strong>External binaries required:</strong> <code>vivado</code> — see <a href="#installing-vivado">Installing Vivado</a> — or, for the open alternative, <code>yosys</code> + <code>nextpnr-xilinx</code> + prjxray — see <a href="#the-openxc7-backend-open-source-7-series-only">The openXC7 backend</a>.</p>
+<p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
+</blockquote>
+<p><code>rb fpga</code> drives a full FPGA implementation flow — RTL synthesis, placement, routing, post-route reports, and (on request) a bitstream — for one target part per run. The value-add over driving the tools by hand: a stable <code>artefacts/&lt;run&gt;/</code> layout, structured pass/fail with utilization/timing/power/DRC metrics distilled from multi-thousand-line logs, machine-mode JSON for agents, and the same regression/reglvl model as <code>rb synth</code>/<code>rb pnr</code>.</p>
+<h2 id="supported-backends">Supported backends</h2>
+<p>The <code>tool:</code> field in <code>fpga.yaml</code> selects the backend; an unknown value is a config error (exit 2).</p>
+<table>
+<thead>
+<tr>
+<th><code>tool:</code></th>
+<th>Engine</th>
+<th>Parts</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>vivado</code> (default)</td>
+<td>AMD/Xilinx Vivado</td>
+<td>all Vivado-supported</td>
+<td>proprietary; full report set</td>
+</tr>
+<tr>
+<td><code>openxc7</code></td>
+<td>Yosys + nextpnr-xilinx + prjxray</td>
+<td>7-series only (<code>xc7...</code>)</td>
+<td>open source; reduced metric set</td>
+</tr>
+</tbody>
+</table>
+<p><code>vivado</code> is the default because openXC7 covers only the 7-series families — an open default would break every UltraScale+/Versal platform out of the box. <strong>openXC7 is the open alternative for 7-series parts; select it per run with <code>tool: openxc7</code>.</strong> Where <code>rb synth</code> can default open because Yosys reads any RTL, an FPGA backend is only usable when it can target your silicon.</p>
+<p>Vivado is driven in non-project batch mode:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>vivado -mode batch -source flow.tcl -nojournal -log vivado.log
+</code></pre></div>
+<p>with <code>read_verilog</code>/<code>read_xdc</code> → <code>synth_design</code> → <code>opt_design</code> → <code>place_design</code> → <code>route_design</code>, followed by <code>report_utilization</code>, <code>report_timing_summary</code>, <code>report_power</code>, <code>report_drc</code>, and <code>report_methodology</code>, and finally <code>write_bitstream</code> when <code>--bitstream</code> is passed.</p>
+<h3 id="the-openxc7-backend-open-source-7-series-only">The openXC7 backend (open source, 7-series only)</h3>
+<p><code>tool: openxc7</code> runs the <a href="https://github.com/openXC7">openXC7</a> flow as a stage pipeline in the same run directory:</p>
+<ol>
+<li><code>yosys -s synth.ys</code> — <code>synth_xilinx</code> to a JSON netlist (<code>synth.ys</code> is generated from the model's filelist, like <code>rb synth</code>).</li>
+<li><code>nextpnr-xilinx --chipdb &lt;part&gt;.bin --xdc ... --json &lt;top&gt;.json --fasm &lt;top&gt;.fasm</code> — place and route; utilization and per-clock Fmax come from its log.</li>
+<li>With <code>--bitstream</code> only: prjxray's <code>fasm2frames</code> then <code>xc7frames2bit</code> produce <code>&lt;top&gt;.bit</code>.</li>
+</ol>
+<p>Install the whole chain with the <a href="https://github.com/openXC7/toolchain-installer">openXC7 toolchain installer</a>; <code>rb tool-check</code> reports <code>yosys</code>, <code>nextpnr-xilinx</code>, and <code>prjxray</code> individually. Beyond binaries the flow needs two data inputs:</p>
+<ul>
+<li><strong>nextpnr chipdb</strong> — the per-device <code>.bin</code>. Point <code>tool_overrides.openxc7.chipdb</code> at the file, or set <code>$CHIPDB</code> to the directory holding <code>&lt;part&gt;.bin</code> files.</li>
+<li><strong>prjxray database</strong> (bitstream only) — set <code>tool_overrides.openxc7.prjxray_db</code> or <code>$PRJXRAY_DB_DIR</code> to the database root (containing <code>artix7/</code>, <code>zynq7/</code>, ...).</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">runs</span><span class="p">:</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;counter_a35t&quot;</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;counter</span><span class="nv"> </span><span class="s">on</span><span class="nv"> </span><span class="s">an</span><span class="nv"> </span><span class="s">Arty</span><span class="nv"> </span><span class="s">A7-35&quot;</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openxc7&quot;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;fpga_counter&quot;</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xc7a35tcsg324-1&quot;</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">xdc</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;constraints/arty.xdc&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">      </span><span class="nt">openxc7</span><span class="p">:</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">        </span><span class="nt">chipdb</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/opt/nextpnr-xilinx/xc7a35t.bin&quot;</span>
+</code></pre></div>
+<p>A non-7-series part with <code>tool: openxc7</code> is a config error (exit 2). Missing binaries or an unconfigured chipdb/database report SKIP with a pointer to <code>rb tool-check</code>, exactly like a missing <code>vivado</code>.</p>
+<p>The result shape is the same <code>FpgaPassResults</code> contract, but the open flow measures less: LUT/FF/BRAM/DSP utilization (from nextpnr's device-utilisation log), <code>fmax_mhz</code>, <code>wns_ns</code> (derived per clock from achieved vs. target frequency), <code>timing_met</code>, and <code>failing_paths</code>. There is no power, DRC, methodology, TNS, or hold-slack reporting — those keys are simply absent from the payload, never fabricated. Machine consumers must treat every metric key as optional.</p>
+<h2 id="installing-vivado">Installing Vivado</h2>
+<p>Download the installer from the <a href="https://www.xilinx.com/support/download.html">AMD/Xilinx download page</a> and source the settings script so <code>vivado</code> lands on <code>PATH</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">source</span><span class="w"> </span>/opt/Xilinx/Vivado/&lt;version&gt;/settings64.sh
+</code></pre></div>
+<p>Alternatively, pin an absolute path via a <code>cfg-fpga-tools</code> entry in <code>root_config.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-fpga-tools</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vivado&quot;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/opt/Xilinx/Vivado/2022.1/vivado&quot;</span>
+</code></pre></div>
+<p><code>rb tool-check</code> reports the detected Vivado and its version. If <code>vivado</code> is not found at run time, the run is reported as SKIP (not FAIL) — the feature is optional and opt-in.</p>
+<h3 id="licensing-and-ci-caveats">Licensing and CI caveats</h3>
+<p>Vivado is proprietary: it cannot run in public CI, and larger parts require a purchased license served at runtime (the free ML/WebPACK device set covers smaller parts). rtl_buddy's own test suite therefore never invokes Vivado — the flow is tested by contract against sanitized report fixtures. Treat <code>rb fpga</code> runs as local/lab jobs, and gate them in regressions with <code>reglvl:</code> so license-less environments skip them cleanly.</p>
+<h2 id="fpga-config-fpgayaml">FPGA config: <code>fpga.yaml</code></h2>
+<p><code>fpga.yaml</code> declares one or more implementation runs. Each entry references a model from a <code>models.yaml</code> (which supplies the filelist and the top module name) and names the target part:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fpga_config</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nt">runs</span><span class="p">:</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpga&quot;</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Counter</span><span class="nv"> </span><span class="s">on</span><span class="nv"> </span><span class="s">a</span><span class="nv"> </span><span class="s">ZU7EV&quot;</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vivado&quot;</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;fpga_counter&quot;</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xczu7ev-ffvc1156-2-e&quot;</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">xdc</span><span class="p">:</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;constraints/clocks.xdc&quot;</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+</code></pre></div>
+<h3 id="fields">Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>Run identifier used on the command line and in <code>artefacts/&lt;name&gt;/</code></td>
+</tr>
+<tr>
+<td><code>desc</code></td>
+<td>Human-readable description</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>Model name from <code>model_path</code>'s <code>models.yaml</code>; the model name is the top module</td>
+</tr>
+<tr>
+<td><code>model_path</code></td>
+<td>Path to the <code>models.yaml</code> defining <code>model</code>, resolved relative to <code>fpga.yaml</code></td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>Backend name (<code>"vivado"</code> or <code>"openxc7"</code>); defaults to <code>"vivado"</code></td>
+</tr>
+<tr>
+<td><code>part</code></td>
+<td>Full device part name (e.g. <code>xczu7ev-ffvc1156-2-e</code>), passed to <code>synth_design -part</code>. Mutually exclusive with <code>platform</code></td>
+</tr>
+<tr>
+<td><code>platform</code></td>
+<td>Name of a <a href="#platforms-cfg-fpga-platforms"><code>cfg-fpga-platforms</code></a> entry in <code>root_config.yaml</code>. Mutually exclusive with <code>part</code></td>
+</tr>
+<tr>
+<td><code>xdc</code></td>
+<td>Optional list of XDC constraint files, resolved relative to <code>fpga.yaml</code>. With <code>platform:</code>, these <em>extend</em> the platform's default XDC set (see <a href="#xdc-ownership-and-ordering">XDC ownership</a>)</td>
+</tr>
+<tr>
+<td><code>reglvl</code></td>
+<td>Regression level for filtering (same semantics as <code>rb synth</code>/<code>rb pnr</code>)</td>
+</tr>
+<tr>
+<td><code>require-timing-met</code></td>
+<td>Optional (default <code>false</code>). When <code>true</code>, a routed run that misses timing (<code>timing_met: false</code>) is a <strong>FAIL</strong> instead of a PASS — see <a href="#timing-closure-and-the-default-pass-on-unmet-timing">timing closure</a></td>
+</tr>
+<tr>
+<td><code>xfail</code> / <code>xfail_strict</code></td>
+<td>Expected-failure markers — see <a href="../expected-failures/">Expected Failures</a></td>
+</tr>
+</tbody>
+</table>
+<p>Naming both <code>part:</code> and <code>platform:</code> on one run is a config error (exit 2) — there is no precedence rule.</p>
+<h3 id="timing-closure-and-the-default-pass-on-unmet-timing">Timing closure and the default pass-on-unmet-timing</h3>
+<p>By default a routed run with negative slack still reports <strong>PASS</strong> — the metrics (<code>timing_met</code>, <code>wns_ns</code>, <code>failing_paths</code>) carry the truth so an agent can drive a <a href="#timing-closure-with-an-agent">timing-closure loop</a> instead of getting an opaque failure. Pass/fail keys off the flow completing, not off meeting timing, matching <code>rb pnr</code>.</p>
+<p>Set <code>require-timing-met: true</code> on a run to make timing a hard gate (useful for regression suites that must not regress closure). An unmet-timing run then FAILs, but the routed metrics still ride along on the failing result so the loop keeps its inputs. The gate only fires when the backend reports timing — a backend that cannot measure it (<code>timing_met: null</code>, e.g. openXC7 without a timing report) is never gated. This behavior is also recorded in <a href="../../known-issues/">Quirks &amp; Known Issues</a>.</p>
+<h2 id="platforms-cfg-fpga-platforms">Platforms: <code>cfg-fpga-platforms</code></h2>
+<p>A platform lifts the device choice out of individual runs into a reusable <code>root_config.yaml</code> entry, parallel to <code>cfg-pnr-platforms</code> on the ASIC side. This is how one suite sweeps the same RTL across several parts:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">cfg-fpga-platforms</span><span class="p">:</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;zu7ev_board&quot;</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xczu7ev-ffvc1156-2-e&quot;</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">board</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my-zu7ev-board&quot;</span><span class="w">        </span><span class="c1"># optional, informational</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">xdc</span><span class="p">:</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;constraints/board.xdc&quot;</span><span class="w">    </span><span class="c1"># platform default constraints</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;vu19p&quot;</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="nt">part</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xcvu19p-fsva3824-1-e&quot;</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>Platform identifier referenced by <code>platform:</code> in <code>fpga.yaml</code></td>
+</tr>
+<tr>
+<td><code>part</code></td>
+<td>Full device part name (required)</td>
+</tr>
+<tr>
+<td><code>board</code></td>
+<td>Optional board name, informational only</td>
+</tr>
+<tr>
+<td><code>package</code></td>
+<td>Optional package name, informational only — Vivado part names already encode the package (<code>ffvc1156</code> inside <code>xczu7ev-ffvc1156-2-e</code>), so this field is never re-attached to the part</td>
+</tr>
+<tr>
+<td><code>xdc</code></td>
+<td>Optional default XDC list (board clocks, pinout), resolved relative to <code>root_config.yaml</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>fpga.yaml</code> runs then reference a platform instead of naming a part:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">runs</span><span class="p">:</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;counter_zu7ev&quot;</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;counter</span><span class="nv"> </span><span class="s">on</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">ZU7EV</span><span class="nv"> </span><span class="s">board&quot;</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;fpga_counter&quot;</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../src/models.yaml&quot;</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="nt">platform</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;zu7ev_board&quot;</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="nt">xdc</span><span class="p">:</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;constraints/counter_timing.xdc&quot;</span><span class="w">   </span><span class="c1"># extends the platform set</span>
+</code></pre></div>
+<h3 id="xdc-ownership-and-ordering">XDC ownership and ordering</h3>
+<p>The platform owns the <em>default</em> constraint set (board-level clocks and pinout); <code>fpga.yaml</code> owns per-run selection — the same split as <code>pnr.yaml</code> owning the floorplan while <code>cfg-pnr-platforms</code> owns the technology. Per-run <code>xdc:</code> entries <strong>extend</strong> (never replace) the platform's list, and the read order is platform files first, run files after. Vivado applies XDC in read order with later commands winning, so a run-level constraint overrides a platform default for the same object.</p>
+<h2 id="regression-rb-fpga-regression">Regression: <code>rb fpga-regression</code></h2>
+<p>Multiple <code>fpga.yaml</code> suites aggregate under one <code>fpga_regression.yaml</code>, exactly like <code>rb synth-regression</code> / <code>rb power-regression</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fpga_reg_config</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nt">fpga-configs</span><span class="p">:</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;blocks/counter/fpga.yaml&quot;</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;blocks/fifo/fpga.yaml&quot;</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># All suites, reglvl-0 entries only (the default)</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>rb<span class="w"> </span>fpga-regression
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Deeper sweep: include entries up to reglvl 1000</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>rb<span class="w"> </span>fpga-regression<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># Explicit config path + bitstreams</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>rb<span class="w"> </span>fpga-regression<span class="w"> </span>-c<span class="w"> </span>ci/fpga_regression.yaml<span class="w"> </span>--bitstream
+</code></pre></div>
+<p>Each run's <code>reglvl:</code> is compared against <code>-l/--reg-level</code>; entries above the level are reported SKIP. In machine mode every result row carries a <code>suite</code> key naming the originating <code>fpga.yaml</code>, and the envelope command is <code>fpga-regression</code>.</p>
+<h2 id="running">Running</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># All runs in the default ./fpga.yaml</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>rb<span class="w"> </span>fpga
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># A single run from a specific config</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>rb<span class="w"> </span>fpga<span class="w"> </span>demo_fpga<span class="w"> </span>-c<span class="w"> </span>fpga/demo/fpga.yaml
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># Generate the bitstream too (off by default — a smoke/timing run</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="c1"># doesn&#39;t need the extra bitgen minutes)</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>rb<span class="w"> </span>fpga<span class="w"> </span>demo_fpga<span class="w"> </span>--bitstream
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="c1"># Reglvl-gated runs</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>rb<span class="w"> </span>fpga<span class="w"> </span>demo_fpga<span class="w"> </span>-l<span class="w"> </span><span class="m">1000</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="c1"># List runs without executing</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>rb<span class="w"> </span>fpga<span class="w"> </span>--list
+</code></pre></div>
+<p>Without <code>--bitstream</code> the flow stops after the post-route reports and the results carry <code>bitstream: null</code>.</p>
+<p>With <code>--bitstream</code>, the two bitgen-blocking I/O DRCs (<code>NSTD-1</code> unspecified IOSTANDARD, <code>UCIO-1</code> unconstrained pin location) are downgraded to warnings just before <code>write_bitstream</code> — <code>rb fpga</code> targets IP-level models that usually carry no board pinout, and <code>report_drc</code> still records both at their original severity. Board projects that constrain every pin are unaffected.</p>
+<h2 id="machine-mode">Machine mode</h2>
+<p>With the global <code>--machine</code> flag the command emits a single JSON envelope on stdout. The per-run payload carries the post-route metrics:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="p">{</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;fpga&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">&quot;exit_code&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="nt">&quot;meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;rtl_buddy_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;argv&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;...&quot;</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;cwd&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;git&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{}},</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span><span class="nt">&quot;payload&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">&quot;results&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">      </span><span class="p">{</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">        </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;demo_fpga&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">        </span><span class="nt">&quot;result&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PASS&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">        </span><span class="nt">&quot;desc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;FPGA flow passed&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">        </span><span class="nt">&quot;lut&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;used&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;fixed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;available&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">230400</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;util_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.01</span><span class="p">},</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">        </span><span class="nt">&quot;ff&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;used&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">16</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;fixed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;available&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">460800</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;util_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.01</span><span class="p">},</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">        </span><span class="nt">&quot;bram&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;used&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;fixed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;available&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">312</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;util_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.16</span><span class="p">},</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="w">        </span><span class="nt">&quot;dsp&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;used&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;fixed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;available&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1728</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;util_pct&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.06</span><span class="p">},</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">        </span><span class="nt">&quot;wns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">8.452</span><span class="p">,</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">        </span><span class="nt">&quot;tns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.0</span><span class="p">,</span>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="w">        </span><span class="nt">&quot;whs_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.059</span><span class="p">,</span>
+<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a><span class="w">        </span><span class="nt">&quot;timing_met&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="w">        </span><span class="nt">&quot;total_power_w&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.636</span><span class="p">,</span>
+<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a><span class="w">        </span><span class="nt">&quot;dynamic_power_w&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.044</span><span class="p">,</span>
+<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="w">        </span><span class="nt">&quot;static_power_w&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.592</span><span class="p">,</span>
+<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a><span class="w">        </span><span class="nt">&quot;drc_violations&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+<a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a><span class="w">        </span><span class="nt">&quot;drc_by_severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;Critical Warning&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;Warning&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">},</span>
+<a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a><span class="w">        </span><span class="nt">&quot;methodology_warnings&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-10-25" name="__codelineno-10-25" href="#__codelineno-10-25"></a><span class="w">          </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TIMING-18#1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;severity&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Warning&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-26" name="__codelineno-10-26" href="#__codelineno-10-26"></a><span class="w">           </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Missing input or output delay&quot;</span><span class="p">}</span>
+<a id="__codelineno-10-27" name="__codelineno-10-27" href="#__codelineno-10-27"></a><span class="w">        </span><span class="p">],</span>
+<a id="__codelineno-10-28" name="__codelineno-10-28" href="#__codelineno-10-28"></a><span class="w">        </span><span class="nt">&quot;bitstream&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<a id="__codelineno-10-29" name="__codelineno-10-29" href="#__codelineno-10-29"></a><span class="w">      </span><span class="p">}</span>
+<a id="__codelineno-10-30" name="__codelineno-10-30" href="#__codelineno-10-30"></a><span class="w">    </span><span class="p">]</span>
+<a id="__codelineno-10-31" name="__codelineno-10-31" href="#__codelineno-10-31"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-10-32" name="__codelineno-10-32" href="#__codelineno-10-32"></a><span class="p">}</span>
+</code></pre></div>
+<p>On a run that completed but missed timing, the payload additionally carries the <a href="#timing-closure-with-an-agent">timing-closure loop fields</a>: <code>timing_met: false</code>, the negative <code>wns_ns</code>/<code>tns_ns</code>, <code>failing_endpoints</code>, and <code>failing_paths</code> — the worst violated paths with their start/endpoints.</p>
+<h2 id="timing-closure-with-an-agent">Timing closure with an agent</h2>
+<p>Failing timing is <strong>not</strong> a flow failure: the run completes, exits 0, and the machine payload carries everything a closure loop needs. The loop an agent (or a human with <code>jq</code>) drives:</p>
+<ol>
+<li><strong>Run</strong> in machine mode: <code>rb --machine fpga &lt;run&gt;</code>.</li>
+<li><strong>Read</strong> <code>timing_met</code>. If <code>true</code>, done — record <code>wns_ns</code> as margin. If <code>false</code>, read <code>wns_ns</code>, <code>tns_ns</code>, <code>failing_endpoints</code>, and <code>failing_paths</code>.</li>
+<li><strong>Hypothesize</strong> from the worst path's shape:<ul>
+<li><code>requirement_ns</code> far below what the logic can do → the clock constraint is simply too fast; relax <code>create_clock -period</code> to ≈ <code>requirement_ns - wns_ns</code> (the implied achievable period).</li>
+<li>Source and destination in different clock domains or a quasi-static config path → a missing <code>set_false_path</code> / <code>set_multicycle_path</code> exception.</li>
+<li>High <code>logic_levels</code> and <code>data_path_delay_ns</code> dominated by logic → a pipeline candidate: add a register stage between the path's <code>source</code> and <code>destination</code>.</li>
+<li>Delay dominated by routing → congestion; look at utilization and placement constraints.</li>
+</ul>
+</li>
+<li><strong>Edit</strong> the XDC (constraint fixes) or the RTL (pipelining), then <strong>rerun</strong> the same command.</li>
+<li><strong>Compare</strong> <code>wns_ns</code> across iterations; stop when <code>timing_met</code> flips or improvement stalls.</li>
+</ol>
+<p>A worked example, from a deliberately over-constrained run of the small counter/multiplier design the test fixtures are generated from (<code>xczu7ev</code>, <code>create_clock -period 0.050</code> — 20 GHz, hopeless by construction):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;timing_met&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="nt">&quot;wns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.882</span><span class="p">,</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="nt">&quot;tns_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-81.047</span><span class="p">,</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">  </span><span class="nt">&quot;failing_endpoints&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">101</span><span class="p">,</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">  </span><span class="nt">&quot;failing_paths&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="p">{</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">      </span><span class="nt">&quot;slack_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.882</span><span class="p">,</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">      </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;product_reg/DSP_A_B_DATA_INST/CLK&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">      </span><span class="nt">&quot;destination&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;product_reg/DSP_M_DATA_INST/V[0]&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="w">      </span><span class="nt">&quot;path_group&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;clk&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="w">      </span><span class="nt">&quot;path_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Setup&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="w">      </span><span class="nt">&quot;requirement_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.05</span><span class="p">,</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="w">      </span><span class="nt">&quot;data_path_delay_ns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.894</span><span class="p">,</span>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a><span class="w">      </span><span class="nt">&quot;logic_levels&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="w">      </span><span class="nt">&quot;met&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a><span class="p">}</span>
+</code></pre></div>
+<p>Reading it: the worst path is <em>inside the DSP48 multiplier</em> (<code>product_reg/DSP_*</code>), only 2 logic levels, 0.894 ns of pure logic delay against a 0.05 ns requirement. No XDC exception applies and no pipelining can beat the DSP's internal delay — the only fix is the constraint: the implied achievable period is <code>0.05 - (-0.882) ≈ 0.93 ns</code> plus margin, so set <code>create_clock -period 1.1</code> (≈900 MHz) and rerun; alternatively enable the DSP's <code>MREG</code>/<code>PREG</code> pipeline registers in RTL and accept the latency. With the relaxed clock the same design closes with <code>wns_ns: 8.452</code> at a 10 ns period (the passing fixture).</p>
+<p>On <code>openxc7</code> the same loop reads <code>timing_met</code>, <code>wns_ns</code>, <code>fmax_mhz</code>, and <code>failing_paths</code> (each entry carries <code>clock</code>, achieved <code>fmax_mhz</code> vs <code>target_mhz</code>, derived <code>slack_ns</code>, and the critical path's <code>source</code>/<code>destination</code>); <code>failing_endpoints</code> and per-path requirement/levels are not available.</p>
+<h2 id="artefacts">Artefacts</h2>
+<p>Per-run outputs land under <code>&lt;suite&gt;/artefacts/&lt;run&gt;/</code>. With <code>tool: vivado</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fpga.f</code></td>
+<td>Generated model filelist</td>
+</tr>
+<tr>
+<td><code>flow.tcl</code></td>
+<td>Rendered batch-Tcl flow handed to Vivado</td>
+</tr>
+<tr>
+<td><code>vivado.log</code></td>
+<td>Full Vivado log</td>
+</tr>
+<tr>
+<td><code>util.rpt</code></td>
+<td><code>report_utilization</code></td>
+</tr>
+<tr>
+<td><code>timing_summary.rpt</code></td>
+<td><code>report_timing_summary</code></td>
+</tr>
+<tr>
+<td><code>power.rpt</code></td>
+<td><code>report_power</code></td>
+</tr>
+<tr>
+<td><code>drc.rpt</code></td>
+<td><code>report_drc</code></td>
+</tr>
+<tr>
+<td><code>methodology.rpt</code></td>
+<td><code>report_methodology</code></td>
+</tr>
+<tr>
+<td><code>&lt;top&gt;.bit</code></td>
+<td>Bitstream — only with <code>--bitstream</code></td>
+</tr>
+</tbody>
+</table>
+<p>With <code>tool: openxc7</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fpga.f</code></td>
+<td>Generated model filelist</td>
+</tr>
+<tr>
+<td><code>synth.ys</code></td>
+<td>Generated Yosys synthesis script</td>
+</tr>
+<tr>
+<td><code>yosys.log</code></td>
+<td>Yosys log</td>
+</tr>
+<tr>
+<td><code>&lt;top&gt;.json</code></td>
+<td>Yosys JSON netlist</td>
+</tr>
+<tr>
+<td><code>nextpnr.log</code></td>
+<td>nextpnr-xilinx log (utilization + timing source)</td>
+</tr>
+<tr>
+<td><code>&lt;top&gt;.fasm</code></td>
+<td>Routed FASM</td>
+</tr>
+<tr>
+<td><code>fasm2frames.log</code>, <code>xc7frames2bit.log</code>, <code>&lt;top&gt;.frames</code>, <code>&lt;top&gt;.bit</code></td>
+<td>Bitstream stages — only with <code>--bitstream</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="power">Power</h2>
+<p><code>report_power</code> runs post-route on every pass, and the results carry the headline watts: <code>total_power_w</code> (total on-chip), <code>dynamic_power_w</code>, and <code>static_power_w</code> (device static). This is the FPGA realization of <a href="https://github.com/rtl-buddy/rtl_buddy/issues/103">issue #103</a> — where <code>rb power</code> answers "what does this netlist burn on an ASIC flow", <code>rb fpga</code> answers the same question for an FPGA target, from the vendor's own post-route power model. The human summary table shows the total; machine mode carries all three.</p>
+<p>Treat the absolute numbers with the report's own caveats: a post-route vector-less estimate (the raw <code>power.rpt</code> records Vivado's confidence level, typically <em>Low</em> without simulation activity data) is for trend-tracking across runs, not signoff.</p>
+<h2 id="methodology-warnings">Methodology warnings</h2>
+<p><code>report_methodology</code> runs alongside the other post-route reports and its findings surface as <code>methodology_warnings</code> — a list of <code>{id, severity, description}</code> entries with Vivado's rule ids (<code>TIMING-18</code>, <code>SYNTH-*</code>, ...) and severities kept verbatim. The same framing as the <a href="../cdc/#vivado-backend-second-opinion-not-authority">CDC second-opinion backend</a> applies: these are vendor findings rtl_buddy surfaces, not a ruleset it adopts as canonical — they are <strong>informational and never flip pass/fail</strong>. The human summary shows the count (the <code>Meth</code> column); machine mode carries the full list; the raw report stays in <code>methodology.rpt</code> for digging.</p>
+<h2 id="passfail-detection">Pass/fail detection</h2>
+<p>A run is PASS when:</p>
+<ol>
+<li>The tool exits with code 0 (on <code>openxc7</code>: every pipeline stage).</li>
+<li>The log has no error lines (<code>ERROR: [...]</code> for Vivado, <code>ERROR:</code> for the open tools).</li>
+<li>All reports/logs were produced and parse.</li>
+<li>With <code>--bitstream</code>: the <code>.bit</code> file exists.</li>
+</ol>
+<p>Otherwise FAIL is returned with the cause (on <code>openxc7</code>, naming the failed stage) in the description. SKIP is returned when the backend's tooling is not installed/configured or when the run's <code>reglvl</code> is above the <code>-l</code> filter. Note that failing timing is <strong>not</strong> a FAIL by itself — the run completes and <code>wns_ns</code> / <code>timing_met</code> carry the truth, so the <a href="#timing-closure-with-an-agent">timing-closure loop</a> can read the metrics and iterate.</p>
+<h2 id="out-of-scope-today">Out of scope (today)</h2>
+<ul>
+<li>Include-directory (<code>+incdir+</code>) propagation into <code>synth_design</code> / <code>synth_xilinx</code>.</li>
+<li>Vivado's <code>report_cdc</code> is integrated as a second-opinion backend of <a href="../cdc/#vivado-backend-second-opinion-not-authority"><code>rb cdc</code></a>, not of <code>rb fpga</code>.</li>
+</ul>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

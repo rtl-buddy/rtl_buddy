@@ -783,6 +783,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../concepts/fpga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/cdc/" class="md-nav__link">
         
   
@@ -1478,6 +1506,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rb-fpga-bitstream-downgrades-unconstrained-io-drcs-to-write-the-bitstream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb fpga --bitstream downgrades unconstrained-I/O DRCs to write the bitstream
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb fpga PASSes a routed run that misses timing (unless require-timing-met)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1660,6 +1710,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rb-fpga-bitstream-downgrades-unconstrained-io-drcs-to-write-the-bitstream" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb fpga --bitstream downgrades unconstrained-I/O DRCs to write the bitstream
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb fpga PASSes a routed run that misses timing (unless require-timing-met)
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1825,6 +1897,12 @@ construction, and cross-process races are excluded by the
 <h2 id="a-wrong-fpv-plugin-path-degrades-coi-coverage-silently">A wrong FPV plugin path degrades COI coverage silently</h2>
 <p><code>rb fpv</code> / <code>rb fpv-regression</code> treat the cone-of-influence pass as best-effort: when the yosys COI script fails — most commonly because the yosys-slang plugin path is wrong (stale <code>plugin-path</code>, an unbuilt <code>slang.so</code>, or a sibling-checkout convention that doesn't hold on this machine) — the run only emits <code>fpv coi_yosys_failed</code> WARNINGs and drops the COI column. The verification verdict itself still PASSes, because the proof pipeline loads the plugin separately, so a broken plugin location can sit unnoticed while COI coverage quietly reports nothing.</p>
 <p>If COI numbers disappear or <code>coi_yosys_failed</code> shows up in the log, check the resolved plugin location first: <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>, or — when that is unset — the <code>RTL_BUDDY_SLANG_PLUGIN</code> environment variable. The per-verification <code>coi.log</code> under <code>artefacts/&lt;name&gt;/</code> records the exact yosys error (e.g. <code>Can't load module ...slang.so</code>).</p>
+<h2 id="rb-fpga-bitstream-downgrades-unconstrained-io-drcs-to-write-the-bitstream"><code>rb fpga --bitstream</code> downgrades unconstrained-I/O DRCs to write the bitstream</h2>
+<p>A bitstream write (<code>rb fpga &lt;run&gt; --bitstream</code>) downgrades two I/O DRCs to warnings immediately before <code>write_bitstream</code>: <strong>NSTD-1</strong> (a port without an <code>IOSTANDARD</code>) and <strong>UCIO-1</strong> (a port without a <code>LOC</code>). Vivado treats both as errors that abort <code>write_bitstream</code>, so a design without a complete board pinout — the common <code>rb fpga</code> bring-up/smoke case — could synthesize and route but never produce a bitstream. The downgrade makes the zero-pinout case produce a <code>.bit</code> out of the box.</p>
+<p>This is deliberate and it is <strong>not silent in the data</strong>: <code>report_drc</code> runs <em>before</em> the downgrade, so both violations are still counted in <code>drc_violations</code> / <code>drc_by_severity</code> at their original severity in the results and machine payload — only the gate that blocks <code>write_bitstream</code> is relaxed. A board-targeted design with a full pinout has no NSTD-1/UCIO-1 violations, so it is unaffected. If you are taking a design to real hardware, treat any NSTD-1/UCIO-1 in the report as the error it is and add the missing <code>IOSTANDARD</code>/<code>LOC</code> constraints in your XDC; the downgrade is a bring-up convenience, not a sign-off policy.</p>
+<h2 id="rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met"><code>rb fpga</code> PASSes a routed run that misses timing (unless <code>require-timing-met</code>)</h2>
+<p>By default a routed run with negative slack (<code>timing_met: false</code>, negative <code>wns_ns</code>) still reports <strong>PASS</strong>. This is intentional and mirrors <code>rb pnr</code>: the metrics carry the truth so an agent can run a timing-closure loop — read <code>timing_met</code> / <code>wns_ns</code> / <code>failing_paths</code> from the machine JSON, edit the XDC or RTL, and rerun — instead of the run simply failing with no actionable detail. Pass/fail keys off the flow completing (synth → route → reports), not off meeting timing.</p>
+<p>To make timing a hard gate (e.g. for a regression suite that must not regress closure), set <code>require-timing-met: true</code> on the run in <code>fpga.yaml</code>. An unmet-timing run then becomes a <strong>FAIL</strong>, but the routed metrics still ride along on the failing result so the closure loop keeps its inputs. The gate only fires when the backend actually reports timing — a backend that cannot measure it (<code>timing_met: null</code>) is never gated, since a miss cannot be proven.</p>
 
 
 
