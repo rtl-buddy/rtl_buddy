@@ -111,11 +111,14 @@ class FpgaPassResults(FpgaResults):
 
 
 class FpgaFailResults(FpgaResults):
-    def __init__(self, name, desc):
-        super().__init__(
-            name=name,
-            results={"result": "FAIL", "name": name, "desc": desc},
-        )
+    def __init__(self, name, desc, metrics=None):
+        results = {"result": "FAIL", "name": name, "desc": desc}
+        # A timing-gate failure (require-timing-met) carries the routed
+        # metrics forward so a closure loop still sees wns_ns/timing_met/
+        # failing_paths on the failing payload.
+        if metrics:
+            results.update(metrics)
+        super().__init__(name=name, results=results)
 
 
 class FpgaSkipResults(FpgaResults):

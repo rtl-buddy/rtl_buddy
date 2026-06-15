@@ -116,9 +116,16 @@ runs:
 | `platform` | Name of a [`cfg-fpga-platforms`](#platforms-cfg-fpga-platforms) entry in `root_config.yaml`. Mutually exclusive with `part` |
 | `xdc` | Optional list of XDC constraint files, resolved relative to `fpga.yaml`. With `platform:`, these *extend* the platform's default XDC set (see [XDC ownership](#xdc-ownership-and-ordering)) |
 | `reglvl` | Regression level for filtering (same semantics as `rb synth`/`rb pnr`) |
+| `require-timing-met` | Optional (default `false`). When `true`, a routed run that misses timing (`timing_met: false`) is a **FAIL** instead of a PASS — see [timing closure](#timing-closure-and-the-default-pass-on-unmet-timing) |
 | `xfail` / `xfail_strict` | Expected-failure markers — see [Expected Failures](expected-failures.md) |
 
 Naming both `part:` and `platform:` on one run is a config error (exit 2) — there is no precedence rule.
+
+### Timing closure and the default pass-on-unmet-timing
+
+By default a routed run with negative slack still reports **PASS** — the metrics (`timing_met`, `wns_ns`, `failing_paths`) carry the truth so an agent can drive a [timing-closure loop](#timing-closure-with-an-agent) instead of getting an opaque failure. Pass/fail keys off the flow completing, not off meeting timing, matching `rb pnr`.
+
+Set `require-timing-met: true` on a run to make timing a hard gate (useful for regression suites that must not regress closure). An unmet-timing run then FAILs, but the routed metrics still ride along on the failing result so the loop keeps its inputs. The gate only fires when the backend reports timing — a backend that cannot measure it (`timing_met: null`, e.g. openXC7 without a timing report) is never gated. This behavior is also recorded in [Quirks & Known Issues](../known-issues.md).
 
 ## Platforms: `cfg-fpga-platforms`
 

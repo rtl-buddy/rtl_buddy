@@ -110,6 +110,18 @@ def test_fpga_suite_tool_defaults_to_vivado(tmp_path):
     assert suite.get_runs("demo_fpga")[0].get_tool_name() == "vivado"
 
 
+def test_fpga_suite_require_timing_met_defaults_false_and_parses(tmp_path):
+    # Absent -> default False (unmet timing still PASSes).
+    suite = FpgaSuiteConfig(str(_write_suite(tmp_path)))
+    assert suite.get_runs("demo_fpga")[0].get_require_timing_met() is False
+    # Present -> parsed from the kebab-case YAML key.
+    yaml = _FPGA_YAML.replace(
+        '    tool: "vivado"\n', '    tool: "vivado"\n    require-timing-met: true\n'
+    )
+    suite = FpgaSuiteConfig(str(_write_suite(tmp_path, yaml)))
+    assert suite.get_runs("demo_fpga")[0].get_require_timing_met() is True
+
+
 def test_fpga_suite_missing_part_raises(tmp_path):
     yaml = _FPGA_YAML.replace('    part: "xczu7ev-ffvc1156-2-e"\n', "")
     assert "part" not in yaml
@@ -158,7 +170,15 @@ def test_fpga_suite_loads_xfail_flags(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_fpga_cfg(tmp_path, *, reglvl=None, tool="vivado", filelist=None, xdc=None):
+def _make_fpga_cfg(
+    tmp_path,
+    *,
+    reglvl=None,
+    tool="vivado",
+    filelist=None,
+    xdc=None,
+    require_timing_met=False,
+):
     model = ModelConfig(
         name="demo_top",
         filelist=filelist if filelist is not None else [],
@@ -173,6 +193,7 @@ def _make_fpga_cfg(tmp_path, *, reglvl=None, tool="vivado", filelist=None, xdc=N
         xdc_files=xdc or [],
         _reglvl=reglvl,
         tool_overrides=None,
+        require_timing_met=require_timing_met,
     )
 
 
@@ -326,6 +347,81 @@ def test_fpga_runner_unknown_tool_raises(tmp_path):
     )
     with pytest.raises(FatalRtlBuddyError, match="unknown tool 'quartus'"):
         runner.run()
+
+
+# ---------------------------------------------------------------------------
+# FpgaRunner — require-timing-met gate
+# ---------------------------------------------------------------------------
+
+
+def _run_with_pass_backend(runner, *, timing_met):
+    """Stub the vivado backend to return a PASS carrying the given timing_met."""
+    from rtl_buddy.runner import fpga_runner as fpga_runner_module
+
+    mock_backend = MagicMock()
+    mock_backend.return_value.run.return_value = FpgaPassResults(
+        name="demo/results",
+        wns_ns=-1.25 if timing_met is False else 0.5,
+        tns_ns=-3.0 if timing_met is False else 0.0,
+        timing_met=timing_met,
+        failing_endpoints=4 if timing_met is False else 0,
+    )
+    with patch.dict(fpga_runner_module._FPGA_BACKENDS, {"vivado": mock_backend}):
+        return runner.run()
+
+
+def _runner(tmp_path, **cfg_kwargs):
+    from rtl_buddy.runner.fpga_runner import FpgaRunner
+
+    root_cfg = MagicMock()
+    root_cfg.get_fpga_tool_cfg.return_value = None
+    return FpgaRunner(
+        name="demo",
+        root_cfg=root_cfg,
+        fpga_cfg=_make_fpga_cfg(tmp_path, **cfg_kwargs),
+        suite_dir=str(tmp_path),
+    )
+
+
+def test_fpga_require_timing_met_fails_unmet_run_and_keeps_metrics(tmp_path):
+    res = _run_with_pass_backend(
+        _runner(tmp_path, require_timing_met=True), timing_met=False
+    )
+    assert isinstance(res, FpgaFailResults)
+    assert res.results["result"] == "FAIL"
+    assert "timing not met" in res.results["desc"]
+    assert "WNS=-1.25" in res.results["desc"]
+    # metrics ride along so a closure loop still sees them on the fail
+    assert res.results["wns_ns"] == -1.25
+    assert res.results["timing_met"] is False
+    assert res.results["failing_endpoints"] == 4
+
+
+def test_fpga_require_timing_met_passes_when_timing_met(tmp_path):
+    res = _run_with_pass_backend(
+        _runner(tmp_path, require_timing_met=True), timing_met=True
+    )
+    assert isinstance(res, FpgaPassResults)
+    assert res.results["result"] == "PASS"
+
+
+def test_fpga_unmet_timing_passes_by_default(tmp_path):
+    # Default (no require-timing-met): unmet timing still PASSes — metrics
+    # carry the truth, matching rb pnr.
+    res = _run_with_pass_backend(_runner(tmp_path), timing_met=False)
+    assert isinstance(res, FpgaPassResults)
+    assert res.results["result"] == "PASS"
+    assert res.results["timing_met"] is False
+
+
+def test_fpga_require_timing_met_does_not_gate_unknown_timing(tmp_path):
+    # A backend that cannot measure timing (timing_met None, e.g. openxc7
+    # without a timing report) is never gated — we cannot prove a miss.
+    res = _run_with_pass_backend(
+        _runner(tmp_path, require_timing_met=True), timing_met=None
+    )
+    assert isinstance(res, FpgaPassResults)
+    assert res.results["result"] == "PASS"
 
 
 # ---------------------------------------------------------------------------

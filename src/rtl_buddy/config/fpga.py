@@ -43,6 +43,13 @@ class FpgaConfigFile:
     xdc: list[str] = field(default_factory=list)
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     tool_overrides: dict | None = None
+    # Gate the run on timing closure. By default a routed run with
+    # negative slack still PASSes (metrics carry the truth so a
+    # timing-closure loop can iterate, matching `rb pnr`); set this true
+    # to make an unmet-timing run FAIL — useful for regression gating.
+    # No effect when the backend cannot report timing (timing_met None).
+    # See docs/known-issues.md.
+    require_timing_met: bool = field(rename="require-timing-met", default=False)
     # Expected-fail markers (pytest-style). Either marks this run
     # expected-to-fail; `xfail` is non-strict (an unexpected pass still
     # passes), `xfail_strict` is strict (an unexpected pass is a failure).
@@ -81,6 +88,7 @@ class FpgaConfigFile:
             xdc_files=xdc_files,
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
+            require_timing_met=self.require_timing_met,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -97,8 +105,13 @@ class FpgaConfig:
     tool_overrides: dict | None
     xdc_files: list[str] = dc_field(default_factory=list)
     platform: str = ""
+    require_timing_met: bool = False
     xfail: bool = False
     xfail_strict: bool = False
+
+    def get_require_timing_met(self) -> bool:
+        """Whether an unmet-timing routed run should FAIL (vs PASS)."""
+        return self.require_timing_met
 
     def is_xfail(self) -> bool:
         """Whether this run is expected to fail (either flag set)."""

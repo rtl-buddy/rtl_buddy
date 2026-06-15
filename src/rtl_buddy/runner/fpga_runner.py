@@ -5,7 +5,7 @@ logger = logging.getLogger(__name__)
 from ..config.fpga import FpgaConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
-from ..runner.fpga_results import FpgaResults, FpgaSkipResults
+from ..runner.fpga_results import FpgaFailResults, FpgaResults, FpgaSkipResults
 from ..tools.fpga_base import BaseFpga
 from ..tools.fpga_openxc7 import OpenXc7Fpga
 from ..tools.fpga_vivado import VivadoFpga
@@ -81,4 +81,35 @@ class FpgaRunner:
             executable=executable,
             emit_bitstream=self.emit_bitstream,
         )
-        return backend.run()
+        return self._apply_timing_gate(backend.run())
+
+    def _apply_timing_gate(self, result: FpgaResults) -> FpgaResults:
+        """Convert a passing run with unmet timing into a FAIL when the run
+        sets ``require-timing-met``.
+
+        Backend-agnostic so it covers every backend uniformly. Only acts
+        when the backend explicitly reported ``timing_met is False`` — a
+        ``None`` (backend cannot measure timing) is never gated, since we
+        cannot prove timing was missed. The routed metrics ride along on
+        the failing result so a closure loop still sees them.
+        """
+        if not self.fpga_cfg.get_require_timing_met():
+            return result
+        res = result.results
+        if res.get("result") != "PASS" or res.get("timing_met") is not False:
+            return result
+        wns = res.get("wns_ns")
+        metrics = {k: v for k, v in res.items() if k not in ("result", "name", "desc")}
+        log_event(
+            logger,
+            logging.WARNING,
+            "fpga.timing_gate_failed",
+            fpga=self.fpga_cfg.get_name(),
+            wns_ns=wns,
+            failing_endpoints=res.get("failing_endpoints"),
+        )
+        desc = "timing not met"
+        if wns is not None:
+            desc += f" (WNS={wns} ns)"
+        desc += " — require-timing-met is set for this run"
+        return FpgaFailResults(name=self.name + "/results", desc=desc, metrics=metrics)
