@@ -1,0 +1,213 @@
+{
+  "tool": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "module": "cdc_ref_top",
+  "summary": {
+    "ports": 11,
+    "cells": 47,
+    "flops": 20,
+    "crossings": 5,
+    "async_crossings": 5,
+    "violations": 2,
+    "suppressed": 0,
+    "baseline_carryover": 0
+  },
+  "by_instance": [
+    {
+      "instance_path": [
+        "u_gray_sync"
+      ],
+      "violations": 1,
+      "rules": {
+        "CDC-004": 1
+      }
+    },
+    {
+      "instance_path": [
+        "u_hs"
+      ],
+      "violations": 1,
+      "rules": {
+        "CDC-012": 1
+      }
+    }
+  ],
+  "domains": [
+    {
+      "flop": "u_rst_a.$slang$adff$1",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_rst_a.$slang$adff$2",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_rst_b.$slang$adff$3",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_rst_b.$slang$adff$4",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "$slang$adff$5",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_flag_sync.$slang$adff$6",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_flag_sync.$slang$adff$7",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "$slang$adff$8",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_gray_sync.$slang$adff$9",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_gray_sync.$slang$adff$10",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_hs.$slang$adff$11",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_hs.$slang$adff$12",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_hs.u_ack_sync.$slang$adff$13",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_hs.u_ack_sync.$slang$adff$14",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_hs.u_req_sync.$slang$adff$15",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_hs.u_req_sync.$slang$adff$16",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_hs.$slang$adff$17",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_hs.$slang$adff$18",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_hs.$slang$adff$19",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "u_hs.$slang$adff$20",
+      "clock": "clk_b"
+    }
+  ],
+  "crossings": [
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "dst_flop": "u_flag_sync.$slang$adff$6",
+      "width": 1,
+      "min_hops": 0,
+      "src_flop": "$slang$adff$5"
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "dst_flop": "u_gray_sync.$slang$adff$9",
+      "width": 8,
+      "min_hops": 1,
+      "src_flop": "$slang$adff$8"
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "dst_flop": "u_hs.u_req_sync.$slang$adff$15",
+      "width": 1,
+      "min_hops": 0,
+      "src_flop": "u_hs.$slang$adff$11"
+    },
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "dst_flop": "u_hs.$slang$adff$19",
+      "width": 8,
+      "min_hops": 1,
+      "src_flop": "u_hs.$slang$adff$12"
+    },
+    {
+      "src_clock": "clk_b",
+      "dst_clock": "clk_a",
+      "dst_flop": "u_hs.u_ack_sync.$slang$adff$13",
+      "width": 1,
+      "min_hops": 0,
+      "src_flop": "u_hs.$slang$adff$20"
+    }
+  ],
+  "violations": [
+    {
+      "rule_id": "CDC-004",
+      "severity": "error",
+      "message": "unprotected bus crossing on clk_a \u2192 clk_b: 8-bit path with no recognized gating or gray-coding (src: $slang$adff$8, dst flop: u_gray_sync.$slang$adff$9)",
+      "cell_name": "u_gray_sync.$slang$adff$9",
+      "instance_path": [
+        "u_gray_sync"
+      ],
+      "crossing": {
+        "src_clock": "clk_a",
+        "dst_clock": "clk_b",
+        "dst_flop": "u_gray_sync.$slang$adff$9",
+        "width": 8,
+        "min_hops": 1,
+        "src_flop": "$slang$adff$8"
+      },
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "rule_id": "CDC-012",
+      "severity": "warning",
+      "message": "functional data-hold risk on 'u_hs.$slang$adff$12' \u2192 'u_hs.$slang$adff$19': 8-bit gated bus crossing from 'clk_a' to 'clk_b' has no synced-back handshake between the two domains. The destination's enable is synchronised, but nothing keeps the source payload stable while the enable is in flight \u2014 a payload change between request and capture silently corrupts the latched value. Add a req/ack handshake: hold the source payload until an ack from the destination (synchronised back through a 2FF chain) confirms the sample.",
+      "cell_name": "u_hs.$slang$adff$12",
+      "instance_path": [
+        "u_hs"
+      ],
+      "crossing": {
+        "src_clock": "clk_a",
+        "dst_clock": "clk_b",
+        "dst_flop": "u_hs.$slang$adff$19",
+        "width": 8,
+        "min_hops": 1,
+        "src_flop": "u_hs.$slang$adff$12"
+      },
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 82,
+        "start_column": 3,
+        "end_line": 92,
+        "end_column": 6
+      }
+    }
+  ],
+  "suppressed": [],
+  "baseline_carryover": []
+}

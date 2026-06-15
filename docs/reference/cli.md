@@ -454,9 +454,18 @@ Usage: rtl-buddy cdc [OPTIONS] [CDC_NAME]
 │                             [default: (run all analyses)]                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --cdc-config  -c      TEXT  cdc.yaml to use [default: cdc.yaml]                      │
-│ --list                      list analyses in the selected config and exit            │
-│ --help                      Show this message and exit.                              │
+│ --cdc-config        -c      TEXT      cdc.yaml to use [default: cdc.yaml]            │
+│ --list                                list analyses in the selected config and exit  │
+│ --emit-constraints                    generate scoped CDC timing exceptions from the │
+│                                       verified crossing set instead of linting       │
+│ --format                    FUNCTION  constraint dialect for --emit-constraints      │
+│                                       [default: xdc]                                 │
+│ --scoped                              --emit-constraints: emit IP-relative           │
+│                                       (SCOPED_TO_REF) constraints, omitting          │
+│                                       top-level clock defs/groups                    │
+│ --output            -o      TEXT      --emit-constraints: write to this file         │
+│                                       (default: stdout)                              │
+│ --help                                Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

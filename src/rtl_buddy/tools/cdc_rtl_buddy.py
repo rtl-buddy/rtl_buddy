@@ -63,11 +63,15 @@ class RtlBuddyCdc:
         tool_cfg: CdcToolConfig,
         suite_dir: str,
         root_cfg=None,
+        emit_maps: bool = False,
     ):
         self.name = name
         self.cdc_cfg = cdc_cfg
         self.tool_cfg = tool_cfg
         self.root_cfg = root_cfg
+        # When set, additionally request the structured clock-domain and
+        # reset-domain maps (the inputs for `rb cdc --emit-constraints`, #291).
+        self.emit_maps = emit_maps
         # The cdc.yaml's directory (see ``_do_cdc_suite``). Used as the
         # analyzer's ``--project-root`` so relative paths in a config's
         # ``extra_args`` resolve against the config — not against the
@@ -88,6 +92,24 @@ class RtlBuddyCdc:
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "cdc.log")
+
+    def _domain_map_path(self) -> str:
+        return os.path.join(self.artefact_dir, "domain_map.json")
+
+    def _reset_map_path(self) -> str:
+        return os.path.join(self.artefact_dir, "reset_map.json")
+
+    def read_emitted_maps(self) -> tuple[dict | None, dict | None]:
+        """Return the (domain_map, reset_map) dicts produced by an
+        ``emit_maps`` run, or ``(None, None)`` if they were not written."""
+
+        def _load(path):
+            try:
+                return json.loads(Path(path).read_text())
+            except (OSError, json.JSONDecodeError):
+                return None
+
+        return _load(self._domain_map_path()), _load(self._reset_map_path())
 
     # --- helpers ------------------------------------------------------------
 
@@ -193,6 +215,13 @@ class RtlBuddyCdc:
                 cmd += ["--sync-depth", str(opts.sync_depth)]
             if self.cdc_cfg.frontend is not None:
                 cmd += ["--frontend", self.cdc_cfg.frontend]
+            if self.emit_maps:
+                cmd += [
+                    "--emit-domain-map",
+                    self._domain_map_path(),
+                    "--emit-reset-domain-map",
+                    self._reset_map_path(),
+                ]
             if opts.extra_args:
                 # After project_root_args so a config can still override
                 # the anchor in its own extra_args if it must.

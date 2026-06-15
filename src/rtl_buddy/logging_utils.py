@@ -549,6 +549,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "summary":
             return fields.get("title", "Summary")
+        case "cdc.emit.no_maps":
+            return (
+                f'cdc emit "{fields.get("analysis")}": rtl-buddy-cdc produced no '
+                "domain map — cannot generate constraints (check the cdc log / tool version)"
+            )
+        case "cdc.emit.done":
+            dst = fields.get("output") or "stdout"
+            return (
+                f'cdc emit "{fields.get("analysis")}": {fields.get("exceptions")} '
+                f"{str(fields.get('format', '')).upper()} exception(s) -> {dst}"
+            )
         case "fpga.no_vivado":
             return (
                 f'fpga "{fields.get("fpga")}": {fields.get("exe")!r} not found — '

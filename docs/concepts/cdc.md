@@ -60,6 +60,33 @@ Notes:
 - If `vivado` is not on `PATH` the analysis is reported SKIP (the backend is optional); a missing `opts.part` is a config error (exit 2).
 - Artefacts land in `<suite>/artefacts/<analysis>/`: `cdc.f` (filelist), `cdc.tcl` (rendered batch script), `vivado.log`, and `cdc.rpt` (the raw `report_cdc -details` output).
 
+## Generating CDC timing exceptions (`--emit-constraints`)
+
+Portable CDC IP carries its synchronizers in RTL (`(* ASYNC_REG = "TRUE" *)`) but should **not** hand-author per-instance timing exceptions. `rb cdc --emit-constraints` derives them from the analysis instead: rtl-buddy-cdc already knows the verified crossing set and the reset-synchronizer set, so the exact exceptions can be generated rather than written by hand.
+
+```bash
+# Vivado XDC for the whole design (clock defs + groups + per-crossing exceptions)
+rb cdc <analysis> -c cdc.yaml --emit-constraints --format xdc -o cdc_exceptions.xdc
+
+# Scoped, IP-relative constraints (SCOPED_TO_REF) — for a reusable IP block
+rb cdc <analysis> -c cdc.yaml --emit-constraints --format sdc --scoped -o ip.sdc
+```
+
+What it emits, per verified-safe crossing:
+
+- **`set_max_delay -datapath_only`** bounded to the destination clock period — preferred over a bare `set_false_path` because it still bounds transit and skew.
+- **`set_bus_skew`** additionally for multi-bit buses (width > 1, e.g. a gray-coded counter or a handshake payload), so a false-path on a bus cannot hide bit-to-bit incoherency.
+- **`set_false_path`** to each reset synchronizer's first stage (the async-assert / sync-deassert path is exempt from the data-path check).
+
+Plus, at the top level (omitted with `--scoped`, where clock framing belongs to the parent): `create_clock` echoed from the analysis SDC and `set_clock_groups -asynchronous` for the async domain relationships.
+
+Notes:
+
+- `--format` selects the dialect: **`sdc`** (ASIC / open flow) or **`xdc`** (Vivado, the default). The CDC-relevant subset is identical; only the header and the scoped-cell addressing differ.
+- Requires the open `rtl-buddy-cdc` engine (the vendor backend exposes no structured crossing map); naming a `tool: "vivado"` analysis is a config error.
+- Generation is only correct if the analysis classifies the IP's crossings as **safe** — configure the synchronizer recognition (module names + `sync-depth`) first. Machine mode (`--machine`) returns a manifest of every emitted exception and its rationale, plus the recognition verdict.
+- The generated constraints round-trip through the `--check-xdc` audit ([issue #290](https://github.com/rtl-buddy/rtl_buddy/issues/290)) for completeness / zero-over-waive verification.
+
 ## Installing rtl-buddy-cdc
 
 ```bash

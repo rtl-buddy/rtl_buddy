@@ -3700,6 +3700,38 @@ class RtlBuddy:
                 "--list", help="list analyses in the selected config and exit"
             ),
         ] = False,
+        emit_constraints: Annotated[
+            bool,
+            typer.Option(
+                "--emit-constraints",
+                help="generate scoped CDC timing exceptions from the verified "
+                "crossing set instead of linting",
+            ),
+        ] = False,
+        emit_format: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                help="constraint dialect for --emit-constraints",
+                click_type=click.Choice(["sdc", "xdc"]),
+            ),
+        ] = "xdc",
+        scoped: Annotated[
+            bool,
+            typer.Option(
+                "--scoped",
+                help="--emit-constraints: emit IP-relative (SCOPED_TO_REF) "
+                "constraints, omitting top-level clock defs/groups",
+            ),
+        ] = False,
+        output: Annotated[
+            str,
+            typer.Option(
+                "-o",
+                "--output",
+                help="--emit-constraints: write to this file (default: stdout)",
+            ),
+        ] = None,
     ):
         """
         run CDC lint
@@ -3707,6 +3739,11 @@ class RtlBuddy:
         ctx = self._enter_command_context(
             primary_config=cdc_config, list_only=list_cdcs
         )
+        if emit_constraints:
+            self._do_emit_constraints(
+                ctx, cdc_config, cdc_name, emit_format, scoped, output
+            )
+            return
         suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
@@ -3739,6 +3776,111 @@ class RtlBuddy:
         else:
             self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
         raise typer.Exit(exit_code)
+
+    def _do_emit_constraints(self, ctx, cdc_config, cdc_name, fmt, scoped, output):
+        """`rb cdc --emit-constraints`: generate scoped CDC timing exceptions
+        (#291) from rtl-buddy-cdc's verified crossing + reset-sync maps."""
+        from .tools.cdc_constraints import generate_constraints
+        from .tools.cdc_rtl_buddy import RtlBuddyCdc
+
+        suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        analyses = suite_cfg.get_analyses(cdc_name)
+        if not analyses:
+            raise FatalRtlBuddyError(
+                f"no CDC analysis named {cdc_name!r} in {cdc_config}"
+            )
+        if cdc_name is None and len(analyses) > 1:
+            raise FatalRtlBuddyError(
+                "--emit-constraints needs a single analysis (the IP to constrain); "
+                "name one of: " + ", ".join(a.get_name() for a in analyses)
+            )
+        analysis = analyses[0]
+        tool_name = analysis.get_tool_name()
+        if tool_name != "rtl-buddy-cdc":
+            # Emit derives exceptions from the open engine's crossing set; the
+            # vendor backend has no such structured map.
+            raise FatalRtlBuddyError(
+                "--emit-constraints requires the open rtl-buddy-cdc engine; "
+                f"analysis '{analysis.get_name()}' uses tool '{tool_name}'"
+            )
+
+        tool_cfg = self.root_cfg.get_cdc_tool_cfg(tool_name)
+        backend = RtlBuddyCdc(
+            name=self.name + "/cdc_emit",
+            cdc_cfg=analysis,
+            tool_cfg=tool_cfg,
+            suite_dir=suite_dir,
+            root_cfg=self.root_cfg,
+            emit_maps=True,
+        )
+        res = backend.run()
+        domain_map, reset_map = backend.read_emitted_maps()
+
+        if domain_map is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "cdc.emit.no_maps",
+                analysis=analysis.get_name(),
+            )
+            if self.machine:
+                self._emit_machine_result(
+                    "cdc --emit-constraints",
+                    0,
+                    analysis=analysis.get_name(),
+                    status="SKIP",
+                    reason="rtl-buddy-cdc produced no domain map",
+                )
+            else:
+                emit_console_text(
+                    f"emit-constraints skipped: no domain map produced for "
+                    f"{analysis.get_name()} (see the cdc log)",
+                    style="yellow",
+                )
+            raise typer.Exit(0)
+
+        emit = generate_constraints(domain_map, reset_map, fmt=fmt, scoped=scoped)
+
+        out_path = None
+        if output:
+            out_path = (
+                output
+                if os.path.isabs(output)
+                else os.path.join(self.invocation_cwd, output)
+            )
+            Path(out_path).write_text(emit.text)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "cdc.emit.done",
+            analysis=analysis.get_name(),
+            format=fmt,
+            scoped=scoped,
+            exceptions=len(emit.entries),
+            recognition=res.results.get("result"),
+            output=out_path,
+        )
+
+        if self.machine:
+            self._emit_machine_result(
+                "cdc --emit-constraints",
+                0,
+                analysis=analysis.get_name(),
+                format=fmt,
+                scoped=scoped,
+                output=out_path,
+                recognition=res.results.get("result"),
+                constraints=emit.manifest,
+            )
+        elif out_path:
+            emit_console_text(
+                f"wrote {len(emit.entries)} CDC exception(s) to {out_path}"
+            )
+        else:
+            emit_console_text(emit.text, stream="stdout", markup=False)
+        raise typer.Exit(0)
 
     def do_cdc_regression(
         self,
