@@ -783,6 +783,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../concepts/fpga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../concepts/cdc/" class="md-nav__link">
         
   
@@ -1809,7 +1837,7 @@ When a change intentionally alters a contract, update docs, tests, generated ref
 <ul>
 <li><code>invocation_cwd</code>: the directory where the user ran <code>rb</code>. Use it to resolve relative CLI arguments before they become absolute.</li>
 <li><code>command_root</code>: the directory containing the command's primary config file.</li>
-<li><code>suite_dir</code>: the command root for per-suite flows such as <code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code>.</li>
+<li><code>suite_dir</code>: the command root for per-suite flows such as <code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, <code>power.yaml</code>, and <code>fpga.yaml</code>.</li>
 <li><code>artifact_dir</code>: the generated workspace for one command item, normally <code>suite_dir/artefacts/&lt;name&gt;</code>.</li>
 </ul>
 <p>Config-driven commands should be rooted at their primary config file.
@@ -1883,6 +1911,18 @@ Explicit CLI input and output paths should remain relative to <code>invocation_c
 <td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
 </tr>
 <tr>
+<td><code>fpga</code></td>
+<td style="text-align: right;"><code>dirname(fpga.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;fpga&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
+<td><code>fpga-regression</code></td>
+<td style="text-align: right;"><code>dirname(fpga.yaml)</code></td>
+<td style="text-align: right;"><code>&lt;suite&gt;/artefacts/&lt;fpga&gt;</code></td>
+<td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
+</tr>
+<tr>
 <td><code>hier --view dut</code></td>
 <td style="text-align: right;"><code>dirname(models.yaml)</code></td>
 <td style="text-align: right;"><code>&lt;model_root&gt;/artefacts/hier/&lt;model&gt;</code></td>
@@ -1951,7 +1991,7 @@ Explicit CLI input and output paths should remain relative to <code>invocation_c
 <li><code>regression.yaml</code> resolves listed suite configs relative to itself.</li>
 <li><code>tests.yaml</code> resolves testbench filelists, hook script paths, and suite-local runtime assets relative to the suite directory.</li>
 <li><code>models.yaml</code> resolves model filelist entries relative to the <code>models.yaml</code> file that defined them.</li>
-<li><code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code> resolve their own fields relative to their config directory.</li>
+<li><code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, <code>power.yaml</code>, and <code>fpga.yaml</code> resolve their own fields relative to their config directory.</li>
 </ul>
 <p>Do not let relative paths silently depend on where the user happened to invoke the command.
 If a path is passed to an external tool, prefer an absolute path unless the value is intentionally artifact-relative.</p>

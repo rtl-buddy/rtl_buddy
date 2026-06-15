@@ -935,6 +935,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../concepts/fpga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/cdc/" class="md-nav__link">
         
   
@@ -1715,7 +1743,7 @@
 <td><code>rb cdc</code>, <code>rb cdc-regression</code></td>
 <td>Integrated tool</td>
 <td><a href="https://github.com/rtl-buddy/rtl-buddy-cdc">rtl-buddy-cdc</a></td>
-<td>SpyGlass support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">issue #85</a>.</td>
+<td>Optional: AMD/Xilinx Vivado for the <code>report_cdc</code> second-opinion backend (<code>tool: "vivado"</code>) — see <a href="../concepts/cdc/#vivado-backend-second-opinion-not-authority">CDC Lint</a>. SpyGlass support is on the roadmap — tracked in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">issue #85</a>.</td>
 </tr>
 <tr>
 <td><code>rb wave</code></td>
@@ -1734,6 +1762,12 @@
 <td>Integrated tool</td>
 <td>OpenROAD ≥ <code>25Q1</code></td>
 <td><code>rb saif</code> (FST/VCD → SAIF, used to feed activity) needs no extra tool. See <a href="../concepts/power/">Power Analysis</a>.</td>
+</tr>
+<tr>
+<td><code>rb fpga</code>, <code>rb fpga-regression</code></td>
+<td>Pluggable</td>
+<td>AMD/Xilinx Vivado (default) or openXC7 (<code>yosys</code> + <code>nextpnr-xilinx</code> + prjxray)</td>
+<td>Vivado is proprietary; driven in non-project batch mode (<code>vivado -mode batch</code>); larger parts need a purchased license. <code>tool: openxc7</code> selects the open toolchain for 7-series parts (install via the <a href="https://github.com/openXC7/toolchain-installer">openXC7 toolchain installer</a>). Optional feature — runs report SKIP when the selected backend's tools are absent. See <a href="../concepts/fpga/">FPGA Implementation</a>.</td>
 </tr>
 <tr>
 <td><code>rb fpv</code>, <code>rb fpv-regression</code>, <code>rb wave-fpv</code></td>
