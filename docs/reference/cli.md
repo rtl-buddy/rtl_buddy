@@ -467,6 +467,10 @@ Usage: rtl-buddy cdc [OPTIONS] [CDC_NAME]
 │                                        (default: stdout)                             │
 │ --check-xdc                 FILE       audit a Vivado XDC's CDC exceptions against   │
 │                                        the verified crossing set instead of linting  │
+│ --recognize-sync            REGEX      --check-xdc: instance-path regex for a        │
+│                                        synchronizer the analyzer did not recognize   │
+│                                        (e.g. a blackboxed xpm_cdc_*); repeatable.    │
+│                                        Adds to cdc.yaml's recognized-syncs           │
 │ --help                                 Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

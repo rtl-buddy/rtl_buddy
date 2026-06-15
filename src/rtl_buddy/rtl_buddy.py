@@ -3742,6 +3742,16 @@ class RtlBuddy:
                 "crossing set instead of linting",
             ),
         ] = None,
+        recognize_sync: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--recognize-sync",
+                metavar="REGEX",
+                help="--check-xdc: instance-path regex for a synchronizer the "
+                "analyzer did not recognize (e.g. a blackboxed xpm_cdc_*); "
+                "repeatable. Adds to cdc.yaml's recognized-syncs",
+            ),
+        ] = None,
     ):
         """
         run CDC lint
@@ -3759,7 +3769,9 @@ class RtlBuddy:
             )
             return
         if check_xdc:
-            self._do_check_xdc(ctx, cdc_config, cdc_name, check_xdc)
+            self._do_check_xdc(
+                ctx, cdc_config, cdc_name, check_xdc, recognize_sync or []
+            )
             return
         suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
         log_event(
@@ -3926,7 +3938,7 @@ class RtlBuddy:
             emit_console_text(emit.text, stream="stdout", markup=False)
         raise typer.Exit(0)
 
-    def _do_check_xdc(self, ctx, cdc_config, cdc_name, xdc):
+    def _do_check_xdc(self, ctx, cdc_config, cdc_name, xdc, recognize_sync=None):
         """`rb cdc --check-xdc <file>`: audit an XDC's CDC exceptions against
         rtl-buddy-cdc's verified crossing set (#290)."""
         from .tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
@@ -3975,7 +3987,10 @@ class RtlBuddy:
 
         report = backend.read_report()
         xc = extract_cdc_constraints(Path(xdc_path).read_text())
-        audit = audit_xdc(domain_map, report, xc)
+        # Recognized-synchronizer patterns: cdc.yaml's `recognized-syncs` plus
+        # any --recognize-sync overrides given on the command line.
+        recognized = analysis.get_recognized_syncs() + list(recognize_sync or [])
+        audit = audit_xdc(domain_map, report, xc, recognized_syncs=recognized)
         blockers = audit.blockers
         # A completeness gap or a dangerous over-waive fails the audit; the
         # softer findings (bus-skew / clock-graph) are warnings.

@@ -106,7 +106,23 @@ The audit is a diff between the XDC's exceptions and the open engine's truth, tr
 | `missing_bus_skew` | warning | a multi-bit crossing waived with a bare false-path / clock-group and no `set_bus_skew` — bit-to-bit skew incoherency is unbounded. |
 | `clock_graph` | warning / info | XDC `create_clock` set disagrees with the RTL clocking (extra clock, missing clock, or period mismatch) — can silently change the derived domain set. |
 
-A blocker finding exits non-zero. Pair it with `--emit-constraints`: a generated XDC, fed back through `--check-xdc`, audits clean (full coverage, zero over-waive). `xpm_cdc_*` macro recognition is a separate follow-up ([issue #315](https://github.com/rtl-buddy/rtl_buddy/issues/315)); today the audit targets the portable / `ASYNC_REG` synchronizer pattern.
+A blocker finding exits non-zero. Pair it with `--emit-constraints`: a generated XDC, fed back through `--check-xdc`, audits clean (full coverage, zero over-waive).
+
+### Recognized synchronizers (`recognized-syncs` / `--recognize-sync`)
+
+The audit treats anything the analyzer flags as **not** safely synchronized as eligible for an over-waive. When a crossing actually goes through a synchronizer the analyzer can't see structurally — most often a **vendor macro** like `xpm_cdc_single` whose internals you blackboxed (or that elaborated as a 1-flop stub) — declare it so the audit doesn't raise a false over-waive:
+
+```yaml
+# cdc.yaml
+analyses:
+  - name: top
+    # ...
+    recognized-syncs: ["u_xpm_.*", "xpm_cdc_single"]   # instance-path regexes
+```
+
+…or per-invocation: `rb cdc top -c cdc.yaml --check-xdc top.xdc --recognize-sync 'u_xpm_.*'` (repeatable; adds to the config list).
+
+A crossing whose instance matches is treated as a real synchronizer: a correct XDC waiver of it is **not** reported as a dangerous over-waive, but it is **still required to be constrained** (a missing exception is still an `unconstrained_crossing`). This is the portable way to handle `xpm_cdc_*`-based designs together with blackboxing the macros; true structural recognition of XPM in the analyzer is tracked upstream ([issue #315](https://github.com/rtl-buddy/rtl_buddy/issues/315)). Otherwise the audit targets the portable / `ASYNC_REG` synchronizer pattern.
 
 ## Installing rtl-buddy-cdc
 

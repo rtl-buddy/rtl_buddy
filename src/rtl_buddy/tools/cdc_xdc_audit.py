@@ -237,9 +237,22 @@ def _covers_clock_pair(pair, exceptions, kinds) -> bool:
     return False
 
 
-def audit_xdc(domain_map: dict, cdc_report: dict, xc: XdcConstraints) -> AuditResult:
-    """Diff the XDC's CDC exceptions against the verified crossing set."""
+def audit_xdc(
+    domain_map: dict,
+    cdc_report: dict,
+    xc: XdcConstraints,
+    recognized_syncs: list[str] | None = None,
+) -> AuditResult:
+    """Diff the XDC's CDC exceptions against the verified crossing set.
+
+    ``recognized_syncs`` is a list of instance-path regexes the user declares
+    as real synchronizers the analyzer did not recognize structurally (e.g. a
+    blackboxed ``xpm_cdc_*`` macro). A violation whose instance matches one is
+    treated as a safe crossing: a correct XDC waiver of it is NOT a dangerous
+    over-waive. (Completeness still applies — it is a real crossing.)
+    """
     res = AuditResult()
+    recognized = [re.compile(p) for p in (recognized_syncs or [])]
     crossings = [
         c for c in domain_map.get("crossings", []) if c.get("async_per_sdc", True)
     ]
@@ -311,6 +324,14 @@ def audit_xdc(domain_map: dict, cdc_report: dict, xc: XdcConstraints) -> AuditRe
         if not src or not dst:
             continue
         inst = "/".join(v.get("instance_path", [])) or c.get("dst_flop", "")
+        # A user-declared recognized synchronizer the analyzer missed
+        # structurally (e.g. a blackboxed xpm_cdc_* macro): a correct XDC
+        # waiver of it is not an over-waive, so skip it here. Completeness
+        # above still requires it to be constrained.
+        if recognized and any(
+            r.search(inst) or r.search(c.get("dst_flop", "")) for r in recognized
+        ):
+            continue
         pair = frozenset({src, dst})
         # false_path / clock_groups make the tool IGNORE the path; max_delay
         # still times it, so it is not an over-waive.
