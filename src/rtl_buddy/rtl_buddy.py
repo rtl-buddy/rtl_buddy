@@ -3713,6 +3713,7 @@ class RtlBuddy:
             typer.Option(
                 "--format",
                 help="constraint dialect for --emit-constraints",
+                metavar="[sdc|xdc]",
                 click_type=click.Choice(["sdc", "xdc"]),
             ),
         ] = "xdc",
@@ -3725,7 +3726,7 @@ class RtlBuddy:
             ),
         ] = False,
         output: Annotated[
-            str,
+            str | None,
             typer.Option(
                 "-o",
                 "--output",
@@ -3818,27 +3819,43 @@ class RtlBuddy:
         domain_map, reset_map = backend.read_emitted_maps()
 
         if domain_map is None:
+            # No map can mean two very different things; don't collapse them
+            # into a single exit-0 SKIP.
+            #   (a) the analysis itself failed -> surface it as a failure;
+            #   (b) it ran but the (optional/old) tool emitted no map -> SKIP.
+            verdict = res.results.get("result")
+            failed = verdict not in ("PASS", "SKIP", "XFAIL")
             log_event(
                 logger,
                 logging.WARNING,
                 "cdc.emit.no_maps",
                 analysis=analysis.get_name(),
+                recognition=verdict,
+                failed=failed,
+            )
+            exit_code = 2 if failed else 0
+            status = "FAIL" if failed else "SKIP"
+            reason = (
+                f"analysis did not pass ({verdict}); see the cdc log"
+                if failed
+                else "rtl-buddy-cdc produced no domain map"
             )
             if self.machine:
                 self._emit_machine_result(
                     "cdc --emit-constraints",
-                    0,
+                    exit_code,
                     analysis=analysis.get_name(),
-                    status="SKIP",
-                    reason="rtl-buddy-cdc produced no domain map",
+                    status=status,
+                    recognition=verdict,
+                    reason=reason,
                 )
             else:
                 emit_console_text(
-                    f"emit-constraints skipped: no domain map produced for "
-                    f"{analysis.get_name()} (see the cdc log)",
-                    style="yellow",
+                    f"emit-constraints {status.lower()} for "
+                    f"{analysis.get_name()}: {reason}",
+                    style="red" if failed else "yellow",
                 )
-            raise typer.Exit(0)
+            raise typer.Exit(exit_code)
 
         emit = generate_constraints(domain_map, reset_map, fmt=fmt, scoped=scoped)
 
