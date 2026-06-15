@@ -85,6 +85,7 @@ Notes:
 - `--format` selects the dialect: **`sdc`** (ASIC / open flow) or **`xdc`** (Vivado, the default). The CDC-relevant subset is identical; only the header and the scoped-cell addressing differ.
 - Requires the open `rtl-buddy-cdc` engine (the vendor backend exposes no structured crossing map); naming a `tool: "vivado"` analysis is a config error.
 - Generation is only correct if the analysis classifies the IP's crossings as **safe** — configure the synchronizer recognition (module names + `sync-depth`) first. Machine mode (`--machine`) returns a manifest of every emitted exception and its rationale, plus the recognition verdict.
+- **Requires a recent rtl-buddy-cdc** — the structured maps come from its `--emit-domain-map` / `--emit-reset-domain-map` (newer than plain lint). An analyzer that lacks them produces no map: the command then reports `SKIP` (when the analysis otherwise passed) rather than constraints. If you expected output and got a SKIP, upgrade rtl-buddy-cdc (`uv tool upgrade rtl-buddy-cdc`).
 - The generated constraints round-trip through the `--check-xdc` audit ([issue #290](https://github.com/rtl-buddy/rtl_buddy/issues/290)) for completeness / zero-over-waive verification.
 
 ## Installing rtl-buddy-cdc
