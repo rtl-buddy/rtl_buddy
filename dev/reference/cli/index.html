@@ -3716,10 +3716,19 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>│                             [default: (run all analyses)]                            │
 <a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>│ --cdc-config  -c      TEXT  cdc.yaml to use [default: cdc.yaml]                      │
-<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>│ --list                      list analyses in the selected config and exit            │
-<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>│ --help                      Show this message and exit.                              │
-<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>│ --cdc-config        -c      TEXT       cdc.yaml to use [default: cdc.yaml]           │
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>│ --list                                 list analyses in the selected config and exit │
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>│ --emit-constraints                     generate scoped CDC timing exceptions from    │
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>│                                        the verified crossing set instead of linting  │
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>│ --format                    [sdc|xdc]  constraint dialect for --emit-constraints     │
+<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a>│                                        [default: xdc]                                │
+<a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a>│ --scoped                               --emit-constraints: emit IP-relative          │
+<a id="__codelineno-16-17" name="__codelineno-16-17" href="#__codelineno-16-17"></a>│                                        (SCOPED_TO_REF) constraints, omitting         │
+<a id="__codelineno-16-18" name="__codelineno-16-18" href="#__codelineno-16-18"></a>│                                        top-level clock defs/groups                   │
+<a id="__codelineno-16-19" name="__codelineno-16-19" href="#__codelineno-16-19"></a>│ --output            -o      TEXT       --emit-constraints: write to this file        │
+<a id="__codelineno-16-20" name="__codelineno-16-20" href="#__codelineno-16-20"></a>│                                        (default: stdout)                             │
+<a id="__codelineno-16-21" name="__codelineno-16-21" href="#__codelineno-16-21"></a>│ --help                                 Show this message and exit.                   │
+<a id="__codelineno-16-22" name="__codelineno-16-22" href="#__codelineno-16-22"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="cdc-regression">cdc-regression</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>Usage: rtl-buddy cdc-regression [OPTIONS]                                              
