@@ -425,6 +425,76 @@ def test_fpga_require_timing_met_does_not_gate_unknown_timing(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Human-mode messages for the new WARNING/ERROR events (no lossy fallback)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "event, fields, expected_substrings",
+    [
+        (
+            "fpga.no_vivado",
+            {"fpga": "demo", "exe": "vivado"},
+            ["demo", "vivado", "tool-check"],
+        ),
+        (
+            "fpga.no_openxc7",
+            {"fpga": "demo", "missing": ["yosys", "nextpnr-xilinx"]},
+            ["demo", "yosys", "nextpnr-xilinx"],
+        ),
+        (
+            "fpga.filelist_failed",
+            {"fpga": "demo", "error": "bad .f"},
+            ["demo", "filelist", "bad .f"],
+        ),
+        (
+            "fpga.script_failed",
+            {"fpga": "demo", "error": "boom"},
+            ["demo", "script", "boom"],
+        ),
+        (
+            "fpga.failed",
+            {"fpga": "demo", "returncode": 1, "log": "v.log"},
+            ["demo", "code 1", "v.log"],
+        ),
+        (
+            "fpga.stage_failed",
+            {"fpga": "demo", "stage": "nextpnr", "returncode": 2, "log": "s.log"},
+            ["demo", "nextpnr", "code 2"],
+        ),
+        (
+            "fpga.errors_in_log",
+            {"fpga": "demo", "count": 3, "first": "ERROR: x", "log": "v.log"},
+            ["demo", "3 ERROR", "ERROR: x"],
+        ),
+        (
+            "fpga.timing_gate_failed",
+            {"fpga": "demo", "wns_ns": -1.25, "failing_endpoints": 4},
+            ["demo", "timing not met", "-1.25", "require-timing-met"],
+        ),
+        (
+            "cdc.no_vivado",
+            {"analysis": "two_clk", "exe": "vivado"},
+            ["two_clk", "vivado", "tool-check"],
+        ),
+        (
+            "cdc.vivado_waivers_unsupported",
+            {"analysis": "two_clk", "waivers": "w.yaml"},
+            ["two_clk", "waiver"],
+        ),
+    ],
+)
+def test_fpga_cdc_human_messages_are_specific(event, fields, expected_substrings):
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(event, fields)
+    # Not the lossy fallback ("foo.bar" -> "foo bar").
+    assert msg != event.replace(".", " ")
+    for sub in expected_substrings:
+        assert sub in msg, f"{event}: {sub!r} not in {msg!r}"
+
+
+# ---------------------------------------------------------------------------
 # VivadoFpga backend — skip / pass / fail without a real Vivado
 # ---------------------------------------------------------------------------
 

@@ -549,6 +549,63 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             )
         case "summary":
             return fields.get("title", "Summary")
+        case "fpga.no_vivado":
+            return (
+                f'fpga "{fields.get("fpga")}": {fields.get("exe")!r} not found — '
+                "skipping; run `rb tool-check --explain vivado` for install instructions"
+            )
+        case "fpga.no_openxc7":
+            missing = fields.get("missing", [])
+            names = ", ".join(missing) if isinstance(missing, list) else missing
+            return (
+                f'fpga "{fields.get("fpga")}": openXC7 toolchain incomplete '
+                f"(missing: {names}) — skipping; see `rb tool-check --required-for fpga`"
+            )
+        case "fpga.filelist_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": filelist error — {fields.get("error")}'
+            )
+        case "fpga.script_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": flow-script generation failed — '
+                f"{fields.get('error')}"
+            )
+        case "fpga.failed":
+            return (
+                f'fpga "{fields.get("fpga")}": Vivado exited with code '
+                f"{fields.get('returncode')} (log: {fields.get('log')})"
+            )
+        case "fpga.stage_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": stage {fields.get("stage")!r} exited '
+                f"with code {fields.get('returncode')} (log: {fields.get('log')})"
+            )
+        case "fpga.errors_in_log":
+            stage = fields.get("stage")
+            where = f" in {stage}" if stage else ""
+            return (
+                f'fpga "{fields.get("fpga")}": {fields.get("count")} ERROR line(s)'
+                f"{where} — first: {fields.get('first')} (log: {fields.get('log')})"
+            )
+        case "fpga.timing_gate_failed":
+            wns = fields.get("wns_ns")
+            wns_text = f" (WNS={wns} ns)" if wns is not None else ""
+            return (
+                f'fpga "{fields.get("fpga")}": timing not met{wns_text}, '
+                f"{fields.get('failing_endpoints')} failing endpoint(s) — failing the "
+                "run because require-timing-met is set"
+            )
+        case "cdc.no_vivado":
+            return (
+                f'cdc "{fields.get("analysis")}": {fields.get("exe")!r} not found — '
+                "skipping; run `rb tool-check --explain vivado` for install instructions"
+            )
+        case "cdc.vivado_waivers_unsupported":
+            return (
+                f'cdc "{fields.get("analysis")}": rtl-buddy-cdc waiver files do not '
+                "translate to the Vivado backend — waivers ignored; findings still "
+                "carry full detail for downstream filtering"
+            )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
             # This is fine for DEBUG/INFO events. Events logged at WARNING or above
