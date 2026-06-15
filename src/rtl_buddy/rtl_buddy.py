@@ -3733,6 +3733,15 @@ class RtlBuddy:
                 help="--emit-constraints: write to this file (default: stdout)",
             ),
         ] = None,
+        check_xdc: Annotated[
+            str | None,
+            typer.Option(
+                "--check-xdc",
+                metavar="FILE",
+                help="audit a Vivado XDC's CDC exceptions against the verified "
+                "crossing set instead of linting",
+            ),
+        ] = None,
     ):
         """
         run CDC lint
@@ -3740,10 +3749,17 @@ class RtlBuddy:
         ctx = self._enter_command_context(
             primary_config=cdc_config, list_only=list_cdcs
         )
+        if emit_constraints and check_xdc:
+            raise FatalRtlBuddyError(
+                "--emit-constraints and --check-xdc are mutually exclusive"
+            )
         if emit_constraints:
             self._do_emit_constraints(
                 ctx, cdc_config, cdc_name, emit_format, scoped, output
             )
+            return
+        if check_xdc:
+            self._do_check_xdc(ctx, cdc_config, cdc_name, check_xdc)
             return
         suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
         log_event(
@@ -3778,10 +3794,13 @@ class RtlBuddy:
             self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
         raise typer.Exit(exit_code)
 
-    def _do_emit_constraints(self, ctx, cdc_config, cdc_name, fmt, scoped, output):
-        """`rb cdc --emit-constraints`: generate scoped CDC timing exceptions
-        (#291) from rtl-buddy-cdc's verified crossing + reset-sync maps."""
-        from .tools.cdc_constraints import generate_constraints
+    def _run_single_cdc_with_maps(self, ctx, cdc_config, cdc_name, mode):
+        """Resolve a single rtl-buddy-cdc analysis, run it requesting the
+        structured maps, and return ``(analysis, backend, res)``.
+
+        Shared by ``--emit-constraints`` (#291) and ``--check-xdc`` (#290);
+        ``mode`` names the flag for error messages.
+        """
         from .tools.cdc_rtl_buddy import RtlBuddyCdc
 
         suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
@@ -3793,29 +3812,37 @@ class RtlBuddy:
             )
         if cdc_name is None and len(analyses) > 1:
             raise FatalRtlBuddyError(
-                "--emit-constraints needs a single analysis (the IP to constrain); "
-                "name one of: " + ", ".join(a.get_name() for a in analyses)
+                f"{mode} needs a single analysis (the IP); name one of: "
+                + ", ".join(a.get_name() for a in analyses)
             )
         analysis = analyses[0]
         tool_name = analysis.get_tool_name()
         if tool_name != "rtl-buddy-cdc":
-            # Emit derives exceptions from the open engine's crossing set; the
-            # vendor backend has no such structured map.
+            # Both modes use the open engine's structured crossing map; the
+            # vendor backend has no such map.
             raise FatalRtlBuddyError(
-                "--emit-constraints requires the open rtl-buddy-cdc engine; "
+                f"{mode} requires the open rtl-buddy-cdc engine; "
                 f"analysis '{analysis.get_name()}' uses tool '{tool_name}'"
             )
-
         tool_cfg = self.root_cfg.get_cdc_tool_cfg(tool_name)
         backend = RtlBuddyCdc(
-            name=self.name + "/cdc_emit",
+            name=self.name + "/cdc_maps",
             cdc_cfg=analysis,
             tool_cfg=tool_cfg,
             suite_dir=suite_dir,
             root_cfg=self.root_cfg,
             emit_maps=True,
         )
-        res = backend.run()
+        return analysis, backend, backend.run()
+
+    def _do_emit_constraints(self, ctx, cdc_config, cdc_name, fmt, scoped, output):
+        """`rb cdc --emit-constraints`: generate scoped CDC timing exceptions
+        (#291) from rtl-buddy-cdc's verified crossing + reset-sync maps."""
+        from .tools.cdc_constraints import generate_constraints
+
+        analysis, backend, res = self._run_single_cdc_with_maps(
+            ctx, cdc_config, cdc_name, "--emit-constraints"
+        )
         domain_map, reset_map = backend.read_emitted_maps()
 
         if domain_map is None:
@@ -3898,6 +3925,99 @@ class RtlBuddy:
         else:
             emit_console_text(emit.text, stream="stdout", markup=False)
         raise typer.Exit(0)
+
+    def _do_check_xdc(self, ctx, cdc_config, cdc_name, xdc):
+        """`rb cdc --check-xdc <file>`: audit an XDC's CDC exceptions against
+        rtl-buddy-cdc's verified crossing set (#290)."""
+        from .tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
+
+        xdc_path = xdc if os.path.isabs(xdc) else os.path.join(self.invocation_cwd, xdc)
+        if not os.path.isfile(xdc_path):
+            raise FatalRtlBuddyError(f"--check-xdc: XDC not found: {xdc_path}")
+
+        analysis, backend, res = self._run_single_cdc_with_maps(
+            ctx, cdc_config, cdc_name, "--check-xdc"
+        )
+        domain_map, _reset = backend.read_emitted_maps()
+        if domain_map is None:
+            verdict = res.results.get("result")
+            failed = verdict not in ("PASS", "SKIP", "XFAIL")
+            log_event(
+                logger,
+                logging.WARNING,
+                "cdc.check_xdc.no_maps",
+                analysis=analysis.get_name(),
+                recognition=verdict,
+                failed=failed,
+            )
+            exit_code = 2 if failed else 0
+            status = "FAIL" if failed else "SKIP"
+            reason = (
+                f"analysis did not pass ({verdict}); see the cdc log"
+                if failed
+                else "rtl-buddy-cdc produced no domain map"
+            )
+            if self.machine:
+                self._emit_machine_result(
+                    "cdc --check-xdc",
+                    exit_code,
+                    analysis=analysis.get_name(),
+                    status=status,
+                    recognition=verdict,
+                    reason=reason,
+                )
+            else:
+                emit_console_text(
+                    f"check-xdc {status.lower()} for {analysis.get_name()}: {reason}",
+                    style="red" if failed else "yellow",
+                )
+            raise typer.Exit(exit_code)
+
+        report = backend.read_report()
+        xc = extract_cdc_constraints(Path(xdc_path).read_text())
+        audit = audit_xdc(domain_map, report, xc)
+        blockers = audit.blockers
+        # A completeness gap or a dangerous over-waive fails the audit; the
+        # softer findings (bus-skew / clock-graph) are warnings.
+        exit_code = 2 if blockers else 0
+
+        log_event(
+            logger,
+            logging.INFO if not blockers else logging.WARNING,
+            "cdc.check_xdc.done",
+            analysis=analysis.get_name(),
+            xdc=xdc_path,
+            findings=len(audit.findings),
+            blockers=len(blockers),
+        )
+
+        if self.machine:
+            self._emit_machine_result(
+                "cdc --check-xdc",
+                exit_code,
+                analysis=analysis.get_name(),
+                xdc=xdc_path,
+                blockers=len(blockers),
+                findings=audit.to_machine(),
+            )
+        else:
+            if not audit.findings:
+                emit_console_text(
+                    f"check-xdc clean: {analysis.get_name()} — every verified "
+                    "crossing is covered, no over-waives",
+                    style="green",
+                )
+            else:
+                for f in audit.findings:
+                    style = {"blocker": "red", "warning": "yellow"}.get(
+                        f.severity, None
+                    )
+                    emit_console_text(
+                        f"[{f.severity}] {f.kind}: {f.message}",
+                        style=style,
+                        markup=False,
+                    )
+        raise typer.Exit(exit_code)
 
     def do_cdc_regression(
         self,

@@ -86,7 +86,27 @@ Notes:
 - Requires the open `rtl-buddy-cdc` engine (the vendor backend exposes no structured crossing map); naming a `tool: "vivado"` analysis is a config error.
 - Generation is only correct if the analysis classifies the IP's crossings as **safe** — configure the synchronizer recognition (module names + `sync-depth`) first. Machine mode (`--machine`) returns a manifest of every emitted exception and its rationale, plus the recognition verdict.
 - **Requires a recent rtl-buddy-cdc** — the structured maps come from its `--emit-domain-map` / `--emit-reset-domain-map` (newer than plain lint). An analyzer that lacks them produces no map: the command then reports `SKIP` (when the analysis otherwise passed) rather than constraints. If you expected output and got a SKIP, upgrade rtl-buddy-cdc (`uv tool upgrade rtl-buddy-cdc`).
-- The generated constraints round-trip through the `--check-xdc` audit ([issue #290](https://github.com/rtl-buddy/rtl_buddy/issues/290)) for completeness / zero-over-waive verification.
+- The generated constraints round-trip through the `--check-xdc` audit (below) for completeness / zero-over-waive verification.
+
+## Auditing an XDC (`--check-xdc`)
+
+`rb cdc --check-xdc <file>` audits a Vivado XDC's **CDC-relevant** exceptions against rtl-buddy-cdc's independently-derived crossing set. It is *not* a general XDC validator — pin/IO/placement/electrical correctness stays Vivado's job. Scope is strictly `create_clock` / `create_generated_clock`, `set_clock_groups -asynchronous`, `set_false_path`, `set_max_delay -datapath_only`, `set_bus_skew`; everything else (`set_property`, placement, pblocks) is ignored.
+
+```bash
+rb cdc <analysis> -c cdc.yaml --check-xdc constraints/top.xdc
+rb --machine cdc <analysis> -c cdc.yaml --check-xdc top.xdc   # JSON findings
+```
+
+The audit is a diff between the XDC's exceptions and the open engine's truth, triangulated against the optional Vivado `report_cdc` backend (the open engine is the authority; the XDC is verified *against* it, not trusted):
+
+| Finding | Severity | Meaning |
+|---|---|---|
+| `unconstrained_crossing` | **blocker** | a verified crossing has no covering XDC exception — the tool will time a metastable-by-design path (false confidence or a timing failure). |
+| `over_waive` | **blocker** | the XDC `set_false_path` / `set_clock_groups -asynchronous` a path rtl-buddy-cdc reports as **not** safely synchronized — the constraint **masks a real metastability bug**. (A `set_max_delay` still *times* the path, so it is not an over-waive.) |
+| `missing_bus_skew` | warning | a multi-bit crossing waived with a bare false-path / clock-group and no `set_bus_skew` — bit-to-bit skew incoherency is unbounded. |
+| `clock_graph` | warning / info | XDC `create_clock` set disagrees with the RTL clocking (extra clock, missing clock, or period mismatch) — can silently change the derived domain set. |
+
+A blocker finding exits non-zero. Pair it with `--emit-constraints`: a generated XDC, fed back through `--check-xdc`, audits clean (full coverage, zero over-waive). `xpm_cdc_*` macro recognition is a separate follow-up ([issue #315](https://github.com/rtl-buddy/rtl_buddy/issues/315)); today the audit targets the portable / `ASYNC_REG` synchronizer pattern.
 
 ## Installing rtl-buddy-cdc
 
