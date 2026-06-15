@@ -11,6 +11,7 @@ import logging
 import os
 import pprint
 from dataclasses import dataclass
+from dataclasses import field as dc_field
 
 from serde import field, serde
 from serde.yaml import from_yaml
@@ -92,6 +93,12 @@ class CdcConfigFile:
     # can add frontends without an rtl_buddy release. Unknown values
     # are rejected by the analyzer's own arg parser.
     frontend: str | None = None
+    # Modules to treat as black boxes: each is forwarded as-is via a
+    # repeated ``--blackbox <module>`` to the analyzer (rtl-buddy-cdc#259),
+    # stubbing out that module's internals during elaboration. Like
+    # ``frontend`` above, values are intentionally not validated here so the
+    # analyzer owns the accepted-name set. Empty by default (no blackboxing).
+    blackbox: list[str] = field(default_factory=list)
     # Expected-fail markers (pytest-style). Either flag marks the analysis
     # expected-to-fail (a FAIL becomes XFAIL, a pass); they differ only in
     # how an unexpected pass (XPASS) is counted: `xfail` non-strict (XPASS
@@ -119,6 +126,7 @@ class CdcConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             frontend=self.frontend,
+            blackbox=self.blackbox,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -135,6 +143,7 @@ class CdcConfig:
     _reglvl: int | dict | None
     tool_overrides: dict | None
     frontend: str | None = None
+    blackbox: list[str] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
 

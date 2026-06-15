@@ -210,6 +210,7 @@ _SUITE_YAML = dedent("""\
         waivers: "mod_b.waivers"
         reglvl: 1000
         frontend: "slang"
+        blackbox: ["sram_macro", "pll_wrap"]
 """)
 
 _MODELS_YAML = dedent("""\
@@ -309,6 +310,16 @@ def test_cdc_suite_config_picks_up_frontend_field(tmp_path):
     assert cdc_b.frontend == "slang"  # explicit in YAML
 
 
+def test_cdc_suite_config_picks_up_blackbox_field(tmp_path):
+    """Per-analysis `blackbox:` round-trips through CdcConfigFile -> CdcConfig."""
+    suite_yaml = _write_suite(tmp_path)
+    cfg = CdcSuiteConfig(str(suite_yaml))
+    cdc_a = cfg.get_analyses("cdc_a")[0]
+    cdc_b = cfg.get_analyses("cdc_b")[0]
+    assert cdc_a.blackbox == []  # not set in YAML -> default empty list
+    assert cdc_b.blackbox == ["sram_macro", "pll_wrap"]  # explicit in YAML
+
+
 # ---------------------------------------------------------------------------
 # CdcRegConfig — YAML loading + per-suite path resolution
 # ---------------------------------------------------------------------------
@@ -342,7 +353,7 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _setup_lint_run(tmp_path, frontend=None):
+def _setup_lint_run(tmp_path, frontend=None, blackbox=None):
     """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
     build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
 
@@ -374,6 +385,7 @@ def _setup_lint_run(tmp_path, frontend=None):
         _reglvl=None,
         tool_overrides=None,
         frontend=frontend,
+        blackbox=blackbox if blackbox is not None else [],
     )
     tool_cfg = CdcToolConfig(
         CdcToolConfigFile(
@@ -441,6 +453,44 @@ def test_lint_argv_adds_frontend_yosys_when_explicit(tmp_path, monkeypatch):
     assert len(calls) == 2
     for cmd in calls:
         assert cmd[cmd.index("--frontend") + 1] == "yosys"
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — --blackbox argv plumbing (rtl-buddy-cdc#259)
+# ---------------------------------------------------------------------------
+
+
+def test_lint_argv_omits_blackbox_when_empty(tmp_path, monkeypatch):
+    """An empty/absent blackbox list adds no `--blackbox` args."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, blackbox=[])
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2  # text + json
+    for cmd in calls:
+        assert "--blackbox" not in cmd
+
+
+def test_lint_argv_adds_blackbox_for_each_module(tmp_path, monkeypatch):
+    """Each blackbox entry is forwarded as a repeated `--blackbox <module>`."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(
+        tmp_path, blackbox=["foo", "bar"]
+    )
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        # Both modules present, each preceded by its own `--blackbox`.
+        bb_values = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--blackbox"]
+        assert bb_values == ["foo", "bar"]
+        assert cmd[cmd.index("--blackbox") + 1] == "foo"
 
 
 # ---------------------------------------------------------------------------
