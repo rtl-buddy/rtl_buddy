@@ -404,6 +404,124 @@ def cmd_wave_zoom_fit() -> None:
 
 
 @send_app.command(
+    "wave-items",
+    help="List the items currently in surfer's wave view (id, type, name). Maps to WCP get_item_list + get_item_info.",
+)
+def cmd_wave_items() -> None:
+    with _open_or_exit() as h:
+        _print_response(h.request("wave_get_items", {}))
+
+
+@send_app.command(
+    "wave-remove",
+    help="Ask the wave peer (surfer) to remove items by id. IDs come from wave-add / wave-items. Reports removed vs not_found.",
+)
+def cmd_wave_remove(
+    ids: Annotated[
+        list[int],
+        typer.Argument(help="DisplayedItemRef ids to remove, e.g. 3 5 7"),
+    ],
+) -> None:
+    if not ids:
+        raise typer.BadParameter("at least one id required")
+    if any(i < 0 for i in ids):
+        raise typer.BadParameter("ids must be non-negative")
+    with _open_or_exit() as h:
+        _print_response(h.request("wave_remove_items", {"ids": list(ids)}))
+
+
+@send_app.command(
+    "wave-move",
+    help=(
+        "Reorder items in surfer's view. Move the given IDS (in the order "
+        "listed) so the block starts at --to INDEX, or just before --before "
+        "ID. Exactly one of --to / --before is required."
+    ),
+)
+def cmd_wave_move(
+    ids: Annotated[
+        list[int],
+        typer.Argument(help="DisplayedItemRef ids to move, e.g. 5 6"),
+    ],
+    to_index: Annotated[
+        Optional[int],
+        typer.Option("--to", help="target visible index (0 = top of view)", min=0),
+    ] = None,
+    before: Annotated[
+        Optional[int],
+        typer.Option(
+            "--before",
+            help="move the block to just before this item id (resolved via wave-items)",
+            min=0,
+        ),
+    ] = None,
+) -> None:
+    if not ids:
+        raise typer.BadParameter("at least one id required")
+    if any(i < 0 for i in ids):
+        raise typer.BadParameter("ids must be non-negative")
+    if (to_index is None) == (before is None):
+        raise typer.BadParameter("pass exactly one of --to / --before")
+    with _open_or_exit() as h:
+        target = to_index
+        if before is not None:
+            # Resolve the target id to a visible index via a live item-list
+            # snapshot, then move the block to sit at that slot.
+            env = h.request("wave_get_items", {})
+            if env.kind is Kind.ERROR:
+                return _print_response(env)
+            body = env.payload if isinstance(env.payload, dict) else {}
+            raw_items = body.get("items")
+            items = raw_items if isinstance(raw_items, list) else []
+            index = next(
+                (
+                    i
+                    for i, it in enumerate(items)
+                    if isinstance(it, dict) and it.get("id") == before
+                ),
+                None,
+            )
+            if index is None:
+                emit_console_text(
+                    f"--before id {before} is not in the current view", style="red"
+                )
+                raise typer.Exit(code=1)
+            target = index
+        _print_response(
+            h.request("wave_move_items", {"ids": list(ids), "to_index": target})
+        )
+
+
+@send_app.command(
+    "wave-comment",
+    help="Add comment rows (named dividers) to surfer's view. Returns the new item ids. Maps to WCP add_dividers.",
+)
+def cmd_wave_comment(
+    texts: Annotated[
+        list[str],
+        typer.Argument(help="comment labels, one divider per entry"),
+    ],
+    after: Annotated[
+        Optional[int],
+        typer.Option(
+            "--after",
+            help="insert the comments after this item id (default: end of view)",
+            min=0,
+        ),
+    ] = None,
+) -> None:
+    if not texts:
+        raise typer.BadParameter("at least one comment text required")
+    if any(not t.strip() for t in texts):
+        raise typer.BadParameter("comment text must be non-empty")
+    payload: dict[str, object] = {"texts": list(texts)}
+    if after is not None:
+        payload["after_id"] = after
+    with _open_or_exit() as h:
+        _print_response(h.request("wave_add_comments", payload))
+
+
+@send_app.command(
     "view-pan",
     help="Ask the view peer (SPA) to pan/center on INSTANCE_PATH.",
 )

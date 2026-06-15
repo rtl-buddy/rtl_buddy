@@ -218,6 +218,7 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 
 - **State broadcast:** `select INSTANCE_PATH`, `signal SIGNAL`, `cursor T_FS`, `scope WAVE_SCOPE`, `open FILE:LINE[:COL]`.
 - **Wave control** (routed to surfer via the `rb wave` bridge): `wave-add VARIABLES…`, `wave-cursor T_FS`, `wave-scope WAVE_SCOPE`, `wave-pan T_FS`, `wave-zoom START_FS END_FS`, `wave-zoom-fit`.
+- **Wave-view item management** (also via the `rb wave` bridge — lets an agent curate the signal list): `wave-items` (list the displayed items as `{id, type, name}`), `wave-remove IDS…` (reports `removed` vs `not_found`), `wave-move IDS… --to N | --before ID` (reorder), `wave-comment TEXTS… [--after ID]` (add comment rows / dividers, returns their ids). Every verb reports genuine success/error: a surfer-side rejection (unknown id, illegal move, unknown scope) comes back as a hub `error` and a non-zero CLI exit, not a false `{"ok": true}`. `wave-move`/`wave-comment` need the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) fork with the `move_items` / `add_dividers` WCP commands.
 - **SPA:** `view-pan INSTANCE_PATH`, `overlay NAME --on/--off` (`clock` / `reset` / `axi-perf` / `wave`), `capture --out PATH [--format png|svg] [--scale …]`.
 - **Source:** `open-source FILE:LINE[:COL]`.
 - **Diagnostics:** `diagnose SOURCE ITEM…` (each `ITEM` is `file:line:severity:code:message`; `--clear`, `--instance`).

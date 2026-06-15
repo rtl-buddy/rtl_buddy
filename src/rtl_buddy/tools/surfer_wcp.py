@@ -686,12 +686,21 @@ class SurferWcpListener:
         """Optional callback invoked for relevant WCP events. The hub-bridge
         adapter sets this; the listener stays free of hub awareness."""
 
-        # Per-command-type FIFO of pending response slots. WCP has no request
-        # IDs, so the only correlation guarantee is "responses arrive in
-        # send order for a given command". The bridge calls await_response()
-        # right after sending a command; the reader thread fills the next
-        # slot for that command name when a response frame arrives.
-        self._response_waiters: dict[str, list[tuple[threading.Event, dict]]] = {}
+        # Ordered list of pending reply waiters. WCP has no request IDs, so
+        # the only correlation guarantee is "responses arrive in send order".
+        # A caller registers a waiter right after sending a command; the WCP
+        # reader thread fills the first compatible waiter when a frame lands.
+        #
+        # Two frame kinds resolve a waiter:
+        #   * a ``response`` frame whose ``command`` is in the waiter's
+        #     ``commands`` set (surfer tags named responses with the command
+        #     name; shared acks carry ``command == "ack"``), or
+        #   * an ``error`` frame, which has no command to correlate on — it
+        #     fills the first waiter that opted into errors (``accept_error``).
+        # Because hub-driven commands are handled serially on the bridge
+        # reader thread, at most one error-accepting waiter is outstanding at
+        # a time in practice, so first-match is the right correlation.
+        self._waiters: list[dict] = []
         self._waiters_lock = threading.Lock()
 
     def send_to_surfer(self, obj: dict) -> None:
@@ -702,40 +711,87 @@ class SurferWcpListener:
             except OSError:
                 self._wcp_conn = None
 
+    def _register_waiter(self, commands: "set[str]", accept_error: bool) -> dict:
+        waiter = {
+            "commands": frozenset(commands),
+            "accept_error": accept_error,
+            "event": threading.Event(),
+            "result": None,
+        }
+        with self._waiters_lock:
+            self._waiters.append(waiter)
+        return waiter
+
+    def _wait_waiter(self, waiter: dict, timeout: float) -> dict | None:
+        if not waiter["event"].wait(timeout):
+            # Reclaim the slot so a late frame doesn't fill a stale waiter.
+            with self._waiters_lock:
+                try:
+                    self._waiters.remove(waiter)
+                except ValueError:
+                    pass
+            return None
+        return waiter["result"]
+
     def await_response(self, command: str, timeout: float = 2.0) -> dict | None:
         """Wait for the next response frame whose ``command`` matches.
 
         The caller is responsible for calling this *immediately after*
-        sending the matching WCP command so the FIFO ordering across
-        callers stays consistent. Returns the response dict (with
-        ``command`` and any payload fields), or ``None`` on timeout.
+        sending the matching WCP command so the send-order correlation
+        across callers stays consistent. Returns the response dict (with
+        ``command`` and any payload fields), or ``None`` on timeout. Error
+        frames do not resolve this waiter — use :meth:`await_reply` when the
+        caller wants to surface surfer-side rejections.
         """
-        slot: dict = {}
-        event = threading.Event()
-        with self._waiters_lock:
-            self._response_waiters.setdefault(command, []).append((event, slot))
-        if not event.wait(timeout):
-            # Reclaim the slot so a late response doesn't fill a stale waiter.
-            with self._waiters_lock:
-                waiters = self._response_waiters.get(command, [])
-                try:
-                    waiters.remove((event, slot))
-                except ValueError:
-                    pass
+        waiter = self._register_waiter({command}, accept_error=False)
+        result = self._wait_waiter(waiter, timeout)
+        if result and result.get("kind") == "response":
+            return result.get("msg")
+        return None
+
+    def await_reply(
+        self, commands: "set[str]", timeout: float = 2.0
+    ) -> "tuple[str, dict] | None":
+        """Wait for the next response (``command`` in *commands*) or error.
+
+        Returns ``("response", msg)`` on a matching response frame,
+        ``("error", msg)`` when surfer rejects the command, or ``None`` on
+        timeout. The error case has no command correlation (WCP errors carry
+        no command field), so this relies on commands being driven serially.
+        """
+        waiter = self._register_waiter(set(commands), accept_error=True)
+        result = self._wait_waiter(waiter, timeout)
+        if result is None:
             return None
-        return slot.get("response")
+        return (result["kind"], result["msg"])
 
     def _dispatch_response(self, msg: dict) -> None:
         command = msg.get("command")
         if not isinstance(command, str):
             return
         with self._waiters_lock:
-            waiters = self._response_waiters.get(command, [])
-            if not waiters:
+            target = next((w for w in self._waiters if command in w["commands"]), None)
+            if target is None:
                 return
-            event, slot = waiters.pop(0)
-        slot["response"] = msg
-        event.set()
+            self._waiters.remove(target)
+        target["result"] = {"kind": "response", "msg": msg}
+        target["event"].set()
+
+    def _dispatch_error(self, msg: dict) -> None:
+        with self._waiters_lock:
+            target = next((w for w in self._waiters if w["accept_error"]), None)
+            if target is None:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "wcp.error_unmatched",
+                    error=str(msg.get("error", "")),
+                    message=str(msg.get("message", "")),
+                )
+                return
+            self._waiters.remove(target)
+        target["result"] = {"kind": "error", "msg": msg}
+        target["event"].set()
 
     def add_variable_to_surfer(self, name: str) -> None:
         """Resolve *name* against the active scope cache, add to Surfer, and annotate nvim."""
@@ -854,6 +910,8 @@ class SurferWcpListener:
                 self._notify_observer("scope_changed", msg)
             elif msg.get("type") == "response":
                 self._dispatch_response(msg)
+            elif msg.get("type") == "error":
+                self._dispatch_error(msg)
 
     def _notify_observer(self, event_name: str, msg: dict) -> None:
         observer = self.event_observer

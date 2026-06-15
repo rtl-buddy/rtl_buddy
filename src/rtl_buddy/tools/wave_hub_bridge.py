@@ -65,6 +65,10 @@ WAVE_CAPABILITIES: tuple[str, ...] = (
     "wave_set_viewport",
     "wave_zoom_to_range",
     "wave_zoom_to_fit",
+    "wave_get_items",
+    "wave_remove_items",
+    "wave_move_items",
+    "wave_add_comments",
     "signal_selected",
     "cursor_time_changed",
     "scope_changed",
@@ -451,6 +455,14 @@ class WaveHubBridge:
             self._handle_zoom_to_range(env)
         elif env.type == "wave_zoom_to_fit":
             self._handle_zoom_to_fit(env)
+        elif env.type == "wave_get_items":
+            self._handle_get_items(env)
+        elif env.type == "wave_remove_items":
+            self._handle_remove_items(env)
+        elif env.type == "wave_move_items":
+            self._handle_move_items(env)
+        elif env.type == "wave_add_comments":
+            self._handle_add_comments(env)
         else:
             self._reply_bad_request(env, f"unhandled wave request {env.type}")
 
@@ -504,15 +516,16 @@ class WaveHubBridge:
             ts = int(t_fs)
         except ValueError:
             return self._reply_bad_request(env, f"non-numeric t_fs: {t_fs!r}")
-        self._send_to_surfer(
+        self._drive_ack(
+            env,
             {
                 "type": "command",
                 "command": "set_cursor",
                 "timestamp": ts,
                 "time_unit": "fs",
-            }
+            },
+            strict=False,
         )
-        self._reply_response(env, type_=env.type, payload={"ok": True})
 
     def _handle_set_viewport(self, env: Envelope) -> None:
         """Pan the surfer viewport to center on a timestamp (zoom unchanged)."""
@@ -524,15 +537,16 @@ class WaveHubBridge:
             ts = int(t_fs)
         except ValueError:
             return self._reply_bad_request(env, f"non-numeric t_fs: {t_fs!r}")
-        self._send_to_surfer(
+        self._drive_ack(
+            env,
             {
                 "type": "command",
                 "command": "set_viewport_to",
                 "timestamp": ts,
                 "time_unit": "fs",
-            }
+            },
+            strict=False,
         )
-        self._reply_response(env, type_=env.type, payload={"ok": True})
 
     def _handle_zoom_to_range(self, env: Envelope) -> None:
         """Zoom + pan to fit ``[start_fs, end_fs]`` in surfer's viewport."""
@@ -548,26 +562,28 @@ class WaveHubBridge:
             end_ts = int(end_fs)
         except ValueError:
             return self._reply_bad_request(env, "non-numeric start_fs/end_fs")
-        self._send_to_surfer(
+        self._drive_ack(
+            env,
             {
                 "type": "command",
                 "command": "set_viewport_range",
                 "start": start_ts,
                 "end": end_ts,
                 "time_unit": "fs",
-            }
+            },
+            strict=False,
         )
-        self._reply_response(env, type_=env.type, payload={"ok": True})
 
     def _handle_zoom_to_fit(self, env: Envelope) -> None:
         """Zoom out surfer's viewport to fit the entire waveform."""
         # WCP's zoom_to_fit takes a viewport_idx; surfer only opens viewport 0
         # in the wcp-initiate flow, so hard-code that until we expose a second
         # viewport from the hub.
-        self._send_to_surfer(
-            {"type": "command", "command": "zoom_to_fit", "viewport_idx": 0}
+        self._drive_ack(
+            env,
+            {"type": "command", "command": "zoom_to_fit", "viewport_idx": 0},
+            strict=False,
         )
-        self._reply_response(env, type_=env.type, payload={"ok": True})
 
     def _handle_set_scope(self, env: Envelope) -> None:
         payload = env.payload if isinstance(env.payload, dict) else {}
@@ -576,14 +592,235 @@ class WaveHubBridge:
             return self._reply_bad_request(env, "missing wave_scope")
         # surfer's `set_scope` (rtl-buddy fork PR #6) navigates the active
         # scope without mutating the displayed item list — the right
-        # semantics for "follow source-focus" tinting. We reply
-        # optimistically here matching the set_cursor / set_viewport_to
-        # pattern (no add_* ids to surface); unknown-scope errors are
-        # logged on surfer but not propagated back to the requesting peer.
-        self._send_to_surfer(
-            {"type": "command", "command": "set_scope", "scope": scope}
+        # semantics for "follow source-focus" tinting. Best-effort ack: an
+        # explicit surfer rejection (e.g. unknown scope) is now propagated
+        # back to the requesting peer as a hub error; a missing reply still
+        # resolves as ok so a slow/old surfer doesn't stall scope-follow.
+        self._drive_ack(
+            env,
+            {"type": "command", "command": "set_scope", "scope": scope},
+            strict=False,
         )
+
+    # ------------------------------------------------------------------
+    # inbound — wave-view item management (list / remove / move / comment)
+    # ------------------------------------------------------------------
+
+    WCP_REPLY_TIMEOUT = 2.0
+    """Wall-time the bridge waits on a surfer WCP reply for a hub-driven
+    command before treating it as no-reply. Surfer's WCP is in-process and
+    acks in well under this; the budget is generous for a loaded design."""
+
+    def _drive_ack(self, env: Envelope, frame: dict[str, Any], *, strict: bool) -> bool:
+        """Send an ack-returning WCP command and report genuine status back.
+
+        ``strict=True`` turns a no-reply into a hub error (the caller needs
+        confirmation — destructive / structural commands). ``strict=False``
+        is best-effort: an explicit surfer ``error`` is still surfaced as a
+        hub error, but a missing reply resolves as ``{"ok": true}`` so the
+        high-frequency navigation commands never stall on a dropped ack.
+
+        Returns ``True`` when an ``{"ok": true}`` response was sent, ``False``
+        when a hub error was sent instead.
+        """
+        self._send_to_surfer(frame)
+        reply = self._listener.await_reply({"ack"}, timeout=self.WCP_REPLY_TIMEOUT)
+        if reply is None:
+            if strict:
+                self._reply_error(
+                    env,
+                    "not_connected",
+                    f"surfer did not acknowledge {frame.get('command')}",
+                )
+                return False
+            self._reply_response(env, type_=env.type, payload={"ok": True})
+            return True
+        kind, msg = reply
+        if kind == "error":
+            self._reply_surfer_error(env, msg)
+            return False
         self._reply_response(env, type_=env.type, payload={"ok": True})
+        return True
+
+    def _fetch_item_ids(self) -> list[int] | None:
+        """Return surfer's current displayed-item ids, or ``None`` on
+        no-reply / surfer error."""
+        self._send_to_surfer({"type": "command", "command": "get_item_list"})
+        reply = self._listener.await_reply(
+            {"get_item_list"}, timeout=self.WCP_REPLY_TIMEOUT
+        )
+        if reply is None or reply[0] == "error":
+            return None
+        ids = reply[1].get("ids")
+        return [i for i in ids if isinstance(i, int)] if isinstance(ids, list) else []
+
+    def _handle_get_items(self, env: Envelope) -> None:
+        """List the items currently in surfer's view (get_item_list + info)."""
+        self._send_to_surfer({"type": "command", "command": "get_item_list"})
+        list_reply = self._listener.await_reply(
+            {"get_item_list"}, timeout=self.WCP_REPLY_TIMEOUT
+        )
+        if list_reply is None:
+            return self._reply_error(
+                env, "not_connected", "surfer did not return the item list"
+            )
+        if list_reply[0] == "error":
+            return self._reply_surfer_error(env, list_reply[1])
+        ids = list_reply[1].get("ids")
+        ids = [i for i in ids if isinstance(i, int)] if isinstance(ids, list) else []
+        if not ids:
+            return self._reply_response(env, type_=env.type, payload={"items": []})
+
+        self._send_to_surfer(
+            {"type": "command", "command": "get_item_info", "ids": ids}
+        )
+        info_reply = self._listener.await_reply(
+            {"get_item_info"}, timeout=self.WCP_REPLY_TIMEOUT
+        )
+        if info_reply is None:
+            return self._reply_error(
+                env, "not_connected", "surfer did not return item info"
+            )
+        if info_reply[0] == "error":
+            return self._reply_surfer_error(env, info_reply[1])
+        items = self._build_items(info_reply[1].get("results"))
+        self._reply_response(env, type_=env.type, payload={"items": items})
+
+    @staticmethod
+    def _build_items(results: Any) -> list[dict[str, Any]]:
+        """Translate surfer ``get_item_info`` results into hub item dicts.
+
+        surfer reports item kinds capitalised (``Variable``, ``Divider``,
+        ``Marker``, ``Group``, …); they are normalised to lower-case here so
+        the hub exposes a stable ``variable | divider | marker | group | …``
+        vocabulary regardless of surfer's internal casing. For a variable
+        whose name is a dotted hierarchy path, the leading scope is split
+        out into the optional ``scope`` field so a consumer can address it
+        without re-parsing.
+        """
+        items: list[dict[str, Any]] = []
+        if not isinstance(results, list):
+            return items
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            rid = row.get("id")
+            if not isinstance(rid, int):
+                continue
+            name = row.get("name")
+            itype = row.get("type")
+            item: dict[str, Any] = {
+                "id": rid,
+                "type": itype.lower()
+                if isinstance(itype, str) and itype
+                else "unknown",
+                "name": name if isinstance(name, str) else "",
+            }
+            if item["type"] == "variable" and isinstance(name, str) and "." in name:
+                scope, _, _signal = name.rpartition(".")
+                if scope:
+                    item["scope"] = scope
+            items.append(item)
+        return items
+
+    def _handle_remove_items(self, env: Envelope) -> None:
+        """Remove items by id, reporting which were actually removed.
+
+        surfer's ``remove_items`` acks unconditionally and silently ignores
+        unknown ids, so the bridge diffs the item list before/after to
+        report genuine ``removed`` / ``not_found`` sets to the caller.
+        """
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        ids = payload.get("ids")
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or not all(isinstance(i, int) for i in ids)
+        ):
+            return self._reply_bad_request(env, "missing/invalid ids")
+        requested = list(dict.fromkeys(ids))
+
+        before = self._fetch_item_ids()
+        if before is None:
+            return self._reply_error(
+                env, "not_connected", "surfer did not return the item list"
+            )
+
+        self._send_to_surfer(
+            {"type": "command", "command": "remove_items", "ids": requested}
+        )
+        rm_reply = self._listener.await_reply({"ack"}, timeout=self.WCP_REPLY_TIMEOUT)
+        if rm_reply is not None and rm_reply[0] == "error":
+            return self._reply_surfer_error(env, rm_reply[1])
+
+        after = self._fetch_item_ids()
+        after_set = set(after) if after is not None else set()
+        before_set = set(before)
+        removed = [i for i in requested if i in before_set and i not in after_set]
+        not_found = [i for i in requested if i not in before_set]
+        self._reply_response(
+            env,
+            type_=env.type,
+            payload={"ok": True, "removed": removed, "not_found": not_found},
+        )
+
+    def _handle_move_items(self, env: Envelope) -> None:
+        """Reorder items: move ids so the block starts at to_index."""
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        ids = payload.get("ids")
+        to_index = payload.get("to_index")
+        if (
+            not isinstance(ids, list)
+            or not ids
+            or not all(isinstance(i, int) for i in ids)
+        ):
+            return self._reply_bad_request(env, "missing/invalid ids")
+        if not isinstance(to_index, int) or to_index < 0:
+            return self._reply_bad_request(env, "missing/invalid to_index")
+        self._drive_ack(
+            env,
+            {
+                "type": "command",
+                "command": "move_items",
+                "ids": list(dict.fromkeys(ids)),
+                "target_index": to_index,
+            },
+            strict=True,
+        )
+
+    def _handle_add_comments(self, env: Envelope) -> None:
+        """Add comment rows (named dividers) to the view; return their ids."""
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        texts = payload.get("texts")
+        if (
+            not isinstance(texts, list)
+            or not texts
+            or not all(isinstance(t, str) and t for t in texts)
+        ):
+            return self._reply_bad_request(env, "missing/invalid texts")
+        frame: dict[str, Any] = {
+            "type": "command",
+            "command": "add_dividers",
+            "names": list(texts),
+        }
+        after_id = payload.get("after_id")
+        if isinstance(after_id, int):
+            frame["after"] = after_id
+        self._send_to_surfer(frame)
+        reply = self._listener.await_reply(
+            {"add_dividers"}, timeout=self.WCP_REPLY_TIMEOUT
+        )
+        if reply is None:
+            return self._reply_error(
+                env, "not_connected", "surfer did not acknowledge add_dividers"
+            )
+        if reply[0] == "error":
+            return self._reply_surfer_error(env, reply[1])
+        ids = reply[1].get("ids")
+        out_ids = (
+            [i for i in ids if isinstance(i, int)] if isinstance(ids, list) else []
+        )
+        self._reply_response(env, type_=env.type, payload={"ids": out_ids})
 
     def _produce_wave_values(self, native_timestamp: int) -> None:
         """Sample every tracked variable at the cursor and broadcast.
@@ -770,20 +1007,57 @@ class WaveHubBridge:
                 error=str(exc),
             )
 
-    def _reply_bad_request(self, env: Envelope, message: str) -> None:
+    def _reply_error(
+        self,
+        env: Envelope,
+        code: str,
+        message: str,
+        context: dict[str, Any] | None = None,
+    ) -> None:
         from ..hub.protocol import make_error
 
         err = make_error(
             origin=Origin.WAVE,
-            code="bad_request",
+            code=code,
             message=message,
-            context=env.payload if isinstance(env.payload, dict) else None,
+            context=context,
             in_reply_to=env.id,
         )
         try:
             self._send_envelope(err)
         except (OSError, HubProtocolError):
             pass
+
+    def _reply_bad_request(self, env: Envelope, message: str) -> None:
+        self._reply_error(
+            env,
+            "bad_request",
+            message,
+            context=env.payload if isinstance(env.payload, dict) else None,
+        )
+
+    def _reply_surfer_error(self, env: Envelope, err_msg: dict) -> None:
+        """Translate a surfer WCP ``error`` frame into a hub error reply.
+
+        surfer's error carries ``error`` (a short tag, usually the command
+        name), ``arguments``, and a human ``message``. We map it to the
+        hub's ``bad_request`` code — a surfer rejection means the request
+        couldn't be applied (unknown id, illegal move, unknown scope) — and
+        preserve the surfer detail in ``context``.
+        """
+        message = (
+            err_msg.get("message")
+            or err_msg.get("error")
+            or "surfer rejected the command"
+        )
+        context: dict[str, Any] = {}
+        tag = err_msg.get("error")
+        if isinstance(tag, str) and tag:
+            context["surfer_error"] = tag
+        args = err_msg.get("arguments")
+        if isinstance(args, list) and args:
+            context["arguments"] = [a for a in args if isinstance(a, str)]
+        self._reply_error(env, "bad_request", str(message), context or None)
 
 
 def maybe_connect_bridge(

@@ -940,3 +940,110 @@ class TestListenerFatalErrorTeardown:
 
         assert listener._stop.is_set()
         fake_conn.close.assert_called()
+
+
+class TestWcpReplyWaiters:
+    """Correlation of WCP response/error frames to pending reply waiters.
+
+    These exercise the real SurferWcpListener waiter subsystem (the
+    wave_hub_bridge tests use a fake listener), covering the genuine
+    success/error reporting path: a response resolves by command name, an
+    error resolves the first error-accepting waiter, and the back-compat
+    await_response ignores errors.
+    """
+
+    def _make_listener(self):
+        from rtl_buddy.tools.surfer_wcp import (
+            SurferSourceResolver,
+            EditorLauncher,
+            SurferWcpListener,
+        )
+
+        surfer_cfg = _make_surfer_cfg()
+        resolver = object.__new__(SurferSourceResolver)
+        resolver._sv_files = []
+        editor = object.__new__(EditorLauncher)
+        editor._surfer_cfg = surfer_cfg
+        return SurferWcpListener(surfer_cfg, resolver, editor)
+
+    def _await_in_thread(self, fn):
+        import threading
+
+        box = {}
+
+        def run():
+            box["result"] = fn()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t, box
+
+    def test_await_reply_resolves_on_matching_response(self):
+        import time as _time
+
+        listener = self._make_listener()
+        frame = {"type": "response", "command": "ack"}
+        t, box = self._await_in_thread(
+            lambda: listener.await_reply({"ack"}, timeout=2.0)
+        )
+        # waiter is registered; dispatch the response
+        deadline = _time.monotonic() + 1.0
+        while _time.monotonic() < deadline and not listener._waiters:
+            _time.sleep(0.01)
+        listener._dispatch_response(frame)
+        t.join(2.0)
+        assert box["result"] == ("response", frame)
+
+    def test_await_reply_resolves_on_error(self):
+        import time as _time
+
+        listener = self._make_listener()
+        err = {"type": "error", "error": "move_items", "message": "bad id"}
+        t, box = self._await_in_thread(
+            lambda: listener.await_reply({"ack"}, timeout=2.0)
+        )
+        deadline = _time.monotonic() + 1.0
+        while _time.monotonic() < deadline and not listener._waiters:
+            _time.sleep(0.01)
+        listener._dispatch_error(err)
+        t.join(2.0)
+        assert box["result"] == ("error", err)
+
+    def test_dispatch_response_correlates_by_command(self):
+        import time as _time
+
+        listener = self._make_listener()
+        # Two waiters: one for get_item_list, one for ack. A get_item_list
+        # response must wake only the matching waiter.
+        t1, box1 = self._await_in_thread(
+            lambda: listener.await_reply({"get_item_list"}, timeout=2.0)
+        )
+        t2, box2 = self._await_in_thread(
+            lambda: listener.await_reply({"ack"}, timeout=2.0)
+        )
+        deadline = _time.monotonic() + 1.0
+        while _time.monotonic() < deadline and len(listener._waiters) < 2:
+            _time.sleep(0.01)
+        list_frame = {"type": "response", "command": "get_item_list", "ids": [1]}
+        listener._dispatch_response(list_frame)
+        t1.join(2.0)
+        assert box1["result"] == ("response", list_frame)
+        # The ack waiter is still pending.
+        assert len(listener._waiters) == 1
+        ack_frame = {"type": "response", "command": "ack"}
+        listener._dispatch_response(ack_frame)
+        t2.join(2.0)
+        assert box2["result"] == ("response", ack_frame)
+
+    def test_await_response_ignores_errors(self):
+        """Back-compat await_response (accept_error=False) must not be
+        resolved by an error frame — it times out instead, so the
+        cursor-driven query path is unchanged."""
+        listener = self._make_listener()
+        t, box = self._await_in_thread(
+            lambda: listener.await_response("query_variable_values", timeout=0.3)
+        )
+        # Dispatch an error; the response waiter should NOT pick it up.
+        listener._dispatch_error({"type": "error", "error": "x", "message": "y"})
+        t.join(2.0)
+        assert box["result"] is None

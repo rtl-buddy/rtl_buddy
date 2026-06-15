@@ -52,4 +52,5 @@ Outputs anchor on the **config file**, not your shell's cwd. `rb test -c path/to
 
 - `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for one run (`artefacts/<test>/run-0001/...` per iteration for `randtest`).
 - `rb wave <test>` opens `artefacts/<test>/dump.fst` (FST from debug-mode builds, `-M debug`) in Surfer, running a debug sim first if no FST exists; needs `cfg-surfer` in `root_config.yaml` (`rtl-buddy docs show concepts/root-config`).
+- With a hub running, curate the open wave view from the CLI: `rb hub send wave-items` (list), then `wave-add` / `wave-remove` / `wave-move` / `wave-comment`; each reports success/error (non-zero exit on a surfer rejection). See `rtl-buddy docs show concepts/hub`.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`

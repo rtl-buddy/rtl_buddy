@@ -1078,6 +1078,15 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ wave-zoom      Zoom + pan surfer to fit [START_FS, END_FS]. Maps to WCP              │
 │                set_viewport_range.                                                   │
 │ wave-zoom-fit  Zoom surfer out to fit the whole waveform. Maps to WCP zoom_to_fit.   │
+│ wave-items     List the items currently in surfer's wave view (id, type, name). Maps │
+│                to WCP get_item_list + get_item_info.                                 │
+│ wave-remove    Ask the wave peer (surfer) to remove items by id. IDs come from       │
+│                wave-add / wave-items. Reports removed vs not_found.                  │
+│ wave-move      Reorder items in surfer's view. Move the given IDS (in the order      │
+│                listed) so the block starts at --to INDEX, or just before --before    │
+│                ID. Exactly one of --to / --before is required.                       │
+│ wave-comment   Add comment rows (named dividers) to surfer's view. Returns the new   │
+│                item ids. Maps to WCP add_dividers.                                   │
 │ view-pan       Ask the view peer (SPA) to pan/center on INSTANCE_PATH.               │
 │ overlay        Flip an overlay's enabled state on the SPA. Built-in NAMES are        │
 │                'clock', 'reset', 'axi-perf', 'wave'; an unknown name is a no-op. Use │
@@ -1299,6 +1308,73 @@ Usage: rtl-buddy hub send wave-zoom-fit [OPTIONS]
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send wave-items
+
+```text
+Usage: rtl-buddy hub send wave-items [OPTIONS]                                         
+                                                                                        
+ List the items currently in surfer's wave view (id, type, name). Maps to WCP           
+ get_item_list + get_item_info.                                                         
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send wave-remove
+
+```text
+Usage: rtl-buddy hub send wave-remove [OPTIONS] IDS...                                 
+                                                                                        
+ Ask the wave peer (surfer) to remove items by id. IDs come from wave-add / wave-items. 
+ Reports removed vs not_found.                                                          
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    ids      IDS...  DisplayedItemRef ids to remove, e.g. 3 5 7 [required]          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send wave-move
+
+```text
+Usage: rtl-buddy hub send wave-move [OPTIONS] IDS...                                   
+                                                                                        
+ Reorder items in surfer's view. Move the given IDS (in the order listed) so the block  
+ starts at --to INDEX, or just before --before ID. Exactly one of --to / --before is    
+ required.                                                                              
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    ids      IDS...  DisplayedItemRef ids to move, e.g. 5 6 [required]              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --to            INTEGER RANGE [x>=0]  target visible index (0 = top of view)         │
+│ --before        INTEGER RANGE [x>=0]  move the block to just before this item id     │
+│                                       (resolved via wave-items)                      │
+│ --help                                Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send wave-comment
+
+```text
+Usage: rtl-buddy hub send wave-comment [OPTIONS] TEXTS...                              
+                                                                                        
+ Add comment rows (named dividers) to surfer's view. Returns the new item ids. Maps to  
+ WCP add_dividers.                                                                      
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    texts      TEXTS...  comment labels, one divider per entry [required]           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --after        INTEGER RANGE [x>=0]  insert the comments after this item id          │
+│                                      (default: end of view)                          │
+│ --help                               Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
