@@ -175,3 +175,84 @@ def test_resolve_unknown_builder_name_raises():
     root = _make_root(verilator, {"verilator": verilator})
     with pytest.raises(FatalRtlBuddyError):
         root.resolve_rtl_builder_cfg("nonexistent")
+
+
+# --- summary footer: builder reported as a list -----------------------------
+
+
+class _NamedBuilder:
+    def __init__(self, name):
+        self._name = name
+
+    def get_name(self):
+        return self._name
+
+
+class _FakeTest:
+    def __init__(self, builder_name):
+        self._builder_name = builder_name
+
+    def get_builder_name(self):
+        return self._builder_name
+
+
+class _FakeSuite:
+    def __init__(self, builder_names):
+        self._tests = [_FakeTest(b) for b in builder_names]
+
+    def get_tests(self, _test_name=None):
+        return self._tests
+
+
+def _make_rtl_buddy(builders, builder_override=None, platform="verilator"):
+    """Build an RtlBuddy with just enough wiring for _builder_metadata_line."""
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    rb = RtlBuddy.__new__(RtlBuddy)
+    rb.root_cfg = _make_root(
+        builders[platform], builders, builder_override=builder_override
+    )
+    rb.builder = platform
+    return rb
+
+
+def test_builder_footer_single_builder():
+    builders = {
+        "verilator": _NamedBuilder("verilator"),
+        "icarus": _NamedBuilder("icarus"),
+    }
+    rb = _make_rtl_buddy(builders)
+    suite = _FakeSuite(["icarus", "icarus"])
+    assert rb._builder_metadata_line(suite) == "Builder: icarus"
+
+
+def test_builder_footer_lists_multiple_builders_sorted():
+    builders = {
+        "verilator": _NamedBuilder("verilator"),
+        "icarus": _NamedBuilder("icarus"),
+    }
+    rb = _make_rtl_buddy(builders)
+    # Mixed suite: one test pins icarus, one falls back to platform (verilator).
+    suite = _FakeSuite(["icarus", None])
+    assert rb._builder_metadata_line(suite) == "Builders: icarus, verilator"
+
+
+def test_builder_footer_cli_override_collapses_to_one():
+    builders = {
+        "verilator": _NamedBuilder("verilator"),
+        "icarus": _NamedBuilder("icarus"),
+    }
+    rb = _make_rtl_buddy(builders, builder_override="verilator")
+    # Override forces every test onto verilator, so the footer lists only it.
+    suite = _FakeSuite(["icarus", None])
+    assert rb._builder_metadata_line(suite) == "Builder: verilator"
+
+
+def test_builder_footer_unions_across_regression_suites():
+    builders = {
+        "verilator": _NamedBuilder("verilator"),
+        "icarus": _NamedBuilder("icarus"),
+    }
+    rb = _make_rtl_buddy(builders)
+    suites = [_FakeSuite(["verilator"]), _FakeSuite(["icarus"])]
+    assert rb._builder_metadata_line(suites) == "Builders: icarus, verilator"

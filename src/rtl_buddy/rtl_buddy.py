@@ -783,6 +783,30 @@ class RtlBuddy:
             else [f"Builder: {self.builder}", f"Builder Mode: {self.rtl_builder_mode}"],
         )
 
+    def _builder_metadata_line(self, suite_cfgs, test_name=None):
+        """Footer line naming the distinct builder(s) the run uses.
+
+        Resolves each test's effective builder (per-test/suite `builder:`,
+        `--builder` override, or platform default) so the summary reflects
+        what actually ran rather than only the platform default. `suite_cfgs`
+        may be one SuiteConfig or an iterable; for regression it lists the
+        union across suites. Renders `Builder: x` for a single builder and
+        `Builders: x, y` when more than one is in play.
+        """
+        if not isinstance(suite_cfgs, (list, tuple)):
+            suite_cfgs = [suite_cfgs]
+        names = sorted(
+            {
+                self.root_cfg.resolve_rtl_builder_cfg(t.get_builder_name()).get_name()
+                for suite_cfg in suite_cfgs
+                for t in suite_cfg.get_tests(test_name)
+            }
+        )
+        if not names:
+            names = [self.builder]
+        label = "Builder" if len(names) == 1 else "Builders"
+        return f"{label}: {', '.join(names)}"
+
     def _display_path(self, path: str, *, base_dir: str | None = None) -> str:
         if base_dir is None:
             return path
@@ -959,7 +983,7 @@ class RtlBuddy:
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
-        metadata = [f"Builder: {self.builder}"]
+        metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
         metadata.extend(
             self.coverage.build_metadata(
                 suite_results,
@@ -1050,7 +1074,7 @@ class RtlBuddy:
                     "RandTest Replay Summary",
                     suite_results,
                     include_run_id=True,
-                    metadata=[f"Builder: {self.builder}"],
+                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
                 )
         else:
             suite_results = self._do_test_suite(
@@ -1065,7 +1089,7 @@ class RtlBuddy:
                     "RandTest Results Summary",
                     suite_results,
                     include_run_id=True,
-                    metadata=[f"Builder: {self.builder}"],
+                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
                 )
 
         exit_code = self._exit_code_from_results(suite_results)
@@ -1501,7 +1525,7 @@ class RtlBuddy:
             all_suite_results.extend(reg_result["results"])
 
         metadata = [
-            f"Builder: {self.builder}",
+            self._builder_metadata_line(list(self.reg_cfg.get_suite_configs())),
             f"Builder Mode: {self.rtl_builder_mode}",
         ]
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
