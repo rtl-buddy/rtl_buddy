@@ -1216,10 +1216,12 @@ class RtlBuddy:
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         suite_results = []
         for t in tests:
-            if reg_level is not None:
+            if reg_level is not None or start_level is not None:
                 # Resolve the regression level against the builder this test
                 # will actually run on (per-test/suite `builder:` may differ
-                # from the platform default).
+                # from the platform default). Computed whenever either the
+                # end- or start-level filter is active, since both consume
+                # t_lvl below.
                 t_builder = self.root_cfg.resolve_rtl_builder_cfg(
                     t.get_builder_name()
                 ).get_name()

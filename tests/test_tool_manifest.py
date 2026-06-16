@@ -447,6 +447,24 @@ def test_axi_profile_vpd_converters_declared():
     assert "axi-profile" in gtkwave.used_by
 
 
+def test_icarus_simulator_declared():
+    """Icarus (iverilog compile + vvp runtime) is declared as a sim backend.
+
+    `VlogSim` shells out to `iverilog` and the simv wrapper execs `vvp`
+    when a `cfg-rtl-builder` entry / `builder:` selects simulator-family
+    icarus. Both must stay visible to `rb tool-check` so a missing binary
+    surfaces as structured guidance rather than a shell-exec error.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+
+    icarus = by_name["icarus"]
+    assert icarus.binaries == ("iverilog", "vvp")
+    # Opt-in alternate backend: missing Icarus must not gate test readiness
+    # for the default (Verilator) path.
+    assert icarus.optional
+    assert icarus.used_by == ("test", "randtest", "regression")
+
+
 def test_rtl_buddy_view_declares_floor_and_version_probe():
     """rtl-buddy-view carries a 0.3.0 FLOOR (no upper cap) and a probe.
 

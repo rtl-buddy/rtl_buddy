@@ -33,7 +33,7 @@ These are installed automatically when you `uv add rtl_buddy` — no action need
 
 | Command / feature | Integration type | Curated tools | Sub-deps and notes |
 |---|---|---|---|
-| `rb test`, `rb randtest`, `rb regression` | Pluggable | Verilator, VCS (Icarus on the roadmap) | Install the `lcov` package in your OS for LCOV / HTML coverage export from Verilator runs. |
+| `rb test`, `rb randtest`, `rb regression` | Pluggable | Verilator, Icarus Verilog (`brew install icarus-verilog` / `apt install iverilog`), VCS | Select the simulator per suite/test with `builder:` (or `--builder`); see [tests.yaml](reference/yaml.md#selecting-the-simulator-builder). Install the `lcov` package in your OS for LCOV / HTML coverage export from Verilator runs (coverage is Verilator-only — see [Known Issues](known-issues.md#coverage-follows-the-platform-builder-not-a-per-testsuite-builder)). |
 | `rb verible` | Integrated tool | Verible | `brew tap chipsalliance/verible && brew install verible` on macOS; or see [Verible releases](https://github.com/chipsalliance/verible/releases). |
 | Coverview packaging (under `rb regression`) | Integrated tool | Antmicro [Coverview](https://github.com/antmicro/coverview) | Install the `info-process` package in your OS via Coverview's own setup for full package generation. |
 | `rb synth`, `rb synth-regression` | Pluggable | `yosys`, `openroad` | `yosys` is required (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see below); `openroad` is required only when `tool: openroad`. See [Synthesis](concepts/synthesis.md). |

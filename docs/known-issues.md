@@ -8,6 +8,12 @@ The home for rtl_buddy behavior that does not follow convention: quirks, surpris
 
 Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one `##` section per quirk, name it after the behavior, and say what to do about it.
 
+## Coverage follows the platform builder, not a per-test/suite `builder:`
+
+A test can pick its simulator with a per-test or suite-wide `builder:` (see [Selecting the simulator builder](reference/yaml.md#selecting-the-simulator-builder)), but coverage collection and reporting — `rb test --coverage`, the Coverview packer, and the `builder`/`simulator_family` labels on coverage artifacts — key off the **platform-selected** builder, not the test's effective one. When a test's effective builder differs from the platform default *and* no `--builder` override is in effect, the coverage layer can mislabel or misparse results.
+
+Workaround: run the suite with `--builder <name>` (which forces the builder consistently across simulation and coverage) or make that builder the platform default. In practice this only bites Verilator — the sole family that emits line/toggle coverage today; VCS and Icarus collect no coverage through this path. See the [tests.yaml limitation note](reference/yaml.md#selecting-the-simulator-builder) for the full rationale.
+
 ## Instance pRNG seeding with Verilator
 
 Random testing does not behave reliably with Verilator. While Verilator supports multiple random tests with different seeds, tests are not always reproducible even with the same seed.

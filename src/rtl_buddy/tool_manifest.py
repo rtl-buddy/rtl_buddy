@@ -305,6 +305,26 @@ def _builtin_manifest() -> list[ToolSpec]:
             "will fail compile.",
         ),
         ToolSpec(
+            name="icarus",
+            binaries=("iverilog", "vvp"),
+            version_cmd=("iverilog", "-V"),
+            version_regex=r"Icarus Verilog version\s+([\d.]+)",
+            minimum_version=None,
+            detection=(PathDetector(),),
+            install_hint={
+                "macos": "brew install icarus-verilog",
+                "linux": "apt install iverilog",
+                "source": "https://github.com/steveicarus/iverilog",
+            },
+            used_by=("test", "randtest", "regression"),
+            optional=True,
+            description="Icarus Verilog simulator (iverilog compile + vvp runtime)",
+            notes="Opt-in alternate sim backend, selected per suite/test via a "
+            "cfg-rtl-builder entry with simulator-family: icarus (or builder: "
+            "icarus in tests.yaml). Compile uses iverilog; the simv wrapper "
+            "execs vvp, so both binaries must be present.",
+        ),
+        ToolSpec(
             name="surfer",
             binaries=("surfer",),
             version_cmd=("surfer", "--version"),
