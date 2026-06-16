@@ -53,7 +53,7 @@ def _make_synth_cfg(
     constraints=None,
     params=None,
     defines=None,
-    libraries=None,
+    platform=None,
     reglvl=None,
     tool_overrides=None,
 ):
@@ -68,7 +68,7 @@ def _make_synth_cfg(
         constraints=constraints,
         params=params,
         defines=defines,
-        libraries=libraries,
+        platform=platform,
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
     )
@@ -228,6 +228,37 @@ def test_synth_suite_config_params_and_defines_loaded(tmp_path):
     assert synth_b.get_defines() == {"TARGET_SYNTH": 1}
 
 
+def test_synth_suite_config_duplicate_synthesis_raises(tmp_path):
+    """Two syntheses with the same name in one synth.yaml is a hard
+    error — the dict-comprehension in SynthSuiteConfig.__init__
+    would silently overwrite the first one otherwise."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    models_yaml = tmp_path / "models.yaml"
+    models_yaml.write_text(_MODELS_YAML)
+    body = dedent("""\
+        rtl-buddy-filetype: synth_config
+
+        syntheses:
+          - name: "dup"
+            desc: "first"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+            reglvl: 0
+          - name: "dup"
+            desc: "second"
+            model: "mod_b"
+            model_path: "models.yaml"
+            tool: "yosys"
+            reglvl: 0
+    """)
+    path = tmp_path / "synth.yaml"
+    path.write_text(body)
+    with pytest.raises(FatalRtlBuddyError, match="duplicate synthesis name 'dup'"):
+        SynthSuiteConfig(str(path))
+
+
 def test_synth_suite_config_missing_name_raises(tmp_path):
     from rtl_buddy.errors import FatalRtlBuddyError
 
@@ -354,6 +385,31 @@ def test_source_files_resolves_relative_paths(tmp_path):
     assert paths == [str(sv)]
 
 
+def test_filelist_with_incdir_does_not_leak_directory(tmp_path):
+    # Regression: rtl_buddy#69 — `+incdir+<path>` in the model filelist
+    # leaked into the generated synth.f as a bare directory path because
+    # `strip=True` removed the option prefix, then
+    # `_source_files_from_filelist` couldn't tell it from a source file.
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    sub_f = tmp_path / "src.f"
+    sub_f.write_text("+incdir+.\ntop.sv\n")
+    from rtl_buddy.config.model import ModelConfig
+
+    model = ModelConfig(
+        name="m", filelist=[f"-F {sub_f}"], path=str(tmp_path / "models.yaml")
+    )
+    out = tmp_path / "synth.f"
+    VlogFilelist(name="t", model_cfg=model, output_path=str(out)).write_output(
+        output_filepath=str(out), unroll=True, strip=False, deduplicate=True
+    )
+    ys = _make_yosys(tmp_path)
+    paths = ys._source_files_from_filelist(str(out))
+    assert paths == [str(sv)], (
+        f"+incdir+ leaked into source list: {paths!r}; synth.f was:\n{out.read_text()}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # YosysSynth — _write_script
 # ---------------------------------------------------------------------------
@@ -459,6 +515,345 @@ def test_write_script_tool_overrides_applied(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# YosysSynth — frontend: slang
+# ---------------------------------------------------------------------------
+
+
+def _slang_tool_cfg(plugin_path: str):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=plugin_path),
+    )
+    return SynthToolConfig(cfg_file)
+
+
+class _FakeRoot:
+    """Minimal stand-in for RootConfig.get_project_rootdir() in tests."""
+
+    def __init__(self, rootdir: str):
+        self._rootdir = rootdir
+
+    def get_project_rootdir(self) -> str:
+        return self._rootdir
+
+
+def test_write_script_frontend_slang_emits_plugin_and_read_slang(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="my_top"),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert f"plugin -i {plugin}" in script
+    assert "read_slang --std 1800-2017 --top my_top" in script
+    assert f"{sv}" in script
+    # Legacy verilog frontend must not be emitted.
+    assert "read_verilog -sv -defer" not in script
+
+
+def test_write_script_frontend_slang_resolves_relative_plugin_path(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin_rel = "tools/slang.so"
+    (tmp_path / "tools").mkdir()
+    plugin_abs = tmp_path / plugin_rel
+    plugin_abs.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        tool_cfg=_slang_tool_cfg(plugin_rel),
+        root_cfg=_FakeRoot(str(tmp_path)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"plugin -i {plugin_abs.resolve()}" in script
+
+
+def test_write_script_frontend_slang_folds_params_into_G(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", params={"WIDTH": 8, "DEPTH": 16}),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert "-GWIDTH=8" in script
+    assert "-GDEPTH=16" in script
+    # Slang elaborates eagerly; a later chparam would arrive too late.
+    assert "chparam" not in script
+
+
+def test_write_script_frontend_slang_folds_defines_into_D(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(defines={"SYNTH": 1, "FOO": "bar"}),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "-DSYNTH=1" in script
+    assert "-DFOO=bar" in script
+
+
+def test_write_script_frontend_slang_missing_plugin_path_raises(tmp_path, monkeypatch):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=""),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    # The error must name both configuration channels.
+    with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
+        ys._write_script(str(fl))
+    with pytest.raises(FatalRtlBuddyError, match=SLANG_PLUGIN_ENV):
+        ys._write_script(str(fl))
+
+
+def test_write_script_frontend_slang_env_fallback(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, str(plugin))
+    ys = _make_yosys(tmp_path, tool_cfg=_slang_tool_cfg(""))
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"plugin -i {plugin}" in script
+
+
+def test_write_script_frontend_slang_relative_env_rejected(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, "build/slang.so")
+    ys = _make_yosys(tmp_path, tool_cfg=_slang_tool_cfg(""))
+    with pytest.raises(FatalRtlBuddyError, match="absolute"):
+        ys._write_script(str(fl))
+
+
+def test_write_script_frontend_slang_config_wins_over_env(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    configured = tmp_path / "configured.so"
+    configured.write_text("")
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, str(tmp_path / "env.so"))
+    ys = _make_yosys(tmp_path, tool_cfg=_slang_tool_cfg(str(configured)))
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"plugin -i {configured}" in script
+    assert "env.so" not in script
+
+
+def test_write_script_frontend_unknown_raises(tmp_path):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="vhdl"),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    with pytest.raises(FatalRtlBuddyError, match="unknown synth frontend"):
+        ys._write_script(str(fl))
+
+
+def test_write_script_default_frontend_is_verilog(tmp_path):
+    """Regression guard: existing root_config.yaml without a frontend
+    field continues to use read_verilog -sv -defer."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    ys = _make_yosys(tmp_path)
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "read_verilog -sv -defer" in script
+    assert "plugin -i" not in script
+    assert "read_slang" not in script
+
+
+def test_write_script_explicit_frontend_verilog(tmp_path):
+    """``frontend: "verilog"`` explicitly set must produce the same
+    output as the default. Guards against future default flips that
+    would silently change behavior for projects that pinned to the
+    explicit value."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys", tool="yosys", opts=SynthToolOptsFile(frontend="verilog")
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "read_verilog -sv -defer" in script
+    assert "plugin -i" not in script
+    assert "read_slang" not in script
+
+
+def test_write_script_frontend_slang_quotes_path_with_spaces(tmp_path):
+    """Source paths containing spaces must be shell-quoted on the
+    read_slang line, otherwise the whole elaboration corrupts (one
+    line per source on the verilog path; one line for ALL sources
+    on the slang path → unquoted space breaks slang elaboration
+    entirely). Plugin path also quoted."""
+    spacey_dir = tmp_path / "dir with spaces"
+    spacey_dir.mkdir()
+    sv = spacey_dir / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = spacey_dir / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    script = Path(ys._write_script(str(fl))).read_text()
+    # The literal unquoted path must NOT appear (would tokenise).
+    assert f"read_slang --std 1800-2017 --top my_module {sv}" not in script
+    # Both source and plugin path must be present in *quoted* form
+    # — shlex.quote uses single quotes for paths with spaces.
+    assert f"'{sv}'" in script
+    assert f"'{plugin}'" in script
+
+
+def test_write_script_frontend_slang_quotes_define_value_with_spaces(tmp_path):
+    """Define values containing spaces (uncommon but possible — e.g.
+    a multi-token macro expansion) must be quoted on the read_slang
+    line. Same correctness invariant as path quoting; missed during
+    the original implementation."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    ys = _make_yosys(
+        tmp_path,
+        tool_cfg=SynthToolConfig(cfg_file),
+        synth_cfg=_make_synth_cfg(defines={"MULTI": "a b c"}),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    # Quoted form: -DMULTI='a b c' (shlex.quote single-quotes anything
+    # that needs escaping). Unquoted -DMULTI=a b c would be parsed as
+    # three tokens by Yosys.
+    assert "-DMULTI='a b c'" in script
+
+
+def test_write_script_frontend_slang_whitespace_only_plugin_path_raises(tmp_path):
+    """Whitespace-only plugin-path must raise the same FatalRtlBuddyError
+    as empty string — otherwise we'd build a `plugin -i '   '` line
+    that fails inscrutably inside Yosys."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg_file = SynthToolConfigFile(
+        name="yosys",
+        tool="yosys",
+        opts=SynthToolOptsFile(frontend="slang", plugin_path="   "),
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=SynthToolConfig(cfg_file))
+    with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
+        ys._write_script(str(fl))
+
+
+def test_tool_overrides_can_flip_frontend_to_slang(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    # Tool config defaults to verilog; per-block override flips to slang.
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            tool_overrides={"yosys": {"frontend": "slang", "plugin_path": str(plugin)}}
+        ),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "read_slang" in script
+    assert "read_verilog -sv -defer" not in script
+
+
+# ---------------------------------------------------------------------------
 # YosysSynth — run() pass/fail detection
 # ---------------------------------------------------------------------------
 
@@ -505,7 +900,7 @@ def test_run_returns_pass_on_clean_exit(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -532,7 +927,7 @@ def test_run_returns_fail_on_nonzero_exit(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -560,7 +955,7 @@ def test_run_returns_fail_on_error_in_log(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -590,7 +985,7 @@ def test_run_uses_managed_process_for_yosys(tmp_path, monkeypatch):
         constraints=None,
         params=None,
         defines=None,
-        libraries=None,
+        platform=None,
         _reglvl=None,
         tool_overrides=None,
     )
@@ -619,7 +1014,7 @@ def test_run_uses_managed_process_for_yosys(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-class _FakeLibCfg:
+class _FakePlatformCfg:
     def __init__(self, path):
         self._path = path
 
@@ -631,12 +1026,12 @@ class _FakeRootCfg:
     def __init__(self, lib_map):
         self._lib_map = lib_map
 
-    def get_synth_lib_cfg(self, name):
+    def get_synth_platform_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
 
         if name not in self._lib_map:
             raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
-        return _FakeLibCfg(self._lib_map[name])
+        return _FakePlatformCfg(self._lib_map[name])
 
 
 def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
@@ -650,7 +1045,7 @@ def test_write_script_lib_flow_emits_read_liberty_and_mapping(tmp_path):
     root_cfg = _FakeRootCfg({"mylib": str(lib)})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(platform="mylib"),
         root_cfg=root_cfg,
     )
     script = Path(ys._write_script(str(fl))).read_text()
@@ -673,7 +1068,7 @@ def test_write_script_lib_flow_no_standalone_abc(tmp_path):
     root_cfg = _FakeRootCfg({"mylib": str(lib)})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(platform="mylib"),
         tool_cfg=_tool_cfg(abc_args="-fast"),
         root_cfg=root_cfg,
     )
@@ -687,7 +1082,7 @@ def test_write_script_no_lib_flow_unchanged(tmp_path):
     fl = tmp_path / "synth.f"
     fl.write_text(f"-v {sv}\n")
 
-    ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(libraries=None))
+    ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(platform=None))
     script = Path(ys._write_script(str(fl))).read_text()
 
     assert "read_liberty" not in script
@@ -702,7 +1097,7 @@ def test_resolve_lib_paths_unknown_name_raises(tmp_path):
     root_cfg = _FakeRootCfg({})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["unknown_lib"]),
+        synth_cfg=_make_synth_cfg(platform="unknown_lib"),
         root_cfg=root_cfg,
     )
     with pytest.raises(FatalRtlBuddyError, match="not found"):
@@ -763,7 +1158,7 @@ def test_write_script_lib_flow_with_sdc_adds_D_flag(tmp_path):
     root_cfg = _FakeRootCfg({"mylib": str(lib)})
     ys = _make_yosys(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"], constraints=str(sdc)),
+        synth_cfg=_make_synth_cfg(platform="mylib", constraints=str(sdc)),
         root_cfg=root_cfg,
     )
     script = Path(ys._write_script(str(fl))).read_text()
@@ -867,28 +1262,55 @@ def test_synth_tool_config_strategy_via_override_dict():
 
 
 # ---------------------------------------------------------------------------
-# SynthLibConfig — lef_paths field
+# SynthPlatformConfig — pdk + corner + lef paths
 # ---------------------------------------------------------------------------
 
 
-def test_synth_lib_config_lef_paths_empty_by_default(tmp_path):
-    from rtl_buddy.config.synth import SynthLibConfigFile, SynthLibConfig
+def _make_pdk(name, root_cfg_path, *, tech_lef="", macro_lef="", corners=None):
+    from rtl_buddy.config.pdk import PdkConfig, PdkConfigFile
 
-    root_cfg_path = str(tmp_path / "root_config.yaml")
-    lib_file = SynthLibConfigFile(name="mylib", path="lib/cells.lib", lef_paths=[])
-    cfg = SynthLibConfig(lib_file, root_cfg_path)
-    assert cfg.get_lef_paths() == []
-
-
-def test_synth_lib_config_lef_paths_resolved(tmp_path):
-    from rtl_buddy.config.synth import SynthLibConfigFile, SynthLibConfig
-
-    root_cfg_path = str(tmp_path / "root_config.yaml")
-    lib_file = SynthLibConfigFile(
-        name="mylib", path="lib/cells.lib", lef_paths=["lef/cells.lef"]
+    return PdkConfig(
+        PdkConfigFile(
+            name=name,
+            corners=corners or {"typ": "lib/cells.lib"},
+            tech_lef=tech_lef,
+            macro_lef=macro_lef,
+        ),
+        root_cfg_path,
     )
-    cfg = SynthLibConfig(lib_file, root_cfg_path)
-    assert cfg.get_lef_paths() == [str(tmp_path / "lef" / "cells.lef")]
+
+
+def test_synth_platform_config_lef_paths_empty_when_pdk_has_no_lef(tmp_path):
+    from rtl_buddy.config.synth import SynthPlatformConfigFile, SynthPlatformConfig
+
+    root_cfg_path = str(tmp_path / "root_config.yaml")
+    pdk = _make_pdk("nangate45", root_cfg_path)
+    cfg = SynthPlatformConfig(
+        SynthPlatformConfigFile(name="nangate45_typ", pdk="nangate45"),
+        lambda _name: pdk,
+    )
+    assert cfg.get_lef_paths() == []
+    assert cfg.get_path() == str(tmp_path / "lib" / "cells.lib")
+
+
+def test_synth_platform_config_lef_paths_from_pdk(tmp_path):
+    from rtl_buddy.config.synth import SynthPlatformConfigFile, SynthPlatformConfig
+
+    root_cfg_path = str(tmp_path / "root_config.yaml")
+    pdk = _make_pdk(
+        "nangate45",
+        root_cfg_path,
+        tech_lef="lef/tech.lef",
+        macro_lef="lef/cells.lef",
+    )
+    cfg = SynthPlatformConfig(
+        SynthPlatformConfigFile(name="nangate45_typ", pdk="nangate45"),
+        lambda _name: pdk,
+    )
+    assert cfg.get_lef_paths() == [
+        str(tmp_path / "lef" / "tech.lef"),
+        str(tmp_path / "lef" / "cells.lef"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -896,7 +1318,7 @@ def test_synth_lib_config_lef_paths_resolved(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _FakeLibCfgWithLef:
+class _FakePlatformCfgWithLef:
     def __init__(self, path, lef_paths=None):
         self._path = path
         self._lef_paths = lef_paths or []
@@ -913,13 +1335,13 @@ class _FakeRootCfgOR:
         self._lib_map = lib_map
         self._lef_map = lef_map or {}
 
-    def get_synth_lib_cfg(self, name):
+    def get_synth_platform_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
 
         if name not in self._lib_map:
             raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
         lef_paths = self._lef_map.get(name, [])
-        return _FakeLibCfgWithLef(self._lib_map[name], lef_paths)
+        return _FakePlatformCfgWithLef(self._lib_map[name], lef_paths)
 
     def get_synth_tool_cfg(self, name):
         from rtl_buddy.errors import FatalRtlBuddyError
@@ -972,7 +1394,7 @@ def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
     )
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(model_name="top", libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
         root_cfg=root_cfg,
     )
     script = Path(or_synth._write_yosys_script(str(fl))).read_text()
@@ -998,7 +1420,7 @@ def test_openroad_or_script_has_lef_liberty_verilog_sdc(tmp_path):
     or_synth = _make_openroad(
         tmp_path,
         synth_cfg=_make_synth_cfg(
-            model_name="top", libraries=["mylib"], constraints=str(sdc)
+            model_name="top", platform="mylib", constraints=str(sdc)
         ),
         root_cfg=root_cfg,
     )
@@ -1011,6 +1433,7 @@ def test_openroad_or_script_has_lef_liberty_verilog_sdc(tmp_path):
     assert f"read_sdc {sdc}" in script
     assert "report_design_area" in script
     assert "report_checks -path_delay max" in script
+    assert "report_worst_slack -max" in script
     assert "report_tns" in script
 
 
@@ -1025,9 +1448,7 @@ def test_openroad_or_script_no_sdc_omits_timing_reports(tmp_path):
     )
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(
-            model_name="top", libraries=["mylib"], constraints=None
-        ),
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib", constraints=None),
         root_cfg=root_cfg,
     )
     script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
@@ -1052,13 +1473,135 @@ def test_openroad_or_script_timing_strategy_adds_resynth(tmp_path):
     or_synth = _make_openroad(
         tmp_path,
         synth_cfg=_make_synth_cfg(
-            model_name="top", libraries=["mylib"], constraints=str(sdc)
+            model_name="top", platform="mylib", constraints=str(sdc)
         ),
         tool_cfg=_make_or_tool_cfg(strategy="TIMING"),
         root_cfg=root_cfg,
     )
     script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
     assert "resynth_annealing" in script
+
+
+# ---------------------------------------------------------------------------
+# OpenRoadSynth — frontend pickup from yosys tool config
+# ---------------------------------------------------------------------------
+
+
+class _FakeRootCfgORWithYosys:
+    """Variant of _FakeRootCfgOR that exposes a yosys tool config so the
+    elaboration stage can find frontend / plugin-path settings."""
+
+    def __init__(self, lib_map, lef_map=None, yosys_opts=None):
+        self._lib_map = lib_map
+        self._lef_map = lef_map or {}
+        self._yosys_opts = yosys_opts
+
+    def get_synth_platform_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+
+        if name not in self._lib_map:
+            raise FatalRtlBuddyError(f"synthesis library '{name}' not found")
+        lef_paths = self._lef_map.get(name, [])
+        return _FakePlatformCfgWithLef(self._lib_map[name], lef_paths)
+
+    def get_synth_tool_cfg(self, name):
+        from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.config.synth import SynthToolConfigFile
+
+        if name != "yosys" or self._yosys_opts is None:
+            raise FatalRtlBuddyError(f"tool '{name}' not found")
+        cfg_file = SynthToolConfigFile(
+            name="yosys", tool="yosys", opts=self._yosys_opts
+        )
+        return SynthToolConfig(cfg_file)
+
+
+def test_openroad_yosys_stage_picks_up_yosys_frontend_from_root_cfg(tmp_path):
+    """When `tool: openroad` is selected, the internal Yosys elaboration stage
+    should read frontend / plugin-path from the *yosys* tool config (and
+    tool_overrides.yosys), not from the openroad tool config."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    root_cfg = _FakeRootCfgORWithYosys(
+        lib_map={"mylib": str(lib)},
+        yosys_opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert f"plugin -i {plugin}" in script
+    assert "read_slang --std 1800-2017 --top top" in script
+    assert "read_verilog -sv -defer" not in script
+
+
+def test_openroad_yosys_stage_picks_up_yosys_tool_overrides(tmp_path):
+    """A `tool_overrides.yosys` block in synth.yaml should reach the Yosys
+    elaboration stage of the OpenROAD backend (not just `tool: yosys` flows)."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    # yosys tool defaults to verilog frontend; per-block override flips to slang.
+    root_cfg = _FakeRootCfgORWithYosys(
+        lib_map={"mylib": str(lib)},
+        yosys_opts=SynthToolOptsFile(),  # all defaults — frontend="verilog"
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool_overrides={"yosys": {"frontend": "slang", "plugin_path": str(plugin)}},
+        ),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "read_slang" in script
+    assert "read_verilog -sv -defer" not in script
+
+
+def test_openroad_falls_back_to_openroad_opts_when_no_yosys_tool_cfg(tmp_path):
+    """Projects that only configure cfg-synth-tools[openroad] keep working —
+    the OpenROAD backend falls back to its own opts (default frontend=verilog)
+    when no yosys tool entry is configured."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)})
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "read_verilog -sv -defer" in script
+    assert "read_slang" not in script
 
 
 # ---------------------------------------------------------------------------
@@ -1089,6 +1632,34 @@ def test_openroad_parse_wns_violated():
     ) == pytest.approx(-0.431)
 
 
+def test_openroad_parse_wns_prefers_report_worst_slack():
+    # When `report_worst_slack -max` is present, prefer that authoritative
+    # line over the per-group path summaries (which may appear in any order).
+    log = (
+        "            6.754   slack (MET)\n"
+        "           -0.431   slack (VIOLATED)\n"
+        "worst slack max -2.150\n"
+    )
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_wns_ns(log) == pytest.approx(-2.150)
+
+
+def test_openroad_parse_wns_multi_group_fallback_picks_min():
+    # Legacy log without `report_worst_slack`. The parser must scan every
+    # `slack (...)` line and return the minimum — the historical bug was
+    # to take the first match, which on multi-clock designs is whichever
+    # path group OpenROAD prints first, not the true WNS.
+    log = (
+        "            3.054   slack (MET)\n"
+        "           -2.000   slack (VIOLATED)\n"
+        "          -11.867   slack (VIOLATED)\n"
+        "         -556.494   slack (VIOLATED)\n"
+        "            5.919   slack (MET)\n"
+    )
+    or_synth = _make_openroad(Path("/tmp"))
+    assert or_synth._parse_or_wns_ns(log) == pytest.approx(-556.494)
+
+
 def test_openroad_parse_tns_with_corner():
 
     or_synth = _make_openroad(Path("/tmp"))
@@ -1108,10 +1679,10 @@ def test_openroad_parse_area_missing_returns_none():
 
 def test_openroad_run_fails_without_library(tmp_path, monkeypatch):
 
-    or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(libraries=None))
+    or_synth = _make_openroad(tmp_path, synth_cfg=_make_synth_cfg(platform=None))
     result = or_synth.run()
     assert isinstance(result, SynthFailResults)
-    assert "library" in result.results["desc"].lower()
+    assert "liberty" in result.results["desc"].lower()
 
 
 def test_openroad_run_fails_without_lef(tmp_path, monkeypatch):
@@ -1121,9 +1692,43 @@ def test_openroad_run_fails_without_lef(tmp_path, monkeypatch):
     root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)}, lef_map={})
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(libraries=["mylib"]),
+        synth_cfg=_make_synth_cfg(platform="mylib"),
         root_cfg=root_cfg,
     )
     result = or_synth.run()
     assert isinstance(result, SynthFailResults)
     assert "lef" in result.results["desc"].lower()
+
+
+def test_synth_suite_config_loads_xfail_flags(tmp_path):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    (tmp_path / "synth.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: synth_config
+
+        syntheses:
+          - name: "synth_xfail"
+            desc: "expected-fail synth, non-strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+            xfail: true
+          - name: "synth_xfail_strict"
+            desc: "expected-fail synth, strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+            xfail_strict: true
+          - name: "synth_normal"
+            desc: "normal"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "yosys"
+    """)
+    )
+    cfg = SynthSuiteConfig(str(tmp_path / "synth.yaml"))
+    assert cfg.get_syntheses("synth_xfail")[0].is_xfail() is True
+    assert cfg.get_syntheses("synth_xfail")[0].get_xfail_strict() is False
+    assert cfg.get_syntheses("synth_xfail_strict")[0].is_xfail() is True
+    assert cfg.get_syntheses("synth_xfail_strict")[0].get_xfail_strict() is True
+    assert cfg.get_syntheses("synth_normal")[0].is_xfail() is False

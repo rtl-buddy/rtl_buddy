@@ -1,0 +1,6 @@
+rtl-buddy-filetype: model_config
+models:
+  - name: example
+    desc: example model used by CLI smoke tests
+    filelist:
+      - src/example.sv

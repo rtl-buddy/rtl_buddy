@@ -1,0 +1,76 @@
+{
+  "tool": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "module": "cdc_xpm_top",
+  "summary": {
+    "ports": 4,
+    "cells": 2,
+    "flops": 2,
+    "crossings": 1,
+    "async_crossings": 1,
+    "violations": 1,
+    "suppressed": 0,
+    "baseline_carryover": 0
+  },
+  "by_instance": [
+    {
+      "instance_path": [
+        "u_xpm_single"
+      ],
+      "violations": 1,
+      "rules": {
+        "CDC-001": 1
+      }
+    }
+  ],
+  "domains": [
+    {
+      "flop": "$slang$dff$1",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "u_xpm_single.$slang$dff$2",
+      "clock": "clk_b"
+    }
+  ],
+  "crossings": [
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "dst_flop": "u_xpm_single.$slang$dff$2",
+      "width": 1,
+      "min_hops": 0,
+      "src_flop": "$slang$dff$1"
+    }
+  ],
+  "violations": [
+    {
+      "rule_id": "CDC-001",
+      "severity": "error",
+      "message": "unsynchronized control crossing clk_a \u2192 clk_b (src: flop $slang$dff$1): destination flop u_xpm_single.$slang$dff$2 has no second-stage synchronizer (chain depth = 1)",
+      "cell_name": "u_xpm_single.$slang$dff$2",
+      "instance_path": [
+        "u_xpm_single"
+      ],
+      "crossing": {
+        "src_clock": "clk_a",
+        "dst_clock": "clk_b",
+        "dst_flop": "u_xpm_single.$slang$dff$2",
+        "width": 1,
+        "min_hops": 0,
+        "src_flop": "$slang$dff$1"
+      },
+      "location": {
+        "file": "cdc_xpm_top.sv",
+        "start_line": 12,
+        "start_column": 3,
+        "end_line": 12,
+        "end_column": 46
+      }
+    }
+  ],
+  "suppressed": [],
+  "baseline_carryover": []
+}

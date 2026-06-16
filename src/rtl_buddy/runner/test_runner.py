@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 from ..tools.vlog_sim import VlogSim
 from ..tools.cocotb_sim import CocotbSim
+from ..tools.systemc_sim import SystemCSim
 from ..seed_mode import SeedMode
 from .test_results import *
 from ..errors import FilelistError
@@ -36,6 +37,7 @@ class TestRunner:
         replay_run_id=None,
         run_depth=None,
         suite_dir=None,
+        share_build=False,
     ):
         """
         Run tests based on config
@@ -59,13 +61,20 @@ class TestRunner:
         self.rtl_builder_mode = rtl_builder_mode
         self.test_runner_mode = test_runner_mode
         self.suite_dir = suite_dir
+        self.share_build = share_build
 
     def _create_vlog_sim(self):
         sim_mode = {"sim_to_stdout": True}
         if "sim_to_stdout" in self.test_runner_mode:
             sim_mode["sim_to_stdout"] = self.test_runner_mode["sim_to_stdout"]
 
-        sim_class = CocotbSim if self.test_cfg.get_testbench().is_cocotb() else VlogSim
+        tb = self.test_cfg.get_testbench()
+        if tb.is_cocotb():
+            sim_class = CocotbSim
+        elif tb.is_systemc():
+            sim_class = SystemCSim
+        else:
+            sim_class = VlogSim
         return sim_class(
             name=self.name + "/vlog_sim",
             root_cfg=self.root_cfg,
@@ -75,6 +84,7 @@ class TestRunner:
             run_id=self.run_id,
             replay_run_id=self.replay_run_id,
             suite_dir=self.suite_dir,
+            share_build=self.share_build,
         )
 
     def run(self):

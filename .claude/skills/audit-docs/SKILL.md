@@ -11,7 +11,7 @@ You are reviewing the `docs/` directory of the rtl_buddy repo — the MkDocs sit
 
 The docs have two distinct types of pages with different standards:
 
-**Concept and guide pages** (`concepts/`, `quickstart`, `install`, `agents`, `migrations/`) — these are explanatory. A reader arrives without knowing how the feature works. Each page must:
+**Concept and guide pages** (`concepts/`, `quickstart`, `install`, `agents`, `migrations`) — these are explanatory. A reader arrives without knowing how the feature works. Each page must:
 - Open with a plain-English explanation of what the feature is and *when and why* to use it
 - Build understanding progressively — motivation first, mechanics second
 - Use section headings to let a reader scan and jump to what they need

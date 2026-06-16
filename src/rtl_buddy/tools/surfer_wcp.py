@@ -23,13 +23,15 @@ import socket
 import socket as _socket_mod
 import subprocess
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from ..config.surfer import SurferConfig
     from ..config.test import TestConfig
 
+from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
+from .pywellen_compat import require_random_access_api
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +76,37 @@ class WaveformValueReader:
     Look up signal values at a specific FST timestamp using pywellen.
 
     The pywellen Waveform is loaded lazily on the first query and reused.
-    Errors (file missing, signal not in waveform, etc.) return None silently.
+    A genuine lookup miss (signal not in the waveform) returns None/empty;
+    a missing or unreadable trace, or a pywellen without the random-access
+    Waveform API, raises FatalRtlBuddyError instead of silently blanking
+    every annotation (#263). WaveLauncher calls check() on the main thread
+    before Surfer starts so those failures abort the command up front.
     """
 
     def __init__(self, fst_path: str):
         self._fst_path = fst_path
         self._waveform = None
 
+    def check(self) -> None:
+        """Validate the trace path and the pywellen API surface.
+
+        Cheap (no waveform load). Raises FatalRtlBuddyError on failure.
+        """
+        if not os.path.isfile(self._fst_path):
+            log_event(
+                logger,
+                logging.ERROR,
+                "wave.trace_missing",
+                path=self._fst_path,
+            )
+            raise FatalRtlBuddyError(f"waveform trace not found: {self._fst_path}")
+        require_random_access_api("rb wave")
+
     def _load(self):
         if self._waveform is None:
+            self.check()
             import pywellen  # type: ignore[import-untyped]  # noqa: PLC0415
 
-            if not os.path.isfile(self._fst_path):
-                raise FileNotFoundError(self._fst_path)
             # pywellen emits terminal capability queries to stderr on load; suppress them
             import sys
 
@@ -94,70 +114,65 @@ class WaveformValueReader:
             sys.stderr = open(os.devnull, "w")  # noqa: WPS515
             try:
                 self._waveform = pywellen.Waveform(self._fst_path)
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "wave.trace_open_failed",
+                    path=self._fst_path,
+                    error=str(e),
+                )
+                raise FatalRtlBuddyError(
+                    f"could not open waveform trace {self._fst_path}: {e}"
+                ) from e
             finally:
                 sys.stderr.close()
                 sys.stderr = old_stderr
         return self._waveform
 
     def get_value(self, variable: str, timestamp: int) -> str | None:
-        """Return the signal value string at *timestamp* (FST ticks), or None."""
+        """Return the signal value string at *timestamp* (FST ticks).
+
+        Returns None when the signal is not in the waveform; anything else
+        (broken trace, API break) propagates loudly.
+        """
+        wf = self._load()
         try:
-            wf = self._load()
             sig = wf.get_signal_from_path(variable)
-            return str(sig.value_at_time(timestamp))
-        except Exception:
+        except RuntimeError:
+            # pywellen lookup miss ("No var at path ...")
             return None
+        return str(sig.value_at_time(timestamp))
 
     def get_scope_signals(self, scope_path: str) -> list[tuple[str, str]]:
         """Return [(signal_name, full_fst_path), ...] for all vars directly under scope_path."""
-        try:
-            wf = self._load()
-            h = wf.hierarchy
-            results = []
-            for scope in h.top_scopes():
-                results.extend(self._walk_scope(h, scope, scope_path))
-            return results
-        except Exception:
-            return []
+        wf = self._load()
+        h = wf.hierarchy
+        results = []
+        for scope in h.top_scopes():
+            results.extend(self._walk_scope(h, scope, scope_path))
+        return results
 
     def _walk_scope(self, h, scope, target_path: str) -> list[tuple[str, str]]:
-        try:
-            full = scope.full_name(h)
-        except Exception:
-            return []
-        if full == target_path:
-            results = []
-            try:
-                for v in scope.vars(h):
-                    try:
-                        results.append((v.name(h), v.full_name(h)))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            return results
+        if scope.full_name(h) == target_path:
+            return [(v.name(h), v.full_name(h)) for v in scope.vars(h)]
         # recurse into child scopes
         results = []
-        try:
-            for child in scope.scopes(h):
-                results.extend(self._walk_scope(h, child, target_path))
-        except Exception:
-            pass
+        for child in scope.scopes(h):
+            results.extend(self._walk_scope(h, child, target_path))
         return results
 
     def get_values_bulk(self, full_paths: list[str], timestamp: int) -> dict[str, str]:
-        """Return {full_path: value} for all paths that resolve successfully."""
-        try:
-            wf = self._load()
-        except Exception:
-            return {}
+        """Return {full_path: value} for all paths present in the waveform."""
+        wf = self._load()
         out = {}
         for path in full_paths:
             try:
                 sig = wf.get_signal_from_path(path)
-                out[path] = str(sig.value_at_time(timestamp))
-            except Exception:
-                pass
+            except RuntimeError:
+                # pywellen lookup miss — path not in waveform, omit
+                continue
+            out[path] = str(sig.value_at_time(timestamp))
         return out
 
 
@@ -667,6 +682,26 @@ class SurferWcpListener:
         self._wcp_conn: socket.socket | None = (
             None  # live connection to Surfer for sending commands
         )
+        self.event_observer: "Callable[[str, dict], None] | None" = None
+        """Optional callback invoked for relevant WCP events. The hub-bridge
+        adapter sets this; the listener stays free of hub awareness."""
+
+        # Ordered list of pending reply waiters. WCP has no request IDs, so
+        # the only correlation guarantee is "responses arrive in send order".
+        # A caller registers a waiter right after sending a command; the WCP
+        # reader thread fills the first compatible waiter when a frame lands.
+        #
+        # Two frame kinds resolve a waiter:
+        #   * a ``response`` frame whose ``command`` is in the waiter's
+        #     ``commands`` set (surfer tags named responses with the command
+        #     name; shared acks carry ``command == "ack"``), or
+        #   * an ``error`` frame, which has no command to correlate on — it
+        #     fills the first waiter that opted into errors (``accept_error``).
+        # Because hub-driven commands are handled serially on the bridge
+        # reader thread, at most one error-accepting waiter is outstanding at
+        # a time in practice, so first-match is the right correlation.
+        self._waiters: list[dict] = []
+        self._waiters_lock = threading.Lock()
 
     def send_to_surfer(self, obj: dict) -> None:
         """Send a WCP command frame to Surfer if connected."""
@@ -675,6 +710,88 @@ class SurferWcpListener:
                 _send_frame(self._wcp_conn, obj)
             except OSError:
                 self._wcp_conn = None
+
+    def _register_waiter(self, commands: "set[str]", accept_error: bool) -> dict:
+        waiter = {
+            "commands": frozenset(commands),
+            "accept_error": accept_error,
+            "event": threading.Event(),
+            "result": None,
+        }
+        with self._waiters_lock:
+            self._waiters.append(waiter)
+        return waiter
+
+    def _wait_waiter(self, waiter: dict, timeout: float) -> dict | None:
+        if not waiter["event"].wait(timeout):
+            # Reclaim the slot so a late frame doesn't fill a stale waiter.
+            with self._waiters_lock:
+                try:
+                    self._waiters.remove(waiter)
+                except ValueError:
+                    pass
+            return None
+        return waiter["result"]
+
+    def await_response(self, command: str, timeout: float = 2.0) -> dict | None:
+        """Wait for the next response frame whose ``command`` matches.
+
+        The caller is responsible for calling this *immediately after*
+        sending the matching WCP command so the send-order correlation
+        across callers stays consistent. Returns the response dict (with
+        ``command`` and any payload fields), or ``None`` on timeout. Error
+        frames do not resolve this waiter — use :meth:`await_reply` when the
+        caller wants to surface surfer-side rejections.
+        """
+        waiter = self._register_waiter({command}, accept_error=False)
+        result = self._wait_waiter(waiter, timeout)
+        if result and result.get("kind") == "response":
+            return result.get("msg")
+        return None
+
+    def await_reply(
+        self, commands: "set[str]", timeout: float = 2.0
+    ) -> "tuple[str, dict] | None":
+        """Wait for the next response (``command`` in *commands*) or error.
+
+        Returns ``("response", msg)`` on a matching response frame,
+        ``("error", msg)`` when surfer rejects the command, or ``None`` on
+        timeout. The error case has no command correlation (WCP errors carry
+        no command field), so this relies on commands being driven serially.
+        """
+        waiter = self._register_waiter(set(commands), accept_error=True)
+        result = self._wait_waiter(waiter, timeout)
+        if result is None:
+            return None
+        return (result["kind"], result["msg"])
+
+    def _dispatch_response(self, msg: dict) -> None:
+        command = msg.get("command")
+        if not isinstance(command, str):
+            return
+        with self._waiters_lock:
+            target = next((w for w in self._waiters if command in w["commands"]), None)
+            if target is None:
+                return
+            self._waiters.remove(target)
+        target["result"] = {"kind": "response", "msg": msg}
+        target["event"].set()
+
+    def _dispatch_error(self, msg: dict) -> None:
+        with self._waiters_lock:
+            target = next((w for w in self._waiters if w["accept_error"]), None)
+            if target is None:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "wcp.error_unmatched",
+                    error=str(msg.get("error", "")),
+                    message=str(msg.get("message", "")),
+                )
+                return
+            self._waiters.remove(target)
+        target["result"] = {"kind": "error", "msg": msg}
+        target["event"].set()
 
     def add_variable_to_surfer(self, name: str) -> None:
         """Resolve *name* against the active scope cache, add to Surfer, and annotate nvim."""
@@ -718,6 +835,12 @@ class SurferWcpListener:
                 log_event(
                     logger, logging.WARNING, "wcp.connection_lost", reason=str(exc)
                 )
+            except FatalRtlBuddyError as exc:
+                # The lazy waveform open can fail here (present-but-corrupt
+                # trace) — tear down gracefully instead of dying with a
+                # listener-thread traceback (#263).
+                log_event(logger, logging.ERROR, "wcp.fatal_error", error=str(exc))
+                self.stop()
             finally:
                 conn.close()
 
@@ -773,15 +896,31 @@ class SurferWcpListener:
                     self._editor.open(filepath, lineno, value)
                     if self._scope_annotation and self._value_reader is not None:
                         self._build_scope_cache(variable, timestamp)
+                self._notify_observer("goto_declaration", msg)
             elif msg.get("type") == "event" and msg.get("event") == "cursor_moved":
                 timestamp = msg.get("timestamp")
                 if timestamp is not None:
                     self._last_timestamp = timestamp
                 self._on_cursor_moved(timestamp)
+                self._notify_observer("cursor_moved", msg)
             elif msg.get("type") == "event" and msg.get("event") == "scope_changed":
                 scope = msg.get("scope", "")
                 if scope:
                     self._on_scope_changed(scope)
+                self._notify_observer("scope_changed", msg)
+            elif msg.get("type") == "response":
+                self._dispatch_response(msg)
+            elif msg.get("type") == "error":
+                self._dispatch_error(msg)
+
+    def _notify_observer(self, event_name: str, msg: dict) -> None:
+        observer = self.event_observer
+        if observer is None:
+            return
+        try:
+            observer(event_name, msg)
+        except Exception:
+            logger.exception("wave.event_observer.unhandled_error event=%s", event_name)
 
     def _emit_value(self, variable: str, timestamp: int | None) -> str | None:
         """Log the signal value at *timestamp* to the console. Returns the display string or None."""

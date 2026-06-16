@@ -29,6 +29,7 @@ from .surfer_wcp import (
     WaveControlServer,
     WaveformValueReader,
 )
+from .wave_hub_bridge import maybe_connect_bridge
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,6 @@ class WaveLauncher:
         self._surfer_file = surfer_file
         self._scope_annotation = scope_annotation
 
-    _NVIM_PLUGIN = os.path.expanduser(
-        "~/.local/share/nvim/site/plugin/rtl_buddy_wave.lua"
-    )
-
     def _check_nvim_plugin(self) -> None:
         """Warn if editor-sock is configured but the nvim plugin is not installed."""
         if not self._surfer_cfg.resolved_editor_sock:
@@ -65,12 +62,14 @@ class WaveLauncher:
         cmd = self._surfer_cfg.editor_cmd.strip()
         if not (cmd.startswith("nvim") or "/nvim" in cmd):
             return
-        if not os.path.isfile(self._NVIM_PLUGIN):
+        from .nvim_install import is_installed, pack_dir
+
+        if not is_installed():
             log_event(
                 logger,
                 logging.WARNING,
                 "wave.nvim_plugin_missing",
-                path=self._NVIM_PLUGIN,
+                path=str(pack_dir()),
             )
 
     def launch(self) -> None:
@@ -78,6 +77,10 @@ class WaveLauncher:
         resolver = SurferSourceResolver(self._test_cfg, self._suite_dir)
         editor = EditorLauncher(self._surfer_cfg)
         value_reader = WaveformValueReader(self._fst_path)
+        # Fail loud on the main thread (trace missing / pywellen API break)
+        # before Surfer starts — not as blank annotations from the WCP
+        # listener thread (#263).
+        value_reader.check()
         listener = SurferWcpListener(
             self._surfer_cfg,
             resolver,
@@ -116,6 +119,11 @@ class WaveLauncher:
             ctrl = WaveControlServer(self._surfer_cfg.resolved_ctrl_sock, listener)
             ctrl.start()
 
+        # Opportunistic hub adapter: registers as the `wave` origin client
+        # when a project hub is running. Standalone behavior is unchanged
+        # when no hub is reachable (the bridge is None).
+        hub_bridge = maybe_connect_bridge(listener=listener)
+
         emit_console_text(
             f"Surfer open (PID {proc.pid}). "
             f"Right-click a signal → Go to declaration. "
@@ -131,6 +139,8 @@ class WaveLauncher:
             except subprocess.TimeoutExpired:
                 proc.kill()
         finally:
+            if hub_bridge is not None:
+                hub_bridge.stop()
             listener.stop()
             if ctrl:
                 ctrl.stop()

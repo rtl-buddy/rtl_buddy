@@ -1,21 +1,29 @@
 ---
-description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-synth-libs, and the rb synth command.
+description: How to run synthesis flows with rtl_buddy using synth.yaml, cfg-synth-tools, cfg-pdks + cfg-synth-platforms, and the rb synth command.
 ---
 
 # Synthesis
+
+> **Integration type:** Pluggable. `rb synth` selects a synthesis tool via `tool:` in `synth.yaml`; the schema is open for future backends.
+>
+> **Curated tools (`tool:` values):** `yosys` (Yosys-only flow); `openroad` (Yosys + OpenROAD-STA two-stage flow).
+>
+> **External binaries required:** `yosys` (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see [Installing Yosys](#installing-yosys)); plus `openroad` on `PATH` when `tool: openroad` is selected — see [Installing OpenROAD](#installing-openroad).
+>
+> See also: [Installation — External tools by feature](../install.md#external-tools-by-feature).
 
 `rtl_buddy` provides a tool-agnostic synthesis flow that mirrors the simulation workflow. Synthesis runs are described in `synth.yaml` files; tool-specific defaults and PDK library paths live in `root_config.yaml`.
 
 ## Supported backends
 
-`rtl_buddy` ships two synthesis backends selectable via `tool:` in `synth.yaml`:
+`rb synth` ships two backends selectable via `tool:` in `synth.yaml`. Both backends use Yosys to map RTL to a gate-level netlist; they differ in whether OpenROAD is run afterwards for static timing analysis.
 
 | `tool:` | Backend | Multi-clock SDC | Reports |
 |---------|---------|-----------------|---------|
-| `yosys` | Yosys + ABC | Workaround (min period) | Gates, Area, WNS |
+| `yosys` | Yosys + ABC (single stage) | Workaround (min period) | Gates, Area, WNS |
 | `openroad` | Yosys (stage 1) + OpenROAD STA (stage 2) | Native `read_sdc` | Gates, Area, WNS, TNS |
 
-The OpenROAD backend removes the multi-clock SDC workaround: stage 1 maps RTL to a gate-level netlist with Yosys, stage 2 feeds that netlist into OpenROAD which loads the SDC natively and reports WNS (actual worst slack from `report_checks`) and TNS (total negative slack).
+The `openroad` backend removes the multi-clock SDC workaround: stage 1 maps RTL to a gate-level netlist with Yosys, stage 2 feeds that netlist into OpenROAD which loads the SDC natively and reports WNS (actual worst slack from `report_checks`) and TNS (total negative slack).
 
 ## Installing Yosys
 
@@ -40,6 +48,19 @@ yosys --version
 ```
 
 The `yosys` binary must be on `PATH` when `rb synth` is invoked.
+
+### Optional: yosys-slang plugin
+
+For designs that use SystemVerilog-2017 features Yosys's built-in frontend doesn't accept (e.g. `import pkg::*`, packed-struct typedefs, complex package generates), build the [yosys-slang](https://github.com/povik/yosys-slang) plugin against the same Yosys you just installed:
+
+```bash
+git clone --recursive https://github.com/povik/yosys-slang.git
+cd yosys-slang
+make -j 8           # produces build/slang.so
+make install        # optional: copies into $(yosys-config --datdir)/plugins/
+```
+
+Wire it into `rb synth` by setting `opts.frontend: "slang"` and `opts.plugin-path` under `cfg-synth-tools` (see [`SystemVerilog frontend`](#systemverilog-frontend) below). Skip this step entirely if your designs work with the default `frontend: "verilog"`.
 
 ## Installing OpenROAD
 
@@ -74,8 +95,7 @@ syntheses:
     model: "test_module"
     model_path: "../../design/sandbox/models.yaml"
     tool: "yosys"
-    libraries:
-      - "sky130hd_tt"
+    platform: "sky130hd_tt"
     constraints: "constraints.sdc"
     params:
       WIDTH: 8
@@ -92,8 +112,7 @@ syntheses:
     model: "test_module"
     model_path: "../../design/sandbox/models.yaml"
     tool: "openroad"
-    libraries:
-      - "sky130hd_tt"
+    platform: "sky130hd_tt"
     constraints: "constraints.sdc"
     reglvl: 0
 ```
@@ -107,8 +126,10 @@ syntheses:
 | `model` | Model name from `models.yaml`; also used as the synthesis top module |
 | `model_path` | Path to `models.yaml`, resolved relative to the `synth.yaml` directory |
 | `tool` | Synthesis tool name — must match a `cfg-synth-tools` entry in `root_config.yaml` |
-| `libraries` | Optional list of library names from `cfg-synth-libs`; enables technology mapping |
+| `platform` | Optional synth platform name from `cfg-synth-platforms` (which in turn references a `cfg-pdks` entry); enables technology mapping |
 | `constraints` | Optional SDC constraints file, resolved relative to `synth.yaml` |
+| `lef-paths` | Optional block-specific LEF files (resolved relative to `synth.yaml`); appended after the platform PDK's tech/macro LEFs for the OpenROAD backend |
+| `lib-paths` | Optional block-specific Liberty files (resolved relative to `synth.yaml`); appended after the platform PDK Liberty for both the Yosys and OpenROAD backends |
 | `params` | Optional key-value pairs passed as top-level parameter overrides (`chparam` in Yosys) |
 | `defines` | Optional compile-time Verilog defines passed via `-D KEY=VALUE` |
 | `reglvl` | Regression level (int or per-tool dict); same semantics as simulation `reglvl` |
@@ -162,8 +183,7 @@ syntheses:
     model: "test_module"
     model_path: "../../design/sandbox/models.yaml"
     tool: "openroad"
-    libraries:
-      - "sky130hd_tt"
+    platform: "sky130hd_tt"
     constraints: "constraints.sdc"
     effort: "quick"      # references a cfg-synth-efforts entry
     reglvl: 0
@@ -191,12 +211,57 @@ cfg-synth-tools:
     opts:
       synth-args: ""
       abc-args: ""
+      frontend: "verilog"      # "verilog" (default) | "slang"
+      plugin-path: ""          # required if frontend: slang
 
   - name: "openroad"
     tool: "openroad"     # executable name (must be on PATH)
     opts:
       strategy: "AREA"   # AREA (default) | TIMING | TIMING_ANNEAL | TIMING_GENETIC
+      frontend: "verilog"
+      plugin-path: ""
 ```
+
+#### SystemVerilog frontend
+
+`opts.frontend` chooses the parser Yosys uses to read the design:
+
+| Value | Behaviour |
+|-------|-----------|
+| `"verilog"` (default) | `read_verilog -sv -defer` per source — lazy elaboration, fast, supports the SystemVerilog subset built into the rtl-buddy Yosys fork. |
+| `"slang"` | Loads the [yosys-slang](https://github.com/povik/yosys-slang) plugin and calls `read_slang --top <top> --std 1800-2017` — full SV-2017 (`import pkg::*`, packed-struct typedefs, virtual interfaces, complex generates). Elaboration is eager, so `params:` are folded into `read_slang -GNAME=VAL` and `defines:` into `-DNAME=VAL` (subsequent `chparam` is skipped). |
+
+When `frontend: slang`, `opts.plugin-path` must point at yosys-slang's `slang.so`. Absolute paths pass through unchanged; relative paths resolve against the project root (the directory containing `root_config.yaml`). When `plugin-path` is unset, the `RTL_BUDDY_SLANG_PLUGIN` environment variable is consulted instead — set it once per machine (e.g. from a toolchain env script, or per project via [`.rtl-buddy/.env`](root-config.md#project-local-env-defaults-rtl-buddyenv)) to keep project configs free of machine-specific paths; an explicitly configured `plugin-path` always wins over the environment. The env value must be an absolute path (`~` is expanded; a relative value is rejected loudly, since a machine-level variable has no project root to anchor against). Build instructions for the plugin are in [`yosys-slang's README`](https://github.com/povik/yosys-slang#building).
+
+Per-block opt-in (leaves other blocks on the legacy frontend):
+
+```yaml
+# synth.yaml
+- name: "<block>_synth"
+  tool: "yosys"
+  model: "<top>"
+  model_path: "../../design/<block>/models.yaml"
+  tool_overrides:
+    yosys:
+      frontend: "slang"
+      plugin_path: "../yosys-slang/build/slang.so"
+```
+
+The OpenROAD backend inherits the same selection — it runs Yosys for elaboration before handing the netlist to OpenROAD for STA/placement. Even when the synth's `tool:` is `openroad`, the per-block override key is `tool_overrides.yosys` (the elaboration tool), not `tool_overrides.openroad`:
+
+```yaml
+# synth.yaml
+- name: "<block>_or"
+  tool: "openroad"          # full Yosys + OpenROAD STA flow
+  tool_overrides:
+    yosys:                  # elaboration-stage opts → live under yosys
+      frontend: "slang"
+      plugin_path: "../yosys-slang/build/slang.so"
+```
+
+> **Naming convention — `plugin-path` vs `plugin_path`:** under `cfg-synth-tools.opts` (above) the YAML field is **kebab-case** (`plugin-path`, `synth-args`, `abc-args`) — that's the schema's canonical form. Under `tool_overrides.yosys` keys are the **Python attribute names** (snake_case: `plugin_path`, `synth_args`), because the override dict is merged at the attribute level rather than re-deserialised through the YAML schema. Same field, two names, depending on where it lives.
+
+#### Strategy
 
 The `strategy` option controls optional OpenROAD resynthesis after timing analysis:
 
@@ -264,22 +329,29 @@ Running the same DMA design at all three levels (ip_dma, sky130hd_tt, 5-clock SD
 
 The pessimization between `standard` and `accurate` (−1.347 vs −1.172 ns WNS) shows the wire-load model adding parasitic RC; the gate count is unchanged because the Yosys stage runs identically.
 
-### PDK library configuration
+### PDK and synth platform configuration
 
-Liberty files for technology mapping are registered under `cfg-synth-libs`. Paths are resolved relative to `root_config.yaml`:
+PDK assets live under `cfg-pdks` — one entry per process, with corners as sub-fields. Each entry owns *everything* PDK-bound (Liberty per corner, tech-LEF, macro-LEF, cell-GDS, KLayout `.lyt`/`.lyp`, SITE, tie/fill cells); synth and P&R consume what they need.
+
+`cfg-synth-platforms` is a thin selector layer: each entry references a PDK + corner. `synth.yaml` then picks a platform name via `platform:`. All paths are resolved relative to `root_config.yaml`.
 
 ```yaml
-cfg-synth-libs:
+cfg-pdks:
+  - name: "sky130hd"
+    site: "unithd"
+    corners:
+      tt: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
+    tech-lef:  "pdk/sky130hd/lef/sky130_fd_sc_hd.tlef"
+    macro-lef: "pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef"
+
+cfg-synth-platforms:
   - name: "sky130hd_tt"
-    path: "pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib"
-    lef-paths:                                          # required for OpenROAD backend
-      - "pdk/sky130hd/lef/sky130_fd_sc_hd_merged.lef"
+    pdk: "sky130hd"
+    corner: "tt"
 ```
 
-The `libraries` list in `synth.yaml` references entries by name.
-
-- **Yosys backend:** uses `path` (liberty) for `read_liberty` → `dfflibmap` → `abc -liberty` → `write_verilog`. `lef-paths` is ignored.
-- **OpenROAD backend:** requires both `path` (liberty) for timing and `lef-paths` (LEF) for technology loading. Without `lef-paths` the run fails immediately with an actionable error.
+- **Yosys backend:** uses the platform's Liberty for `read_liberty` → `dfflibmap` → `abc -liberty` → `write_verilog`. LEF is ignored.
+- **OpenROAD backend:** requires both Liberty and LEF. The `tech-lef` and `macro-lef` on the PDK are passed through automatically; per-block extras can be added via `lef-paths:` on the `synth.yaml` entry. A platform with no LEF assets fails immediately with an actionable error.
 
 PDK files are typically large and should be gitignored. Provide a download script:
 

@@ -1,0 +1,268 @@
+import logging
+import os
+import pprint
+from dataclasses import dataclass, field as dc_field
+from typing import Literal
+
+from serde import field, serde
+from serde.yaml import from_yaml
+
+from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event
+from .synth import SynthSuiteConfig
+
+logger = logging.getLogger(__name__)
+
+
+@serde
+class PnrToolConfigFile:
+    name: str
+    tool: str
+
+
+class PnrToolConfig:
+    def __init__(self, cfg: PnrToolConfigFile):
+        self._cfg = cfg
+
+    def get_name(self) -> str:
+        return self._cfg.name
+
+    def get_executable(self) -> str:
+        return self._cfg.tool
+
+
+@serde
+class PnrFloorplanFile:
+    utilization: float = 0.55
+    aspect: float = 1.0
+    core_margin: float = field(rename="core-margin", default=2.0)
+
+
+@dataclass
+class PnrFloorplan:
+    utilization: float
+    aspect: float
+    core_margin: float
+
+
+@serde
+class PnrConfigFile:
+    name: str
+    desc: str
+    tool: str = "openroad"
+    synth: str = ""
+    synth_path: str = field(rename="synth-path", default="")
+    constraints: str | None = None
+    platform: str = ""
+    floorplan: PnrFloorplanFile = field(default_factory=PnrFloorplanFile)
+    lef_paths: list[str] = field(rename="lef-paths", default_factory=list)
+    lib_paths: list[str] = field(rename="lib-paths", default_factory=list)
+    reglvl: int | dict | None = field(rename="reglvl", default=None)
+    tool_overrides: dict | None = None
+    # Expected-fail markers (pytest-style). Either marks this run
+    # expected-to-fail; `xfail` is non-strict (an unexpected pass still
+    # passes), `xfail_strict` is strict (an unexpected pass is a failure).
+    # See docs/concepts/expected-failures.md.
+    xfail: bool = False
+    xfail_strict: bool = field(rename="xfail_strict", default=False)
+
+    def initialise(self, config_dir: str) -> "PnrConfig":
+        if not self.synth:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': missing 'synth' (name of upstream rb synth entry)"
+            )
+        if not self.synth_path:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': missing 'synth-path' "
+                "(path to the synth.yaml that defines the synth entry)"
+            )
+        if not self.platform:
+            raise FatalRtlBuddyError(
+                f"pnr run '{self.name}': missing 'platform' "
+                "(name of a cfg-pnr-platforms entry)"
+            )
+
+        synth_path_abs = os.path.normpath(os.path.join(config_dir, self.synth_path))
+        constraints = (
+            os.path.normpath(os.path.join(config_dir, self.constraints))
+            if self.constraints is not None
+            else None
+        )
+        lef_paths = [
+            os.path.normpath(os.path.join(config_dir, p)) for p in self.lef_paths
+        ]
+        lib_paths = [
+            os.path.normpath(os.path.join(config_dir, p)) for p in self.lib_paths
+        ]
+        return PnrConfig(
+            name=self.name,
+            desc=self.desc,
+            tool=self.tool,
+            synth_name=self.synth,
+            synth_suite_path=synth_path_abs,
+            constraints=constraints,
+            platform=self.platform,
+            floorplan=PnrFloorplan(
+                utilization=self.floorplan.utilization,
+                aspect=self.floorplan.aspect,
+                core_margin=self.floorplan.core_margin,
+            ),
+            lef_paths=lef_paths,
+            lib_paths=lib_paths,
+            _reglvl=self.reglvl,
+            tool_overrides=self.tool_overrides,
+            xfail=self.xfail,
+            xfail_strict=self.xfail_strict,
+        )
+
+
+@dataclass
+class PnrConfig:
+    name: str
+    desc: str
+    tool: str
+    synth_name: str
+    synth_suite_path: str
+    constraints: str | None
+    platform: str
+    floorplan: PnrFloorplan
+    _reglvl: int | dict | None
+    tool_overrides: dict | None
+    lef_paths: list[str] = dc_field(default_factory=list)
+    lib_paths: list[str] = dc_field(default_factory=list)
+    xfail: bool = False
+    xfail_strict: bool = False
+
+    def is_xfail(self) -> bool:
+        """Whether this run is expected to fail (either flag set)."""
+        return self.xfail or self.xfail_strict
+
+    def get_xfail_strict(self) -> bool:
+        return self.xfail_strict
+
+    def get_name(self) -> str:
+        return self.name
+
+    def get_desc(self) -> str:
+        return self.desc
+
+    def get_tool_name(self) -> str:
+        return self.tool
+
+    def get_synth_name(self) -> str:
+        return self.synth_name
+
+    def get_synth_suite_path(self) -> str:
+        return self.synth_suite_path
+
+    def get_constraints(self) -> str | None:
+        return self.constraints
+
+    def get_platform(self) -> str:
+        return self.platform
+
+    def get_floorplan(self) -> PnrFloorplan:
+        return self.floorplan
+
+    def get_lef_paths(self) -> list[str]:
+        return list(self.lef_paths)
+
+    def get_lib_paths(self) -> list[str]:
+        return list(self.lib_paths)
+
+    def get_reglvl(self, tool_name: str) -> int:
+        match self._reglvl:
+            case int() as lvl:
+                return lvl
+            case dict() if tool_name in self._reglvl:
+                return self._reglvl[tool_name]
+            case dict() if "default" in self._reglvl:
+                return self._reglvl["default"]
+            case None:
+                return 0
+            case _:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr_config.reglvl_malformed",
+                    pnr=self.name,
+                    tool=tool_name,
+                )
+                raise FatalRtlBuddyError(
+                    f"Malformed pnr.yaml, specify reglvl for {self.name} with {tool_name} or default"
+                )
+
+    def get_tool_overrides(self) -> dict | None:
+        return self.tool_overrides
+
+    def resolve_synth_cfg(self):
+        """Load the upstream synth.yaml and return the referenced entry."""
+        suite = SynthSuiteConfig(self.synth_suite_path)
+        return suite.get_syntheses(self.synth_name)[0]
+
+    def __str__(self):
+        return pprint.pformat(self)
+
+
+@serde
+class PnrSuiteConfigFile:
+    filetype: Literal["pnr_config"] = field(rename="rtl-buddy-filetype")
+    runs: list[PnrConfigFile]
+
+
+class PnrSuiteConfig:
+    def __init__(self, path: str):
+        self.path = path
+        self.runs: dict[str, PnrConfig] = {}
+        try:
+            with open(path, "r") as f:
+                data = from_yaml(PnrSuiteConfigFile, f.read())
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_suite_config.load_failed",
+                path=path,
+                error=e,
+            )
+            raise FatalRtlBuddyError(f'failed to load "{path}"') from e
+
+        config_dir = os.path.dirname(os.path.abspath(path))
+        try:
+            self.runs = {r.name: r.initialise(config_dir) for r in data.runs}
+        except FatalRtlBuddyError:
+            raise
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "pnr_suite_config.runs_malformed",
+                path=path,
+                error=e,
+            )
+            raise FatalRtlBuddyError(f"{path}: runs section malformed") from e
+
+    def get_runs(self, name: str | None = None) -> list[PnrConfig]:
+        if name is not None:
+            if name not in self.runs:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "pnr_suite_config.run_missing",
+                    path=self.path,
+                    run=name,
+                )
+                raise FatalRtlBuddyError(
+                    f"pnr run '{name}' not found in suite {self.path}"
+                )
+            return [self.runs[name]]
+        return list(self.runs.values())
+
+    def get_run_names(self) -> list[str]:
+        return list(self.runs.keys())
+
+    def get_path(self) -> str:
+        return self.path
+
+    def __str__(self):
+        return pprint.pformat(self)

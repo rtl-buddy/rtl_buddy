@@ -10,13 +10,52 @@ description: How to install rtl_buddy into a project using uv, including prerequ
 
 - Python 3.11 or later
 - `uv`
-- Simulation tool on `PATH`: Verilator (macOS/Linux) or VCS (Linux)
-- Optional: Verible if you want to use `uv run rb verible ...` — e.g. `brew tap chipsalliance/verible && brew install verible` on macOS, or see [Verible releases](https://github.com/chipsalliance/verible/releases) for other platforms
-- Optional system-level coverage tools:
-  - `lcov` for `.info` export and HTML reports
-  - Antmicro `coverview` for Coverview package generation
 
-`rtl_buddy` can be used with different project-specific tool setups, but the primary supported flows are Verilator and VCS. Basic Verible command integration exists; broader first-class Verible and PeakRDL workflows are on the roadmap.
+Everything else is feature-dependent: which external tools you need is decided by which `rb` commands you use. The matrix below maps each command to its required and optional tools.
+
+## Dependency types
+
+rtl_buddy classifies dependencies into four buckets:
+
+- **Required dependency**: Installed automatically with the `rtl_buddy` wheel; no external setup.
+- **Integrated tool**: A rtl_buddy feature is built around one specific tool; you must install that exact tool to use the feature with no alternatives supported.
+- **Pluggable**: rtl_buddy defines an interface; any tool that fits the interface works. rtl_buddy does not know what the tool specifically is or does — it just hands it the inputs the interface promises and consumes the outputs the interface promises.
+- **Pluggable, curated**: tools that plug into the same plug point as **Pluggable**, but rtl_buddy carries first-class optimizations triggered by the tool name (e.g. coverage merging tuned for a specific simulator, a two-stage flow when a specific synthesis backend is selected). Having curated tools does not prevent non-curated tools from plugging into the same plug points.
+
+## Required dependencies
+
+These are installed automatically when you `uv add rtl_buddy` — no action needed:
+
+- `typer`, `click`, `pyserde[yaml]`, `ruamel.yaml`, `rich` — core CLI and config parsing.
+- `pywellen` — FST/VCD waveform reader. Used by `rb wave` annotation regardless of which waveform viewer is configured; the data layer is viewer-independent, which is why it ships with the wheel rather than as a Surfer-side install step.
+
+## External tools by feature
+
+| Command / feature | Integration type | Curated tools | Sub-deps and notes |
+|---|---|---|---|
+| `rb test`, `rb randtest`, `rb regression` | Pluggable | Verilator, VCS (Icarus on the roadmap) | Install the `lcov` package in your OS for LCOV / HTML coverage export from Verilator runs. |
+| `rb verible` | Integrated tool | Verible | `brew tap chipsalliance/verible && brew install verible` on macOS; or see [Verible releases](https://github.com/chipsalliance/verible/releases). |
+| Coverview packaging (under `rb regression`) | Integrated tool | Antmicro [Coverview](https://github.com/antmicro/coverview) | Install the `info-process` package in your OS via Coverview's own setup for full package generation. |
+| `rb synth`, `rb synth-regression` | Pluggable | `yosys`, `openroad` | `yosys` is required (the [rtl-buddy/yosys fork](https://github.com/rtl-buddy/yosys), see below); `openroad` is required only when `tool: openroad`. See [Synthesis](concepts/synthesis.md). |
+| `rb pnr` | Integrated tool | OpenROAD ≥ `25Q1` | Optional: `klayout` for `--gds` / `--png` streamout and rendering. See [Place-and-Route](concepts/pnr.md). |
+| `rb cdc`, `rb cdc-regression` | Integrated tool | [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc) | Optional: AMD/Xilinx Vivado for the `report_cdc` second-opinion backend (`tool: "vivado"`) — see [CDC Lint](concepts/cdc.md#vivado-backend-second-opinion-not-authority). SpyGlass support is on the roadmap — tracked in [issue #85](https://github.com/rtl-buddy/rtl_buddy/issues/85). |
+| `rb wave` | Integrated tool | Surfer (rtl-buddy fork, `rtl-buddy` branch) | nvim for full annotation round-trip; any editor configurable via `editor-cmd` for one-way "open at line". Vaporview / VS Code support is on the roadmap — tracked in [issue #84](https://github.com/rtl-buddy/rtl_buddy/issues/84). See [Waveform Viewer](concepts/wave.md). |
+| `rb nvim-install` (alias `rb wave-install-nvim`) | Integrated tool | [rtl-buddy-nvim](https://github.com/rtl-buddy/rtl-buddy-nvim) | Requires **`git` + network** — clones the pinned, hub-compatible plugin revision into the nvim pack dir and writes a managed setup file. For air-gapped installs point at a local checkout: `--source <path> --ref <ref>`. See [Waveform Viewer → nvim setup](concepts/wave.md#nvim-setup). |
+| `rb power`, `rb power-regression` | Integrated tool | OpenROAD ≥ `25Q1` | `rb saif` (FST/VCD → SAIF, used to feed activity) needs no extra tool. See [Power Analysis](concepts/power.md). |
+| `rb fpga`, `rb fpga-regression` | Pluggable | AMD/Xilinx Vivado (default) or openXC7 (`yosys` + `nextpnr-xilinx` + prjxray) | Vivado is proprietary; driven in non-project batch mode (`vivado -mode batch`); larger parts need a purchased license. `tool: openxc7` selects the open toolchain for 7-series parts (install via the [openXC7 toolchain installer](https://github.com/openXC7/toolchain-installer)). Optional feature — runs report SKIP when the selected backend's tools are absent. See [FPGA Implementation](concepts/fpga.md). |
+| `rb fpv`, `rb fpv-regression`, `rb wave-fpv` | Integrated tool | SymbiYosys (`sby`) ≥ `0.40` + ≥ 1 SMT solver | Solvers: yices / z3 / boolector / bitwuzla / btormc. `yosys` (for COI / dead-assume) and the optional yosys-slang plugin (for `frontend: slang`). `rb wave-fpv` reuses the `rb wave` Surfer entry (plain VCD — mainline Surfer suffices). See [Formal Property Verification](concepts/fpv.md). |
+| `rb hier`, `rb hier-query` | Pluggable — curated | [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view) | `uv tool install rtl-buddy-view` (≥ 0.3.0 for the `hier-query` verbs). Optional: `graphviz` (`dot`) for `--format dot` → SVG/PNG; `pyslang` for `--frontend slang`. See [Hierarchy Rendering](concepts/hier.md). |
+| `rb axi-profile` | Pluggable — curated | [rtl-buddy-axi-profiler](https://github.com/rtl-buddy/rtl-buddy-axi-profiler) | `uv tool install rtl-buddy-axi-profiler`. Optional extras: `[parquet]` (pyarrow) for `--emit-txns-parquet`; `[notebook]` (marimo) for `rb axi-profile notebook`. Optional for VCS traces: `vpd2vcd` (ships with VCS) converts `vcdplus.vpd` dumps at profile time, and GTKWave's `vcd2fst` compacts the result — without it the intermediate VCD is kept (~15x larger). See [AXI Profiling](concepts/axi-profile.md). |
+| `rb mut` | Pluggable — curated | [rtl-buddy-xeno](https://github.com/rtl-buddy/rtl-buddy-xeno) | Optional mutation engine, not installed by default. Enable it with the `[mut]` extra: `uv add "rtl_buddy[mut]"` (or `pip install "rtl_buddy[mut]"`), which pulls `rtl-buddy-xeno[verible,slang] >= 0.1.0`; the `verible`/`slang` extras provide the Verible CST + pyslang toolchain the operators need. Kill oracles reuse `rb fpv` and/or `rb test` tooling. See [Mutation Testing](concepts/mut.md). |
+
+### Forks required
+
+rtl_buddy currently validates against two forks rather than upstream:
+
+- **Surfer** — required. Use the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) repo, branch `rtl-buddy`. Mainline Surfer works for basic FST viewing but does not support the WCP signal-value annotation features `rb wave` relies on.
+- **Yosys** — required. Use the [`rtl-buddy/yosys`](https://github.com/rtl-buddy/yosys) repo, which tracks upstream with rtl-buddy-specific patches.
+
+Build instructions live on the respective concept pages: [Surfer build](concepts/wave.md#surfer-build) and [Installing Yosys](concepts/synthesis.md#installing-yosys).
 
 ## Install Into A Project With `uv`
 

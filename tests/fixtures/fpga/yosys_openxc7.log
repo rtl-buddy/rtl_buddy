@@ -1,0 +1,65 @@
+/----------------------------------------------------------------------------\
+|  yosys -- Yosys Open SYnthesis Suite                                        |
+|  Copyright (C) 2012 - 2024  Claire Xenia Wolf <claire@yosyshq.com>          |
+\----------------------------------------------------------------------------/
+ Yosys 0.38 (git sha1 543faed9c8c, gcc 12.3.0 -fPIC -Os)
+
+-- Executing script file `synth.ys' --
+
+1. Executing Verilog-2005 frontend: fpga_counter.sv
+Parsing SystemVerilog input from `fpga_counter.sv' to AST representation.
+Generating RTLIL representation for module `\fpga_counter'.
+Successfully finished Verilog frontend.
+
+2. Executing SYNTH_XILINX pass.
+
+2.1. Executing HIERARCHY pass (managing design hierarchy).
+Top module:  \fpga_counter
+
+2.2. Executing PROC pass (convert processes to netlists).
+
+2.25. Executing ABC9 pass.
+ABC: + read_lut /usr/share/yosys/xilinx/abc9_xc7_nowide.lut
+ABC: + &ps -l
+
+2.48. Executing AUTONAME pass.
+
+2.49. Printing statistics.
+
+=== fpga_counter ===
+
+   Number of wires:                234
+   Number of wire bits:            518
+   Number of public wires:          18
+   Number of public wire bits:      96
+   Number of ports:                  5
+   Number of port bits:             41
+   Number of memories:               0
+   Number of memory bits:            0
+   Number of processes:              0
+   Number of cells:                239
+     BUFG                            1
+     CARRY4                         16
+     DSP48E1                         1
+     FDRE                           97
+     IBUF                           18
+     INV                             1
+     LUT2                           24
+     LUT3                           38
+     LUT4                           21
+     LUT5                           17
+     LUT6                           42
+     OBUF                           23
+     RAMB18E1                        1
+
+   Estimated number of LCs:        118
+
+2.50. Executing CHECK pass (checking for obvious problems).
+Checking module fpga_counter...
+Found and reported 0 problems.
+
+3. Executing JSON backend.
+
+End of script. Logfile hash: 8e2f1c9ab4, CPU: user 1.84s system 0.12s, MEM: 92.31 MB peak
+Yosys 0.38 (git sha1 543faed9c8c, gcc 12.3.0 -fPIC -Os)
+Time spent: 41% 2x abc9 (1 sec), 18% 1x synth_xilinx (0 sec), ...

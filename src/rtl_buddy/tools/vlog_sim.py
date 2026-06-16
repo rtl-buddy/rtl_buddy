@@ -8,8 +8,11 @@ vlog_sim module handles verilog simulations for rtl-buddy
 
 """
 
+import hashlib
+import json
 import os
 import random
+import re
 import signal
 import logging
 
@@ -20,7 +23,7 @@ from .vlog_filelist import VlogFilelist
 from .vlog_post import VlogPost
 from .vlog_post import UvmVlogPost
 from .vlog_cov import VlogCov
-from .artifact_paths import test_artifact_dir, test_build_dir_name
+from .artifact_paths import shared_build_dir, test_artifact_dir, test_build_dir_name
 
 import time
 import pprint
@@ -36,6 +39,15 @@ def force_symlink(target, link_name):
         os.remove(link_name)
 
     os.symlink(target, link_name)
+
+
+# Stamp written into a shared build dir after a successful compile; records
+# the exact compile inputs the simv was built from so reuse can be validated.
+SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+
+# Matches the option prefixes VlogFilelist emits into run.f (see
+# VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
+_FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext)\+|-[vyF]\s+)?(.*)$")
 
 
 class VlogSim:
@@ -54,6 +66,7 @@ class VlogSim:
         run_id=None,
         replay_run_id=None,
         suite_dir=None,
+        share_build=False,
     ):
         """
         compile and execute sim for given test
@@ -72,6 +85,16 @@ class VlogSim:
         self.replay_run_id = replay_run_id
         self.testbench = self.test_cfg.get_testbench()
         self.vlog_post = None
+        # Opt-in: key the build dir on a hash of the compile inputs so tests
+        # with identical inputs share one simv (#293). The resolved shared
+        # dir is only known once compile() has written the filelist.
+        self.share_build = share_build
+        self._shared_build_dir = None
+        # CLI commands always pass suite_dir resolved from the test
+        # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
+        # is tests-only — `tests/test_setup_failures.py`,
+        # `tests/test_cocotb_post.py`, etc. construct VlogSim directly
+        # with a monkeypatched cwd. New code paths must pass suite_dir.
         self.suite_work_dir = (
             os.path.abspath(suite_dir)
             if suite_dir is not None
@@ -109,6 +132,8 @@ class VlogSim:
         """
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
+            if self._shared_build_dir is not None:
+                return str(Path(self._shared_build_dir) / "simv")
             return str(
                 Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
             )
@@ -163,7 +188,42 @@ class VlogSim:
 
     def _coverage_enabled(self):
         compile_opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
-        return any(opt.startswith("--coverage") for opt in compile_opts)
+        if any(opt.startswith("--coverage") for opt in compile_opts):
+            return True
+        # Verilator-side `--coverage-user` injected by assertions=true is enough
+        # to produce a coverage.dat that the cov pipeline can read.
+        if self._assertions_enabled() and self._get_simulator_family() == "verilator":
+            return True
+        return False
+
+    def _assertions_enabled(self):
+        """SVA assertions requested for this test (Verilator-only today)."""
+        return bool(getattr(self.test_cfg, "assertions", False))
+
+    def _get_verilator_assertion_flags(self, builder_opts: list[str]) -> list[str]:
+        """Return Verilator-specific flags needed to compile in SVA + cover hits.
+
+        Idempotent: skips flags already present in the builder's configured opts.
+        """
+        if not self._assertions_enabled():
+            return []
+        if self._get_simulator_family() != "verilator":
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.assertions_not_verilator",
+                test=self.test_name,
+                simulator=self._get_simulator_family(),
+            )
+            return []
+
+        existing = set(builder_opts)
+        extras: list[str] = []
+        if "--assert" not in existing:
+            extras.append("--assert")
+        if not any(opt == "--coverage-user" for opt in existing):
+            extras.append("--coverage-user")
+        return extras
 
     def _get_simulator_family(self):
         """
@@ -176,6 +236,15 @@ class VlogSim:
 
     def _get_extra_compile_flags(self) -> list:
         return []
+
+    def _get_extra_compile_env(self) -> dict:
+        """Hook for subclasses to inject env vars into the compile subprocess.
+
+        Base VlogSim has no extra env. SystemCSim overrides to pin CXX and
+        export SYSTEMC_HOME / SYSTEMC_INCLUDE / SYSTEMC_LIBDIR so Verilator's
+        --build step picks them up when invoking the generated Makefile.
+        """
+        return {}
 
     def _get_extra_sim_env(self, run_id=None) -> dict:
         return {}
@@ -226,6 +295,7 @@ class VlogSim:
             strip=False,
             deduplicate=True,
             test_filelist=self.testbench.get_filelist(),
+            suite_dir=self.suite_work_dir,
         )
 
     def _get_plusargs(self):
@@ -263,6 +333,77 @@ class VlogSim:
                 else:
                     pd_list += [f"+define+{plusdefine}"]
         return pd_list
+
+    def _fingerprint_filelist_sources(self, filelist_path):
+        """Per-entry (line, size, mtime_ns) stamps for the generated run.f.
+
+        Entries that don't resolve to a plain file (+incdir+/-y directories,
+        +libext+ suffixes) keep only their raw line; changes inside include
+        directories are not tracked.
+        """
+        base = os.path.dirname(os.path.abspath(filelist_path))
+        stamps = []
+        with open(filelist_path) as filelist_fp:
+            for raw_line in filelist_fp:
+                line = raw_line.strip()
+                if not line or line.startswith("//"):
+                    continue
+                option_match = _FILELIST_OPTION_RE.match(line)
+                entry_path = option_match.group(1) if option_match else line
+                resolved = os.path.normpath(os.path.join(base, entry_path))
+                if os.path.isfile(resolved):
+                    stat = os.stat(resolved)
+                    stamps.append([line, stat.st_size, stat.st_mtime_ns])
+                else:
+                    stamps.append([line, None, None])
+        return stamps
+
+    def _compile_fingerprint(self, key_cmd, filelist_path):
+        """Everything that determines the compiled binary.
+
+        Runtime-only inputs (seed, plusargs, run-time opts, timeout,
+        coverage output path) are deliberately excluded — they vary per
+        test/run without changing the simv.
+
+        Must stay JSON-native (lists/dicts/str/int/None): the stamp check
+        compares this dict against a json.loads() round-trip, so a tuple
+        here would silently disable reuse rather than error.
+        """
+        return {
+            "cmd": list(key_cmd),
+            "env": dict(sorted(self._get_extra_compile_env().items())),
+            "sources": self._fingerprint_filelist_sources(filelist_path),
+        }
+
+    @staticmethod
+    def _compile_config_key(fingerprint):
+        """Short stable hash naming the shared build dir.
+
+        Excludes source size/mtime so editing RTL rebuilds in place in the
+        same dir (the stamp comparison catches the staleness) instead of
+        accumulating a new obj_dir per edit.
+        """
+        config = {
+            "cmd": fingerprint["cmd"],
+            "env": fingerprint["env"],
+            "filelist": [entry[0] for entry in fingerprint["sources"]],
+        }
+        digest = hashlib.sha256(
+            json.dumps(config, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        return digest[:16]
+
+    @staticmethod
+    def _shared_build_is_valid(build_dir, fingerprint):
+        simv_path = Path(build_dir) / "simv"
+        stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+        if not simv_path.is_file() or not stamp_path.is_file():
+            return False
+        try:
+            stored = json.loads(stamp_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return stored == fingerprint
 
     def pre(self):
         script_path = self.test_cfg.get_preproc_path()
@@ -317,32 +458,90 @@ class VlogSim:
         )
         compile_work_dir = self._ensure_artifact_dir()
 
-        run_cmd = [rtl_builder_cfg.get_exe()]
-
         builder_opts = self._filter_builder_opts(
             rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
         )
-        run_cmd += builder_opts
-
-        if os.path.basename(rtl_builder_cfg.get_exe()).startswith("verilator"):
-            run_cmd += ["--Mdir", self._get_build_dir()]
-        elif self._get_simulator_family() == "icarus":
-            # Icarus has no -Mdir equivalent; output a single .vvp snapshot
-            # into the per-test build dir and let our execute() path wrap it.
-            build_dir = Path(self._get_compile_work_dir()) / self._get_build_dir()
-            build_dir.mkdir(parents=True, exist_ok=True)
-            run_cmd += ["-o", self._get_icarus_snapshot_path()]
-
-        run_cmd += self._get_extra_compile_flags()
-
-        # add test plus-defines
-        run_cmd += self._get_plusdefines()
+        extra_compile_flags = self._get_extra_compile_flags()
+        assertion_flags = self._get_verilator_assertion_flags(builder_opts)
+        plusdefines = self._get_plusdefines()
+        is_verilator = os.path.basename(rtl_builder_cfg.get_exe()).startswith(
+            "verilator"
+        )
 
         # Keep compile outputs in the suite work dir, but pass explicit paths so sim cwd can vary later.
         filelist_path = self._get_filelist_path()
         self._write_filelist(
             filelist_path
         )  # raises FilelistError on bad path; caught by TestRunner
+
+        build_dir = self._get_build_dir()
+        fingerprint = None
+        if self.share_build:
+            if is_verilator:
+                key_cmd = (
+                    [rtl_builder_cfg.get_exe()]
+                    + builder_opts
+                    + extra_compile_flags
+                    + assertion_flags
+                    + plusdefines
+                )
+                fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
+                shared_dir = shared_build_dir(
+                    self.suite_work_dir, self._compile_config_key(fingerprint)
+                )
+                self._shared_build_dir = str(shared_dir)
+                build_dir = str(shared_dir)
+                if self._shared_build_is_valid(shared_dir, fingerprint):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "compile.build_reused",
+                        test=self.test_name,
+                        build_dir=build_dir,
+                    )
+                    return 0
+                shared_dir.mkdir(parents=True, exist_ok=True)
+                # A crashed/killed compile must never leave a stamp that
+                # validates a broken simv.
+                (shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
+            else:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.share_build_unsupported",
+                    test=self.test_name,
+                    simulator=self._get_simulator_family(),
+                )
+
+        run_cmd = [rtl_builder_cfg.get_exe()]
+        run_cmd += builder_opts
+
+        if is_verilator:
+            run_cmd += ["--Mdir", build_dir]
+        elif self._get_simulator_family() == "icarus":
+            # Icarus has no -Mdir equivalent; output a single .vvp snapshot
+            # into the per-test build dir and let our execute() path wrap it.
+            icarus_build_dir = (
+                Path(self._get_compile_work_dir()) / self._get_build_dir()
+            )
+            icarus_build_dir.mkdir(parents=True, exist_ok=True)
+            run_cmd += ["-o", self._get_icarus_snapshot_path()]
+
+        run_cmd += extra_compile_flags
+
+        if assertion_flags:
+            run_cmd += assertion_flags
+            log_event(
+                logger,
+                logging.INFO,
+                "compile.assertions_enabled",
+                test=self.test_name,
+                flags=assertion_flags,
+            )
+
+        # add test plus-defines
+        run_cmd += plusdefines
+
         run_cmd += ["-f", filelist_path]
         run_str = " ".join(run_cmd)
         log_event(
@@ -354,10 +553,16 @@ class VlogSim:
             builder=rtl_builder_cfg.get_name(),
         )
         s_time = time.time()
+        extra_compile_env = self._get_extra_compile_env()
+        compile_env = {**os.environ, **extra_compile_env} if extra_compile_env else None
         with task_status(f"Compiling {self.test_name}", spinner="dots12"):
             try:
                 result = run_managed_process(
-                    run_cmd, capture_output=True, text=True, cwd=compile_work_dir
+                    run_cmd,
+                    capture_output=True,
+                    text=True,
+                    cwd=compile_work_dir,
+                    env=compile_env,
                 )
             except FileNotFoundError:
                 log_event(
@@ -399,6 +604,16 @@ class VlogSim:
                 logger.debug("compile stdout\n%s", result.stdout)
             if self._get_simulator_family() == "icarus":
                 self._write_icarus_simv_wrapper()
+            if fingerprint is not None:
+                stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+                stamp_path.write_text(json.dumps(fingerprint, sort_keys=True))
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_stamp_written",
+                    test=self.test_name,
+                    stamp=str(stamp_path),
+                )
         return result.returncode
 
     def execute(
@@ -589,6 +804,8 @@ class VlogSim:
 
         run_id = self.run_id if run_id is None else run_id
         log_path = self._get_log_path(run_id=run_id)
+        err_path = self._get_err_path(run_id=run_id)
+        assertions_enabled = self._assertions_enabled()
 
         if self.test_cfg.uvm:
             self.vlog_post = UvmVlogPost(
@@ -596,11 +813,18 @@ class VlogSim:
                 path=log_path,
                 max_warns=self.test_cfg.uvm.max_warns,
                 max_errors=self.test_cfg.uvm.max_errors,
+                err_path=err_path,
+                assertions_enabled=assertions_enabled,
             )
 
         # default post-processing (VlogPost)
         else:
-            self.vlog_post = VlogPost(name=self.test_name, path=log_path)
+            self.vlog_post = VlogPost(
+                name=self.test_name,
+                path=log_path,
+                err_path=err_path,
+                assertions_enabled=assertions_enabled,
+            )
         results = self.vlog_post.get_results()
         if self._coverage_enabled():
             cov = VlogCov(

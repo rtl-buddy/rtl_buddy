@@ -34,6 +34,11 @@ Specify a config file explicitly:
 rtl-buddy regression --reg-config path/to/regressions.yaml
 ```
 
+When many tests in a suite share one testbench and compile configuration,
+add `--share-build` to compile once per unique set of compile inputs instead
+of once per test (Verilator builders only). See
+[Sharing compiled builds across tests](tests.md#sharing-compiled-builds-across-tests).
+
 ### Config resolution order
 
 When `--reg-config` is not given, `rtl_buddy` resolves the regression config in this order:
@@ -42,6 +47,8 @@ When `--reg-config` is not given, `rtl_buddy` resolves the regression config in 
 2. The path set in `root_config.yaml` under `cfg-rtl-reg.reg-cfg-path`
 
 This means you can drop a `regression.yaml` at the repo root and run `rtl-buddy regression` without any flags, even if `root_config.yaml` points elsewhere.
+
+Each suite's outputs land under that suite's own `tests.yaml` directory; the orchestration log and any merged coverage artifacts land under `dirname(regression.yaml)`. See [Execution Context](execution-context.md) for how the per-suite re-anchoring works.
 
 ### Regression levels
 

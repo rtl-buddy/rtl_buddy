@@ -4,6 +4,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from rich.console import Console
@@ -14,6 +15,16 @@ from rich.table import Table
 RESULT_LEVEL = 25
 RESULT_LEVEL_NAME = "RESULT"
 DEFAULT_FILE_LOG = "rtl_buddy.log"
+
+# Tracks file log state across setup_logging / attach_file_log so callers
+# can attach the file handler once the command root is known.
+_FILE_LOG_LEVEL: int | None = None
+_FILE_LOG_MACHINE: bool = False
+# Paths the current process has already opened. The first open of a
+# given path truncates (clearing stale state from a previous run); a
+# subsequent re-anchor to the same path appends so re-anchoring the log
+# (e.g. during regression's suite-by-suite loop) doesn't lose content.
+_OPENED_LOG_PATHS: set[str] = set()
 
 
 def _result(self, message, *args, **kwargs):
@@ -88,9 +99,23 @@ def setup_logging(
     verbose: bool = False,
     color: bool = True,
     machine: bool = False,
-    log_path: str = DEFAULT_FILE_LOG,
+    log_path: str | None = None,
 ) -> None:
+    """Initialize console logging (and optionally a file log).
+
+    The file handler is attached only when ``log_path`` is provided. The
+    normal command path constructs the console handler here, then calls
+    :func:`attach_file_log` after the command's :class:`ExecutionContext`
+    is known so the log file lands under the command root, not the
+    invocation directory. Tests and ad-hoc callers may still pass
+    ``log_path`` directly.
+    """
     register_logging_levels()
+
+    # A fresh setup_logging() starts a new invocation; clear the
+    # per-path truncate-vs-append memory so the first attach in this
+    # invocation truncates as expected.
+    _OPENED_LOG_PATHS.clear()
 
     root_logger = logging.getLogger()
     for handler in list(root_logger.handlers):
@@ -122,9 +147,51 @@ def setup_logging(
     )
     console_handler.addFilter(_ExcludeResultFilter())
 
-    file_handler = logging.FileHandler(log_path, mode="w")
-    file_handler.setLevel(logging.DEBUG if debug else logging.INFO)
-    if machine:
+    root_logger.addHandler(console_handler)
+
+    global _STATE, _FILE_LOG_LEVEL, _FILE_LOG_MACHINE
+    _STATE = LoggingState(
+        stderr_console=stderr_console,
+        stdout_console=stdout_console,
+        color=color_enabled,
+        machine=machine,
+    )
+    _FILE_LOG_LEVEL = logging.DEBUG if debug else logging.INFO
+    _FILE_LOG_MACHINE = machine
+
+    if log_path is not None:
+        attach_file_log(log_path)
+
+
+def attach_file_log(log_path: str | Path) -> None:
+    """Attach (or re-anchor) the rotating file handler at ``log_path``.
+
+    Idempotent: calling twice replaces the previous file handler so the
+    log file follows the command's resolved :class:`ExecutionContext`
+    even if an earlier code path opened one in a different location.
+    """
+    if _FILE_LOG_LEVEL is None:
+        raise RuntimeError(
+            "attach_file_log() called before setup_logging(); "
+            "console handlers must be initialized first"
+        )
+
+    resolved = str(Path(log_path).resolve())
+    root_logger = logging.getLogger()
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            root_logger.removeHandler(handler)
+            handler.close()
+
+    # First open of a path truncates (clears stale state from a prior
+    # invocation); subsequent re-anchors to the same path append so the
+    # regression orchestrator can re-anchor to dirname(regression.yaml)
+    # after iterating suites without losing earlier events.
+    mode = "a" if resolved in _OPENED_LOG_PATHS else "w"
+    _OPENED_LOG_PATHS.add(resolved)
+    file_handler = logging.FileHandler(resolved, mode=mode)
+    file_handler.setLevel(_FILE_LOG_LEVEL)
+    if _FILE_LOG_MACHINE:
         file_handler.setFormatter(JsonLinesFormatter())
     else:
         file_handler.setFormatter(
@@ -132,17 +199,7 @@ def setup_logging(
                 "%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
             )
         )
-
     root_logger.addHandler(file_handler)
-    root_logger.addHandler(console_handler)
-
-    global _STATE
-    _STATE = LoggingState(
-        stderr_console=stderr_console,
-        stdout_console=stdout_console,
-        color=color_enabled,
-        machine=machine,
-    )
 
 
 def get_stderr_console() -> Console:
@@ -158,13 +215,20 @@ def get_stdout_console() -> Console:
 
 
 def emit_console_text(
-    text: str, *, style: str | None = None, stream: str = "stderr"
+    text: str,
+    *,
+    style: str | None = None,
+    stream: str = "stderr",
+    markup: bool = True,
 ) -> None:
     console = get_stdout_console() if stream == "stdout" else get_stderr_console()
+    # Pass markup=False for text that may contain literal square brackets
+    # (e.g. exception messages with `pkg[extra]` install hints) so Rich
+    # doesn't swallow them as style tags.
     if is_machine_mode():
-        console.print(text, highlight=False)
+        console.print(text, highlight=False, markup=markup)
     else:
-        console.print(text, style=style, highlight=False)
+        console.print(text, style=style, highlight=False, markup=markup)
 
 
 @contextmanager
@@ -223,6 +287,21 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"git: {fields.get('branch')} | commit {fields.get('commit')} | clean"
             )
+        case "artifact_lock.contended":
+            # Deferred import: artifact_lock imports log_event from this
+            # module, so a top-level import here would be circular.
+            from .artifact_lock import _describe_holder
+
+            holder = _describe_holder(
+                {
+                    "pid": fields.get("holder_pid"),
+                    "command": fields.get("holder_command"),
+                    "started": fields.get("holder_started"),
+                }
+            )
+            return (
+                f"Another rtl-buddy run is already using {fields.get('path')}{holder}"
+            )
         case "command.test":
             return f"Running test {fields.get('test')}"
         case "command.randtest":
@@ -271,6 +350,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'compile'}: compile failed (returncode {fields.get('returncode')}){suffix}"
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
+        case "compile.build_reused":
+            return f"{target or 'compile'}: reused shared build {fields.get('build_dir')} (compile skipped)"
+        case "compile.share_build_unsupported":
+            return f"{fields.get('test')}: --share-build only supports Verilator builders; {fields.get('simulator')} compiles per test"
         case "sim.start":
             return f"{target or 'sim'}: simulation started"
         case "sim.output_paths":
@@ -313,6 +396,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"Wrote filelist to {fields.get('output')}"
         case "verible.path_missing":
             return f"Verible disabled: path not found at {fields.get('path')}"
+        case "verible.path_fallback":
+            return f"Verible: configured path not found at {fields.get('path')}, using PATH"
         case "verible.command":
             return f"Running {fields.get('executable')}"
         case "verible.completed":
@@ -323,11 +408,26 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'verible: invalid command "{fields.get("command")}"'
         case "wave.nvim_plugin_missing":
             return (
-                f'nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations'
+                'nvim plugin not installed — run "rb nvim-install" to enable the hub'
+                " connection and wave annotations"
                 f" (expected: {fields.get('path')})"
+            )
+        case "wave.trace_missing":
+            return f"waveform trace not found: {fields.get('path')}"
+        case "wave.trace_open_failed":
+            return f"could not open waveform trace {fields.get('path')}: {fields.get('error')}"
+        case "pywellen.api_missing":
+            return (
+                f"pywellen {fields.get('version')} lacks the random-access Waveform API "
+                f"{fields.get('tool')} requires (removed in 0.25) — "
+                f"reinstall with 'pywellen>=0.20.0,<0.25' (#263)"
             )
         case "wcp.resolve_failed":
             return f'WCP: could not find source for "{fields.get("variable")}" (searched {fields.get("searched")} files)'
+        case "wcp.fatal_error":
+            return (
+                f"WCP: fatal error — wave annotations disabled ({fields.get('error')})"
+            )
         case "wcp.connection_lost":
             return f"WCP: connection lost ({fields.get('reason')}); waiting for Surfer to reconnect"
         case "synth.sdc_multi_clock":
@@ -342,13 +442,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.openroad.no_lef":
             return (
-                f'OpenROAD synthesis "{fields.get("synth")}" requires lef-paths in cfg-synth-libs; '
-                "add LEF files for the technology library"
+                f'OpenROAD synthesis "{fields.get("synth")}" requires LEF files; '
+                "set tech-lef / macro-lef on the referenced cfg-pdks entry "
+                "or lef-paths on the synth.yaml entry"
             )
         case "synth.openroad.no_library":
             return (
                 f'OpenROAD synthesis "{fields.get("synth")}" requires a mapped library; '
-                "add libraries: [...] and lef-paths: [...] to cfg-synth-libs"
+                "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
+                "entry pointing at a cfg-pdks corner"
             )
         case "coverage.metric.failed":
             return (
@@ -408,14 +510,125 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'{fields.get("name")}: no platform config matches uname "{fields.get("uname")}"'
         case "project_path.missing_directory":
             return f"project path is not a directory: {fields.get('path')}"
+        case "axi_profile_run.vcd2fst_missing":
+            return (
+                f"{target}: vcd2fst not on PATH — keeping the converted VCD "
+                f"at {fields.get('vcd')} (works, but ~15x larger than FST; "
+                "install GTKWave to get vcd2fst)"
+            )
         case "cocotb.results_missing":
             return f"cocotb results file not found for {target} at {fields.get('path')} — sim may have crashed before writing results"
+        case "systemc.cfg_missing":
+            return f"SystemC testbench '{target}' requires cfg-systemc block in root_config.yaml"
+        case "systemc.home_unresolved":
+            return f"SystemC testbench '{target}' could not resolve home (set cfg-systemc.home or $SYSTEMC_HOME)"
         case "builder.mode_missing":
             return f'builder "{fields.get("builder")}": mode "{fields.get("mode")}" not in config (stage={fields.get("stage")})'
         case "builder.stage_missing":
             return f'builder "{fields.get("builder")}": stage "{fields.get("stage")}" not in mode "{fields.get("mode")}"'
+        case "mut_runner.scope_graph_failed":
+            return (
+                f"rb mut: scope graph-ingestion for model "
+                f"'{fields.get('model')}' needs rtl-buddy-view on PATH "
+                f"(rtl-buddy-view exited rc={fields.get('rc')})"
+            )
+        case "xplr.record_missing":
+            return (
+                f"xplr: experiment dir '{fields.get('id')}' has no record.json "
+                f"({fields.get('path')}); skipped in listing"
+            )
+        case "xplr.worktree_not_ignored":
+            return (
+                f"xplr: worktree {fields.get('path')} is inside the repo but "
+                f"not gitignored — {fields.get('hint')}"
+            )
+        case "xplr.ledger_not_ignored":
+            return (
+                f"xplr: {fields.get('path')} is inside the repo but not "
+                f"gitignored — {fields.get('hint')}"
+            )
         case "summary":
             return fields.get("title", "Summary")
+        case "cdc.emit.no_maps":
+            return (
+                f'cdc emit "{fields.get("analysis")}": rtl-buddy-cdc produced no '
+                "domain map — cannot generate constraints (check the cdc log / tool version)"
+            )
+        case "cdc.emit.done":
+            dst = fields.get("output") or "stdout"
+            return (
+                f'cdc emit "{fields.get("analysis")}": {fields.get("exceptions")} '
+                f"{str(fields.get('format', '')).upper()} exception(s) -> {dst}"
+            )
+        case "cdc.check_xdc.no_maps":
+            return (
+                f'cdc check-xdc "{fields.get("analysis")}": rtl-buddy-cdc produced '
+                "no domain map — cannot audit (check the cdc log / tool version)"
+            )
+        case "cdc.check_xdc.done":
+            nb = fields.get("blockers", 0)
+            verdict = "clean" if not nb else f"{nb} blocker(s)"
+            return (
+                f'cdc check-xdc "{fields.get("analysis")}": {verdict} '
+                f"({fields.get('findings')} finding(s) vs {fields.get('xdc')})"
+            )
+        case "fpga.no_vivado":
+            return (
+                f'fpga "{fields.get("fpga")}": {fields.get("exe")!r} not found — '
+                "skipping; run `rb tool-check --explain vivado` for install instructions"
+            )
+        case "fpga.no_openxc7":
+            missing = fields.get("missing", [])
+            names = ", ".join(missing) if isinstance(missing, list) else missing
+            return (
+                f'fpga "{fields.get("fpga")}": openXC7 toolchain incomplete '
+                f"(missing: {names}) — skipping; see `rb tool-check --required-for fpga`"
+            )
+        case "fpga.filelist_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": filelist error — {fields.get("error")}'
+            )
+        case "fpga.script_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": flow-script generation failed — '
+                f"{fields.get('error')}"
+            )
+        case "fpga.failed":
+            return (
+                f'fpga "{fields.get("fpga")}": Vivado exited with code '
+                f"{fields.get('returncode')} (log: {fields.get('log')})"
+            )
+        case "fpga.stage_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": stage {fields.get("stage")!r} exited '
+                f"with code {fields.get('returncode')} (log: {fields.get('log')})"
+            )
+        case "fpga.errors_in_log":
+            stage = fields.get("stage")
+            where = f" in {stage}" if stage else ""
+            return (
+                f'fpga "{fields.get("fpga")}": {fields.get("count")} ERROR line(s)'
+                f"{where} — first: {fields.get('first')} (log: {fields.get('log')})"
+            )
+        case "fpga.timing_gate_failed":
+            wns = fields.get("wns_ns")
+            wns_text = f" (WNS={wns} ns)" if wns is not None else ""
+            return (
+                f'fpga "{fields.get("fpga")}": timing not met{wns_text}, '
+                f"{fields.get('failing_endpoints')} failing endpoint(s) — failing the "
+                "run because require-timing-met is set"
+            )
+        case "cdc.no_vivado":
+            return (
+                f'cdc "{fields.get("analysis")}": {fields.get("exe")!r} not found — '
+                "skipping; run `rb tool-check --explain vivado` for install instructions"
+            )
+        case "cdc.vivado_waivers_unsupported":
+            return (
+                f'cdc "{fields.get("analysis")}": rtl-buddy-cdc waiver files do not '
+                "translate to the Vivado backend — waivers ignored; findings still "
+                "carry full detail for downstream filtering"
+            )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
             # This is fine for DEBUG/INFO events. Events logged at WARNING or above

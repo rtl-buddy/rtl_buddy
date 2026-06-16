@@ -1,0 +1,30 @@
+name: Bug
+description: Report unexpected behavior in rtl_buddy.
+type: Bug
+body:
+  - type: input
+    id: version
+    attributes:
+      label: rtl_buddy version
+      description: Output of `rb --version`.
+      placeholder: e.g. 2.5.0
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected to happen, what actually happened, and the command you ran.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps to reproduce. Paste relevant YAML config snippets if useful.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Paste the relevant `rtl_buddy.log` excerpt or terminal output. `--machine` mode produces structured JSON lines that are often easier to diagnose.
+      render: text

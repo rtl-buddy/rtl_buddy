@@ -4,6 +4,8 @@
 #
 import pprint
 
+from .xfail import is_pass_with_xfail
+
 
 class TestResults:
     """
@@ -24,7 +26,8 @@ class TestResults:
             results["desc"] = "NA"
 
     def is_pass(self):
-        return self.results["result"] == "PASS" or self.results["result"] == "SKIP"
+        # PASS/SKIP/XFAIL pass; XPASS passes only for a non-strict xfail.
+        return is_pass_with_xfail(self.results)
 
     def __str__(self):
         return "test_results: " + pprint.pformat(self.results)

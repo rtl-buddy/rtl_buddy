@@ -1,0 +1,21 @@
+name: Feature
+description: Request a new feature or behavior change.
+type: Feature
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user-facing problem does this solve? What is blocked or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: How might this work? Sketch CLI surface, YAML schema, or behavior if helpful. Skip if you would rather discuss first.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed and why this one is preferred.

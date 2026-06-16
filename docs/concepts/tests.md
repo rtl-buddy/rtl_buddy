@@ -51,6 +51,7 @@ tests:
 | `uvm` | UVM report thresholds (see below) |
 | `sweep` | Sweep expansion script (see [Plugins](plugins.md)) |
 | `preproc` | Pre-processing script (see [Plugins](plugins.md)) |
+| `assertions` | Boolean: compile in SVA (`--assert`) and report firings (see [Assertion-Based Verification](abv-simulation.md)) |
 
 ### Regression levels
 
@@ -116,6 +117,16 @@ The transcript parser is not the only source of failures. `rtl_buddy` also marks
 - compilation fails
 - simulation times out
 
+### Exit codes
+
+`rtl_buddy` returns one of three exit codes from test commands:
+
+| Code | Meaning |
+|------|---------|
+| 0 | All tests passed |
+| 1 | One or more tests failed |
+| 2 | Fatal configuration or environment error |
+
 ## Running tests
 
 Run a named test:
@@ -132,6 +143,46 @@ List tests without running:
 ```bash
 rtl-buddy test --list
 ```
+
+### Sharing compiled builds across tests
+
+By default every test compiles into its own build directory
+(`artefacts/<test>/obj_dir_<test>`), so a suite of N tests that share one
+testbench verilates the design N times. For large designs the verilation
+step dominates wall-clock time.
+
+`--share-build` opts into reusing one compiled `simv` across tests whose
+compile inputs are identical:
+
+```bash
+rtl-buddy test --share-build
+rtl-buddy regression --share-build
+```
+
+The build directory is keyed on a hash of the compile inputs — builder
+executable, compile-time options, plusdefines, compile environment, and the
+resolved filelist — and lives at `artefacts/.shared-builds/obj_dir_<hash>/`.
+The first test with a given key compiles; subsequent tests find a valid
+`simv` and skip verilation entirely. Runtime-only inputs (plusargs, seeds,
+`timeout`) never affect the key, so tests that differ only in those always
+share. Tests with different `pd` plusdefines hash to different keys and
+compile separately.
+
+After a successful compile, a `rb-compile-stamp.json` recording the exact
+compile inputs (including each source file's size and modification time) is
+written next to the `simv`. Reuse only happens when the stamp matches, so
+editing any file listed in the filelist triggers a rebuild in place.
+
+Caveats:
+
+- Verilator builders only. Other builders log a warning and compile per
+  test as before.
+- Changes inside `+incdir+` include directories are not tracked by the
+  stamp; delete `artefacts/.shared-builds/` (or run without
+  `--share-build`) to force a fresh compile after header-only edits.
+- Toolchain upgrades are likewise invisible to the stamp. See
+  [Known Issues](../known-issues.md#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades)
+  for the full list of untracked inputs.
 
 ## Randomization
 
@@ -163,7 +214,7 @@ For machine-readable logs (JSON Lines), use `--machine`. See [For Agents](../age
 
 ## Path and working directory
 
-`test` and `randtest` do **not** automatically change directory to the suite directory. Run them from the directory containing `tests.yaml`, or pass an explicit `--test-config` path.
+`test` and `randtest` anchor outputs on the directory containing `tests.yaml`. You can run them from anywhere — invoke `rb test -c path/to/tests.yaml` and the artifact tree, `rtl_buddy.log`, and builder scratch all land under `dirname(tests.yaml)`, not your shell's cwd. See [Execution Context](execution-context.md) for the full picture and the worked example for invoking from a sibling directory.
 
 Paths in `tests.yaml` (such as `model_path`) are resolved relative to the suite file's directory, not the invocation directory.
 

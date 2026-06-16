@@ -1,0 +1,962 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rtl-buddy.dev/schemas/hub-protocol-v1.json",
+  "title": "rtl-buddy-hub protocol v1 envelope",
+  "description": "Wire contract for messages exchanged between rtl-buddy-hub and its clients (viewer, surfer/WCP adapter, nvim plugin, CLI). See docs/hub-protocol.md.",
+  "type": "object",
+  "required": ["v", "id", "origin", "kind", "type"],
+  "additionalProperties": false,
+  "properties": {
+    "v": {
+      "const": 1,
+      "description": "Protocol major version."
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "description": "RFC 4122 UUID for request/response correlation and loop-prevention dedupe."
+    },
+    "origin": {
+      "enum": ["view", "wave", "src", "cli", "notebook"],
+      "description": "Conceptual originator of the message; the loop-prevention discriminator."
+    },
+    "kind": {
+      "enum": ["event", "request", "response", "error"]
+    },
+    "type": {
+      "type": "string",
+      "description": "Message type. See docs/hub-protocol.md §3 for the v1 catalog. Unknown types MUST be silently dropped at DEBUG."
+    },
+    "payload": {
+      "description": "Type-specific. May be null for messages without payload (e.g. bye)."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "selection_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["instance_path"],
+            "additionalProperties": false,
+            "properties": {
+              "instance_path": {
+                "oneOf": [
+                  { "type": "string", "minLength": 1 },
+                  { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+                ],
+                "description": "Single instance path, or a list when collapsed from a multi-driver signal (§6)."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "signal_selected" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["signal", "wave_scope"],
+            "additionalProperties": false,
+            "properties": {
+              "signal": { "type": "string", "minLength": 1 },
+              "wave_scope": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "cursor_time_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["t_fs"],
+            "additionalProperties": false,
+            "properties": {
+              "t_fs": {
+                "type": "string",
+                "pattern": "^-?[0-9]+$",
+                "description": "Time in femtoseconds, encoded as a decimal string to avoid JSON number precision loss for large timestamps."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "scope_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["wave_scope"],
+            "additionalProperties": false,
+            "properties": {
+              "wave_scope": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_values_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["t_fs", "values"],
+            "additionalProperties": false,
+            "description": "Broadcast by the hub when surfer reports new values for the variables it's tracking — typically as a side-effect of cursor movement. Carries the timestamp at which the values were sampled plus one entry per (wave_scope, signal). Consumers merge into a last-known-value map; absent signals retain their previous value (no clear-on-omit semantics).",
+            "properties": {
+              "t_fs": {
+                "type": "string",
+                "pattern": "^-?[0-9]+$",
+                "description": "Sampling time in femtoseconds, decimal string (same encoding as cursor_time_changed)."
+              },
+              "values": {
+                "type": "array",
+                "description": "Per-signal value samples at t_fs. An empty array is legal (e.g. the cursor moved into a region the hub doesn't have variables tracked for) and clears nothing.",
+                "items": {
+                  "type": "object",
+                  "required": ["wave_scope", "signal", "value"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "wave_scope": { "type": "string", "minLength": 1, "description": "Surfer-side scope path, dotted (e.g. `tb.dut.fifo`)." },
+                    "signal":     { "type": "string", "minLength": 1, "description": "Bare signal name within wave_scope (no scope prefix)." },
+                    "value":      { "type": "string", "description": "SV literal — e.g. `1'b1`, `32'hDEAD_BEEF`, `1'bx`. Producers should emit the same encoding the Phase 8 offline overlay uses so the renderer can format both identically." }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "source_focused" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["file", "line", "col"],
+            "additionalProperties": false,
+            "properties": {
+              "file": { "type": "string", "minLength": 1, "description": "Absolute path." },
+              "line": { "type": "integer", "minimum": 1 },
+              "col":  { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "open_source" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["file", "line", "col"],
+                "additionalProperties": false,
+                "properties": {
+                  "file": { "type": "string", "minLength": 1 },
+                  "line": { "type": "integer", "minimum": 1 },
+                  "col":  { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_add_variables" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["variables"],
+                "additionalProperties": false,
+                "properties": {
+                  "variables": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ids"],
+                "additionalProperties": false,
+                "properties": {
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+                  "not_found": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_set_scope" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["wave_scope"],
+                "additionalProperties": false,
+                "properties": { "wave_scope": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": {
+                  "ok": { "type": "boolean" },
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+                  "not_found": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_set_cursor" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["t_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "t_fs": { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_set_viewport" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["t_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "t_fs": { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_zoom_to_range" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["start_fs", "end_fs"],
+                "additionalProperties": false,
+                "properties": {
+                  "start_fs": { "type": "string", "pattern": "^-?[0-9]+$" },
+                  "end_fs":   { "type": "string", "pattern": "^-?[0-9]+$" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_zoom_to_fit" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_get_items" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Ask the wave peer (surfer) to enumerate the items currently displayed in its waveform view. Maps to WCP get_item_list + get_item_info.",
+                "properties": {}
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["items"],
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "description": "Displayed items in view order. An empty array means the view holds no items.",
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "type", "name"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "id":    { "type": "integer", "minimum": 0, "description": "Surfer DisplayedItemRef. Session-scoped handle; pass to wave_remove_items / wave_move_items. May change after a clear/reload — re-query to resync." },
+                        "type":  { "type": "string", "minLength": 1, "description": "Surfer item kind: variable | divider | marker | group | timeline | stream | placeholder." },
+                        "name":  { "type": "string", "description": "Display name. Empty string for an unnamed divider." },
+                        "scope": { "type": "string", "minLength": 1, "description": "Owning wave scope when the item is a variable; omitted otherwise." }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_remove_items" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["ids"],
+                "additionalProperties": false,
+                "properties": {
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1, "description": "DisplayedItemRefs (from wave_add_variables / wave_get_items) to remove." }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": {
+                  "ok":        { "type": "boolean" },
+                  "removed":   { "type": "array", "items": { "type": "integer", "minimum": 0 }, "description": "Subset of the requested ids that were present and are now gone (computed by diffing the item list)." },
+                  "not_found": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "description": "Requested ids that were not in the view to begin with." }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_move_items" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["ids", "to_index"],
+                "additionalProperties": false,
+                "description": "Reorder displayed items: move ids (preserving their relative order) so the block starts at to_index in the visible item list. Maps to WCP move_items.",
+                "properties": {
+                  "ids":      { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1 },
+                  "to_index": { "type": "integer", "minimum": 0, "description": "Target visible index (0 = top of the view)." }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_add_comments" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["texts"],
+                "additionalProperties": false,
+                "description": "Add one or more comment rows (named dividers) to the wave view. Maps to WCP add_dividers.",
+                "properties": {
+                  "texts":    { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "description": "Comment labels, one divider per entry, inserted in order." },
+                  "after_id": { "type": "integer", "minimum": 0, "description": "Optional DisplayedItemRef to insert the comments after. Appended to the end of the view when omitted." }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ids"],
+                "additionalProperties": false,
+                "properties": {
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "description": "DisplayedItemRefs of the created comment rows, in input order." }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "view_pan_to" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path"],
+                "additionalProperties": false,
+                "properties": { "instance_path": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "view_overlay_set" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["name", "enabled"],
+                "additionalProperties": false,
+                "description": "Ask the SPA to toggle an overlay's enabled state. Names follow the same convention as `graph.overlays_present` — built-ins today are `clock`, `reset`, `axi-perf`, `wave`. Enabling an unknown name is a no-op (the SPA silently drops it, matching the existing soft-miss semantics for unrecognised overlay names).",
+                "properties": {
+                  "name":    { "type": "string", "minLength": 1 },
+                  "enabled": { "type": "boolean" }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "resolve_view_to_wave" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path"],
+                "additionalProperties": false,
+                "properties": { "instance_path": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["wave_scope"],
+                "additionalProperties": false,
+                "properties": { "wave_scope": { "type": "string", "minLength": 1 } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "resolve_signal_to_view" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["signal", "wave_scope"],
+                "additionalProperties": false,
+                "properties": {
+                  "signal": { "type": "string", "minLength": 1 },
+                  "wave_scope": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path", "port"],
+                "additionalProperties": false,
+                "properties": {
+                  "instance_path": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+                  "port": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "resolve_wave_to_view" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["wave_scope"],
+                "additionalProperties": false,
+                "properties": { "wave_scope": { "type": "string", "minLength": 1 } }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["instance_path"],
+                "additionalProperties": false,
+                "properties": { "instance_path": { "type": "string", "minLength": 1 } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "state_snapshot" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "active_model":  { "type": ["string", "null"], "description": "Currently-active model name when the hub was started with --model NAME, else null." },
+                  "selection":     { "type": ["object", "null"], "description": "Last selection_changed payload broadcast through the hub, plus the origin that produced it. Null when the hub has seen no selection yet.",
+                                     "required": ["instance_path", "origin"], "additionalProperties": false,
+                                     "properties": { "instance_path": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook"] } } },
+                  "cursor_time":   { "type": ["object", "null"], "description": "Last cursor_time_changed payload + origin. Null when no cursor event has fired.",
+                                     "required": ["t_fs", "origin"], "additionalProperties": false,
+                                     "properties": { "t_fs": { "type": "string", "pattern": "^[0-9]+$" }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook"] } } },
+                  "wave_scope":    { "type": ["object", "null"], "description": "Last scope_changed payload + origin. Null when no scope event has fired.",
+                                     "required": ["wave_scope", "origin"], "additionalProperties": false,
+                                     "properties": { "wave_scope": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook"] } } },
+                  "peers":         { "type": "array", "items": { "enum": ["view", "wave", "src", "cli", "notebook"] }, "uniqueItems": true,
+                                     "description": "Origins currently registered against the hub." },
+                  "diagnostics_sources": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true,
+                                           "description": "Names of producers with cached diagnostics_set bundles." }
+                },
+                "required": ["active_model", "selection", "cursor_time", "wave_scope", "peers", "diagnostics_sources"]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "hello" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "request" },
+          "origin": { "enum": ["view", "wave", "src", "cli", "notebook"] },
+          "payload": {
+            "type": "object",
+            "required": ["client", "version", "capabilities"],
+            "additionalProperties": false,
+            "properties": {
+              "client": { "enum": ["view", "wave", "src", "cli", "notebook"] },
+              "version": { "type": "string", "minLength": 1, "description": "Semver of the client implementation." },
+              "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+              "takeover": { "type": "boolean", "description": "When true, instructs the hub to disconnect any existing registration for the same client slot before accepting this hello. Used by browser tabs that find an older tab already attached: the new tab requests takeover, the old tab gets bye-broadcast and its socket closed. Optional; default false." }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "welcome" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "response" },
+          "payload": {
+            "type": "object",
+            "required": ["server_version", "registered_clients"],
+            "additionalProperties": false,
+            "properties": {
+              "server_version": { "type": "string", "minLength": 1 },
+              "registered_clients": {
+                "type": "array",
+                "items": { "enum": ["view", "wave", "src", "cli", "notebook"] },
+                "uniqueItems": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "bye" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "object", "additionalProperties": false }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "peer_joined" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "description": "Empty (or absent). Hub broadcasts peer_joined to already-registered peers when a new client finishes its hello handshake; the joining peer's origin lives in the envelope's `origin` field, mirroring `bye`'s shape so consumers can treat join + leave symmetrically.",
+            "oneOf": [
+              { "type": "null" },
+              { "type": "object", "additionalProperties": false }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "view_changed" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["model", "view_url"],
+            "additionalProperties": false,
+            "description": "Broadcast by the hub (origin=cli) whenever the active view changes — driven by a SPA `?model=` or `?test=` switch today, by file-watch refresh later. Consumers should refetch view-scoped state. The `view_mode` field (rtl-buddy-view #99 / 6b) marks DUT vs TB renders; TB renders also carry `test`, `tb`, and `tests_file` fields, while DUT renders carry `models_file`.",
+            "properties": {
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The DUT model name. Always present — for TB renders this is the model the test pins."
+              },
+              "models_file": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Absolute path to the models.yaml that owns the entry. Set on DUT renders."
+              },
+              "view_url": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Convenience URL the SPA can load directly — `/view.json?model=<NAME>` for DUT renders, `/view.json?test=<NAME>` for TB renders."
+              },
+              "view_mode": {
+                "enum": ["dut", "tb"],
+                "description": "Explicit render mode (#99 / 6b). v1.0 SPAs that don't know this field ignore it and fall through to the legacy model-driven switchModel path."
+              },
+              "test": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Test name. Set on TB renders only."
+              },
+              "tb": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Testbench name (from tests.yaml). Set on TB renders only."
+              },
+              "tests_file": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Absolute path to the tests.yaml that owns the entry. Set on TB renders only."
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "diagnostics_set" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["source", "items"],
+            "additionalProperties": false,
+            "properties": {
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Producer key — e.g. `rtl-buddy-cdc`. Latest-writer-wins per source on the hub's in-memory cache."
+              },
+              "items": {
+                "type": "array",
+                "description": "Full diagnostic set for this source. An empty array clears the source's diagnostics on all clients.",
+                "items": {
+                  "type": "object",
+                  "required": ["file", "line", "severity", "message"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "file":     { "type": "string", "minLength": 1, "description": "Absolute path." },
+                    "line":     { "type": "integer", "minimum": 1, "description": "1-based start line." },
+                    "col":      { "type": "integer", "minimum": 1, "description": "1-based start column; defaults to 1 if absent." },
+                    "end_line": { "type": "integer", "minimum": 1 },
+                    "end_col":  { "type": "integer", "minimum": 1 },
+                    "severity": { "enum": ["error", "warning", "info", "hint"] },
+                    "code":     { "type": "string", "minLength": 1, "description": "Producer-defined rule code, e.g. `CDC-001`." },
+                    "message":  { "type": "string", "minLength": 1 },
+                    "instance_path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Optional producer-side hint: the `view.json` instance path this finding pertains to. When present, consumers (e.g. the rtl-buddy-view SPA's on-canvas badge layer) use it as a fast-path instead of the file+line range resolver — which is required for diagnostics reported against an instantiated module's own body, since `node.source` only describes the instantiation site in the parent."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "view_capture" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format": {
+                    "enum": ["png", "svg"],
+                    "description": "Output format. PNG goes through an offscreen canvas; SVG is the serialised live SVG (vector)."
+                  },
+                  "scale": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 8,
+                    "description": "PNG raster upscale factor (1.0 = native). Ignored for SVG."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["format", "bytes_b64", "width", "height"],
+                "additionalProperties": false,
+                "properties": {
+                  "format":    { "enum": ["png", "svg"] },
+                  "bytes_b64": { "type": "string", "minLength": 1, "description": "Base64-encoded image bytes (PNG) or UTF-8 SVG XML." },
+                  "width":     { "type": "number", "exclusiveMinimum": 0 },
+                  "height":    { "type": "number", "exclusiveMinimum": 0 }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "error" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "error" },
+          "payload": {
+            "type": "object",
+            "required": ["code", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "enum": ["unresolvable", "not_connected", "bad_request", "protocol_mismatch", "superseded"],
+                "description": "`timeout` is a client-side-only code and is never sent on the wire. `superseded` is sent by the hub to a client whose origin slot was just taken over by a newer hello (see hello.payload.takeover)."
+              },
+              "message": { "type": "string", "minLength": 1 },
+              "context": { "type": "object", "description": "Arbitrary structured context for the error; e.g. the offending input." }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$comment": "Loop prevention and origin-suppression rules (docs §6) are runtime invariants the hub enforces; they are not expressible in JSON Schema."
+}

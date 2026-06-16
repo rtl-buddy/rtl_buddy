@@ -39,6 +39,7 @@ def _make_cdc_cfg(
     waivers=None,
     reglvl=None,
     tool_overrides=None,
+    frontend=None,
 ):
     from rtl_buddy.config.model import ModelConfig
 
@@ -52,6 +53,7 @@ def _make_cdc_cfg(
         waivers=waivers,
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
+        frontend=frontend,
     )
 
 
@@ -165,6 +167,26 @@ def test_cdc_config_tool_overrides_merge_through_tool_cfg():
 
 
 # ---------------------------------------------------------------------------
+# CdcConfig — frontend (per-analysis elaboration frontend selector)
+# ---------------------------------------------------------------------------
+
+
+def test_cdc_config_frontend_defaults_to_none():
+    cfg = _make_cdc_cfg()
+    assert cfg.frontend is None
+
+
+def test_cdc_config_frontend_explicit_slang():
+    cfg = _make_cdc_cfg(frontend="slang")
+    assert cfg.frontend == "slang"
+
+
+def test_cdc_config_frontend_explicit_yosys():
+    cfg = _make_cdc_cfg(frontend="yosys")
+    assert cfg.frontend == "yosys"
+
+
+# ---------------------------------------------------------------------------
 # CdcSuiteConfig — YAML loading + path resolution
 # ---------------------------------------------------------------------------
 
@@ -187,6 +209,8 @@ _SUITE_YAML = dedent("""\
         constraints: "mod_b.sdc"
         waivers: "mod_b.waivers"
         reglvl: 1000
+        frontend: "slang"
+        blackbox: ["sram_macro", "pll_wrap"]
 """)
 
 _MODELS_YAML = dedent("""\
@@ -244,6 +268,58 @@ def test_cdc_suite_config_missing_name_raises(tmp_path):
         cfg.get_analyses("nonexistent")
 
 
+def test_cdc_suite_config_duplicate_analysis_raises(tmp_path):
+    """Two analyses with the same name in one cdc.yaml is a hard
+    error — the dict-comprehension in CdcSuiteConfig.__init__
+    would silently overwrite the first with the second otherwise."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    body = dedent("""\
+        rtl-buddy-filetype: cdc_config
+
+        analyses:
+          - name: "dup"
+            desc: "first"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+            reglvl: 0
+          - name: "dup"
+            desc: "second"
+            model: "mod_b"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_b.sdc"
+            reglvl: 0
+    """)
+    path = tmp_path / "cdc.yaml"
+    path.write_text(body)
+    with pytest.raises(FatalRtlBuddyError, match="duplicate analysis name 'dup'"):
+        CdcSuiteConfig(str(path))
+
+
+def test_cdc_suite_config_picks_up_frontend_field(tmp_path):
+    """Per-analysis `frontend:` round-trips through CdcConfigFile -> CdcConfig."""
+    suite_yaml = _write_suite(tmp_path)
+    cfg = CdcSuiteConfig(str(suite_yaml))
+    cdc_a = cfg.get_analyses("cdc_a")[0]
+    cdc_b = cfg.get_analyses("cdc_b")[0]
+    assert cdc_a.frontend is None  # not set in YAML -> default
+    assert cdc_b.frontend == "slang"  # explicit in YAML
+
+
+def test_cdc_suite_config_picks_up_blackbox_field(tmp_path):
+    """Per-analysis `blackbox:` round-trips through CdcConfigFile -> CdcConfig."""
+    suite_yaml = _write_suite(tmp_path)
+    cfg = CdcSuiteConfig(str(suite_yaml))
+    cdc_a = cfg.get_analyses("cdc_a")[0]
+    cdc_b = cfg.get_analyses("cdc_b")[0]
+    assert cdc_a.blackbox == []  # not set in YAML -> default empty list
+    assert cdc_b.blackbox == ["sram_macro", "pll_wrap"]  # explicit in YAML
+
+
 # ---------------------------------------------------------------------------
 # CdcRegConfig — YAML loading + per-suite path resolution
 # ---------------------------------------------------------------------------
@@ -270,3 +346,261 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
     suites = reg_cfg.get_suite_configs()
     assert len(suites) == 1
     assert suites[0].get_analysis_names() == ["cdc_a", "cdc_b"]
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — frontend argv plumbing
+# ---------------------------------------------------------------------------
+
+
+def _setup_lint_run(tmp_path, frontend=None, blackbox=None):
+    """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
+    build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
+
+    The subprocess is mocked: each invocation is appended to the returned
+    list, and the mock writes a minimal valid JSON report so run() can
+    finish parsing its output. Use the captured argv to assert on the
+    --frontend plumbing.
+    """
+    from contextlib import nullcontext
+    from rtl_buddy.config.cdc import CdcToolConfig, CdcToolConfigFile, CdcToolOptsFile
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.process_utils import ManagedProcessResult
+    from rtl_buddy.tools import cdc_rtl_buddy as cdc_rtl_buddy_module
+    from rtl_buddy.tools.cdc_rtl_buddy import RtlBuddyCdc
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("module my_module(); endmodule")
+    sdc = tmp_path / "my_module.sdc"
+    sdc.write_text("# empty SDC")
+
+    model = ModelConfig(name="my_module", filelist=[f"-v {sv}"], path=str(tmp_path))
+    cdc_cfg = CdcConfig(
+        name="test_cdc",
+        desc="t",
+        model=model,
+        tool="rtl-buddy-cdc",
+        constraints=str(sdc),
+        waivers=None,
+        _reglvl=None,
+        tool_overrides=None,
+        frontend=frontend,
+        blackbox=blackbox if blackbox is not None else [],
+    )
+    tool_cfg = CdcToolConfig(
+        CdcToolConfigFile(
+            name="rtl-buddy-cdc",
+            tool="rtl-buddy-cdc",
+            opts=CdcToolOptsFile(),
+        )
+    )
+
+    wrapper = RtlBuddyCdc(
+        name="t", cdc_cfg=cdc_cfg, tool_cfg=tool_cfg, suite_dir=str(tmp_path)
+    )
+    json_report = Path(wrapper.artefact_dir) / "cdc.json"
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, stdout, stderr, **kwargs):
+        calls.append(list(cmd))
+        # Subprocess succeeded; write the minimal payload run() expects so
+        # downstream parsing finishes cleanly.
+        json_report.write_text('{"summary": {"violations": 0, "suppressed": 0}}')
+        return ManagedProcessResult(returncode=0)
+
+    return wrapper, calls, _fake_run, cdc_rtl_buddy_module, nullcontext
+
+
+def test_lint_argv_omits_frontend_when_unset(tmp_path, monkeypatch):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend=None)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2  # text + json
+    for cmd in calls:
+        assert "--frontend" not in cmd
+
+
+def test_lint_argv_adds_frontend_slang(tmp_path, monkeypatch):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend="slang")
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "--frontend" in cmd
+        assert cmd[cmd.index("--frontend") + 1] == "slang"
+
+
+def test_lint_argv_adds_frontend_yosys_when_explicit(tmp_path, monkeypatch):
+    """An explicit `frontend: "yosys"` is forwarded as well — useful for
+    pinning a config to a specific frontend independent of the tool's own
+    default, and as a regression guard against future default changes."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend="yosys")
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert cmd[cmd.index("--frontend") + 1] == "yosys"
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — --blackbox argv plumbing (rtl-buddy-cdc#259)
+# ---------------------------------------------------------------------------
+
+
+def test_lint_argv_omits_blackbox_when_empty(tmp_path, monkeypatch):
+    """An empty/absent blackbox list adds no `--blackbox` args."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, blackbox=[])
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2  # text + json
+    for cmd in calls:
+        assert "--blackbox" not in cmd
+
+
+def test_lint_argv_adds_blackbox_for_each_module(tmp_path, monkeypatch):
+    """Each blackbox entry is forwarded as a repeated `--blackbox <module>`."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(
+        tmp_path, blackbox=["foo", "bar"]
+    )
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        # Both modules present, each preceded by its own `--blackbox`.
+        bb_values = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--blackbox"]
+        assert bb_values == ["foo", "bar"]
+        assert cmd[cmd.index("--blackbox") + 1] == "foo"
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — --project-root plumbing (rtl-buddy-cdc#245)
+# ---------------------------------------------------------------------------
+
+
+def test_lint_argv_adds_project_root_when_supported(tmp_path, monkeypatch):
+    """When the analyzer advertises `--project-root`, both invocations get
+    `--project-root <suite_dir>` so a config's relative `extra_args` paths
+    resolve against the cdc.yaml dir rather than the nested artefact cwd."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: True)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "--project-root" in cmd
+        assert cmd[cmd.index("--project-root") + 1] == str(tmp_path)
+
+
+def test_lint_argv_omits_project_root_when_unsupported(tmp_path, monkeypatch):
+    """An analyzer that predates the flag must not be handed it — passing an
+    unknown option would hard-fail (exit 2). Degrade silently instead."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "--project-root" not in cmd
+
+
+def test_lint_argv_project_root_precedes_extra_args(tmp_path, monkeypatch):
+    """`--project-root` is emitted before `extra_args` so a config can still
+    override the anchor in its own `extra_args` if it ever needs to."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    # Inject a path-bearing extra_arg of the kind #245 is about.
+    wrapper.tool_cfg._cfg.opts.extra_args = "--yosys-plugin build/slang.so"
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: True)
+
+    wrapper.run()
+
+    for cmd in calls:
+        assert cmd.index("--project-root") < cmd.index("--yosys-plugin")
+
+
+def test_lint_supports_project_root_probe(monkeypatch):
+    """The capability probe greps `lint --help` and degrades to False on a
+    missing/erroring binary (so the cache never sticks a flag onto an old
+    analyzer)."""
+    from types import SimpleNamespace
+    from rtl_buddy.tools import cdc_rtl_buddy as mod
+
+    mod._lint_supports_project_root.cache_clear()
+
+    def _help_with_flag(cmd, **kwargs):
+        return SimpleNamespace(stdout="... --project-root DIR ...", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", _help_with_flag)
+    assert mod._lint_supports_project_root("cdc-new") is True
+
+    def _boom(cmd, **kwargs):
+        raise FileNotFoundError("no such binary")
+
+    monkeypatch.setattr(mod.subprocess, "run", _boom)
+    assert mod._lint_supports_project_root("cdc-missing") is False
+    mod._lint_supports_project_root.cache_clear()
+
+
+def test_cdc_suite_config_loads_xfail_flags(tmp_path):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    (tmp_path / "cdc.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: cdc_config
+
+        analyses:
+          - name: "cdc_xfail"
+            desc: "known violations, non-strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+            xfail: true
+          - name: "cdc_xfail_strict"
+            desc: "known violations, strict"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+            xfail_strict: true
+          - name: "cdc_normal"
+            desc: "normal"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "rtl-buddy-cdc"
+            constraints: "mod_a.sdc"
+    """)
+    )
+    cfg = CdcSuiteConfig(str(tmp_path / "cdc.yaml"))
+    assert cfg.get_analyses("cdc_xfail")[0].is_xfail() is True
+    assert cfg.get_analyses("cdc_xfail")[0].get_xfail_strict() is False
+    assert cfg.get_analyses("cdc_xfail_strict")[0].is_xfail() is True
+    assert cfg.get_analyses("cdc_xfail_strict")[0].get_xfail_strict() is True
+    assert cfg.get_analyses("cdc_normal")[0].is_xfail() is False

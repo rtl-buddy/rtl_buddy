@@ -1,0 +1,28 @@
+# Minimal root_config used by CLI smoke tests. Matches both macOS and Linux
+# hosts so the same fixture works in dev and in CI.
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "stub-verible"
+
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "stub-verible"
+    path: "/usr/bin"
+    extra_args: {}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"

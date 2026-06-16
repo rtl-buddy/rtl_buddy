@@ -1,0 +1,101 @@
+{
+  "schema_version": "1.0",
+  "id": "exp-0007",
+  "parent": "exp-0003",
+  "hypothesis": "Moving blk_c off FB3 onto FB2 (SLR1) should relieve the FB2-FB3 SLL wall; expect SLL util down, watch for a Fmax hit on FB2.",
+  "source": {
+    "git_sha": "9f3a1c4",
+    "branch": "exp/blk-c-to-fb2",
+    "diff_from": "1b0e7a2",
+    "dirty": false
+  },
+  "knobs": [
+    {
+      "name": "partition.blk_c.fpga",
+      "from": "FB3",
+      "to": "FB2",
+      "rationale": "relieve FB2-FB3 SLL crossing that was the binding constraint in exp-0003",
+      "layer": "flow"
+    },
+    {
+      "name": "vivado.blk_c.pblock",
+      "from": null,
+      "to": "SLR1",
+      "rationale": "keep blk_c in one SLR after the move to avoid intra-device crossing",
+      "layer": "impl"
+    },
+    {
+      "name": "vivado.place.directive",
+      "from": "Default",
+      "to": "Explore",
+      "rationale": "FB2 now denser; give the placer more freedom",
+      "layer": "impl"
+    }
+  ],
+  "config_snapshot": {
+    "partition": {
+      "blk_a": "FB1",
+      "blk_b": "FB2",
+      "blk_c": "FB2",
+      "blk_d": "FB4"
+    },
+    "vivado": {
+      "place_directive": "Explore",
+      "route_directive": "Default",
+      "seed": 3
+    }
+  },
+  "outcome": {
+    "status": "success",
+    "metrics": {
+      "routed": true,
+      "sll_util_fb2_fb3": 0.58,
+      "wns_ns_fb2": -0.142,
+      "lut_pct_fb2": 71.4,
+      "fpga_count": 4,
+      "wall_clock_s": 1290
+    },
+    "metric_meta": {
+      "sll_util_fb2_fb3": {
+        "direction": "min",
+        "unit": "fraction"
+      },
+      "wns_ns_fb2": {
+        "direction": "max",
+        "unit": "ns"
+      },
+      "lut_pct_fb2": {
+        "direction": "min",
+        "unit": "percent"
+      },
+      "fpga_count": {
+        "direction": "min",
+        "unit": "count"
+      },
+      "wall_clock_s": {
+        "direction": "min",
+        "unit": "s"
+      }
+    },
+    "artifacts": [
+      "FB2/post_route.dcp",
+      "FB2/timing_summary.rpt",
+      "smoke.log"
+    ]
+  },
+  "provenance": {
+    "created": "2026-06-11T15:11:03+08:00",
+    "tools": [
+      {
+        "name": "protocompiler",
+        "version": "V-2023.12-1"
+      },
+      {
+        "name": "vivado",
+        "version": "2022.1"
+      }
+    ],
+    "reused_state": "sg0",
+    "agent": "claude-opus-4-8"
+  }
+}

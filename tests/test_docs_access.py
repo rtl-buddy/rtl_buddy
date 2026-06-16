@@ -67,8 +67,8 @@ def test_get_page_returns_expected_sections():
     page = get_page("agents")
 
     assert page is not None
-    assert page.title == "For Agents"
-    assert any(section.title == "Agent Skill Install" for section in page.sections)
+    assert page.title == "Agent use of rtl-buddy"
+    assert any(section.title == "Bundled agent skill" for section in page.sections)
 
 
 def test_get_section_returns_section_payload():
@@ -99,8 +99,15 @@ def test_docs_list_machine_output():
     )
 
     assert result.returncode == 0
-    payload = json.loads(result.stdout)
-    assert any(page["slug"] == "agents" for page in payload["pages"])
+    envelope = json.loads(result.stdout)
+    assert envelope["command"] == "docs list"
+    assert envelope["exit_code"] == 0
+    assert "meta" in envelope
+    assert any(page["slug"] == "agents" for page in envelope["payload"]["pages"])
+    assert all(
+        {"slug", "title", "description"} <= set(page)
+        for page in envelope["payload"]["pages"]
+    )
 
 
 def test_docs_show_machine_output():
@@ -115,12 +122,12 @@ def test_docs_show_machine_output():
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["slug"] == "agents"
-    assert payload["title"] == "For Agents"
+    assert payload["title"] == "Agent use of rtl-buddy"
     assert payload["summary"]
     assert any(
-        section["title"] == "Agent Skill Install" for section in payload["sections"]
+        section["title"] == "Bundled agent skill" for section in payload["sections"]
     )
-    assert "# For Agents" in payload["content"]
+    assert "# Agent use of rtl-buddy" in payload["content"]
 
 
 def test_docs_show_section_machine_output():

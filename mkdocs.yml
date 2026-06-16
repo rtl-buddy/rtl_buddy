@@ -36,23 +36,39 @@ nav:
   - Installation: install.md
   - Quick Start: quickstart.md
   - Concepts:
+      - Execution Context: concepts/execution-context.md
       - Root Config: concepts/root-config.md
       - Tests: concepts/tests.md
       - Regressions: concepts/regressions.md
+      - Expected Failures (xfail): concepts/expected-failures.md
       - Coverage: concepts/coverage.md
       - Plugins: concepts/plugins.md
       - cocotb: concepts/cocotb.md
       - Spec Traceability: concepts/spec-traceability.md
       - Waveform Viewer: concepts/wave.md
+      - Hierarchy Rendering: concepts/hier.md
+      - Hub: concepts/hub.md
       - Synthesis: concepts/synthesis.md
+      - Place-and-Route: concepts/pnr.md
+      - Power Analysis: concepts/power.md
+      - FPGA Implementation: concepts/fpga.md
+      - CDC Lint: concepts/cdc.md
+      - Formal Property Verification: concepts/fpv.md
+      - Assertion-Based Verification (sim): concepts/abv-simulation.md
+      - Mutation Testing: concepts/mut.md
+      - Design-Space Exploration: concepts/xplr.md
+      - AXI Profiling: concepts/axi-profile.md
+      - Tool Check: concepts/tool-check.md
   - Reference:
       - CLI: reference/cli.md
       - YAML Formats: reference/yaml.md
   - For Agents: agents.md
-  - Migrations:
-      - Submodule to uv: migrations/submodule-to-uv.md
-      - v2 to v3: migrations/v2-to-v3.md
-  - Known Issues: known-issues.md
+  - Development:
+      - Environment Setup: development/setup.md
+      - Engineering Guidelines: development/guidelines.md
+      - Documentation Guidelines: development/docs.md
+  - Migrations: migrations.md
+  - Quirks & Known Issues: known-issues.md
   - Contributing: CONTRIBUTING.md
 
 extra:

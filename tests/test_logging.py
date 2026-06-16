@@ -204,22 +204,14 @@ def test_root_options_ignores_forwarded_help_args_after_double_dash(monkeypatch)
     rb = RtlBuddy(name="rtl_buddy")
     fake_ctx = SimpleNamespace(resilient_parsing=False, invoked_subcommand="verible")
 
-    class FakeRootConfig:
-        def __init__(self, name, builder_override=None):
-            self.name = name
-            self.builder_override = builder_override
-
-        def get_builder_name(self):
-            return "vcs"
-
     monkeypatch.setattr("rtl_buddy.rtl_buddy.setup_logging", lambda **kwargs: None)
-    monkeypatch.setattr("rtl_buddy.rtl_buddy.RootConfig", FakeRootConfig)
     monkeypatch.setattr(sys, "argv", ["rtl_buddy", "verible", "syntax", "--", "-h"])
 
     rb.root_options(fake_ctx)
 
-    assert isinstance(rb.root_cfg, FakeRootConfig)
-    assert rb.builder == "vcs"
+    # Root config is now built lazily in _enter_command_context, so we
+    # only verify the callback completed past the help-arg detection.
+    assert rb._pending_invoked_subcommand == "verible"
 
 
 class DummyModelCfg:

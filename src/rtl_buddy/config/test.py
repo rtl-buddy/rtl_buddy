@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from typing import Literal
 from serde import serde, field
 from .model import ModelConfig, ModelConfigLoader
 from .uvm import UVMConfig
@@ -31,6 +32,31 @@ class CocotbTestbenchConfig:
 
 
 @serde
+class SystemCTestbenchConfig:
+    """
+    SystemC-specific configuration nested under a testbench.
+
+    Presence signals that Verilator should emit the DUT as an sc_module and
+    link it against a user-provided sc_main(). Mirrors CocotbTestbenchConfig.
+
+    Attributes:
+      sc_main (str): C++ source file containing sc_main(), relative to suite dir.
+      sc_extra (list[str]): Additional C++ translation units to compile and link.
+      cflags (list[str]): Tokens appended to -CFLAGS at verilator invocation.
+      ldflags (list[str]): Tokens appended to -LDFLAGS at verilator invocation.
+      pin_style (str | None): One of "uint" | "bv" | "biguint" — maps to
+        --pins-sc-uint / --pins-sc-biguint / (no flag for "bv"). None leaves
+        Verilator's default emission (uint32_t for ≤32-bit, sc_bv for wider).
+    """
+
+    sc_main: str
+    sc_extra: list[str] = field(default_factory=list)
+    cflags: list[str] = field(default_factory=list)
+    ldflags: list[str] = field(default_factory=list)
+    pin_style: Literal["uint", "bv", "biguint"] | None = None
+
+
+@serde
 class TestbenchConfig:
     """
     Configuration for a single testbench within a test suite.
@@ -38,23 +64,37 @@ class TestbenchConfig:
     Attributes:
       name (str): Unique testbench identifier.
       filelist (list[str]): List of paths to files involved in running the testbench.
-      toplevel (str | None): Top-level DUT module name. Required for cocotb testbenches.
+      toplevel (str | None): Top-level DUT module name. Required for cocotb and SystemC testbenches.
       cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
+      systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
     """
 
     name: str
     filelist: list[str]
     toplevel: str | None = None
     cocotb: CocotbTestbenchConfig | None = None
+    systemc: SystemCTestbenchConfig | None = None
 
     def __post_init__(self):
+        if self.cocotb is not None and self.systemc is not None:
+            raise FatalRtlBuddyError(
+                f"testbench '{self.name}': cocotb: and systemc: are mutually exclusive "
+                "(different host kernels cannot share one Verilator build)"
+            )
         if self.cocotb is not None and self.toplevel is None:
             raise FatalRtlBuddyError(
                 f"testbench '{self.name}': toplevel is required when cocotb: is present"
             )
+        if self.systemc is not None and self.toplevel is None:
+            raise FatalRtlBuddyError(
+                f"testbench '{self.name}': toplevel is required when systemc: is present"
+            )
 
     def is_cocotb(self) -> bool:
         return self.cocotb is not None
+
+    def is_systemc(self) -> bool:
+        return self.systemc is not None
 
     def get_name(self):
         """
@@ -102,6 +142,10 @@ class TestConfig:
       sweep_path (str | None): Path to sweep expansion Python script (expands one test into many).
       preproc_path (str | None): Path to pre-processing Python script (runs before compile).
       postproc_path (str | None): Path to post-processing Python script (runs after simulation).
+      assertions (bool): When True and the builder is Verilator, compile in SVA via
+        `--assert` and surface assertion-failed counts in the `rb test` results
+        table. Also enables `--coverage-user` so concurrent `cover` property hits
+        flow into the existing coverage pipeline.
     """
 
     name: str
@@ -118,6 +162,18 @@ class TestConfig:
     timeout: int | None
     covers: list[str] | None = None
     builder_name: str | None = None
+    assertions: bool = False
+    # Expected-fail markers (pytest-style xfail). A test is treated as
+    # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
+    # FAIL is reported as XFAIL and counts as a pass; SKIP/NA pass through.
+    # They differ only in how an unexpected pass (XPASS) is counted:
+    #   xfail        — non-strict: XPASS still counts as a pass.
+    #   xfail_strict — strict: XPASS counts as a FAILURE (stale marker is
+    #                  loud). If both are set, strict wins.
+    # Use for a known-failing test you want tracked in the suite rather
+    # than deleted or silently excluded.
+    xfail: bool = False
+    xfail_strict: bool = False
     default_timeout: int = 60  # NOTE: potential for config through root config
 
     def get_name(self):
@@ -138,6 +194,18 @@ class TestConfig:
             for this test, or None to fall back to the suite/platform default.
         """
         return self.builder_name
+
+    def is_xfail(self) -> bool:
+        """Whether this test is expected to fail (either flag set)."""
+        return self.xfail or self.xfail_strict
+
+    def get_xfail(self) -> bool:
+        """Whether this test is marked expected-to-fail (see `xfail`)."""
+        return self.xfail
+
+    def get_xfail_strict(self) -> bool:
+        """Whether an unexpected pass (XPASS) should count as a failure."""
+        return self.xfail_strict
 
     def get_model(self):
         """
@@ -387,12 +455,23 @@ class TestConfigFile:
     timeout: int | None = field(rename="sim_timeout")
     covers: list[str] | None = None
     builder_name: str | None = field(rename="builder", default=None)
+    assertions: bool = False
+    xfail: bool = False
+    xfail_strict: bool = False
 
     def initialise(self, config_dir, tbs, suite_builder=None):
         tb = tbs[self.tb]
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
         )
+        # Hook script paths are declared relative to the suite config
+        # (tests.yaml), the same as model_path. Resolve them at load
+        # time so VlogSim.pre() / _expand_tests_with_sweep can open()
+        # them regardless of the process cwd — required since #216,
+        # which stopped changing cwd into the suite dir.
+        preproc_path = _resolve_hook_path(self.preproc_path, config_dir)
+        postproc_path = _resolve_hook_path(self.postproc_path, config_dir)
+        sweep_path = _resolve_hook_path(self.sweep_path, config_dir)
         return TestConfig(
             self.name,
             self.desc,
@@ -401,11 +480,28 @@ class TestConfigFile:
             self.pa,
             self.pd,
             self.uvm,
-            self.preproc_path,
-            self.postproc_path,
-            self.sweep_path,
+            preproc_path,
+            postproc_path,
+            sweep_path,
             tb,
             self.timeout,
             covers=self.covers,
             builder_name=self.builder_name or suite_builder,
+            assertions=self.assertions,
+            xfail=self.xfail,
+            xfail_strict=self.xfail_strict,
         )
+
+
+def _resolve_hook_path(path: str | None, config_dir: str) -> str | None:
+    """Resolve a hook-script path declared in tests.yaml.
+
+    Absolute paths pass through; relative paths anchor on the suite
+    config's directory. Returns None unchanged so commands without a
+    hook stay None.
+    """
+    if path is None:
+        return None
+    if os.path.isabs(path):
+        return path
+    return os.path.normpath(os.path.join(config_dir, path))

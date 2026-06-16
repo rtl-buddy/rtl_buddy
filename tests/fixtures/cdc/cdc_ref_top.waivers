@@ -1,0 +1,5 @@
+# Reference fixture waivers: the gray bus and the 4-phase handshake are safe
+# by construction (one bit changes per gray step; the handshake holds the
+# payload until ack returns) but not structurally provable.
+waive CDC-004 .*u_gray_sync.*   gray-coded bus: one bit changes per step
+waive CDC-012 .*u_hs.*          4-phase req/ack: payload held until ack returns

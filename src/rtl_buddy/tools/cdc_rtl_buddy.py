@@ -10,6 +10,7 @@ up new releases via ``uv sync`` without code changes here.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -30,6 +31,30 @@ _FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
 
+@functools.lru_cache(maxsize=None)
+def _lint_supports_project_root(executable: str) -> bool:
+    """Whether ``<executable> lint`` accepts ``--project-root`` (rtl-buddy-cdc#245).
+
+    The analyzer is resolved off PATH / the tool config and is *not*
+    pinned by rtl_buddy, and its ``version`` command reports a static
+    string — so the only reliable capability signal is the ``--help``
+    surface. We probe once per executable (cached) and degrade to
+    ``False`` on any failure (missing binary, timeout, non-zero exit), so
+    an older analyzer that predates the flag keeps working instead of
+    hard-failing on an unknown option.
+    """
+    try:
+        proc = subprocess.run(
+            [executable, "lint", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "--project-root" in (proc.stdout + proc.stderr)
+
+
 class RtlBuddyCdc:
     def __init__(
         self,
@@ -38,11 +63,20 @@ class RtlBuddyCdc:
         tool_cfg: CdcToolConfig,
         suite_dir: str,
         root_cfg=None,
+        emit_maps: bool = False,
     ):
         self.name = name
         self.cdc_cfg = cdc_cfg
         self.tool_cfg = tool_cfg
         self.root_cfg = root_cfg
+        # When set, additionally request the structured clock-domain and
+        # reset-domain maps (the inputs for `rb cdc --emit-constraints`, #291).
+        self.emit_maps = emit_maps
+        # The cdc.yaml's directory (see ``_do_cdc_suite``). Used as the
+        # analyzer's ``--project-root`` so relative paths in a config's
+        # ``extra_args`` resolve against the config — not against the
+        # nested artefact cwd we run the subprocess from (#245).
+        self.suite_dir = suite_dir
 
         artefact_root = Path(suite_dir) / "artefacts" / cdc_cfg.get_name()
         artefact_root.mkdir(parents=True, exist_ok=True)
@@ -59,6 +93,32 @@ class RtlBuddyCdc:
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "cdc.log")
 
+    def _domain_map_path(self) -> str:
+        return os.path.join(self.artefact_dir, "domain_map.json")
+
+    def _reset_map_path(self) -> str:
+        return os.path.join(self.artefact_dir, "reset_map.json")
+
+    def read_emitted_maps(self) -> tuple[dict | None, dict | None]:
+        """Return the (domain_map, reset_map) dicts produced by an
+        ``emit_maps`` run, or ``(None, None)`` if they were not written."""
+
+        def _load(path):
+            try:
+                return json.loads(Path(path).read_text())
+            except (OSError, json.JSONDecodeError):
+                return None
+
+        return _load(self._domain_map_path()), _load(self._reset_map_path())
+
+    def read_report(self) -> dict:
+        """Return the parsed cdc.json report (with ``violations`` /
+        ``suppressed`` / ``crossings``), or ``{}`` if not produced."""
+        try:
+            return json.loads(Path(self._report_path("json")).read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+
     # --- helpers ------------------------------------------------------------
 
     def _write_filelist(self) -> str:
@@ -69,7 +129,7 @@ class RtlBuddyCdc:
             output_path=fl_path,
         )
         vlog_fl.write_output(
-            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+            output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
         )
         return fl_path
 
@@ -126,45 +186,63 @@ class RtlBuddyCdc:
             self.cdc_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )
 
-        cmd_text = [
-            executable,
-            "lint",
-            "--top",
-            self.cdc_cfg.get_top(),
-            "--sdc",
-            sdc_path,
-            "--format",
-            "text",
-            "--output",
-            text_report,
-        ]
-        if waivers_path is not None:
-            cmd_text += ["--waivers", waivers_path]
-        if opts.sync_depth is not None:
-            cmd_text += ["--sync-depth", str(opts.sync_depth)]
-        if opts.extra_args:
-            cmd_text += opts.extra_args.split()
-        cmd_text += sources
+        # Anchor the analyzer's relative path args (chiefly any in
+        # ``extra_args`` — `--yosys-plugin` / `--emit-*`) to the cdc.yaml
+        # dir, matching how `constraints:` / `waivers:` already resolve
+        # (#245). Skipped (with a debug note) when the installed analyzer
+        # predates the flag, so we never hard-fail an older tool.
+        if _lint_supports_project_root(executable):
+            project_root_args = ["--project-root", self.suite_dir]
+        else:
+            project_root_args = []
+            log_event(
+                logger,
+                logging.DEBUG,
+                "cdc.project_root.unsupported",
+                analysis=self.cdc_cfg.get_name(),
+                tool=executable,
+            )
 
-        cmd_json = [
-            executable,
-            "lint",
-            "--top",
-            self.cdc_cfg.get_top(),
-            "--sdc",
-            sdc_path,
-            "--format",
-            "json",
-            "--output",
-            json_report,
-        ]
-        if waivers_path is not None:
-            cmd_json += ["--waivers", waivers_path]
-        if opts.sync_depth is not None:
-            cmd_json += ["--sync-depth", str(opts.sync_depth)]
-        if opts.extra_args:
-            cmd_json += opts.extra_args.split()
-        cmd_json += sources
+        def _build_cmd(fmt: str, report: str) -> list[str]:
+            cmd = [
+                executable,
+                "lint",
+                "--top",
+                self.cdc_cfg.get_top(),
+                "--sdc",
+                sdc_path,
+                "--format",
+                fmt,
+                "--output",
+                report,
+                *project_root_args,
+            ]
+            if waivers_path is not None:
+                cmd += ["--waivers", waivers_path]
+            if opts.sync_depth is not None:
+                cmd += ["--sync-depth", str(opts.sync_depth)]
+            if self.cdc_cfg.frontend is not None:
+                cmd += ["--frontend", self.cdc_cfg.frontend]
+            for module in self.cdc_cfg.blackbox:
+                # Repeated `--blackbox <module>` (rtl-buddy-cdc#259). An
+                # empty list adds nothing.
+                cmd += ["--blackbox", module]
+            if self.emit_maps:
+                cmd += [
+                    "--emit-domain-map",
+                    self._domain_map_path(),
+                    "--emit-reset-domain-map",
+                    self._reset_map_path(),
+                ]
+            if opts.extra_args:
+                # After project_root_args so a config can still override
+                # the anchor in its own extra_args if it must.
+                cmd += opts.extra_args.split()
+            cmd += sources
+            return cmd
+
+        cmd_text = _build_cmd("text", text_report)
+        cmd_json = _build_cmd("json", json_report)
 
         with task_status(f"Running CDC {self.cdc_cfg.get_name()}"):
             log_event(
@@ -218,6 +296,22 @@ class RtlBuddyCdc:
         crossings = summary.get("crossings")
         crossings = int(crossings) if crossings is not None else None
 
+        # Best-effort hub publish. When a hub is running for this
+        # project, push the violations as a `diagnostics_set` event so
+        # the SPA's badge layer + nvim diagnostics namespace light up
+        # immediately. Silently no-ops when no hub is reachable, and
+        # is wrapped in a broad except so a sidecar UI bug can never
+        # fail the CDC analysis itself.
+        try:
+            from .cdc_publisher import publish_cdc_report
+
+            publish_cdc_report(
+                analysis_name=self.cdc_cfg.get_name(),
+                json_report_path=json_report,
+            )
+        except Exception:  # noqa: BLE001 — best-effort side effect
+            logger.debug("cdc.publish.unexpected_error", exc_info=True)
+
         if violations == 0:
             return CdcPassResults(
                 name=self.cdc_cfg.get_name(),
@@ -241,4 +335,5 @@ class RtlBuddyCdc:
                 cmd,
                 stdout=logf,
                 stderr=subprocess.STDOUT,
+                cwd=self.artefact_dir,
             )

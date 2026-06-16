@@ -20,25 +20,37 @@ from .surfer import SurferConfig, SurferConfigFile
 from .synth import (
     SynthToolConfig,
     SynthToolConfigFile,
-    SynthLibConfig,
-    SynthLibConfigFile,
+    SynthPlatformConfig,
+    SynthPlatformConfigFile,
     SynthEffortConfig,
     SynthEffortConfigFile,
     default_effort_config,
 )
+from .pdk import PdkConfig, PdkConfigFile
+from .pnr import PnrToolConfig, PnrToolConfigFile
+from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
+from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
+from .fpga import FpgaToolConfig, FpgaToolConfigFile
+from .fpga_platform import FpgaPlatformConfig, FpgaPlatformConfigFile
+from .fpv import FpvToolConfig, FpvToolConfigFile
+from .systemc import SystemCConfig, SystemCConfigFile
+from .tools import ToolVersionConfig, ToolVersionConfigFile
+from .xplr import XplrConfig, XplrConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
 
-def _discover_root_cfg(max_levels=8) -> str:
-    """
-    Discover the project root config file
+def _discover_root_cfg(max_levels=8, start_dir: str | Path | None = None) -> str:
+    """Discover the project root config file by walking up from ``start_dir``.
 
-    Args:
-      max_levels (int) [8]: The maximum directory depth to search for 'root_config.yaml'.
+    ``start_dir`` defaults to the current working directory. Command code
+    should pass the command's resolved root (``dirname`` of its primary
+    config file) so discovery does not depend on the directory the user
+    happened to invoke ``rb`` from.
     """
-    path = os.getcwd()
+    start = os.path.abspath(str(start_dir)) if start_dir is not None else os.getcwd()
+    path = start
 
     level = 0
     while level < max_levels and not os.path.isfile(path + "/root_config.yaml"):
@@ -54,32 +66,36 @@ def _discover_root_cfg(max_levels=8) -> str:
             logger,
             logging.ERROR,
             "root_config.not_found",
-            cwd=os.getcwd(),
+            cwd=start,
             max_levels=max_levels,
         )
         return None
 
 
-def discover_project_root(*, fallback_cwd: bool = False) -> Path:
+def discover_project_root(
+    *, fallback_cwd: bool = False, start_dir: str | Path | None = None
+) -> Path:
     """Return the project root directory.
 
-    Resolution order:
-      1. Directory containing root_config.yaml (walked up from cwd).
-      2. Directory containing .git (walked up from cwd).
-      3. cwd — only when fallback_cwd=True; otherwise raises FatalRtlBuddyError.
+    Resolution order, walking up from ``start_dir`` (defaults to cwd):
+      1. Directory containing root_config.yaml.
+      2. Directory containing .git.
+      3. ``start_dir`` itself — only when ``fallback_cwd=True``; otherwise
+         raises :class:`FatalRtlBuddyError`.
     """
-    cfg_path = _discover_root_cfg()
+    start = Path(start_dir).resolve() if start_dir is not None else Path.cwd()
+    cfg_path = _discover_root_cfg(start_dir=start)
     if cfg_path is not None:
         return Path(cfg_path).parent
-    for candidate in [Path.cwd(), *Path.cwd().parents]:
+    for candidate in [start, *start.parents]:
         if (candidate / ".git").exists():
             return candidate
     if fallback_cwd:
-        return Path.cwd()
+        return start
     raise FatalRtlBuddyError(
         "cannot locate project root "
-        "(no root_config.yaml or .git found above cwd). "
-        "Run from inside a project or pass an explicit path."
+        "(no root_config.yaml or .git found above "
+        f"{start}). Run from inside a project or pass an explicit path."
     )
 
 
@@ -107,15 +123,37 @@ class RootConfigFile:
     synth_tools: list[SynthToolConfigFile] = field(
         rename="cfg-synth-tools", default_factory=list
     )
-    synth_libs: list[SynthLibConfigFile] = field(
-        rename="cfg-synth-libs", default_factory=list
+    pdks: list[PdkConfigFile] = field(rename="cfg-pdks", default_factory=list)
+    synth_platforms: list[SynthPlatformConfigFile] = field(
+        rename="cfg-synth-platforms", default_factory=list
+    )
+    pnr_platforms: list[PnrPlatformConfigFile] = field(
+        rename="cfg-pnr-platforms", default_factory=list
+    )
+    pnr_tools: list[PnrToolConfigFile] = field(
+        rename="cfg-pnr-tools", default_factory=list
+    )
+    power_tools: list[PowerToolConfigFile] = field(
+        rename="cfg-power-tools", default_factory=list
+    )
+    fpga_tools: list[FpgaToolConfigFile] = field(
+        rename="cfg-fpga-tools", default_factory=list
+    )
+    fpga_platforms: list[FpgaPlatformConfigFile] = field(
+        rename="cfg-fpga-platforms", default_factory=list
     )
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
     )
+    fpv_tools: list[FpvToolConfigFile] = field(
+        rename="cfg-fpv-tools", default_factory=list
+    )
     synth_efforts: list[SynthEffortConfigFile] = field(
         rename="cfg-synth-efforts", default_factory=list
     )
+    systemc: SystemCConfigFile | None = field(rename="cfg-systemc", default=None)
+    tools: list[ToolVersionConfigFile] = field(rename="cfg-tools", default_factory=list)
+    xplr: XplrConfigFile | None = field(rename="cfg-xplr", default=None)
 
 
 class RootConfig:
@@ -132,17 +170,21 @@ class RootConfig:
       reg_cfg (RegConfig | None): RegConfig.
     """
 
-    def __init__(self, name, builder_override=None):
+    def __init__(self, name, builder_override=None, start_dir=None):
         """
         Constructor.
 
         Args:
           name (str): Unique root identifier.
           builder_override (str | None): Optional name of the builder to override test-specific builders.
+          start_dir (str | Path | None): Directory to start the upward walk
+            for ``root_config.yaml``. Defaults to the current working
+            directory; command code should pass the command root so
+            discovery doesn't depend on invocation cwd.
         """
 
         self.name = name
-        self.root_cfg_path = _discover_root_cfg()
+        self.root_cfg_path = _discover_root_cfg(start_dir=start_dir)
         if self.root_cfg_path is None:
             raise FatalRtlBuddyError(
                 "unable to discover root_config.yaml from current working directory"
@@ -159,9 +201,19 @@ class RootConfig:
         self.coverview_cfgs = dict()
         self.surfer_cfgs: dict = {}
         self.synth_tool_cfgs = dict()
-        self.synth_lib_cfgs = dict()
+        self.pdk_cfgs: dict = {}
+        self.synth_platform_cfgs: dict = {}
+        self.pnr_platform_cfgs: dict = {}
+        self.pnr_tool_cfgs: dict = {}
+        self.power_tool_cfgs: dict = {}
+        self.fpga_tool_cfgs: dict = {}
+        self.fpga_platform_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
+        self.fpv_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
+        self.systemc_cfg: SystemCConfig | None = None
+        self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
+        self.xplr_cfg: XplrConfig = XplrConfigFile().initialise()
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -206,10 +258,51 @@ class RootConfig:
                 cfg.name: SynthToolConfig(cfg) for cfg in data.synth_tools
             }
 
-            # Populate synth lib configs
-            self.synth_lib_cfgs = {
-                cfg.name: SynthLibConfig(cfg, self.root_cfg_path)
-                for cfg in data.synth_libs
+            # Populate PDK configs (referenced by synth + pnr platforms)
+            self.pdk_cfgs = {
+                cfg.name: PdkConfig(cfg, self.root_cfg_path) for cfg in data.pdks
+            }
+
+            def _pdk_lookup(name: str) -> PdkConfig:
+                pdk = self.pdk_cfgs.get(name)
+                if pdk is None:
+                    raise FatalRtlBuddyError(
+                        f"PDK '{name}' not found in cfg-pdks; "
+                        f"available: {sorted(self.pdk_cfgs)}"
+                    )
+                return pdk
+
+            # Populate synth platform configs (referencing PDKs by name)
+            self.synth_platform_cfgs = {
+                cfg.name: SynthPlatformConfig(cfg, _pdk_lookup)
+                for cfg in data.synth_platforms
+            }
+
+            # Populate P&R platform configs
+            self.pnr_platform_cfgs = {
+                cfg.name: PnrPlatformConfig(cfg, _pdk_lookup)
+                for cfg in data.pnr_platforms
+            }
+
+            # Populate P&R tool configs
+            self.pnr_tool_cfgs = {
+                cfg.name: PnrToolConfig(cfg) for cfg in data.pnr_tools
+            }
+
+            # Populate power tool configs
+            self.power_tool_cfgs = {
+                cfg.name: PowerToolConfig(cfg) for cfg in data.power_tools
+            }
+
+            # Populate FPGA tool configs
+            self.fpga_tool_cfgs = {
+                cfg.name: FpgaToolConfig(cfg) for cfg in data.fpga_tools
+            }
+
+            # Populate FPGA platform configs (device part + default XDC)
+            self.fpga_platform_cfgs = {
+                cfg.name: FpgaPlatformConfig(cfg, self.root_cfg_path)
+                for cfg in data.fpga_platforms
             }
 
             # Populate CDC tool configs
@@ -217,19 +310,34 @@ class RootConfig:
                 cfg.name: CdcToolConfig(cfg) for cfg in data.cdc_tools
             }
 
+            # Populate FPV tool configs
+            self.fpv_tool_cfgs = {
+                cfg.name: FpvToolConfig(cfg) for cfg in data.fpv_tools
+            }
+
             # Populate synth effort configs
             self.synth_effort_cfgs = {
                 cfg.name: SynthEffortConfig(cfg) for cfg in data.synth_efforts
             }
 
-            # Initialise regression config
+            # SystemC config (optional, single block)
+            if data.systemc is not None:
+                self.systemc_cfg = data.systemc.initialise()
+
+            # cfg-tools min-version overrides (optional)
+            self.tool_version_cfgs = {
+                cfg.name: ToolVersionConfig.from_file(cfg) for cfg in data.tools
+            }
+
+            # cfg-xplr experiment-ledger policy (optional, single block)
+            if data.xplr is not None:
+                self.xplr_cfg = data.xplr.initialise()
+
+            # Record the regression config path; the RegConfig itself is
+            # loaded lazily in get_rtl_reg_cfg() so non-simulation commands
+            # (fpv, cdc, synth, ...) never touch regression.yaml or the
+            # suite tests.yaml files it references (issue #248).
             self.cfg_rtl_reg = data.cfg_rtl_reg
-            self.reg_cfg = RegConfig(
-                name=self.name + "/reg_config",
-                path=os.path.join(
-                    os.path.dirname(self.root_cfg_path), self.cfg_rtl_reg.path
-                ),
-            )
 
             # Select platform config
             result = subprocess.run(
@@ -384,9 +492,24 @@ class RootConfig:
         """
         Get rtl regression configuration, reading one if it does not exist.
 
+        Loading is deferred to this first call so commands that never
+        consume the simulation regression config do not fail when
+        regression.yaml or a referenced suite tests.yaml is absent
+        (e.g. design-only sandboxed checkouts).
+
         Returns:
           cfg (RegConfig): The RTL Regression configuration.
+        Raises:
+          FatalRtlBuddyError: The regression config or a referenced
+            suite config cannot be loaded.
         """
+        if self.reg_cfg is None:
+            self.reg_cfg = RegConfig(
+                name=self.name + "/reg_config",
+                path=os.path.join(
+                    os.path.dirname(self.root_cfg_path), self.cfg_rtl_reg.path
+                ),
+            )
         return self.reg_cfg
 
     def get_verible_cfg(self):
@@ -461,6 +584,60 @@ class RootConfig:
             )
         return cfg
 
+    def get_pnr_tool_cfg(self, name: str):
+        """
+        Get P&R tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-pnr-tools.
+        Returns:
+          cfg (PnrToolConfig|None): Matching P&R tool configuration, or
+            None if no entry with that name is configured. Callers fall
+            back to the bare tool name on PATH when None is returned.
+        """
+        return self.pnr_tool_cfgs.get(name)
+
+    def get_power_tool_cfg(self, name: str):
+        """
+        Get power analysis tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-power-tools.
+        Returns:
+          cfg (PowerToolConfig): Matching power tool configuration.
+        Raises:
+          FatalRtlBuddyError: If no tool with that name is configured.
+        """
+        cfg = self.power_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"power tool '{name}' not found in cfg-power-tools"
+            )
+        return cfg
+
+    def get_fpga_tool_cfg(self, name: str):
+        """
+        Get FPGA tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-fpga-tools.
+        Returns:
+          cfg (FpgaToolConfig|None): Matching FPGA tool configuration, or
+            None if no entry with that name is configured. Callers fall
+            back to the bare tool name on PATH when None is returned.
+        """
+        return self.fpga_tool_cfgs.get(name)
+
+    def get_fpga_platform_cfg(self, name: str) -> FpgaPlatformConfig:
+        """Get an FPGA platform configuration by name (cfg-fpga-platforms entry)."""
+        cfg = self.fpga_platform_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"fpga platform '{name}' not found in cfg-fpga-platforms; "
+                f"available: {sorted(self.fpga_platform_cfgs)}"
+            )
+        return cfg
+
     def get_cdc_tool_cfg(self, name: str):
         """
         Get CDC tool configuration by name.
@@ -477,21 +654,57 @@ class RootConfig:
             raise FatalRtlBuddyError(f"CDC tool '{name}' not found in cfg-cdc-tools")
         return cfg
 
-    def get_synth_lib_cfg(self, name: str):
+    def get_fpv_tool_cfg(self, name: str):
         """
-        Get synthesis library configuration by name.
+        Get FPV tool configuration by name.
 
         Args:
-          name (str): Library name as defined in cfg-synth-libs.
+          name (str): Tool name as defined in cfg-fpv-tools.
         Returns:
-          cfg (SynthLibConfig): Matching synthesis library configuration.
+          cfg (FpvToolConfig): Matching FPV tool configuration.
         Raises:
-          FatalRtlBuddyError: If no library with that name is configured.
+          FatalRtlBuddyError: If no tool with that name is configured.
         """
-        cfg = self.synth_lib_cfgs.get(name)
+        cfg = self.fpv_tool_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(f"FPV tool '{name}' not found in cfg-fpv-tools")
+        return cfg
+
+    def get_pdk_cfg(self, name: str) -> PdkConfig:
+        """Get a PDK configuration by name (cfg-pdks entry)."""
+        cfg = self.pdk_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(
-                f"synthesis library '{name}' not found in cfg-synth-libs"
+                f"PDK '{name}' not found in cfg-pdks; available: {sorted(self.pdk_cfgs)}"
+            )
+        return cfg
+
+    def get_synth_platform_cfg(self, name: str) -> SynthPlatformConfig:
+        """
+        Get a synthesis platform configuration by name.
+
+        Args:
+          name (str): Platform name as defined in cfg-synth-platforms.
+        Returns:
+          cfg (SynthPlatformConfig): Matching synth platform configuration.
+        Raises:
+          FatalRtlBuddyError: If no platform with that name is configured.
+        """
+        cfg = self.synth_platform_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"synth platform '{name}' not found in cfg-synth-platforms; "
+                f"available: {sorted(self.synth_platform_cfgs)}"
+            )
+        return cfg
+
+    def get_pnr_platform_cfg(self, name: str) -> PnrPlatformConfig:
+        """Get a P&R platform configuration by name (cfg-pnr-platforms entry)."""
+        cfg = self.pnr_platform_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"pnr platform '{name}' not found in cfg-pnr-platforms; "
+                f"available: {sorted(self.pnr_platform_cfgs)}"
             )
         return cfg
 
@@ -517,6 +730,35 @@ class RootConfig:
                 f"synthesis effort '{name}' not found in cfg-synth-efforts"
             )
         return cfg
+
+    def get_tool_version_cfg(self, name: str) -> ToolVersionConfig | None:
+        """Get optional ``cfg-tools`` min-version pin for the given tool name."""
+        return self.tool_version_cfgs.get(name)
+
+    def get_xplr_cfg(self) -> XplrConfig:
+        """
+        Get the xplr experiment-ledger configuration.
+
+        Returns:
+          cfg (XplrConfig): The cfg-xplr block, or the documented
+            defaults when the block is absent. Note xplr commands
+            themselves load this block leniently via
+            ``config.xplr.load_xplr_config`` (they never construct a
+            full RootConfig); this accessor is for code that already
+            holds one.
+        """
+        return self.xplr_cfg
+
+    def get_systemc_cfg(self) -> SystemCConfig | None:
+        """
+        Get the SystemC root configuration, if cfg-systemc is present.
+
+        Returns:
+          cfg (SystemCConfig | None): SystemC config, or None when cfg-systemc
+            is absent. Callers (e.g. SystemCSim) decide whether absence is
+            fatal — a project with no SystemC testbenches does not require it.
+        """
+        return self.systemc_cfg
 
     def get_project_rootdir(self):
         """

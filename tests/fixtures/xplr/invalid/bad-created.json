@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "id": "exp-0042",
+  "source": {
+    "git_sha": "a1b2c3d"
+  },
+  "knobs": [],
+  "outcome": {
+    "status": "pending"
+  },
+  "provenance": {
+    "created": "yesterday afternoon"
+  }
+}
