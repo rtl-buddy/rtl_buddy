@@ -10,8 +10,7 @@ model + an SDC + optionally a waiver file; the project's
 import logging
 import os
 import pprint
-from dataclasses import dataclass
-from dataclasses import field as dc_field
+from dataclasses import dataclass, field as dc_field
 
 from serde import field, serde
 from serde.yaml import from_yaml
@@ -99,6 +98,13 @@ class CdcConfigFile:
     # ``frontend`` above, values are intentionally not validated here so the
     # analyzer owns the accepted-name set. Empty by default (no blackboxing).
     blackbox: list[str] = field(default_factory=list)
+    # Recognized-synchronizer instance patterns (regexes) for `--check-xdc`.
+    # A crossing the analyzer flags as a violation but whose instance matches
+    # one of these is treated as a real synchronizer the engine did not
+    # recognize structurally (e.g. a blackboxed `xpm_cdc_*` macro): the audit
+    # then requires it to be constrained (completeness) but does NOT report a
+    # correct XDC waiver of it as a dangerous over-waive.
+    recognized_syncs: list[str] = field(rename="recognized-syncs", default_factory=list)
     # Expected-fail markers (pytest-style). Either flag marks the analysis
     # expected-to-fail (a FAIL becomes XFAIL, a pass); they differ only in
     # how an unexpected pass (XPASS) is counted: `xfail` non-strict (XPASS
@@ -127,6 +133,7 @@ class CdcConfigFile:
             tool_overrides=self.tool_overrides,
             frontend=self.frontend,
             blackbox=self.blackbox,
+            recognized_syncs=list(self.recognized_syncs),
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -144,8 +151,14 @@ class CdcConfig:
     tool_overrides: dict | None
     frontend: str | None = None
     blackbox: list[str] = dc_field(default_factory=list)
+    recognized_syncs: list[str] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
+
+    def get_recognized_syncs(self) -> list[str]:
+        """Instance-path regexes treated as recognized synchronizers in
+        `--check-xdc` (suppress false over-waives; still require coverage)."""
+        return list(self.recognized_syncs)
 
     def is_xfail(self) -> bool:
         """Whether this analysis is expected to fail (either flag set)."""

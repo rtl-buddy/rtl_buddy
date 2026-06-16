@@ -111,6 +111,14 @@ class RtlBuddyCdc:
 
         return _load(self._domain_map_path()), _load(self._reset_map_path())
 
+    def read_report(self) -> dict:
+        """Return the parsed cdc.json report (with ``violations`` /
+        ``suppressed`` / ``crossings``), or ``{}`` if not produced."""
+        try:
+            return json.loads(Path(self._report_path("json")).read_text())
+        except (OSError, json.JSONDecodeError):
+            return {}
+
     # --- helpers ------------------------------------------------------------
 
     def _write_filelist(self) -> str:

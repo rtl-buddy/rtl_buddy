@@ -560,6 +560,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'cdc emit "{fields.get("analysis")}": {fields.get("exceptions")} '
                 f"{str(fields.get('format', '')).upper()} exception(s) -> {dst}"
             )
+        case "cdc.check_xdc.no_maps":
+            return (
+                f'cdc check-xdc "{fields.get("analysis")}": rtl-buddy-cdc produced '
+                "no domain map — cannot audit (check the cdc log / tool version)"
+            )
+        case "cdc.check_xdc.done":
+            nb = fields.get("blockers", 0)
+            verdict = "clean" if not nb else f"{nb} blocker(s)"
+            return (
+                f'cdc check-xdc "{fields.get("analysis")}": {verdict} '
+                f"({fields.get('findings')} finding(s) vs {fields.get('xdc')})"
+            )
         case "fpga.no_vivado":
             return (
                 f'fpga "{fields.get("fpga")}": {fields.get("exe")!r} not found — '

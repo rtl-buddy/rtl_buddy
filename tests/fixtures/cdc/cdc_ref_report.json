@@ -10,30 +10,11 @@
     "flops": 20,
     "crossings": 5,
     "async_crossings": 5,
-    "violations": 2,
-    "suppressed": 0,
+    "violations": 0,
+    "suppressed": 2,
     "baseline_carryover": 0
   },
-  "by_instance": [
-    {
-      "instance_path": [
-        "u_gray_sync"
-      ],
-      "violations": 1,
-      "rules": {
-        "CDC-004": 1
-      }
-    },
-    {
-      "instance_path": [
-        "u_hs"
-      ],
-      "violations": 1,
-      "rules": {
-        "CDC-012": 1
-      }
-    }
-  ],
+  "by_instance": [],
   "domains": [
     {
       "flop": "u_rst_a.$slang$adff$1",
@@ -158,7 +139,8 @@
       "src_flop": "u_hs.$slang$adff$20"
     }
   ],
-  "violations": [
+  "violations": [],
+  "suppressed": [
     {
       "rule_id": "CDC-004",
       "severity": "error",
@@ -181,6 +163,12 @@
         "start_column": 3,
         "end_line": 30,
         "end_column": 6
+      },
+      "waiver": {
+        "rule_pattern": "CDC-004",
+        "regex": ".*u_gray_sync.*",
+        "reason": "gray-coded bus: one bit changes per step",
+        "source_line": 4
       }
     },
     {
@@ -205,9 +193,14 @@
         "start_column": 3,
         "end_line": 92,
         "end_column": 6
+      },
+      "waiver": {
+        "rule_pattern": "CDC-012",
+        "regex": ".*u_hs.*",
+        "reason": "4-phase req/ack: payload held until ack returns",
+        "source_line": 5
       }
     }
   ],
-  "suppressed": [],
   "baseline_carryover": []
 }
