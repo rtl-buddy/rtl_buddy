@@ -256,3 +256,51 @@ def test_builder_footer_unions_across_regression_suites():
     rb = _make_rtl_buddy(builders)
     suites = [_FakeSuite(["verilator"]), _FakeSuite(["icarus"])]
     assert rb._builder_metadata_line(suites) == "Builders: icarus, verilator"
+
+
+# --- summary table: per-row Builder column when >1 builder ------------------
+
+
+class _FakeResults:
+    def __init__(self, result="PASS", desc="d"):
+        self.results = {"result": result, "desc": desc}
+
+
+class _FakeCoverage:
+    def format_summary(self, _results):
+        return None
+
+
+def _result_row(test_name, builder):
+    return {
+        "test_name": test_name,
+        "randmode_i": None,
+        "results": _FakeResults(),
+        "builder": builder,
+    }
+
+
+def _capture_test_summary(monkeypatch, suite_results):
+    import rtl_buddy.rtl_buddy as rbmod
+
+    rb = _make_rtl_buddy({"verilator": _NamedBuilder("verilator")})
+    rb.coverage = _FakeCoverage()
+    captured = {}
+    monkeypatch.setattr(rbmod, "render_summary", lambda **kw: captured.update(kw))
+    rb._render_test_summary("Test Results Summary", suite_results)
+    return captured
+
+
+def test_summary_omits_builder_column_for_single_builder(monkeypatch):
+    captured = _capture_test_summary(
+        monkeypatch, [_result_row("a", "icarus"), _result_row("b", "icarus")]
+    )
+    assert "builder" not in [key for key, _ in captured["columns"]]
+
+
+def test_summary_adds_builder_column_when_multiple_builders(monkeypatch):
+    captured = _capture_test_summary(
+        monkeypatch, [_result_row("a", "icarus"), _result_row("b", "verilator")]
+    )
+    assert ("builder", "Builder") in captured["columns"]
+    assert {row["builder"] for row in captured["rows"]} == {"icarus", "verilator"}
