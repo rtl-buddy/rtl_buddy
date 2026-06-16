@@ -718,7 +718,16 @@ class RtlBuddy:
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         suite_results = []
         for t in tests:
-            t_lvl = t.get_reglvl(self.builder)
+            if reg_level is not None:
+                # Resolve the regression level against the builder this test
+                # will actually run on (per-test/suite `builder:` may differ
+                # from the platform default).
+                t_builder = self.root_cfg.resolve_rtl_builder_cfg(
+                    t.get_builder_name()
+                ).get_name()
+                t_lvl = t.get_reglvl(t_builder)
+            else:
+                t_lvl = 0
             if reg_level is not None and t_lvl > reg_level:
                 log_event(
                     logger,

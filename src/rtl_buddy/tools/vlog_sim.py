@@ -60,7 +60,9 @@ class VlogSim:
         """
         self.name = name
         self.root_cfg = root_cfg
-        self.rtl_builder_cfg = root_cfg.get_rtl_builder_cfg()
+        self.rtl_builder_cfg = root_cfg.resolve_rtl_builder_cfg(
+            test_cfg.get_builder_name()
+        )
         self.rtl_builder_mode = rtl_builder_mode
         self.sim_mode = sim_mode
         # assert 'sim_to_stdout' in self.sim_mode NOTE: not used anywhere, may or may not become important in the future

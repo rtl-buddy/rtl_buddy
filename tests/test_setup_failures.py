@@ -235,6 +235,9 @@ class DummyRootCfg:
     def get_rtl_builder_cfg(self):
         return DummyBuilderCfg()
 
+    def resolve_rtl_builder_cfg(self, _test_builder_name=None):
+        return DummyBuilderCfg()
+
 
 class DummyTestbench:
     def get_filelist(self):
@@ -247,6 +250,9 @@ class DummyExecuteTestCfg:
 
     def get_name(self):
         return "basic"
+
+    def get_builder_name(self):
+        return None
 
     def get_testbench(self):
         return DummyTestbench()

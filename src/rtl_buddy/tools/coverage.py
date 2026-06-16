@@ -26,6 +26,13 @@ class CoverageReporter:
     def _get_cov_tool(self):
         """
         Create a `VlogCov` helper for the active simulator family.
+
+        NOTE: coverage keys off the platform-selected builder, not a per-test
+        or per-suite ``builder:`` override (see docs/reference/yaml.md). When a
+        test's effective builder differs from the platform default and no
+        ``--builder`` is in effect, this family can mismatch the one the test
+        actually simulated on. Use ``--builder`` to collect coverage on an
+        alternate builder consistently.
         """
         simulator_family = self.root_cfg.get_rtl_builder_cfg().get_simulator_family()
         return VlogCov(

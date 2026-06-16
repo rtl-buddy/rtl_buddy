@@ -339,6 +339,47 @@ class RootConfig:
         """
         return self.platform_cfg.get_builder()
 
+    def get_rtl_builder_cfg_by_name(self, name):
+        """
+        Get a builder configuration by its cfg-rtl-builder name.
+
+        Args:
+          name (str): Builder name as defined in cfg-rtl-builder.
+        Returns:
+          cfg (RtlBuilderConfig): The matching builder configuration.
+        Raises:
+          FatalRtlBuddyError: If no builder with that name is configured.
+        """
+        cfg = self.rtl_builder_cfgs.get(name)
+        if cfg is None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "builder.not_found",
+                builder=name,
+                available=list(self.rtl_builder_cfgs.keys()),
+            )
+            raise FatalRtlBuddyError(f'builder "{name}" not found in cfg-rtl-builder')
+        return cfg
+
+    def resolve_rtl_builder_cfg(self, test_builder_name=None):
+        """
+        Resolve the effective builder for a test.
+
+        Precedence: a ``--builder`` CLI override forces the builder for every
+        test (it "overrides all others"); otherwise a per-test/suite
+        ``builder:`` selection wins; otherwise the platform default applies.
+
+        Args:
+          test_builder_name (str | None): Builder name from the test/suite
+            ``builder:`` field, or None when unset.
+        Returns:
+          cfg (RtlBuilderConfig): The builder configuration to use.
+        """
+        if self.builder_override is None and test_builder_name is not None:
+            return self.get_rtl_builder_cfg_by_name(test_builder_name)
+        return self.get_rtl_builder_cfg()
+
     def get_rtl_reg_cfg(self):
         """
         Get rtl regression configuration, reading one if it does not exist.

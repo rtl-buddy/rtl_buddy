@@ -17,6 +17,7 @@ class SuiteConfigFile:
     filetype: Literal["test_config"] = field(rename="rtl-buddy-filetype")
     testbenches: list[TestbenchConfig]
     tests: list[TestConfigFile]
+    builder: str | None = None
 
 
 class SuiteConfig:
@@ -59,7 +60,8 @@ class SuiteConfig:
             config_dir = os.path.dirname(path)
             try:
                 self.tests = {
-                    test.name: test.initialise(config_dir, tbs) for test in data.tests
+                    test.name: test.initialise(config_dir, tbs, data.builder)
+                    for test in data.tests
                 }
             except KeyError:
                 log_event(

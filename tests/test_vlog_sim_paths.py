@@ -56,11 +56,21 @@ class DummyBuilderCfg:
 
 
 class DummyRootCfg:
-    def __init__(self, builder_cfg):
+    def __init__(self, builder_cfg, builders=None, builder_override=None):
         self.builder_cfg = builder_cfg
+        self.builders = builders or {}
+        self.builder_override = builder_override
 
     def get_rtl_builder_cfg(self):
         return self.builder_cfg
+
+    def get_rtl_builder_cfg_by_name(self, name):
+        return self.builders[name]
+
+    def resolve_rtl_builder_cfg(self, test_builder_name=None):
+        if self.builder_override is None and test_builder_name is not None:
+            return self.get_rtl_builder_cfg_by_name(test_builder_name)
+        return self.get_rtl_builder_cfg()
 
     def get_use_lcov(self, _simulator_name):
         return False
@@ -86,15 +96,19 @@ class DummyTestbenchCfg:
 
 
 class DummyTestCfg:
-    def __init__(self, name, model_path):
+    def __init__(self, name, model_path, builder_name=None):
         self.name = name
         self.model = DummyModelCfg(model_path)
         self.tb = DummyTestbenchCfg()
         self.pd = None
         self.uvm = None
+        self.builder_name = builder_name
 
     def get_name(self):
         return self.name
+
+    def get_builder_name(self):
+        return self.builder_name
 
     def get_model(self):
         return self.model
@@ -115,11 +129,24 @@ class DummyTestCfg:
         return None
 
 
-def _make_sim(tmp_path, monkeypatch, *, test_name="basic", builder_cfg=None):
+def _make_sim(
+    tmp_path,
+    monkeypatch,
+    *,
+    test_name="basic",
+    builder_cfg=None,
+    test_builder=None,
+    builders=None,
+    builder_override=None,
+):
     monkeypatch.chdir(tmp_path)
     builder_cfg = builder_cfg or DummyBuilderCfg()
-    root_cfg = DummyRootCfg(builder_cfg)
-    test_cfg = DummyTestCfg(test_name, tmp_path / "models.yaml")
+    root_cfg = DummyRootCfg(
+        builder_cfg, builders=builders, builder_override=builder_override
+    )
+    test_cfg = DummyTestCfg(
+        test_name, tmp_path / "models.yaml", builder_name=test_builder
+    )
     return vlog_sim_module.VlogSim(
         name="rtl_buddy/vlog_sim",
         root_cfg=root_cfg,
@@ -388,3 +415,41 @@ def test_artifact_path_helpers_match_existing_sanitization():
         VlogCov(simulator_name="vcs")._sanitize_artifact_name("with spaces/slash:punct")
         == "with_spaces_slash_punct"
     )
+
+
+def test_vlog_sim_per_test_builder_overrides_platform_default(tmp_path, monkeypatch):
+    """A per-test `builder:` name resolves an alternate cfg-rtl-builder entry."""
+    platform_default = DummyBuilderCfg(exe="verilator", simulator_family="verilator")
+    icarus = DummyBuilderCfg(exe="iverilog", simulator_family="icarus")
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=platform_default,
+        builders={"icarus": icarus},
+        test_builder="icarus",
+    )
+    assert sim.rtl_builder_cfg is icarus
+    assert sim._get_simulator_family() == "icarus"
+
+
+def test_vlog_sim_no_builder_field_keeps_platform_default(tmp_path, monkeypatch):
+    platform_default = DummyBuilderCfg(exe="verilator", simulator_family="verilator")
+    sim = _make_sim(tmp_path, monkeypatch, builder_cfg=platform_default)
+    assert sim.rtl_builder_cfg is platform_default
+
+
+def test_vlog_sim_cli_builder_override_wins_over_per_test_builder(
+    tmp_path, monkeypatch
+):
+    """`--builder` (builder_override) forces the builder for every test."""
+    forced = DummyBuilderCfg(exe="verilator", simulator_family="verilator")
+    icarus = DummyBuilderCfg(exe="iverilog", simulator_family="icarus")
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=forced,
+        builders={"icarus": icarus},
+        test_builder="icarus",
+        builder_override="verilator",
+    )
+    assert sim.rtl_builder_cfg is forced

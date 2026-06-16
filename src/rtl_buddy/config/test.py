@@ -117,6 +117,7 @@ class TestConfig:
     tb: TestbenchConfig
     timeout: int | None
     covers: list[str] | None = None
+    builder_name: str | None = None
     default_timeout: int = 60  # NOTE: potential for config through root config
 
     def get_name(self):
@@ -127,6 +128,16 @@ class TestConfig:
         name (str): The name of the test
         """
         return self.name
+
+    def get_builder_name(self):
+        """
+        Retrieve the builder selected for this test, if any.
+
+        Returns:
+          builder_name (str | None): Name of a cfg-rtl-builder entry to use
+            for this test, or None to fall back to the suite/platform default.
+        """
+        return self.builder_name
 
     def get_model(self):
         """
@@ -375,8 +386,9 @@ class TestConfigFile:
     tb: str = field(rename="testbench")
     timeout: int | None = field(rename="sim_timeout")
     covers: list[str] | None = None
+    builder_name: str | None = field(rename="builder", default=None)
 
-    def initialise(self, config_dir, tbs):
+    def initialise(self, config_dir, tbs, suite_builder=None):
         tb = tbs[self.tb]
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
@@ -395,4 +407,5 @@ class TestConfigFile:
             tb,
             self.timeout,
             covers=self.covers,
+            builder_name=self.builder_name or suite_builder,
         )
