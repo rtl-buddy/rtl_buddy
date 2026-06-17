@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from rtl_buddy.config.test import CocotbTestbenchConfig
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.tools.cocotb_sim import CocotbSim
 
 
@@ -285,3 +286,78 @@ def test_get_modules_str_returns_single_element_list():
 def test_get_modules_list_returns_list_unchanged():
     cfg = CocotbTestbenchConfig(module=["test_foo", "test_bar"])
     assert cfg.get_modules() == ["test_foo", "test_bar"]
+
+
+# ---------------------------------------------------------------------------
+# Simulator-family dispatch for compile flags / opt filtering
+# ---------------------------------------------------------------------------
+
+
+def _make_sim(tmp_path, monkeypatch, family, compile_opts):
+    """A CocotbSim whose builder reports the given family + compile opts.
+
+    cocotb-config is stubbed so these tests run without cocotb installed.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "rtl_buddy.tools.cocotb_sim._cocotb_config",
+        lambda *args: f"<{'-'.join(args)}>",
+    )
+
+    builder = _DummyBuilderCfg()
+    builder.get_simulator_family = lambda: family
+    builder.get_compile_time_opts = lambda _m: list(compile_opts)
+
+    root = _DummyRootCfg()
+    root.get_rtl_builder_cfg = lambda: builder
+    root.resolve_rtl_builder_cfg = lambda _n=None: builder
+
+    return CocotbSim(
+        name="rtl_buddy/cocotb_sim",
+        root_cfg=root,
+        test_cfg=_DummyTestCfg(),
+        rtl_builder_mode="sim",
+        sim_mode={"sim_to_stdout": True},
+    )
+
+
+def test_verilator_compile_flags_and_binary_filter(tmp_path, monkeypatch):
+    sim = _make_sim(tmp_path, monkeypatch, "verilator", ["--binary", "-sv"])
+    flags = sim._get_extra_compile_flags()
+    assert "--cc" in flags and "--exe" in flags and "--vpi" in flags
+    # --binary is dropped (cocotb uses --exe + verilator.cpp main)
+    assert sim._filter_builder_opts(["--binary", "-sv"]) == ["-sv"]
+
+
+def test_vcs_compile_flags_added(tmp_path, monkeypatch):
+    sim = _make_sim(tmp_path, monkeypatch, "vcs", ["-sverilog", "-full64", "+vpi"])
+    flags = sim._get_extra_compile_flags()
+    assert "-load" in flags
+    assert flags[flags.index("-load") + 1] == "<--lib-name-path-vpi-vcs>"
+    assert "+acc+3" in flags
+    assert "-debug_access+all" in flags
+    assert "-LDFLAGS" in flags and "-Wl,--no-as-needed" in flags
+    # toplevel is elaborated as top
+    assert flags[flags.index("-top") + 1] == "my_dut"
+    # VCS keeps builder opts intact (no --binary filtering)
+    assert sim._filter_builder_opts(["-sverilog", "+vpi"]) == ["-sverilog", "+vpi"]
+
+
+def test_vcs_does_not_duplicate_existing_flags(tmp_path, monkeypatch):
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        "vcs",
+        ["-sverilog", "-debug_access+all+class", "+acc+rw", "-top", "my_dut"],
+    )
+    flags = sim._get_extra_compile_flags()
+    assert "-debug_access+all" not in flags  # already covered by +class variant
+    assert "+acc+3" not in flags  # builder already enables +acc
+    assert "-top" not in flags  # builder already pins the top
+    assert "-load" in flags  # the VPI shim is always injected
+
+
+def test_unsupported_family_raises(tmp_path, monkeypatch):
+    sim = _make_sim(tmp_path, monkeypatch, "icarus", [])
+    with pytest.raises(FatalRtlBuddyError, match="cocotb is not supported"):
+        sim._get_extra_compile_flags()

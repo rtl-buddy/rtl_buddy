@@ -373,7 +373,7 @@ and Icarus do not collect coverage through this path.
 
 ### cocotb testbenches
 
-Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode (Verilator only for now). `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
+Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode. Builders whose simulator family is `verilator` or `vcs` are supported (selected via the platform default, a `builder:` field, or `--builder`); any other family raises a fatal error. `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
 
 **Prerequisite:** `cocotb` must be installed in the active Python environment (`uv add cocotb` or `pip install cocotb`). The runner invokes `cocotb-config` at compile time; a missing binary surfaces as a `FatalRtlBuddyError` with an actionable message.
 

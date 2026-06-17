@@ -2,9 +2,19 @@
 description: How to setup rtl-buddy tests to use cocotb. How are cocotb results reported.
 ---
 
-# cocotb testbenches (Verilator + VPI)
+# cocotb testbenches (Verilator / VCS + VPI)
 
-Explains how `rtl_buddy` integrates [cocotb](https://www.cocotb.org) — a coroutine-based Python verification framework — to drive Verilator-compiled RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.
+Explains how `rtl_buddy` integrates [cocotb](https://www.cocotb.org) — a coroutine-based Python verification framework — to drive RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.
+
+## Supported simulators
+
+cocotb runs against any builder whose simulator family is **`verilator`** or **`vcs`** (resolved from the builder's executable name or an explicit `simulator-family:`; see `rtl-buddy docs show reference/yaml`). The simulator is chosen the same way as for any other test — the platform default, a suite/per-test `builder:` field, or `--builder` on the CLI:
+
+```bash
+rb --builder vcs test my_cocotb_test
+```
+
+The two backends differ only in the elaboration flags `rtl_buddy` injects (Verilator builds a `--vpi` shared object; VCS loads `libcocotbvpi_vcs.so` with `+acc`/`-debug_access`). Your `tests.yaml` is identical for both. A builder with any other family (e.g. `icarus`) raises a `FatalRtlBuddyError` for cocotb tests.
 
 ## Prerequisites
 
