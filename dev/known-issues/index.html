@@ -1441,6 +1441,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cocotb-on-vcs-skips-its-vpi-access-flags-when-you-already-configured-any-debug_accessacc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cocotb on VCS skips its VPI-access flags when you already configured any -debug_access/+acc
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vcs-hierarchical-seed-file" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1656,6 +1667,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cocotb-on-vcs-skips-its-vpi-access-flags-when-you-already-configured-any-debug_accessacc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cocotb on VCS skips its VPI-access flags when you already configured any -debug_access/+acc
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vcs-hierarchical-seed-file" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1806,6 +1828,9 @@
 <p>sby reported ERROR (…) — zero formal cells elaborated: the property set produced no assert/assume/cover cells, so the proof would otherwise have passed vacuously (frontend='verilog' cannot resolve a compilation-unit-scope <code>bind</code>; set <code>frontend: slang</code> for bind-based property modules)</p>
 </blockquote>
 <p>The fix is to set <code>frontend: slang</code> on that verification: yosys-slang reads all files in one <code>read_slang --top</code> invocation, so a compilation-unit-scope bind resolves and the asserts elaborate. Inline-assertion suites (<code>properties: []</code>, with assertions in the DUT) are not bind-based and are intentionally not guarded. See <a href="../concepts/fpv/#choosing-a-frontend">Choosing a frontend</a>.</p>
+<h2 id="cocotb-on-vcs-skips-its-vpi-access-flags-when-you-already-configured-any-debug_accessacc">cocotb on VCS skips its VPI-access flags when you already configured any <code>-debug_access</code>/<code>+acc</code></h2>
+<p>cocotb drives the DUT over VPI, so on a <code>vcs</code> builder rtl_buddy injects <code>-debug_access+all</code> and <code>+acc+3</code> (plus <code>-load &lt;libcocotbvpi_vcs.so&gt;</code> and <code>-LDFLAGS -Wl,--no-as-needed</code>) at elaboration. To avoid fighting a builder that already enables access, the injection is suppressed per token: if <strong>any</strong> configured compile-time opt starts with <code>-debug_access</code> (e.g. <code>-debug_access+all+class</code>) the <code>-debug_access+all</code> is not added, and likewise for any <code>+acc*</code> opt.</p>
+<p>The footgun: a <em>narrower</em> configured flag counts as "covered". If your <code>builder-opts</code> set, say, <code>-debug_access+line</code> (or <code>+acc+1</code>) but not full read/write access, rtl_buddy will <strong>not</strong> add <code>+all</code>/<code>+acc+3</code>, and cocotb may fail to drive signals it needs to write. Workaround: configure full access yourself (<code>-debug_access+all</code> / <code>+acc+rw</code>) for cocotb-targeted VCS builders, or drop the narrow flag and let rtl_buddy inject the defaults. <code>-top</code> is similarly only injected when the builder hasn't already pinned a top.</p>
 <h2 id="vcs-hierarchical-seed-file">VCS hierarchical seed file</h2>
 <p>When using VCS with hierarchical instance seeding (<code>-xlrm hier_inst_seed</code>), VCS writes a <code>HierInstanceSeed.txt</code> file in the simulation directory after the run. <code>rtl_buddy</code> looks for this file to record the seed for reproducibility.</p>
 <p>If the file is missing, a <code>sim.hier_seed_missing</code> warning is emitted in the log and the seed is not recorded, but the test result is not affected.</p>
