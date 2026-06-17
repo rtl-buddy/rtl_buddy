@@ -1712,8 +1712,8 @@
 <tr>
 <td><code>rb test</code>, <code>rb randtest</code>, <code>rb regression</code></td>
 <td>Pluggable</td>
-<td>Verilator, VCS (Icarus on the roadmap)</td>
-<td>Install the <code>lcov</code> package in your OS for LCOV / HTML coverage export from Verilator runs.</td>
+<td>Verilator, Icarus Verilog (<code>brew install icarus-verilog</code> / <code>apt install iverilog</code>), VCS</td>
+<td>Select the simulator per suite/test with <code>builder:</code> (or <code>--builder</code>); see <a href="../reference/yaml/#selecting-the-simulator-builder">tests.yaml</a>. Install the <code>lcov</code> package in your OS for LCOV / HTML coverage export from Verilator runs (coverage is Verilator-only — see <a href="../known-issues/#coverage-follows-the-platform-builder-not-a-per-testsuite-builder">Known Issues</a>).</td>
 </tr>
 <tr>
 <td><code>rb verible</code></td>
