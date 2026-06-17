@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#cocotb-testbenches-verilator-vpi" class="md-skip">
+        <a href="#cocotb-testbenches-verilator-vcs-vpi" class="md-skip">
           Skip to content
         </a>
       
@@ -619,6 +619,17 @@
       Table of contents
     </label>
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#supported-simulators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported simulators
+      
+    </span>
+  </a>
+  
+</li>
       
         <li class="md-nav__item">
   <a href="#prerequisites" class="md-nav__link">
@@ -1493,6 +1504,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#supported-simulators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported simulators
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#prerequisites" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1556,40 +1578,45 @@
   
 
 
-<h1 id="cocotb-testbenches-verilator-vpi">cocotb testbenches (Verilator + VPI)</h1>
-<p>Explains how <code>rtl_buddy</code> integrates <a href="https://www.cocotb.org">cocotb</a> — a coroutine-based Python verification framework — to drive Verilator-compiled RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.</p>
+<h1 id="cocotb-testbenches-verilator-vcs-vpi">cocotb testbenches (Verilator / VCS + VPI)</h1>
+<p>Explains how <code>rtl_buddy</code> integrates <a href="https://www.cocotb.org">cocotb</a> — a coroutine-based Python verification framework — to drive RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.</p>
+<h2 id="supported-simulators">Supported simulators</h2>
+<p>cocotb runs against any builder whose simulator family is <strong><code>verilator</code></strong> or <strong><code>vcs</code></strong> (resolved from the builder's executable name or an explicit <code>simulator-family:</code>; see <code>rtl-buddy docs show reference/yaml</code>). The simulator is chosen the same way as for any other test — the platform default, a suite/per-test <code>builder:</code> field, or <code>--builder</code> on the CLI:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>--builder<span class="w"> </span>vcs<span class="w"> </span><span class="nb">test</span><span class="w"> </span>my_cocotb_test
+</code></pre></div>
+<p>The two backends differ only in the elaboration flags <code>rtl_buddy</code> injects (Verilator builds a <code>--vpi</code> shared object; VCS loads <code>libcocotbvpi_vcs.so</code> with <code>+acc</code>/<code>-debug_access</code>). Your <code>tests.yaml</code> is identical for both. A builder with any other family (e.g. <code>icarus</code>) raises a <code>FatalRtlBuddyError</code> for cocotb tests.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <p><code>cocotb</code> must be installed in the active Python environment:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>add<span class="w"> </span>cocotb
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># or: pip install cocotb</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>add<span class="w"> </span>cocotb
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># or: pip install cocotb</span>
 </code></pre></div>
 <p>The runner calls <code>cocotb-config</code> at compile time. If it is missing, <code>rtl_buddy</code> raises a <code>FatalRtlBuddyError</code> with an actionable message rather than a raw traceback.</p>
 <h2 id="yaml-shape">YAML shape</h2>
 <p>Add <code>toplevel:</code> and a <code>cocotb:</code> block to a testbench entry in <code>tests.yaml</code>. <code>toplevel:</code> is <strong>required</strong> when <code>cocotb:</code> is present — omitting it is a fatal config error caught at load time.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">testbenches</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span><span class="w">          </span><span class="c1"># required: DUT top-level module name</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_my_design</span><span class="w">     </span><span class="c1"># Python module with @cocotb.test() coroutines</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_multi&quot;</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w">                    </span><span class="c1"># list form: all modules are loaded</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_smoke</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_corner_cases</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;test_my_design&quot;</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cocotb</span><span class="nv"> </span><span class="s">test&quot;</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/block/models.yaml&quot;</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">testbenches</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span><span class="w">          </span><span class="c1"># required: DUT top-level module name</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_my_design</span><span class="w">     </span><span class="c1"># Python module with @cocotb.test() coroutines</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_multi&quot;</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;my_design.sv&quot;</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">toplevel</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my_design</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">cocotb</span><span class="p">:</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">      </span><span class="nt">module</span><span class="p">:</span><span class="w">                    </span><span class="c1"># list form: all modules are loaded</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_smoke</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">test_corner_cases</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="nt">tests</span><span class="p">:</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;test_my_design&quot;</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;cocotb</span><span class="nv"> </span><span class="s">test&quot;</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/block/models.yaml&quot;</span>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span><span class="nt">testbench</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tb_my_design&quot;</span>
 </code></pre></div>
 <h2 id="passfail-detection">Pass/fail detection</h2>
 <p>cocotb writes a JUnit XML results file (<code>cocotb_results.xml</code>) instead of <code>PASS</code>/<code>FAIL</code> stdout lines. <code>rtl_buddy</code> parses this file automatically — do <strong>not</strong> add <code>$display("PASS …")</code> in cocotb tests. The <code>desc</code> field reports the first three failure messages with a <code>(+N more)</code> suffix when there are more.</p>
