@@ -1386,6 +1386,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#coverage-follows-the-platform-builder-not-a-per-testsuite-builder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage follows the platform builder, not a per-test/suite builder:
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#instance-prng-seeding-with-verilator" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1590,6 +1601,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#coverage-follows-the-platform-builder-not-a-per-testsuite-builder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage follows the platform builder, not a per-test/suite builder:
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#instance-prng-seeding-with-verilator" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1755,6 +1777,9 @@
 <h1 id="quirks-known-issues">Quirks &amp; Known Issues</h1>
 <p>The home for rtl_buddy behavior that does not follow convention: quirks, surprising defaults, simulator-specific workarounds, and known limitations. If something tripped you up because it works differently than you'd expect, add it here so the next person — or agent — finds it first.</p>
 <p>Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one <code>##</code> section per quirk, name it after the behavior, and say what to do about it.</p>
+<h2 id="coverage-follows-the-platform-builder-not-a-per-testsuite-builder">Coverage follows the platform builder, not a per-test/suite <code>builder:</code></h2>
+<p>A test can pick its simulator with a per-test or suite-wide <code>builder:</code> (see <a href="../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a>), but coverage collection and reporting — <code>rb test --coverage</code>, the Coverview packer, and the <code>builder</code>/<code>simulator_family</code> labels on coverage artifacts — key off the <strong>platform-selected</strong> builder, not the test's effective one. When a test's effective builder differs from the platform default <em>and</em> no <code>--builder</code> override is in effect, the coverage layer can mislabel or misparse results.</p>
+<p>Workaround: run the suite with <code>--builder &lt;name&gt;</code> (which forces the builder consistently across simulation and coverage) or make that builder the platform default. In practice this only bites Verilator — the sole family that emits line/toggle coverage today; VCS and Icarus collect no coverage through this path. See the <a href="../reference/yaml/#selecting-the-simulator-builder">tests.yaml limitation note</a> for the full rationale.</p>
 <h2 id="instance-prng-seeding-with-verilator">Instance pRNG seeding with Verilator</h2>
 <p>Random testing does not behave reliably with Verilator. While Verilator supports multiple random tests with different seeds, tests are not always reproducible even with the same seed.</p>
 <p>VCS is recommended for stable random testing due to its hierarchical instance seeding. VCS seeds instantiated modules, process threads, and classes based on their hierarchical names. For stable random seeding with VCS, name your instances explicitly.</p>
