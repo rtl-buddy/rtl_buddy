@@ -54,6 +54,14 @@ class CocotbSim(VlogSim):
         """Resolve and validate the simulator family for this cocotb run."""
         family = self._get_simulator_family()
         if family not in self._SUPPORTED_FAMILIES:
+            log_event(
+                logger,
+                logging.ERROR,
+                "cocotb.unsupported_family",
+                test=self.test_name,
+                simulator=family,
+                supported=list(self._SUPPORTED_FAMILIES),
+            )
             raise FatalRtlBuddyError(
                 f"cocotb is not supported with simulator family '{family}'; "
                 f"use a builder whose family is one of {self._SUPPORTED_FAMILIES}"
@@ -111,20 +119,24 @@ class CocotbSim(VlogSim):
 
         Mirrors cocotb's own VCS runner: load libcocotbvpi_vcs.so, enable VPI
         write access (-debug_access+all / +acc), and link with --no-as-needed
-        so the cocotb/libpython dependencies survive the link. Flags already
-        present in the builder's configured opts are not duplicated.
+        so the cocotb/libpython dependencies survive the link.
+
+        Flags already present in the builder's configured opts are not
+        duplicated. The de-dup is token-level (not substring): any
+        ``-debug_access*`` or ``+acc*`` token the user configured is taken as
+        "already enables VPI access" so we don't inject our own — see
+        docs/known-issues.md. ``-top`` takes the module as a separate token,
+        so an exact-token check is the right "did the user pin a top?" test.
         """
         vpi_lib = _cocotb_config("--lib-name-path", "vpi", "vcs")
-        existing = " ".join(
-            self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
-        )
+        opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
         flags = []
-        if "-debug_access" not in existing:
+        if not any(o.startswith("-debug_access") for o in opts):
             flags.append("-debug_access+all")
-        if "+acc" not in existing:
+        if not any(o.startswith("+acc") for o in opts):
             flags.append("+acc+3")
         flags += ["-LDFLAGS", "-Wl,--no-as-needed", "-load", vpi_lib]
-        if "-top" not in existing:
+        if "-top" not in opts:
             flags += ["-top", self.testbench.toplevel]
         return flags
 

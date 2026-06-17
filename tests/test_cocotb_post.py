@@ -357,6 +357,14 @@ def test_vcs_does_not_duplicate_existing_flags(tmp_path, monkeypatch):
     assert "-load" in flags  # the VPI shim is always injected
 
 
+def test_vcs_dedup_is_token_level_not_substring(tmp_path, monkeypatch):
+    # An opt that merely *contains* "-top" as a substring must NOT suppress
+    # toplevel elaboration (token-level membership, per review feedback).
+    sim = _make_sim(tmp_path, monkeypatch, "vcs", ["-sverilog", "+define+X_top_Y"])
+    flags = sim._get_extra_compile_flags()
+    assert flags[flags.index("-top") + 1] == "my_dut"
+
+
 def test_unsupported_family_raises(tmp_path, monkeypatch):
     sim = _make_sim(tmp_path, monkeypatch, "icarus", [])
     with pytest.raises(FatalRtlBuddyError, match="cocotb is not supported"):

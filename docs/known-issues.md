@@ -57,6 +57,12 @@ A property file that binds its checker module at compilation-unit scope (`bind d
 
 The fix is to set `frontend: slang` on that verification: yosys-slang reads all files in one `read_slang --top` invocation, so a compilation-unit-scope bind resolves and the asserts elaborate. Inline-assertion suites (`properties: []`, with assertions in the DUT) are not bind-based and are intentionally not guarded. See [Choosing a frontend](concepts/fpv.md#choosing-a-frontend).
 
+## cocotb on VCS skips its VPI-access flags when you already configured any `-debug_access`/`+acc`
+
+cocotb drives the DUT over VPI, so on a `vcs` builder rtl_buddy injects `-debug_access+all` and `+acc+3` (plus `-load <libcocotbvpi_vcs.so>` and `-LDFLAGS -Wl,--no-as-needed`) at elaboration. To avoid fighting a builder that already enables access, the injection is suppressed per token: if **any** configured compile-time opt starts with `-debug_access` (e.g. `-debug_access+all+class`) the `-debug_access+all` is not added, and likewise for any `+acc*` opt.
+
+The footgun: a *narrower* configured flag counts as "covered". If your `builder-opts` set, say, `-debug_access+line` (or `+acc+1`) but not full read/write access, rtl_buddy will **not** add `+all`/`+acc+3`, and cocotb may fail to drive signals it needs to write. Workaround: configure full access yourself (`-debug_access+all` / `+acc+rw`) for cocotb-targeted VCS builders, or drop the narrow flag and let rtl_buddy inject the defaults. `-top` is similarly only injected when the builder hasn't already pinned a top.
+
 ## VCS hierarchical seed file
 
 When using VCS with hierarchical instance seeding (`-xlrm hier_inst_seed`), VCS writes a `HierInstanceSeed.txt` file in the simulation directory after the run. `rtl_buddy` looks for this file to record the seed for reproducibility.
