@@ -51,16 +51,26 @@ def test_emit_xdc_top_has_clock_framing_and_per_crossing_exceptions(
     text = r.text
     assert "create_clock -name clk_a -period 8.0" in text
     assert "set_clock_groups -asynchronous -group {clk_a} -group {clk_b}" in text
-    # max_delay is bounded to the *destination* period, not the launch period
+    # max_delay is bounded to the *destination* period, not the launch period.
+    # The whole-domain source (the bare top) is addressed by its launch clock
+    # (canonical CDC -from, all valid startpoints); the destination is a rooted,
+    # sequential-only instance selector — never the `-hierarchical <inst>/*`
+    # form Vivado binds to nothing, and never the bare `<inst>/*` that drags in
+    # combinational / VCC / clock-buffer cells (18-401/18-402 noise).
     assert (
-        "set_max_delay -datapath_only 10.0 -from [get_cells -hierarchical cdc_ref_top/*]"
-        " -to [get_cells -hierarchical u_flag_sync/*]" in text
+        "set_max_delay -datapath_only 10.0 -from [get_clocks {clk_a}]"
+        " -to [get_cells u_flag_sync/* -filter {IS_SEQUENTIAL}]" in text
     )
     # the clk_b->clk_a ack crossing is bounded to clk_a's 8.0 ns
     assert "set_max_delay -datapath_only 8.0" in text
     # reset synchronizers get their own false_path, not a data exception
-    assert "set_false_path -to [get_cells -hierarchical u_rst_a/*]" in text
-    assert "set_false_path -to [get_cells -hierarchical u_rst_b/*]" in text
+    assert "set_false_path -to [get_cells u_rst_a/* -filter {IS_SEQUENTIAL}]" in text
+    assert "set_false_path -to [get_cells u_rst_b/* -filter {IS_SEQUENTIAL}]" in text
+    # path-exception start/endpoints are sequential-only
+    assert "-from [get_cells u_hs/* -filter {IS_SEQUENTIAL}]" in text
+    # the broken `-hierarchical <inst>/*` selector must never be emitted
+    assert "-hierarchical u_" not in text
+    assert "-hierarchical cdc_ref_top" not in text
 
 
 def test_bus_skew_only_on_multibit_crossings(domain_map, reset_map):
@@ -87,8 +97,12 @@ def test_scoped_omits_top_clock_framing_and_uses_relative_cells(domain_map, rese
     assert k["max_delay"] == 5
     assert k["reset_false_path"] == 2
     assert "SCOPED_TO_REF" in r.text
-    assert "[get_cells u_flag_sync/*]" in r.text  # relative, no -hierarchical
-    assert "-hierarchical" not in r.text
+    # rooted/relative, sequential-only instance selector
+    assert "[get_cells u_flag_sync/* -filter {IS_SEQUENTIAL}]" in r.text
+    # the broken `-hierarchical <inst>/*` form must never appear (scoped uses a
+    # filtered `-hierarchical *` for the whole-domain source, which is valid)
+    assert "-hierarchical u_" not in r.text
+    assert "-hierarchical cdc_ref_top" not in r.text
 
 
 def test_sdc_and_xdc_share_the_cdc_subset(domain_map, reset_map):
@@ -127,6 +141,23 @@ def test_missing_period_is_flagged_not_guessed(reset_map):
 def test_unknown_format_raises():
     with pytest.raises(ValueError, match="unknown constraint format"):
         generate_constraints({"crossings": []}, {}, fmt="qsf")
+
+
+def test_emitted_xdc_round_trips_through_check_xdc_clean(domain_map, reset_map):
+    """The generated XDC, fed back through the audit, is coverage-complete with
+    zero over-waive — i.e. emit and check-xdc agree on the cell-selector syntax.
+
+    This is the guard the binding bug needed: emit and audit must parse the same
+    selector grammar, so a generated file always audits clean.
+    """
+    from rtl_buddy.tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
+
+    report = json.loads((FIX / "cdc_ref_report.json").read_text())
+    emitted = generate_constraints(domain_map, reset_map, fmt="xdc")
+    xc = extract_cdc_constraints(emitted.text)
+    res = audit_xdc(domain_map, report, xc)
+    assert res.blockers == [], [f.message for f in res.blockers]
+    assert res.findings == [], [f.message for f in res.findings]
 
 
 # ---------------------------------------------------------------------------

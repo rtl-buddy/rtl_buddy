@@ -60,14 +60,19 @@ def _tokens(expr: str) -> list[str]:
     """Pull the bare names out of a Tcl target expression.
 
     Handles ``[get_clocks clk_a]``, ``[get_clocks {clk_a clk_b}]``,
+    ``[get_cells u_sync/* -filter {IS_SEQUENTIAL}]``,
     ``[get_cells -hierarchical u_sync/*]``, ``{clk_a}`` and bare ``clk_a``.
-    Flags (``-hierarchical``) and the ``get_*`` head are dropped; a trailing
-    ``/*`` cell wildcard is trimmed to the instance token.
+    Flags (``-hierarchical``) and the ``get_*`` head are dropped; a ``-filter
+    {…}`` expression is dropped whole (its predicate is not a target name); a
+    trailing ``/*`` cell wildcard is trimmed to the instance token.
     """
     if expr is None:
         return []
     s = expr.strip().strip("[]{}").strip()
     s = re.sub(r"^get_(clocks|cells|ports|pins)\b", "", s).strip()
+    # Drop a `-filter {…}` / `-filter expr` clause so its predicate (e.g.
+    # IS_SEQUENTIAL) is not mistaken for a target token.
+    s = re.sub(r"-filter\s+(\{[^}]*\}|\S+)", "", s).strip()
     out = []
     for tok in s.split():
         if tok.startswith("-"):  # a flag like -hierarchical

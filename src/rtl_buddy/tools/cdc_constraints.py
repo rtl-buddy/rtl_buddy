@@ -72,17 +72,25 @@ def _strip_top(path: str) -> str:
     return "/".join(rel)
 
 
-def _cells(path: str, *, scoped: bool) -> str:
-    """A ``get_cells`` selector for an instance path.
+def _cells(path: str) -> str:
+    """A ``get_cells`` selector for the *sequential* cells of an instance path.
 
-    Scoped output addresses cells relative to the IP instance (applied with
-    ``SCOPED_TO_REF`` so every instantiation inherits it); top-level output
-    searches hierarchically from the design root.
+    The selector is the instance path stripped of the leading top — relative to
+    the design root for a flat top-level read, or to the IP reference when the
+    scoped file is applied with ``SCOPED_TO_REF``; the same expression resolves
+    in both. ``-filter {IS_SEQUENTIAL}`` keeps only flops: a path exception's
+    start/endpoints must be sequential, and a bare ``<inst>/*`` would also drag
+    in the instance's combinational cells / ``VCC`` / clock buffers, which
+    Vivado then rejects one-by-one (18-401 invalid endpoint / 18-402 invalid
+    startpoint) — noise that hides real findings.
+
+    Note: an earlier form emitted ``[get_cells -hierarchical <rel>/*]``, but
+    Vivado matches ``-hierarchical`` patterns against leaf cell names, so a
+    pattern containing the ``/`` hierarchy separator binds to **nothing** (Vivado
+    12-180 / 12-4739) — the exception then silently constrains no paths. A plain
+    rooted ``[get_cells <rel>/*]`` resolves correctly.
     """
-    rel = _strip_top(path)
-    if scoped:
-        return f"[get_cells {rel}/*]"
-    return f"[get_cells -hierarchical {rel}/*]"
+    return f"[get_cells {_strip_top(path)}/* -filter {{IS_SEQUENTIAL}}]"
 
 
 def _safe_crossings(domain_map: dict) -> list[dict]:
@@ -187,8 +195,24 @@ def generate_constraints(
                 f"{_strip_top(dst_inst)} omitted (add create_clock to the SDC)"
             )
             continue
-        frm = _cells(src_inst, scoped=scoped)
-        to = _cells(dst_inst, scoped=scoped)
+        src_clk = c.get("src_clock", "")
+        if "." not in src_inst:
+            # The whole source domain — the analyzer reports the bare top when
+            # the source registers sit directly in the top. In a flat top-level
+            # read, address it by its launch clock: the canonical CDC `-from`,
+            # and, unlike `get_cells *`, every member is a valid set_max_delay /
+            # set_bus_skew startpoint (no combinational/VCC startpoint warnings).
+            # A scoped (SCOPED_TO_REF) file can't name the clock — the parent
+            # owns the clock framing — so it falls back to "every cell in the
+            # reference".
+            frm = (
+                f"[get_clocks {{{src_clk}}}]"
+                if (src_clk and not scoped)
+                else "[get_cells -hierarchical * -filter {IS_SEQUENTIAL}]"
+            )
+        else:
+            frm = _cells(src_inst)
+        to = _cells(dst_inst)
         md = f"set_max_delay -datapath_only {period} -from {frm} -to {to}"
         lines.append(md)
         entries.append(
@@ -233,7 +257,7 @@ def generate_constraints(
         if inst_key in seen_reset:
             continue
         seen_reset.add(inst_key)
-        to = _cells(inst_key, scoped=scoped)
+        to = _cells(inst_key)
         fp = f"set_false_path -to {to}"
         lines.append(fp)
         entries.append(

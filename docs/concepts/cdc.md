@@ -82,7 +82,8 @@ Plus, at the top level (omitted with `--scoped`, where clock framing belongs to 
 
 Notes:
 
-- `--format` selects the dialect: **`sdc`** (ASIC / open flow) or **`xdc`** (Vivado, the default). The CDC-relevant subset is identical; only the header and the scoped-cell addressing differ.
+- `--format` selects the dialect: **`sdc`** (ASIC / open flow) or **`xdc`** (Vivado, the default). The CDC-relevant subset is identical; only the header differs.
+- Cell selectors are rooted instance paths (`[get_cells u_sync/*]`, the whole source domain as `[get_cells -hierarchical *]`) that resolve for a flat top-level read and, unchanged, when the `--scoped` file is applied `SCOPED_TO_REF`. `--scoped` only drops the top-level clock framing; it does not change cell addressing.
 - Requires the open `rtl-buddy-cdc` engine (the vendor backend exposes no structured crossing map); naming a `tool: "vivado"` analysis is a config error.
 - Generation is only correct if the analysis classifies the IP's crossings as **safe** — configure the synchronizer recognition (module names + `sync-depth`) first. Machine mode (`--machine`) returns a manifest of every emitted exception and its rationale, plus the recognition verdict.
 - **Requires a recent rtl-buddy-cdc** — the structured maps come from its `--emit-domain-map` / `--emit-reset-domain-map` (newer than plain lint). An analyzer that lacks them produces no map: the command then reports `SKIP` (when the analysis otherwise passed) rather than constraints. If you expected output and got a SKIP, upgrade rtl-buddy-cdc (`uv tool upgrade rtl-buddy-cdc`).
