@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How to collect, merge, and report coverage for Verilator-based builds using rtl_buddy.">
+        <meta name="description" content="Verilator vs Icarus Verilog as rtl_buddy simulation backends — the capability split, when to use each, and the coverage limitation.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/simulators/">
       
       
-        <link rel="prev" href="../expected-failures/">
+        <link rel="prev" href="../tests/">
       
       
-        <link rel="next" href="../plugins/">
+        <link rel="next" href="../regressions/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Coverage - RTL Buddy</title>
+        <title>Simulators (Verilator vs Icarus) - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#coverage" class="md-skip">
+        <a href="#simulators-verilator-vs-icarus" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Coverage
+              Simulators (Verilator vs Icarus)
             
           </span>
         </div>
@@ -446,10 +446,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../simulators/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Simulators (Verilator vs Icarus)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -465,6 +492,92 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a backend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capability-split" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capability split
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-backend-is-selected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the backend is selected
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compile-and-run-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compile and run flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#waveforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Waveforms
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-limitation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage limitation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -530,37 +643,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Coverage
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../coverage/" class="md-nav__link">
         
   
   
@@ -576,159 +662,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#setup" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Setup
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Setup">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#builder-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Builder mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#coverage-config-in-root_configyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage config in root_config.yaml
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#coverview-config-in-root_configyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverview config in root_config.yaml
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#coverage-merge-modes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage merge modes
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#generating-merged-output" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Generating merged output
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Generating merged output">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#lcov-html-report" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        LCOV HTML report
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#coverview-zip" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverview zip
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#directory-level-coverage-summary" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Directory-level coverage summary
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-flag-reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full flag reference
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full schema
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1610,60 +1543,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#setup" class="md-nav__link">
+  <a href="#choosing-a-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Setup
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Setup">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#builder-mode" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Builder mode
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#coverage-config-in-root_configyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage config in root_config.yaml
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#coverview-config-in-root_configyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverview config in root_config.yaml
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#coverage-merge-modes" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverage merge modes
+        Choosing a backend
       
     </span>
   </a>
@@ -1671,49 +1554,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#generating-merged-output" class="md-nav__link">
+  <a href="#capability-split" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Generating merged output
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Generating merged output">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#lcov-html-report" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        LCOV HTML report
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#coverview-zip" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Coverview zip
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#directory-level-coverage-summary" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Directory-level coverage summary
+        Capability split
       
     </span>
   </a>
@@ -1721,10 +1565,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#full-flag-reference" class="md-nav__link">
+  <a href="#how-the-backend-is-selected" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full flag reference
+        How the backend is selected
       
     </span>
   </a>
@@ -1732,10 +1576,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
+  <a href="#compile-and-run-flow" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full schema
+        Compile and run flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#waveforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Waveforms
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-limitation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage limitation
       
     </span>
   </a>
@@ -1762,104 +1628,66 @@
   
 
 
-<h1 id="coverage">Coverage</h1>
-<p><code>rtl_buddy</code> supports coverage collection, merging, and reporting for Verilator-based builds. Coverage workflows use a dedicated builder mode to compile with instrumentation, then optionally merge results across tests and export them as LCOV HTML or Coverview packages.</p>
-<h2 id="setup">Setup</h2>
-<h3 id="builder-mode">Builder mode</h3>
-<p>Coverage instrumentation requires a builder mode that adds coverage flags at compile time. Add a <code>cov</code> mode (or similar name) to your builder entry in <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">cfg-rtl-builder</span><span class="p">:</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">builder-simv</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;obj_dir/simv&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">builder-opts</span><span class="p">:</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">      </span><span class="nt">cov</span><span class="p">:</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">        </span><span class="nt">compile-time</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">&gt;-</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">          </span><span class="no">--binary -sv -o simv</span>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">          </span><span class="no">--coverage</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">        </span><span class="nt">run-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;+verilator+rand+reset+2&quot;</span>
-</code></pre></div>
-<p>Run with the coverage builder mode:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression
-</code></pre></div>
-<h3 id="coverage-config-in-root_configyaml">Coverage config in root_config.yaml</h3>
-<p>The <code>cfg-coverage</code> section tells <code>rtl_buddy</code> how to post-process coverage output for each simulator family:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">cfg-coverage</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">use-lcov</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</code></pre></div>
-<p><code>use-lcov: true</code> enables <code>.info</code> file export and LCOV HTML generation when <code>--coverage-html</code> is used. The <code>name</code> field must match the simulator family name used in <code>cfg-rtl-builder</code>.</p>
-<h3 id="coverview-config-in-root_configyaml">Coverview config in root_config.yaml</h3>
-<p>The optional <code>cfg-coverview</code> section configures Coverview packaging:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">cfg-coverview</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">generate-tables</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;line&quot;</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">config</span><span class="p">:</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">      </span><span class="c1"># inline Coverview JSON configuration values</span>
-</code></pre></div>
-<p>Fields:</p>
-<ul>
-<li><code>name</code>: simulator family name, matching <code>cfg-rtl-builder</code></li>
-<li><code>generate-tables</code>: coverage type to use for Coverview tables (e.g. <code>"line"</code>)</li>
-<li><code>config</code>: inline dict of Coverview JSON configuration values</li>
-</ul>
-<h2 id="coverage-merge-modes">Coverage merge modes</h2>
-<p>Three merge modes are available, selected by a mutually exclusive flag. Only one may be used per run.</p>
+<h1 id="simulators-verilator-vs-icarus">Simulators (Verilator vs Icarus)</h1>
+<p><code>rtl_buddy</code> drives a Verilog/SystemVerilog simulation through a named builder in <code>root_config.yaml</code>'s <code>cfg-rtl-builder</code>. Two open-source backends are supported today: <a href="https://www.veripool.org/verilator/">Verilator</a> (the default) and <a href="https://steveicarus.github.io/iverilog/">Icarus Verilog</a>. They differ in language support, speed, and waveform format, so the right choice depends on the test. This page covers the split and how a builder is selected; the YAML mechanics live in <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a>.</p>
+<h2 id="choosing-a-backend">Choosing a backend</h2>
+<p>Use <strong>Verilator</strong> as the default. It is a cycle-accurate compiled simulator: fast, with broad SystemVerilog-2017 support including SVA <code>assert</code>/<code>cover property</code>, functional coverage hooks, and the line/toggle coverage that feeds <code>rb test --coverage</code>. It is the backend the regression tiers and CI run on.</p>
+<p>Reach for <strong>Icarus</strong> when you want a lightweight, quick-to-install event-driven simulator (<code>brew install icarus-verilog</code> / <code>apt install iverilog</code>) — useful for small smoke tests, portable demos, and environments where building Verilator is inconvenient. Icarus 12 supports SystemVerilog-2012 procedural code well but <strong>does not</strong> support <code>cover property</code> SVA, <code>interface class</code>-based frameworks, or coverage collection through rtl_buddy's pipeline. Designs and testbenches that rely on those constructs must gate them out for Icarus (see <a href="../expected-failures/">Expected failures</a> and the <code>SIM_ICARUS</code> gating pattern in the project template's <code>demo_tiny_alu</code>).</p>
+<h2 id="capability-split">Capability split</h2>
 <table>
 <thead>
 <tr>
-<th>Flag</th>
-<th>Merge method</th>
-<th>Outputs</th>
+<th>Capability</th>
+<th>Verilator</th>
+<th>Icarus 12</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>--coverage-merge</code></td>
-<td>Raw for summary/HTML, info-process for Coverview</td>
-<td>summary, HTML (if <code>--coverage-html</code>), Coverview (if <code>--coverage-coverview</code>)</td>
+<td>SV-2012 procedural code</td>
+<td>Yes</td>
+<td>Yes</td>
 </tr>
 <tr>
-<td><code>--coverage-merge-raw</code></td>
-<td>Raw Verilator merge only</td>
-<td>summary, HTML, Coverview</td>
+<td><code>cover property</code> / concurrent SVA</td>
+<td>Yes</td>
+<td>No</td>
 </tr>
 <tr>
-<td><code>--coverage-merge-info-process</code></td>
-<td>info-process only</td>
-<td>summary, Coverview — HTML not supported</td>
+<td><code>interface class</code> frameworks</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Line/toggle coverage (<code>rb test --coverage</code>)</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>cocotb (Python TB via VPI)</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Default waveform dump</td>
+<td>FST (<code>dump.fst</code>)</td>
+<td>VCD (<code>dump.vcd</code>)</td>
+</tr>
+<tr>
+<td>Simulation model</td>
+<td>Compiled, cycle-based</td>
+<td>Interpreted, event-driven</td>
 </tr>
 </tbody>
 </table>
-<p>If none of these flags is given, no merging is done and coverage is reported per test.</p>
-<h2 id="generating-merged-output">Generating merged output</h2>
-<h3 id="lcov-html-report">LCOV HTML report</h3>
-<p>Requires <code>use-lcov: true</code> in <code>cfg-coverage</code>. Not supported with <code>--coverage-merge-info-process</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression<span class="w"> </span>--coverage-merge<span class="w"> </span>--coverage-html
-</code></pre></div>
-<p>Output is written to <code>coverage_merge.html</code> in the current directory.</p>
-<h3 id="coverview-zip">Coverview zip</h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression<span class="w"> </span>--coverage-merge<span class="w"> </span>--coverage-coverview
-</code></pre></div>
-<p>In regression mode, use <code>--coverage-per-test</code> to package one Coverview dataset per test instead of merging:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression<span class="w"> </span>--coverage-coverview<span class="w"> </span>--coverage-per-test
-</code></pre></div>
-<h2 id="directory-level-coverage-summary">Directory-level coverage summary</h2>
-<p>Add per-directory coverage breakdowns to the summary output using <code>--coverage-dir-summary</code>. Pass repo-relative directory prefixes; the flag may be repeated.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--coverage-merge<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--coverage-dir-summary<span class="w"> </span>src/core<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--coverage-dir-summary<span class="w"> </span>src/mem
-</code></pre></div>
-<p>Or provide prefixes from a file (one per line):</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span>--coverage-merge<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>--coverage-dir-summary-file<span class="w"> </span>coverage_dirs.txt
-</code></pre></div>
-<h2 id="full-flag-reference">Full flag reference</h2>
-<p>See the <a href="../../reference/cli/">CLI reference</a> for the complete flag descriptions on <code>test</code> and <code>regression</code>.</p>
-<h2 id="full-schema">Full schema</h2>
-<p>See <a href="../../reference/yaml/#root_configyaml">YAML Formats: root_config.yaml</a> for <code>cfg-coverage</code> and <code>cfg-coverview</code> schema details.</p>
+<h2 id="how-the-backend-is-selected">How the backend is selected</h2>
+<p>A builder is resolved with this precedence (highest first): the <code>--builder &lt;name&gt;</code> CLI override, a per-test <code>builder:</code>, a suite-wide <code>builder:</code>, then the platform default from <code>cfg-platforms</code>. The chosen builder's <code>simulator-family</code> — explicit in <code>cfg-rtl-builder</code> or inferred from the executable name (<code>iverilog</code>→<code>icarus</code>, <code>verilator</code>→<code>verilator</code>) — is what drives every backend-specific decision: the two-phase <code>iverilog</code>→<code>vvp</code> compile/run flow, assertion flags, and coverage handling. See <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a> for the full YAML.</p>
+<h2 id="compile-and-run-flow">Compile and run flow</h2>
+<p>Verilator compiles the design to a single <code>simv</code> binary (<code>verilator --binary</code>) that rtl_buddy runs directly. Icarus is two-phase: <code>iverilog -o &lt;snapshot&gt;.vvp</code> compiles to a <code>.vvp</code> snapshot, then <code>vvp &lt;snapshot&gt;</code> interprets it. rtl_buddy hides this by writing a small <code>simv</code> shell wrapper that execs <code>vvp</code> on the snapshot, so the runner invokes one executable regardless of backend. For cocotb on Icarus the wrapper additionally loads the cocotb VPI module (<code>vvp -M &lt;cocotb-libs&gt; -m libcocotbvpi_icarus</code>), since Icarus binds VPI at run time rather than at compile.</p>
+<h2 id="waveforms">Waveforms</h2>
+<p>Verilator dumps FST (<code>dump.fst</code>); Icarus dumps plain VCD (<code>dump.vcd</code>). <code>rb wave</code> discovers whichever dump is newest under <code>artefacts/&lt;test&gt;/</code> — so the Icarus VCD opens in Surfer without conversion, as Surfer reads VCD natively. To force an FST instead (for tooling that needs it), set <code>wave-format: fst-postproc</code> on the Icarus builder; rtl_buddy then runs <code>vcd2fst</code> (GTKWave) after the sim, falling back to the VCD if <code>vcd2fst</code> is not installed.</p>
+<h2 id="coverage-limitation">Coverage limitation</h2>
+<p>Coverage collection and reporting key off the <strong>platform-selected</strong> builder, not a per-test/suite <code>builder:</code>. Because only Verilator emits line/toggle coverage today, running an Icarus test for coverage through a Verilator-default platform can mislabel or miss results. Run the suite with <code>--builder</code> (or make the builder the platform default) to keep simulation and coverage on the same backend. See <a href="../../known-issues/#coverage-follows-the-platform-builder-not-a-per-testsuite-builder">Coverage follows the platform builder</a> for the full rationale.</p>
 
 
 
