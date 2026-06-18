@@ -160,6 +160,33 @@ def test_emitted_xdc_round_trips_through_check_xdc_clean(domain_map, reset_map):
     assert res.findings == [], [f.message for f in res.findings]
 
 
+def test_emitted_scoped_xdc_round_trips_clean_coverage(domain_map, reset_map):
+    """Same emit -> check-xdc round-trip for the ``scoped`` path.
+
+    The scoped whole-domain source is a *different* selector
+    (``[get_cells -hierarchical * -filter {IS_SEQUENTIAL}]``) that exercises a
+    separate branch of the audit's ``_tokens`` parser, so it needs its own
+    guard. A scoped IP file omits the top-level clock framing (clocks belong to
+    the instantiating parent), so the audit legitimately reports two
+    ``clock_graph`` warnings — but the *coverage* must still be complete: no
+    ``unconstrained_crossing`` (every crossing's selector parsed and matched)
+    and no ``over_waive``, and no blockers.
+    """
+    from rtl_buddy.tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
+
+    report = json.loads((FIX / "cdc_ref_report.json").read_text())
+    emitted = generate_constraints(domain_map, reset_map, fmt="xdc", scoped=True)
+    xc = extract_cdc_constraints(emitted.text)
+    res = audit_xdc(domain_map, report, xc)
+    assert res.blockers == [], [f.message for f in res.blockers]
+    kinds = {f.kind for f in res.findings}
+    assert "unconstrained_crossing" not in kinds, [f.message for f in res.findings]
+    assert "over_waive" not in kinds, [f.message for f in res.findings]
+    # the only findings are the expected clock_graph warnings (no create_clock
+    # in a scoped IP file)
+    assert kinds <= {"clock_graph"}, [f.message for f in res.findings]
+
+
 # ---------------------------------------------------------------------------
 # RtlBuddyCdc(emit_maps=True) — argv plumbing + map readback
 # ---------------------------------------------------------------------------
