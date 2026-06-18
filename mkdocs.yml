@@ -39,6 +39,7 @@ nav:
       - Execution Context: concepts/execution-context.md
       - Root Config: concepts/root-config.md
       - Tests: concepts/tests.md
+      - Simulators (Verilator vs Icarus): concepts/simulators.md
       - Regressions: concepts/regressions.md
       - Expected Failures (xfail): concepts/expected-failures.md
       - Coverage: concepts/coverage.md

@@ -13,6 +13,7 @@ import json
 import os
 import random
 import re
+import shlex
 import signal
 import logging
 
@@ -150,15 +151,28 @@ class VlogSim:
             Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv.vvp"
         )
 
+    def _icarus_vvp_extra_args(self) -> list:
+        """Extra `vvp` arguments injected ahead of the snapshot in the wrapper.
+
+        Base VlogSim needs none. CocotbSim overrides this to load the cocotb
+        VPI module (`-M <libs> -m libcocotbvpi_icarus`) at run time, since
+        Icarus binds VPI at `vvp` invocation rather than at compile.
+        """
+        return []
+
     def _write_icarus_simv_wrapper(self):
-        """Write a shell wrapper that execs `vvp <snapshot> "$@"`.
+        """Write a shell wrapper that execs `vvp [extra] <snapshot> "$@"`.
 
         Lets the existing execute() path invoke a single executable regardless
-        of backend; Icarus's two-phase compile/run becomes invisible.
+        of backend; Icarus's two-phase compile/run becomes invisible. Any
+        `_icarus_vvp_extra_args()` (e.g. cocotb VPI flags) are placed before
+        the snapshot, where `vvp` requires its `-M`/`-m` options.
         """
         wrapper_path = self._get_simv_path()
         snapshot = self._get_icarus_snapshot_path()
-        Path(wrapper_path).write_text(f'#!/bin/sh\nexec vvp "{snapshot}" "$@"\n')
+        argv = ["exec", "vvp", *self._icarus_vvp_extra_args(), snapshot]
+        cmd = " ".join(shlex.quote(part) for part in argv)
+        Path(wrapper_path).write_text(f'#!/bin/sh\n{cmd} "$@"\n')
         os.chmod(wrapper_path, 0o755)
 
     def _get_artifact_dir(self, run_id=None):

@@ -41,14 +41,15 @@ class CocotbSim(VlogSim):
     cocotb simulation — RTL simulator + Python testbench via VPI.
 
     Extends VlogSim with cocotb VPI compile flags, runtime env vars, and
-    JUnit XML result parsing. Both Verilator and Synopsys VCS are supported;
-    the simulator-specific compile flags are dispatched on the builder's
-    simulator family. The runtime env and result parsing are simulator
-    agnostic.
+    JUnit XML result parsing. Verilator, Synopsys VCS, and Icarus Verilog
+    are supported; the simulator-specific wiring is dispatched on the
+    builder's simulator family. Verilator and VCS link/load the VPI shim at
+    compile time; Icarus loads it at run time via `vvp -M/-m`. The runtime
+    env and result parsing are simulator agnostic.
     """
 
     # Simulator families that cocotb can drive via its VPI shims.
-    _SUPPORTED_FAMILIES = ("verilator", "vcs")
+    _SUPPORTED_FAMILIES = ("verilator", "vcs", "icarus")
 
     def _cocotb_family(self) -> str:
         """Resolve and validate the simulator family for this cocotb run."""
@@ -75,12 +76,25 @@ class CocotbSim(VlogSim):
         if self._cocotb_family() == "verilator":
             # cocotb uses --exe + verilator.cpp, not --binary's built-in main
             return [o for o in opts if o != "--binary"]
-        # VCS produces a `simv` executable either way; keep builder opts intact.
+        # VCS and Icarus produce a `simv` executable either way; keep builder
+        # opts intact.
         return opts
 
+    def _icarus_vvp_extra_args(self) -> list:
+        """Load the cocotb VPI module into `vvp` at run time.
+
+        Mirrors cocotb's own Icarus invocation:
+        `vvp -M $(cocotb-config --lib-dir) -m libcocotbvpi_icarus sim.vvp`.
+        """
+        lib_dir = _cocotb_config("--lib-dir")
+        return ["-M", lib_dir, "-m", "libcocotbvpi_icarus"]
+
     def _get_extra_compile_flags(self) -> list:
-        if self._cocotb_family() == "verilator":
+        family = self._cocotb_family()
+        if family == "verilator":
             flags = self._verilator_compile_flags()
+        elif family == "icarus":
+            flags = self._icarus_compile_flags()
         else:
             flags = self._vcs_compile_flags()
         log_event(
@@ -88,10 +102,17 @@ class CocotbSim(VlogSim):
             logging.DEBUG,
             "cocotb.compile_flags",
             test=self.test_name,
-            simulator=self._cocotb_family(),
+            simulator=family,
             flags=flags,
         )
         return flags
+
+    def _icarus_compile_flags(self) -> list:
+        # iverilog needs no cocotb-specific compile flags: the DUT/TB compile
+        # exactly as for a plain Icarus run, and the VPI module is loaded at
+        # run time by the vvp wrapper (_icarus_vvp_extra_args). Language-level
+        # flags like -g2012 come from the builder's compile-time opts.
+        return []
 
     def _verilator_compile_flags(self) -> list:
         share = _cocotb_config("--share")

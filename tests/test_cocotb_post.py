@@ -321,6 +321,39 @@ def _make_sim(tmp_path, monkeypatch, family, compile_opts):
     )
 
 
+@pytest.fixture()
+def icarus_sim(tmp_path, monkeypatch):
+    """A cocotb CocotbSim on the Icarus builder, with cocotb-config stubbed
+    to a known lib-dir so the VPI-load assertions are deterministic."""
+    monkeypatch.chdir(tmp_path)
+    from rtl_buddy.tools import cocotb_sim as cocotb_sim_module
+
+    def _fake_cocotb_config(*args):
+        if args == ("--lib-dir",):
+            return "/fake/cocotb/libs"
+        return "/fake/cocotb"
+
+    monkeypatch.setattr(cocotb_sim_module, "_cocotb_config", _fake_cocotb_config)
+
+    builder = _DummyBuilderCfg()
+    builder.get_exe = lambda: "iverilog"
+    builder.get_name = lambda: "icarus"
+    builder.get_simulator_family = lambda: "icarus"
+    builder.get_compile_time_opts = lambda _m: ["-g2012"]
+
+    root = _DummyRootCfg()
+    root.get_rtl_builder_cfg = lambda: builder
+    root.resolve_rtl_builder_cfg = lambda _n=None: builder
+
+    return CocotbSim(
+        name="rtl_buddy/cocotb_sim",
+        root_cfg=root,
+        test_cfg=_DummyTestCfg(),
+        rtl_builder_mode="sim",
+        sim_mode={"sim_to_stdout": True},
+    )
+
+
 def test_verilator_compile_flags_and_binary_filter(tmp_path, monkeypatch):
     sim = _make_sim(tmp_path, monkeypatch, "verilator", ["--binary", "-sv"])
     flags = sim._get_extra_compile_flags()
@@ -366,6 +399,35 @@ def test_vcs_dedup_is_token_level_not_substring(tmp_path, monkeypatch):
 
 
 def test_unsupported_family_raises(tmp_path, monkeypatch):
-    sim = _make_sim(tmp_path, monkeypatch, "icarus", [])
+    # questa is not among the families cocotb can drive via a VPI shim here.
+    sim = _make_sim(tmp_path, monkeypatch, "questa", [])
     with pytest.raises(FatalRtlBuddyError, match="cocotb is not supported"):
         sim._get_extra_compile_flags()
+
+
+# ---------------------------------------------------------------------------
+# cocotb on Icarus backend dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_icarus_compile_flags_are_empty(icarus_sim):
+    # iverilog needs no cocotb-specific compile flags; the VPI module is
+    # loaded at run time, not linked at compile time like Verilator.
+    assert icarus_sim._get_extra_compile_flags() == []
+
+
+def test_icarus_vvp_extra_args_load_cocotb_vpi(icarus_sim):
+    args = icarus_sim._icarus_vvp_extra_args()
+    assert args == ["-M", "/fake/cocotb/libs", "-m", "libcocotbvpi_icarus"]
+
+
+def test_icarus_simv_wrapper_embeds_cocotb_vpi_flags(icarus_sim):
+    # The vvp flags must precede the snapshot in the generated wrapper.
+    icarus_sim._ensure_artifact_dir()
+    icarus_sim._write_icarus_simv_wrapper()
+    wrapper_text = Path(icarus_sim._get_simv_path()).read_text()
+    assert "-M /fake/cocotb/libs" in wrapper_text
+    assert "-m libcocotbvpi_icarus" in wrapper_text
+    snapshot = icarus_sim._get_icarus_snapshot_path()
+    # -M/-m appear before the snapshot path (vvp option ordering requirement).
+    assert wrapper_text.index("libcocotbvpi_icarus") < wrapper_text.index(snapshot)

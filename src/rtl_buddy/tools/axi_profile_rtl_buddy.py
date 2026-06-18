@@ -52,6 +52,7 @@ import shutil
 from pathlib import Path
 
 from .vlog_filelist import VlogFilelist
+from .wave_trace import TRACE_CANDIDATES
 from ..config.model import ModelConfig
 from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
@@ -253,8 +254,9 @@ class RtlBuddyAxiProfileRun:
 
     # Trace candidates under artefacts/<test>/ (same dir convention as
     # `rb wave`), in the order they are named in errors. Newest mtime
-    # wins so the profiler follows whichever builder ran last.
-    _TRACE_CANDIDATES = ("dump.fst", "dump.vcd", "vcdplus.vpd")
+    # wins so the profiler follows whichever builder ran last. Shared with
+    # `rb wave` via tools/wave_trace.py so both commands agree on the set.
+    _TRACE_CANDIDATES = TRACE_CANDIDATES
 
     def _trace_dir(self) -> str:
         return os.path.join(self.suite_dir, "artefacts", self.test_name)

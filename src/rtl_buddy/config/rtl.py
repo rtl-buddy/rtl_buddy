@@ -44,6 +44,8 @@ class RtlBuilderConfig:
       sim_rand_seed (int): Random seed for the simulation.
       sim_rand_prefix (str): Simulator-specific prefix for the random seed.
       opts (dict[str, RtlBuilderConfigOpts]): Command-line options for the builder, keyed by mode.
+      wave_format (str | None): Optional post-sim waveform handling for `rb
+        wave`. ``fst-postproc`` converts a VCD dump to FST via ``vcd2fst``.
     """
 
     name: str
@@ -53,6 +55,7 @@ class RtlBuilderConfig:
     sim_rand_prefix: str = field(rename="sim-rand-seed-prefix")
     opts: dict[str, RtlBuilderConfigOpts] = field(rename="builder-opts")
     simulator_family: str | None = field(rename="simulator-family", default=None)
+    wave_format: str | None = field(rename="wave-format", default=None)
 
     def get_name(self) -> str:
         """
@@ -81,6 +84,15 @@ class RtlBuilderConfig:
         if exe_base.startswith("iverilog") or exe_base.startswith("icarus"):
             return "icarus"
         return exe_base
+
+    def get_wave_format(self) -> str | None:
+        """
+        Retrieve the optional post-sim waveform format for `rb wave`.
+
+        Returns:
+          wave_format (str | None): e.g. ``"fst-postproc"``, or None.
+        """
+        return self.wave_format
 
     def get_exe(self) -> str:
         """

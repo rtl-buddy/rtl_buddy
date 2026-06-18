@@ -5543,7 +5543,8 @@ class RtlBuddy:
         """
         open waveform viewer for a test
         """
-        from .tools.wave_launcher import WaveLauncher
+        from .tools.wave_launcher import WaveLauncher, prepare_surfer_trace
+        from .tools.wave_trace import TRACE_CANDIDATES, newest_trace
 
         self.rtl_builder_mode = "debug"
 
@@ -5565,8 +5566,13 @@ class RtlBuddy:
         suite_dir = str(ctx.command_root)
         test_cfg = suite_cfg.get_tests(test_name)[0]
 
-        fst_path = os.path.join(suite_dir, "artefacts", test_name, "dump.fst")
+        trace_dir = os.path.join(suite_dir, "artefacts", test_name)
         surfer_file = os.path.join(suite_dir, f"{test_name}.surfer")
+
+        # Discover the newest existing dump (FST from Verilator, VCD from
+        # Icarus, VPD from VCS) rather than hardcoding dump.fst, so the
+        # default Icarus path opens without conversion (#321).
+        trace_path = newest_trace(trace_dir)
 
         log_event(
             logger,
@@ -5574,12 +5580,16 @@ class RtlBuddy:
             "command.wave",
             command="wave",
             test=test_name,
-            fst=fst_path,
+            trace=trace_path or "",
         )
 
-        if resim or not os.path.isfile(fst_path):
+        if resim or trace_path is None:
             log_event(
-                logger, logging.INFO, "wave.sim_required", test=test_name, fst=fst_path
+                logger,
+                logging.INFO,
+                "wave.sim_required",
+                test=test_name,
+                trace_dir=trace_dir,
             )
             suite_results = self._do_test_suite(
                 suite_cfg, test_name=test_name, run_ids=[None]
@@ -5589,16 +5599,32 @@ class RtlBuddy:
                 raise FatalRtlBuddyError(
                     f'Debug sim for "{test_name}" failed; cannot open waveform.'
                 )
+            trace_path = newest_trace(trace_dir)
+            if trace_path is None:
+                names = " / ".join(TRACE_CANDIDATES)
+                raise FatalRtlBuddyError(
+                    f'Debug sim for "{test_name}" produced no waveform trace '
+                    f"under {trace_dir} (looked for {names})."
+                )
         else:
             log_event(
-                logger, logging.INFO, "wave.fst_found", test=test_name, fst=fst_path
+                logger,
+                logging.INFO,
+                "wave.trace_found",
+                test=test_name,
+                trace=trace_path,
             )
+
+        builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(test_cfg.get_builder_name())
+        trace_path = prepare_surfer_trace(
+            trace_path, builder_cfg.get_wave_format(), test_name
+        )
 
         WaveLauncher(
             test_cfg=test_cfg,
             surfer_cfg=surfer_cfg,
             suite_dir=suite_dir,
-            fst_path=fst_path,
+            fst_path=trace_path,
             surfer_file=surfer_file if os.path.isfile(surfer_file) else None,
             scope_annotation=not focused_signal,
         ).launch()

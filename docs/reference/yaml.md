@@ -42,6 +42,19 @@ cfg-rtl-builder:
       reg:
         compile-time: "--binary -sv -o simv"
         run-time: "+verilator+rand+reset+2"
+  - name: "icarus"
+    builder: "iverilog"           # iverilog + vvp; family inferred as "icarus"
+    builder-simv: "simv"
+    sim-rand-seed: 31310
+    sim-rand-seed-prefix: "+seed="
+    wave-format: "fst-postproc"    # optional: vcd2fst the VCD dump for `rb wave`
+    builder-opts:
+      debug:
+        compile-time: "-g2012 -gsupported-assertions -DDUMP"
+        run-time: ""
+      reg:
+        compile-time: "-g2012 -gsupported-assertions"
+        run-time: ""
 
 cfg-verible:
   - name: "verible-macos"
@@ -162,6 +175,7 @@ cfg-rtl-reg:
 - Platform is selected by matching `uname` output against `cfg-platforms[].unames`.
 - `--builder` overrides the platform-selected builder for the current run.
 - `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
+- `cfg-rtl-builder` defines the named simulator builders. `builder` is the compiler executable (bare name on `PATH` or a path). `simulator-family` is optional and drives backend-specific handling (coverage, assertions, Icarus's two-phase `iverilog`→`vvp` flow); when omitted it is inferred from the executable name (`verilator*`→`verilator`, `iverilog*`/`icarus*`→`icarus`, `vcs*`→`vcs`). `wave-format` is optional and only affects `rb wave`: `fst-postproc` runs `vcd2fst` (GTKWave) on a VCD dump to produce a sibling FST before opening Surfer — useful for Icarus, which dumps VCD; if `vcd2fst` is absent the VCD is opened directly (Surfer reads VCD natively). See [Verilator vs Icarus](../concepts/simulators.md) for the capability split.
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the nvim plugin first with `rb nvim-install`.
@@ -373,7 +387,7 @@ and Icarus do not collect coverage through this path.
 
 ### cocotb testbenches
 
-Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode. Builders whose simulator family is `verilator` or `vcs` are supported (selected via the platform default, a `builder:` field, or `--builder`); any other family raises a fatal error. `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
+Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode. Builders whose simulator family is `verilator`, `icarus`, or `vcs` are supported (selected via the platform default, a `builder:` field, or `--builder`); any other family raises a fatal error. `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
 
 **Prerequisite:** `cocotb` must be installed in the active Python environment (`uv add cocotb` or `pip install cocotb`). The runner invokes `cocotb-config` at compile time; a missing binary surfaces as a `FatalRtlBuddyError` with an actionable message.
 
