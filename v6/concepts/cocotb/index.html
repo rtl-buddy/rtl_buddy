@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#cocotb-testbenches-verilator-vcs-vpi" class="md-skip">
+        <a href="#cocotb-testbenches-verilator-icarus-vcs-via-vpi" class="md-skip">
           Skip to content
         </a>
       
@@ -429,6 +429,34 @@
     
   
     Tests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../simulators/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Simulators (Verilator vs Icarus)
   
 
     
@@ -1578,13 +1606,13 @@
   
 
 
-<h1 id="cocotb-testbenches-verilator-vcs-vpi">cocotb testbenches (Verilator / VCS + VPI)</h1>
+<h1 id="cocotb-testbenches-verilator-icarus-vcs-via-vpi">cocotb testbenches (Verilator / Icarus / VCS via VPI)</h1>
 <p>Explains how <code>rtl_buddy</code> integrates <a href="https://www.cocotb.org">cocotb</a> — a coroutine-based Python verification framework — to drive RTL via VPI, covering YAML configuration, pass/fail detection, and prerequisites.</p>
 <h2 id="supported-simulators">Supported simulators</h2>
-<p>cocotb runs against any builder whose simulator family is <strong><code>verilator</code></strong> or <strong><code>vcs</code></strong> (resolved from the builder's executable name or an explicit <code>simulator-family:</code>; see <code>rtl-buddy docs show reference/yaml</code>). The simulator is chosen the same way as for any other test — the platform default, a suite/per-test <code>builder:</code> field, or <code>--builder</code> on the CLI:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>--builder<span class="w"> </span>vcs<span class="w"> </span><span class="nb">test</span><span class="w"> </span>my_cocotb_test
+<p>cocotb runs against any builder whose simulator family is <strong><code>verilator</code></strong>, <strong><code>icarus</code></strong>, or <strong><code>vcs</code></strong> (resolved from the builder's executable name or an explicit <code>simulator-family:</code>; see <code>rtl-buddy docs show reference/yaml</code>). The simulator is chosen the same way as for any other test — the platform default, a suite/per-test <code>builder:</code> field, or <code>--builder</code> on the CLI:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>--builder<span class="w"> </span>icarus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>my_cocotb_test
 </code></pre></div>
-<p>The two backends differ only in the elaboration flags <code>rtl_buddy</code> injects (Verilator builds a <code>--vpi</code> shared object; VCS loads <code>libcocotbvpi_vcs.so</code> with <code>+acc</code>/<code>-debug_access</code>). Your <code>tests.yaml</code> is identical for both. A builder with any other family (e.g. <code>icarus</code>) raises a <code>FatalRtlBuddyError</code> for cocotb tests.</p>
+<p>The backends differ only in how <code>rtl_buddy</code> wires in the VPI shim, and your <code>tests.yaml</code> is identical for all three: Verilator builds a <code>--vpi</code> shared object, VCS loads <code>libcocotbvpi_vcs.so</code> with <code>+acc</code>/<code>-debug_access</code> at elaboration, and Icarus loads <code>libcocotbvpi_icarus</code> into <code>vvp</code> at run time (<code>vvp -M &lt;cocotb-libs&gt; -m libcocotbvpi_icarus</code>). A builder with any other family raises a <code>FatalRtlBuddyError</code> for cocotb tests.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <p><code>cocotb</code> must be installed in the active Python environment:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>add<span class="w"> </span>cocotb

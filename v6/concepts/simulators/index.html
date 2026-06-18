@@ -6,19 +6,19 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How root_config.yaml configures platform selection, builders, and simulation settings for an RTL project.">
+        <meta name="description" content="Verilator vs Icarus Verilog as rtl_buddy simulation backends — the capability split, when to use each, and the coverage limitation.">
       
       
         <meta name="author" content="RTL Buddy contributors">
       
       
-        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/concepts/root-config/">
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/concepts/simulators/">
       
       
-        <link rel="prev" href="../execution-context/">
+        <link rel="prev" href="../tests/">
       
       
-        <link rel="next" href="../tests/">
+        <link rel="next" href="../regressions/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Root Config - RTL Buddy</title>
+        <title>Simulators (Verilator vs Icarus) - RTL Buddy</title>
       
     
     
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#root-config" class="md-skip">
+        <a href="#simulators-verilator-vs-icarus" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Root Config
+              Simulators (Verilator vs Icarus)
             
           </span>
         </div>
@@ -390,37 +390,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Root Config
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../root-config/" class="md-nav__link">
         
   
   
@@ -436,109 +409,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#location" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Location
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#structure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Structure
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#key-fields" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Key fields
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Key fields">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#signal-value-annotation-with-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Signal value annotation with nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#builder-and-mode-overrides" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Builder and mode overrides
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#project-local-env-defaults-rtl-buddyenv" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Project-local env defaults: .rtl-buddy/.env
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Full schema
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -576,10 +446,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../simulators/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Simulators (Verilator vs Icarus)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -595,6 +492,92 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a backend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capability-split" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capability split
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-the-backend-is-selected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How the backend is selected
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compile-and-run-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compile and run flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#waveforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Waveforms
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-limitation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage limitation
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1560,10 +1543,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#location" class="md-nav__link">
+  <a href="#choosing-a-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Location
+        Choosing a backend
       
     </span>
   </a>
@@ -1571,10 +1554,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#structure" class="md-nav__link">
+  <a href="#capability-split" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Structure
+        Capability split
       
     </span>
   </a>
@@ -1582,38 +1565,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#key-fields" class="md-nav__link">
+  <a href="#how-the-backend-is-selected" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key fields
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Key fields">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#signal-value-annotation-with-nvim" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Signal value annotation with nvim
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#builder-and-mode-overrides" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Builder and mode overrides
+        How the backend is selected
       
     </span>
   </a>
@@ -1621,10 +1576,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#project-local-env-defaults-rtl-buddyenv" class="md-nav__link">
+  <a href="#compile-and-run-flow" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Project-local env defaults: .rtl-buddy/.env
+        Compile and run flow
       
     </span>
   </a>
@@ -1632,10 +1587,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#full-schema" class="md-nav__link">
+  <a href="#waveforms" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Full schema
+        Waveforms
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-limitation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage limitation
       
     </span>
   </a>
@@ -1662,105 +1628,66 @@
   
 
 
-<h1 id="root-config">Root Config</h1>
-<p>The <code>root_config.yaml</code> file sits at the root of your RTL project and tells <code>rtl_buddy</code> how to build and simulate designs on the current platform.</p>
-<h2 id="location">Location</h2>
-<p><code>rtl_buddy</code> discovers <code>root_config.yaml</code> by walking <strong>up</strong> from the command root (the directory containing the command's primary config — see <a href="../execution-context/">Execution Context</a>), not from the directory you ran <code>rb</code> from. Paths declared inside <code>root_config.yaml</code> are resolved relative to the <code>root_config.yaml</code> file itself. (Standalone commands that have no primary config — e.g. <code>rb tool-check</code> — fall back to walking up from the current directory.)</p>
-<h2 id="structure">Structure</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">project_root_config</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">cfg-platforms</span><span class="p">:</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">os</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;osx&quot;</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">unames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;Darwin&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="nt">verible</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-macos&quot;</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>
-<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="nt">cfg-rtl-builder</span><span class="p">:</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">    </span><span class="nt">builder</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verilator&quot;</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">    </span><span class="nt">builder-simv</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;obj_dir/simv&quot;</span>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="nt">sim-rand-seed</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">31310</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="nt">sim-rand-seed-prefix</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;+verilator+seed+&quot;</span>
-<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="nt">builder-opts</span><span class="p">:</span>
-<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">      </span><span class="nt">debug</span><span class="p">:</span>
-<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">        </span><span class="nt">compile-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;--binary</span><span class="nv"> </span><span class="s">-sv</span><span class="nv"> </span><span class="s">-o</span><span class="nv"> </span><span class="s">simv&quot;</span>
-<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">        </span><span class="nt">run-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;+verilator+rand+reset+2&quot;</span>
-<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">      </span><span class="nt">reg</span><span class="p">:</span>
-<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">        </span><span class="nt">compile-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;--binary</span><span class="nv"> </span><span class="s">-sv</span><span class="nv"> </span><span class="s">-o</span><span class="nv"> </span><span class="s">simv&quot;</span>
-<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">        </span><span class="nt">run-time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;+verilator+rand+reset+2&quot;</span>
-<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
-<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="nt">cfg-verible</span><span class="p">:</span>
-<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;verible-macos&quot;</span>
-<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">    </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;/opt/homebrew/bin&quot;</span>
-<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="w">    </span><span class="nt">extra_args</span><span class="p">:</span>
-<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="w">      </span><span class="nt">lint</span><span class="p">:</span>
-<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;--rules=-module-filename&quot;</span>
-<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>
-<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
-<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;regression.yaml&quot;</span>
-</code></pre></div>
-<h2 id="key-fields">Key fields</h2>
-<p><strong><code>cfg-platforms</code></strong></p>
-<p>Maps the current OS (detected via <code>uname</code>) to a builder and Verible config. <code>rtl_buddy</code> picks the first platform entry whose <code>unames</code> list contains the output of <code>uname</code>.</p>
-<p><strong><code>cfg-rtl-builder</code></strong></p>
-<p>Defines simulation tool configurations. Each entry has:</p>
-<ul>
-<li><code>builder</code>: simulator executable name (<code>verilator</code>, <code>vcs</code>, etc.)</li>
-<li><code>builder-simv</code>: path to the compiled simulation binary</li>
-<li><code>sim-rand-seed</code> / <code>sim-rand-seed-prefix</code>: default seed value and the plusarg prefix used to pass it</li>
-<li><code>builder-opts</code>: named compile-time and run-time option sets, selected by builder mode</li>
-</ul>
-<p><strong><code>cfg-verible</code></strong></p>
-<p>Defines Verible tool configurations for lint and syntax checks. <code>path</code> is the directory containing Verible executables — absolute or relative to <code>root_config.yaml</code>.</p>
-<p><strong><code>cfg-surfer</code></strong> <em>(optional)</em></p>
-<p>Configures the Surfer waveform viewer for <code>rb wave</code>. Fields:</p>
-<ul>
-<li><code>path</code>: bare executable name (resolved via PATH, e.g. <code>"surfer"</code>) or a relative/absolute path to the binary</li>
-<li><code>wcp-port</code>: TCP port rtl-buddy listens on; Surfer connects with <code>--wcp-initiate</code> (default: <code>0</code> — OS auto-assigns a free port)</li>
-<li><code>editor-cmd</code>: command template with <code>%f</code> (file path) and <code>%l</code> (line number) placeholders — e.g. <code>"vim +%l %f"</code>, <code>"code --goto %f:%l"</code></li>
-<li><code>editor-terminal</code>: how to open terminal editors — <code>tmux</code> (new tmux window), <code>iterm2</code>, <code>terminal</code> (macOS Terminal.app), or <code>""</code> to run the command directly (for GUI editors)</li>
-<li><code>editor-sock</code>: path to a Unix socket for nvim remote reuse (e.g. <code>"/tmp/nvim-rb.sock"</code>). When set, rtl-buddy launches nvim with <code>--listen &lt;sock&gt;</code> on first use and reuses the already-running instance for subsequent "Go to declaration" and cursor-moved events. Omit this field if you do not use nvim or do not want remote reuse.</li>
-</ul>
-<p><code>rb wave &lt;test&gt;</code> looks for a signal layout file at <code>&lt;test&gt;.surfer</code> in the same directory as <code>tests.yaml</code> (e.g. <code>verif/sandbox/basic.surfer</code>). If found it is passed to Surfer via <code>-c</code>; if not, Surfer opens with no pre-loaded signals. If no FST exists for the test, <code>rb wave</code> runs a debug sim automatically before launching Surfer.</p>
-<h3 id="signal-value-annotation-with-nvim">Signal value annotation with nvim</h3>
-<p>When <code>editor-sock</code> is set and the nvim plugin is installed, <code>rb wave</code> annotates signal values as end-of-line virtual text in nvim:</p>
-<ul>
-<li>Right-click a signal in Surfer and choose "Go to declaration": nvim opens at the signal's declaration and all signals in the same module scope are annotated with their waveform values (<code>▶ value [instance]</code> style, black text on a lemon-chiffon background using the <code>WaveValue</code> highlight group).</li>
-<li>Moving the Surfer time cursor updates all annotations in real time.</li>
-<li>Two signals that share a source line are combined into a single annotation: <code>▶ a=val  b=val [inst]</code>.</li>
-<li>Pass <code>--focused-signal</code> to <code>rb wave</code> to annotate only the signal explicitly selected via "Go to declaration" instead of the full module scope.</li>
-</ul>
-<p><strong>Installing the nvim plugin:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>nvim-install<span class="w">          </span><span class="c1"># install the unified rtl-buddy-nvim plugin (hub + annotation)</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--update<span class="w"> </span><span class="c1"># sync an existing install to the pinned revision</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>rb<span class="w"> </span>nvim-install<span class="w"> </span>--force<span class="w">  </span><span class="c1"># remove and re-install</span>
-</code></pre></div>
-<p>This installs the <a href="https://github.com/rtl-buddy/rtl-buddy-nvim"><code>rtl-buddy-nvim</code></a> plugin — the same plugin that provides the <a href="../hub/">hub</a> connection — which supplies the <code>WaveValue</code> highlight group and the annotation hook. One command wires both the annotation and the hub auto-connect; see <a href="../wave/#nvim-setup">the wave doc</a> for details.</p>
-<p><strong><code>cfg-rtl-reg</code></strong></p>
-<p>Sets the default path to <code>regression.yaml</code> used by <code>rtl-buddy regression</code> when <code>--reg-config</code> is not specified.</p>
-<h2 id="builder-and-mode-overrides">Builder and mode overrides</h2>
-<p>Use command-line flags to override the platform defaults for a run:</p>
-<ul>
-<li><code>--builder b</code>: use a different builder (e.g. <code>--builder vcs</code>)</li>
-<li><code>--builder-mode m</code>: use a different named option set (e.g. <code>--builder-mode reg</code>)</li>
-</ul>
-<p>See the <a href="../../reference/cli/">CLI reference</a> for the full option list.</p>
-<h2 id="project-local-env-defaults-rtl-buddyenv">Project-local env defaults: <code>.rtl-buddy/.env</code></h2>
-<p>Some values are project-scoped but machine-local — they belong with the project, yet committing them would break every other checkout (an absolute <code>RTL_BUDDY_SLANG_PLUGIN</code>, a <code>SYSTEMC_HOME</code>). Put them in <code>.rtl-buddy/.env</code> next to <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># .rtl-buddy/.env — KEY=VALUE per line; # comments; `export ` prefix tolerated</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">RTL_BUDDY_SLANG_PLUGIN</span><span class="o">=</span>/opt/rtl-buddy-tools/yosys-slang/build/slang.so
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nv">SYSTEMC_HOME</span><span class="o">=</span>/opt/homebrew/opt/systemc
-</code></pre></div>
-<p>Every <code>rb</code> command loads the file as soon as the project root is discovered and injects the variables into its environment, so both rtl_buddy itself and every tool subprocess (yosys, sby, verilator, the compiled simv) see them.</p>
-<p>Semantics:</p>
-<ul>
-<li><strong>Fallback only.</strong> A variable already present in the process environment is never overridden — the shell, CI, and sourced toolchain env scripts always win, and explicit YAML config (e.g. <code>plugin-path</code>) beats any environment source.</li>
-<li><strong>Literal values.</strong> No <code>$VAR</code> interpolation, no escapes; surrounding matching quotes are stripped. A line that is not <code>KEY=VALUE</code> fails loud with the file and line number.</li>
-<li><strong>Untracked by design.</strong> Add <code>.rtl-buddy/.env</code> to <code>.gitignore</code> (<code>rtl-buddy skill print-gitignore</code> includes it). A committed env file would inject machine paths — or worse, loader variables — into every clone's runs.</li>
-</ul>
-<p>This completes the lookup chain that <a href="../../reference/yaml/#root_configyaml"><code>plugin-path</code></a> uses: per-project YAML config, then the process environment (set machine-wide by a toolchain env script), then <code>.rtl-buddy/.env</code> for project-scoped machine-local values.</p>
-<h2 id="full-schema">Full schema</h2>
-<p>See <a href="../../reference/yaml/#root_configyaml">YAML Formats: root_config.yaml</a> for the complete field reference.</p>
+<h1 id="simulators-verilator-vs-icarus">Simulators (Verilator vs Icarus)</h1>
+<p><code>rtl_buddy</code> drives a Verilog/SystemVerilog simulation through a named builder in <code>root_config.yaml</code>'s <code>cfg-rtl-builder</code>. Two open-source backends are supported today: <a href="https://www.veripool.org/verilator/">Verilator</a> (the default) and <a href="https://steveicarus.github.io/iverilog/">Icarus Verilog</a>. They differ in language support, speed, and waveform format, so the right choice depends on the test. This page covers the split and how a builder is selected; the YAML mechanics live in <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a>.</p>
+<h2 id="choosing-a-backend">Choosing a backend</h2>
+<p>Use <strong>Verilator</strong> as the default. It is a cycle-accurate compiled simulator: fast, with broad SystemVerilog-2017 support including SVA <code>assert</code>/<code>cover property</code>, functional coverage hooks, and the line/toggle coverage that feeds <code>rb test --coverage</code>. It is the backend the regression tiers and CI run on.</p>
+<p>Reach for <strong>Icarus</strong> when you want a lightweight, quick-to-install event-driven simulator (<code>brew install icarus-verilog</code> / <code>apt install iverilog</code>) — useful for small smoke tests, portable demos, and environments where building Verilator is inconvenient. Icarus 12 supports SystemVerilog-2012 procedural code well but <strong>does not</strong> support <code>cover property</code> SVA, <code>interface class</code>-based frameworks, or coverage collection through rtl_buddy's pipeline. Designs and testbenches that rely on those constructs must gate them out for Icarus (see <a href="../expected-failures/">Expected failures</a> and the <code>SIM_ICARUS</code> gating pattern in the project template's <code>demo_tiny_alu</code>).</p>
+<h2 id="capability-split">Capability split</h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>Verilator</th>
+<th>Icarus 12</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SV-2012 procedural code</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><code>cover property</code> / concurrent SVA</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>interface class</code> frameworks</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Line/toggle coverage (<code>rb test --coverage</code>)</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>cocotb (Python TB via VPI)</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Default waveform dump</td>
+<td>FST (<code>dump.fst</code>)</td>
+<td>VCD (<code>dump.vcd</code>)</td>
+</tr>
+<tr>
+<td>Simulation model</td>
+<td>Compiled, cycle-based</td>
+<td>Interpreted, event-driven</td>
+</tr>
+</tbody>
+</table>
+<h2 id="how-the-backend-is-selected">How the backend is selected</h2>
+<p>A builder is resolved with this precedence (highest first): the <code>--builder &lt;name&gt;</code> CLI override, a per-test <code>builder:</code>, a suite-wide <code>builder:</code>, then the platform default from <code>cfg-platforms</code>. The chosen builder's <code>simulator-family</code> — explicit in <code>cfg-rtl-builder</code> or inferred from the executable name (<code>iverilog</code>→<code>icarus</code>, <code>verilator</code>→<code>verilator</code>) — is what drives every backend-specific decision: the two-phase <code>iverilog</code>→<code>vvp</code> compile/run flow, assertion flags, and coverage handling. See <a href="../../reference/yaml/#selecting-the-simulator-builder">Selecting the simulator builder</a> for the full YAML.</p>
+<h2 id="compile-and-run-flow">Compile and run flow</h2>
+<p>Verilator compiles the design to a single <code>simv</code> binary (<code>verilator --binary</code>) that rtl_buddy runs directly. Icarus is two-phase: <code>iverilog -o &lt;snapshot&gt;.vvp</code> compiles to a <code>.vvp</code> snapshot, then <code>vvp &lt;snapshot&gt;</code> interprets it. rtl_buddy hides this by writing a small <code>simv</code> shell wrapper that execs <code>vvp</code> on the snapshot, so the runner invokes one executable regardless of backend. For cocotb on Icarus the wrapper additionally loads the cocotb VPI module (<code>vvp -M &lt;cocotb-libs&gt; -m libcocotbvpi_icarus</code>), since Icarus binds VPI at run time rather than at compile.</p>
+<h2 id="waveforms">Waveforms</h2>
+<p>Verilator dumps FST (<code>dump.fst</code>); Icarus dumps plain VCD (<code>dump.vcd</code>). <code>rb wave</code> discovers whichever dump is newest under <code>artefacts/&lt;test&gt;/</code> — so the Icarus VCD opens in Surfer without conversion, as Surfer reads VCD natively. To force an FST instead (for tooling that needs it), set <code>wave-format: fst-postproc</code> on the Icarus builder; rtl_buddy then runs <code>vcd2fst</code> (GTKWave) after the sim, falling back to the VCD if <code>vcd2fst</code> is not installed.</p>
+<h2 id="coverage-limitation">Coverage limitation</h2>
+<p>Coverage collection and reporting key off the <strong>platform-selected</strong> builder, not a per-test/suite <code>builder:</code>. Because only Verilator emits line/toggle coverage today, running an Icarus test for coverage through a Verilator-default platform can mislabel or miss results. Run the suite with <code>--builder</code> (or make the builder the platform default) to keep simulation and coverage on the same backend. See <a href="../../known-issues/#coverage-follows-the-platform-builder-not-a-per-testsuite-builder">Coverage follows the platform builder</a> for the full rationale.</p>
 
 
 
