@@ -1578,6 +1578,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#get_cells-selectors-in-emitted-cdc-exceptions-must-be-rooted-and-sequential-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_cells selectors in emitted CDC exceptions must be rooted and sequential-only
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1804,6 +1815,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#get_cells-selectors-in-emitted-cdc-exceptions-must-be-rooted-and-sequential-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_cells selectors in emitted CDC exceptions must be rooted and sequential-only
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1981,6 +2003,13 @@ construction, and cross-process races are excluded by the
 <h2 id="rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met"><code>rb fpga</code> PASSes a routed run that misses timing (unless <code>require-timing-met</code>)</h2>
 <p>By default a routed run with negative slack (<code>timing_met: false</code>, negative <code>wns_ns</code>) still reports <strong>PASS</strong>. This is intentional and mirrors <code>rb pnr</code>: the metrics carry the truth so an agent can run a timing-closure loop — read <code>timing_met</code> / <code>wns_ns</code> / <code>failing_paths</code> from the machine JSON, edit the XDC or RTL, and rerun — instead of the run simply failing with no actionable detail. Pass/fail keys off the flow completing (synth → route → reports), not off meeting timing.</p>
 <p>To make timing a hard gate (e.g. for a regression suite that must not regress closure), set <code>require-timing-met: true</code> on the run in <code>fpga.yaml</code>. An unmet-timing run then becomes a <strong>FAIL</strong>, but the routed metrics still ride along on the failing result so the closure loop keeps its inputs. The gate only fires when the backend actually reports timing — a backend that cannot measure it (<code>timing_met: null</code>) is never gated, since a miss cannot be proven.</p>
+<h2 id="get_cells-selectors-in-emitted-cdc-exceptions-must-be-rooted-and-sequential-only"><code>get_cells</code> selectors in emitted CDC exceptions must be rooted and sequential-only</h2>
+<p>Vivado's <code>get_cells</code> has two traps that make a syntactically valid CDC timing exception (<code>set_max_delay -datapath_only</code> / <code>set_bus_skew</code> / <code>set_false_path</code>) constrain the wrong set — or nothing — without an error:</p>
+<ul>
+<li><strong><code>-hierarchical</code> matches leaf names, not paths.</strong> <code>[get_cells -hierarchical u_sync/*]</code> binds to <strong>nothing</strong>: with <code>-hierarchical</code>, Vivado matches the pattern against each cell's leaf name, and a leaf name never contains the <code>/</code> separator. The exception is accepted but constrains zero paths (<code>WARNING [Vivado 12-180] No cells matched</code>, then <code>CRITICAL WARNING [Vivado 12-4739] No valid object(s) found</code>). A design can then appear to meet timing purely on a residual <code>set_clock_groups -asynchronous</code>, with every per-crossing exception silently inert. The top <em>module</em> name is likewise not an instance in a flat netlist, so <code>[get_cells &lt;top&gt;/*]</code> is empty too.</li>
+<li><strong>A bare <code>&lt;inst&gt;/*</code> includes non-sequential cells.</strong> <code>[get_cells u_sync/*]</code> returns the instance's combinational cells, <code>VCC</code>/<code>GND</code>, and clock buffers alongside its flops; <code>set_max_delay</code>/<code>set_bus_skew</code> then reject each non-flop one at a time (<code>WARNING [Constraints 18-401] … not a valid endpoint</code> / <code>[18-402] … not a valid startpoint</code>) — tens of warnings that bury real findings.</li>
+</ul>
+<p><code>rb cdc --emit-constraints</code> therefore emits <strong>rooted, sequential-only</strong> selectors: <code>[get_cells &lt;rel&gt;/* -filter {IS_SEQUENTIAL}]</code> (the instance path stripped of the leading top, resolving for a flat read or under <code>SCOPED_TO_REF</code>), and the whole source domain as <code>[get_clocks &lt;src_clock&gt;]</code> rather than a cell wildcard. The companion <code>--check-xdc</code> parser strips a <code>-filter {…}</code> clause so the predicate is not read as a target name. When hand-writing or reviewing an XDC, prefer the same forms; <code>-hierarchical &lt;inst&gt;/*</code> is the form to never use.</p>
 
 
 
