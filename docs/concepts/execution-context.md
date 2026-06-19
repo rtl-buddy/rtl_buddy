@@ -4,7 +4,7 @@ description: Where rtl_buddy puts artifacts and logs, and how relative paths are
 
 # Execution Context
 
-`rtl_buddy` commands always anchor their work on the **primary config file** (`tests.yaml`, `synth.yaml`, `cdc.yaml`, …), not on the directory you happened to run `rb` from. This means the same command produces the same artifact layout regardless of where you invoked it.
+`rtl_buddy` commands always anchor their work on the **primary config file** (`tests.yaml`, `synth.yaml`, `fpv.yaml`, …), not on the directory you happened to run `rb` from. This means the same command produces the same artifact layout regardless of where you invoked it.
 
 If you've ever run `rb` from a design directory and ended up with a stray `verif/artefacts/` or `rtl_buddy.log` next to your RTL sources, this page explains why that no longer happens.
 
@@ -66,7 +66,6 @@ The filelist lands at `repo/design/<block>/out.f` (your shell's cwd) because `ou
 | `regression` | `dirname(regression.yaml)` | each suite's own `artefacts/` | per-suite, same as `test` |
 | `wave`, `wave --resim` | `dirname(tests.yaml)` | `<command_root>/artefacts` | `<artifact>/<test>` |
 | `synth` | `dirname(synth.yaml)` | `<command_root>/artefacts` | `<artifact>/<synth>` |
-| `cdc` | `dirname(cdc.yaml)` | `<command_root>/artefacts` | `<artifact>/<cdc>` |
 | `fpv` | `dirname(fpv.yaml)` | `<command_root>/artefacts` | `<artifact>/<fpv>` |
 | `pnr` | `dirname(pnr.yaml)` | `<command_root>/artefacts` | `<artifact>/<pnr>` |
 | `power` | `dirname(power.yaml)` | `<command_root>/artefacts` | `<artifact>/<power>` |
@@ -103,7 +102,7 @@ out = os.path.join(os.getcwd(), "gen.sv")    # wrong — invocation cwd
 - `regression.yaml` resolves listed suite configs relative to itself.
 - `tests.yaml` resolves testbench filelists, hook script paths, and suite-local assets relative to the suite directory.
 - `models.yaml` resolves model filelist entries relative to the `models.yaml` file that declared them.
-- `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml` resolve their own fields relative to their config directory.
+- `synth.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml` resolve their own fields relative to their config directory.
 
 A relative path inside a YAML file never depends on where you ran `rb`. Absolute paths pass through unchanged.
 
@@ -118,7 +117,7 @@ Two `rb` processes writing into the same `artefacts/` tree would interleave comp
 
 The lock is released by the kernel when the holding process exits — normal completion, crash, or `kill` alike — so there are no stale locks to clean up; the `.rtl-buddy.lock` file itself is just holder metadata and is harmless to leave behind. `rb regression` locks each suite it enters for the lifetime of the run. Metadata-only invocations (`--list`) never take the lock, so listing tests while a run is in flight always works. Suites with *different* artefact trees never contend — run as many in parallel as you like.
 
-The lock covers the **whole artefact tree**, not just the subtree a command writes: when `tests.yaml`, `cdc.yaml`, `synth.yaml`, etc. share a suite directory, any two artifact-writing commands contend — `rb hier` during a long `rb test` in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the `--list` paths and commands anchored elsewhere (another suite, `rb docs`, `rb hub`) remain available.
+The lock covers the **whole artefact tree**, not just the subtree a command writes: when `tests.yaml`, `synth.yaml`, `fpv.yaml`, etc. share a suite directory, any two artifact-writing commands contend — `rb hier` during a long `rb test` in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the `--list` paths and commands anchored elsewhere (another suite, `rb docs`, `rb hub`) remain available.
 
 **The protection is per host.** The guarantee relies on local `flock(2)` semantics and ends at the machine boundary. On a workspace shared over NFS, two runs on **different hosts** may both acquire "the" lock — whether `flock` propagates across NFS depends on the protocol version, mount options, and server lock-daemon configuration, and rtl_buddy does not rely on it. Concurrent runs against the same suite from two machines are not protected; coordinate those yourself.
 

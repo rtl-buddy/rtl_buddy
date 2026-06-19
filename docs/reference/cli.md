@@ -1,5 +1,5 @@
 ---
-description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+description: Auto-generated CLI reference for documented rtl-buddy commands and their options.
 ---
 
 # CLI Reference
@@ -63,8 +63,6 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ fpga               run FPGA implementation (synth + place + route)                   │
 │ fpga-regression    run FPGA implementation regression                                │
 │ saif               convert FST/VCD trace to SAIF v2.0                                │
-│ cdc                run CDC lint                                                      │
-│ cdc-regression     run CDC lint regression                                           │
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
 │ tool-check         check installed tool dependencies and subcommand readiness        │
@@ -229,9 +227,7 @@ Usage: rtl-buddy hier [OPTIONS] NAME
 │                                  [default: tree]                                     │
 │ --output           -o      TEXT  write renderer output to file instead of stdout     │
 │ --frontend                 TEXT  parser frontend (verible|slang)                     │
-│ --cdc-annotations          TEXT  clock-domain map JSON from `rtl-buddy-cdc           │
-│                                  --emit-domain-map`                                  │
-│ --rdc-annotations          TEXT  reset-domain map JSON from `rtl-buddy-cdc           │
+│ --rdc-annotations          TEXT  reset-domain map JSON from `analysis-tool           │
 │                                  --emit-reset-domain-map`                            │
 │ --clock-legend                   dot format only: emit a side legend of clock colors │
 │ --tool                     TEXT  path to the rtl-buddy-view binary                   │
@@ -439,54 +435,6 @@ Usage: rtl-buddy saif [OPTIONS] TRACE OUTPUT
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
-╰──────────────────────────────────────────────────────────────────────────────────────╯
-```
-
-## cdc
-
-```text
-Usage: rtl-buddy cdc [OPTIONS] [CDC_NAME]                                              
-                                                                                        
- run CDC lint                                                                           
-                                                                                        
-╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│   cdc_name      [CDC_NAME]  name of CDC analysis to run                              │
-│                             [default: (run all analyses)]                            │
-╰──────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --cdc-config        -c      TEXT       cdc.yaml to use [default: cdc.yaml]           │
-│ --list                                 list analyses in the selected config and exit │
-│ --emit-constraints                     generate scoped CDC timing exceptions from    │
-│                                        the verified crossing set instead of linting  │
-│ --format                    [sdc|xdc]  constraint dialect for --emit-constraints     │
-│                                        [default: xdc]                                │
-│ --scoped                               --emit-constraints: emit IP-relative          │
-│                                        (SCOPED_TO_REF) constraints, omitting         │
-│                                        top-level clock defs/groups                   │
-│ --output            -o      TEXT       --emit-constraints: write to this file        │
-│                                        (default: stdout)                             │
-│ --check-xdc                 FILE       audit a Vivado XDC's CDC exceptions against   │
-│                                        the verified crossing set instead of linting  │
-│ --recognize-sync            REGEX      --check-xdc: instance-path regex for a        │
-│                                        synchronizer the analyzer did not recognize   │
-│                                        (e.g. a blackboxed xpm_cdc_*); repeatable.    │
-│                                        Adds to cdc.yaml's recognized-syncs           │
-│ --help                                 Show this message and exit.                   │
-╰──────────────────────────────────────────────────────────────────────────────────────╯
-```
-
-## cdc-regression
-
-```text
-Usage: rtl-buddy cdc-regression [OPTIONS]                                              
-                                                                                        
- run CDC lint regression                                                                
-                                                                                        
-╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --reg-config  -c      TEXT     path to cdc_regression.yaml                           │
-│                                [default: (Use ./cdc_regression.yaml if present)]     │
-│ --reg-level   -l      INTEGER  CDC regression level to stop at [default: 0]          │
-│ --help                         Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1209,7 +1157,7 @@ Usage: rtl-buddy hub send diagnose [OPTIONS] SOURCE [ITEMS]...
  instead of the file+line resolver.                                                     
                                                                                         
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-│ *    source      TEXT        producer key (e.g. 'rtl-buddy-cdc', 'claude-analysis'); │
+│ *    source      TEXT        producer key (e.g. 'analysis-tool', 'claude-analysis'); │
 │                              latest-writer-wins per source on the hub's cache        │
 │                              [required]                                              │
 │      items       [ITEMS]...  <file>:<line>:<sev>:<code>:<msg> ...                    │

@@ -82,28 +82,6 @@ Resolution rules:
 
 The view.json regenerates on every `rb hub start --model` invocation. Cache invalidation isn't modelled yet — restart the hub to pick up source-tree changes.
 
-### Clock-domain overlay (`cdc:` back-pointer)
-
-When the chosen model's `models.yaml` entry has a `cdc:` field, the hub also generates a clock-domain map and feeds it to the view-builder as `--cdc-annotations`:
-
-```yaml
-# models.yaml
-rtl-buddy-filetype: model_config
-models:
-  - name: ip_demo_tiny_npu
-    filelist: [...]
-    cdc: cdc.yaml          # or cdc.yaml#analysis_name to pin one analysis
-```
-
-The hub:
-
-1. Resolves the `cdc:` back-pointer to a `cdc.yaml` file.
-2. Picks the analysis — either the one named by the optional `#fragment`, or the one whose `model:` field matches the model name. Ambiguity is a hard error (the message tells you to add a `#fragment`).
-3. Invokes `rtl-buddy-cdc lint --emit-domain-map .rtl-buddy/cache/domain-<model>.json ...` with the analysis's SDC + waivers.
-4. Passes the resulting domain map to `rtl-buddy-view --cdc-annotations`. The clock overlay toggle in the SPA then has data to render.
-
-Models without a `cdc:` field skip this step entirely — view.json is generated without overlays and the toggle stays dark. `rtl-buddy-cdc` must be on `PATH` when the `cdc:` field is present; absence is a hub-start error (no silent dark toggle).
-
 ### Switching models at runtime
 
 Once the hub is up, the SPA can change models without restarting:
@@ -112,13 +90,13 @@ Once the hub is up, the SPA can change models without restarting:
   ```json
   {
     "models": [
-      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml", "has_cdc": true},
-      {"name": "ip_dtnpu_dma",     "models_file": "/abs/path/to/models.yaml", "has_cdc": true}
+      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml"},
+      {"name": "ip_dtnpu_dma",     "models_file": "/abs/path/to/models.yaml"}
     ],
     "active": "ip_demo_tiny_npu"
   }
   ```
-  `has_cdc` is end-to-end: `true` only when the model has a `cdc:` field AND the referenced cdc.yaml exists AND at least one analysis resolves cleanly for the model. The endpoint walks for `models.yaml` per request, so newly-edited files appear without a restart. When `--models-file PATH` was passed at start time, only that file is enumerated.
+  The endpoint walks for `models.yaml` per request, so newly-edited files appear without a restart. When `--models-file PATH` was passed at start time, only that file is enumerated.
 - `GET /view.json?model=NAME` — build (or reuse) the per-model view.json at `.rtl-buddy/cache/view-<NAME>.json`, serve it, and promote `NAME` to the active model. `--models-file` constraints apply: `?model=` only honours entries in the pinned file. Per-model `asyncio.Lock` serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.
 - `GET /tests` — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as `/models`; entries carry the resolved `(model, tb)` pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
   ```json
@@ -206,7 +184,7 @@ Lifecycle events (`hello` / `welcome` / `peer_joined` / `bye`) keep each peer's 
 
 The hub also **augments `source_focused`**: when a `src` peer (e.g. nvim's `:RtlBuddyShow`) broadcasts `{file, line, col}`, the resolver looks up the instance(s) whose `source` range in `view.json` contains the point and the hub emits a derived `selection_changed { instance_path: [...] }` with `origin: "cli"`. The schematic SPA already handles `selection_changed` — pan/highlight the matching instance — so this bridge makes editor cursor movement light up the schematic without a SPA-side protocol change. Multiple matches (nested instances) come back smallest-range first; consumers picking element `[0]` get the most-specific instance. Line-only matching is used for multi-line ranges (cursor at column 1 still finds an instantiation whose keyword sits further right); single-line ranges still use columns so two instantiations on the same line resolve distinctly.
 
-The hub also relays a **`diagnostics_set`** event for CDC / RDC / lint findings to the SPA's on-canvas badge layer. Each `diagnostics_set` carries a producer `source` key (latest-writer-wins per source, so re-publishing replaces that source's set), a list of `{file, line, severity, code, message}` items, and an optional `instance_path` per item (a fast path for the SPA badge layer that skips the file+line resolver). `rb cdc` publishes its violations this way, and `rb hub send diagnose SOURCE ITEM…` (with `--clear` / `--instance`) lets any tool push diagnostics. A **`wave_values_changed`** event is emitted on `cursor_moved` so the SPA can show signal values at the cursor.
+The hub also relays a **`diagnostics_set`** event for lint and analysis findings to the SPA's on-canvas badge layer. Each `diagnostics_set` carries a producer `source` key (latest-writer-wins per source, so re-publishing replaces that source's set), a list of `{file, line, severity, code, message}` items, and an optional `instance_path` per item (a fast path for the SPA badge layer that skips the file+line resolver). `rb hub send diagnose SOURCE ITEM…` (with `--clear` / `--instance`) lets any tool push diagnostics. A **`wave_values_changed`** event is emitted on `cursor_moved` so the SPA can show signal values at the cursor.
 
 `GET /healthz` returns `ok` for liveness probes.
 

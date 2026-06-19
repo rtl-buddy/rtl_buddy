@@ -16,11 +16,11 @@ The flow is intentionally compact and config-driven — per-run knobs (mode, dep
 
 ## Supported backend
 
-Today only `sby` is wired up. The `tool:` field in `fpv.yaml` selects it; the runner raises a clear error if no matching `cfg-fpv-tools` entry exists. Adding a second backend (e.g. a commercial formal tool) parallels how [`rb cdc` is structured](https://github.com/rtl-buddy/rtl_buddy/issues/85) — implement a sibling driver under `src/rtl_buddy/tools/`, then dispatch from `FpvRunner`.
+Today only `sby` is wired up. The `tool:` field in `fpv.yaml` selects it; the runner raises a clear error if no matching `cfg-fpv-tools` entry exists. Adding a second backend (e.g. a commercial formal tool) means implementing a sibling driver under `src/rtl_buddy/tools/`, then dispatching from `FpvRunner`.
 
 ## Installing SymbiYosys
 
-`sby` must be on `PATH`, or its absolute path must be configured via a `cfg-fpv-tools` entry in `root_config.yaml` (see [yaml.md](../reference/yaml.md#root_configyaml)). The standalone install is small and runs on top of the Yosys you already have for `rb synth` / `rb cdc`:
+`sby` must be on `PATH`, or its absolute path must be configured via a `cfg-fpv-tools` entry in `root_config.yaml` (see [yaml.md](../reference/yaml.md#root_configyaml)). The standalone install is small and runs on top of the Yosys you already have for `rb synth`:
 
 ```bash
 git clone https://github.com/YosysHQ/sby.git
@@ -83,7 +83,7 @@ verifications:
 | `mode` | One of `bmc` (bounded), `prove` (k-induction), `cover`, `live` |
 | `depth` | Cycle depth passed to sby; defaults to 20 |
 | `engines` | List of sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |
-| `reglvl` | Regression level for filtering (same semantics as `rb synth` / `rb cdc`) |
+| `reglvl` | Regression level for filtering (same semantics as `rb synth`) |
 | `tool_overrides` | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
 | `vacuity` | Optional bool. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived cover properties for every `a \|-> b` antecedent in the property set — flags vacuous proofs. Defaults to false for `cover` / `live` modes. See [Vacuity covers](#vacuity-covers). |
 | `coi` | Optional bool. When true (default), run a yosys cone-of-influence pass and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](#cone-of-influence-coverage). |
@@ -93,7 +93,7 @@ verifications:
 
 The `xfail` / `xfail_strict` markers are a cross-cutting feature shared
 with every other verdict-carrying command (`tests.yaml`, `synth.yaml`,
-`cdc.yaml`, `pnr.yaml`, `power.yaml`). See
+`pnr.yaml`, `power.yaml`). See
 [Expected failures (xfail)](expected-failures.md) for the full
 re-interpretation semantics, strict-vs-non-strict guidance, and the
 caveat about infrastructure errors. FPV's most common use is a teaching
@@ -101,7 +101,7 @@ property that is true but not inductive under `mode: prove`.
 
 ### Where inputs come from
 
-The runner reads the model's filelist via `VlogFilelist` (the same helper `rb synth` and `rb cdc` use), extracts source files and `+incdir+` entries, and emits them under the sby config's `[files]` and `[script]` sections respectively. The script reads, in order: design sources → `constraints:` (if set) → `properties:`. Putting constraints before properties ensures their `assume property` statements are in scope when the assertions are elaborated. Property files can be in-RTL with `` `ifdef FORMAL `` guards or standalone bound checker modules.
+The runner reads the model's filelist via `VlogFilelist` (the same helper `rb synth` uses), extracts source files and `+incdir+` entries, and emits them under the sby config's `[files]` and `[script]` sections respectively. The script reads, in order: design sources → `constraints:` (if set) → `properties:`. Putting constraints before properties ensures their `assume property` statements are in scope when the assertions are elaborated. Property files can be in-RTL with `` `ifdef FORMAL `` guards or standalone bound checker modules.
 
 Both frontends define `FORMAL` (and not `SYNTHESIS`) when reading sources, so `` `ifdef FORMAL `` guards behave the same either way: the verilog path uses `read -sv -formal` (which swaps yosys's implicit `SYNTHESIS=1` define for `FORMAL=1`), and the slang path passes `--no-synthesis-define -DFORMAL=1` to `read_slang` for the same effect — in the main proof script, the COI script, and the vacuity pass.
 
@@ -148,7 +148,7 @@ error: encountered unsupported SVA feature
 
 Until #317 merges upstream, build from the **[rtl-buddy/yosys-slang `rtl-buddy` branch](https://github.com/rtl-buddy/yosys-slang/tree/rtl-buddy)** — three commits ahead of povik master (the SVA-rebase work + a stale-test count fix + a `disable iff` regression fix; ctest 46/46). The rtl-buddy fork tracks [rtl-buddy/yosys-slang#1](https://github.com/rtl-buddy/yosys-slang/issues/1) as its vendoring status; this doc switches back to recommending upstream once the fork's `master` fast-forwards to a povik release that includes the SVA work.
 
-povik upstream master is still fine for `rb synth` and `rb cdc` with `frontend: slang` — those paths don't need the SVA implication lowering. The [rtl-buddy-project-template SETUP_OSX.md](https://github.com/rtl-buddy/rtl-buddy-project-template/blob/main/tools/yosys-slang/SETUP_OSX.md) has the per-use-case build matrix.
+povik upstream master is still fine for `rb synth` with `frontend: slang` — that path doesn't need the SVA implication lowering. The [rtl-buddy-project-template SETUP_OSX.md](https://github.com/rtl-buddy/rtl-buddy-project-template/blob/main/tools/yosys-slang/SETUP_OSX.md) has the per-use-case build matrix.
 
 ### Solver version pinning
 
@@ -451,7 +451,7 @@ rb wave-fpv demo_fpv_counter_safety
 
 ## Out of scope (today)
 
-- **SymbiYosys-only.** Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up — adding them parallels the pattern documented for [SpyGlass in `rb cdc`](https://github.com/rtl-buddy/rtl_buddy/issues/85).
+- **SymbiYosys-only.** Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up.
 - **Per-property granularity.** The summary table reports the overall sby verdict, not per-assertion pass/fail. Sby's own `status.json` per task is preserved under `sby_workdir/` for users who need that detail.
 - **Wide SVA coverage.** Yosys's native frontend supports a limited subset of SystemVerilog Assertions. Broader SVA coverage will land alongside the [slang frontend](https://github.com/rtl-buddy/rtl_buddy/issues/88).
 

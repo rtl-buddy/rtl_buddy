@@ -85,16 +85,16 @@ A single `specs.yaml` can contain multiple blocks — useful when a directory ho
 
 ```yaml
 blocks:
-  - name: "ip_cdc_sync"
-    desc: "Multi-flop level synchronizer"
+  - name: "ip_fifo"
+    desc: "Small synchronous FIFO"
     coverage-items:
-      - id: "CDCSYNC-COV-01"
+      - id: "FIFO-COV-01"
         desc: "..."
 
-  - name: "ip_cdc_handshake"
-    desc: "Four-phase request/acknowledge CDC primitive"
+  - name: "ip_arbiter"
+    desc: "Round-robin arbiter"
     coverage-items:
-      - id: "CDCHS-COV-01"
+      - id: "ARB-COV-01"
         desc: "..."
 ```
 

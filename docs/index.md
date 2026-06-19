@@ -16,7 +16,6 @@ It wraps simulation, synthesis, and project scripts to provide a structured, con
 - Filelist generation from `models.yaml`
 - Yosys synthesis (`rb synth`) with optional Liberty mapping, a yosys-slang frontend, and an OpenROAD backend
 - OpenROAD place-and-route (`rb pnr`) and gate-level power analysis (`rb power`, with `rb saif` activity capture)
-- CDC lint (`rb cdc`) via [rtl-buddy-cdc](https://github.com/rtl-buddy/rtl-buddy-cdc)
 - Formal property verification (`rb fpv`) with SymbiYosys, solver pinning, and `rb wave-fpv` counterexample viewing
 - Mutation testing (`rb mut`) that scores a verification suite by mutating a design and checking whether an FPV or simulation/assertion oracle kills each mutant
 - Waveform viewing (`rb wave`) in [Surfer](https://surfer-project.org/) with live editor annotation, and module hierarchy rendering (`rb hier`)

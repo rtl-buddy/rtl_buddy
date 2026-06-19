@@ -335,7 +335,7 @@ Treat the absolute numbers with the report's own caveats: a post-route vector-le
 
 ## Methodology warnings
 
-`report_methodology` runs alongside the other post-route reports and its findings surface as `methodology_warnings` — a list of `{id, severity, description}` entries with Vivado's rule ids (`TIMING-18`, `SYNTH-*`, ...) and severities kept verbatim. The same framing as the [CDC second-opinion backend](cdc.md#vivado-backend-second-opinion-not-authority) applies: these are vendor findings rtl_buddy surfaces, not a ruleset it adopts as canonical — they are **informational and never flip pass/fail**. The human summary shows the count (the `Meth` column); machine mode carries the full list; the raw report stays in `methodology.rpt` for digging.
+`report_methodology` runs alongside the other post-route reports and its findings surface as `methodology_warnings` — a list of `{id, severity, description}` entries with Vivado's rule ids (`TIMING-18`, `SYNTH-*`, ...) and severities kept verbatim. These are vendor findings rtl_buddy surfaces, not a ruleset it adopts as canonical — they are **informational and never flip pass/fail**. The human summary shows the count (the `Meth` column); machine mode carries the full list; the raw report stays in `methodology.rpt` for digging.
 
 ## Pass/fail detection
 
@@ -351,4 +351,3 @@ Otherwise FAIL is returned with the cause (on `openxc7`, naming the failed stage
 ## Out of scope (today)
 
 - Include-directory (`+incdir+`) propagation into `synth_design` / `synth_xilinx`.
-- Vivado's `report_cdc` is integrated as a second-opinion backend of [`rb cdc`](cdc.md#vivado-backend-second-opinion-not-authority), not of `rb fpga`.

@@ -66,7 +66,7 @@ rb hier demo_top --tool /opt/rtl-buddy-view/bin/rtl-buddy-view
 rb hier basic_traffic --view tb
 ```
 
-The model argument matches the `name:` of an entry in `models.yaml`. The runner uses that entry's filelist verbatim — same source of truth that `rb test`, `rb synth`, and `rb cdc` consume. In `--view tb` mode the positional argument is a test name from `tests.yaml` instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from `--tb-top`.
+The model argument matches the `name:` of an entry in `models.yaml`. The runner uses that entry's filelist verbatim — same source of truth that `rb test` and `rb synth` consume. In `--view tb` mode the positional argument is a test name from `tests.yaml` instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from `--tb-top`.
 
 ## Querying with `rb hier-query`
 
@@ -97,20 +97,15 @@ Exit codes follow the query semantics: `0` for an answer (an empty `instances-of
 
 `--frontend` is forwarded as-is to `rtl-buddy-view`. The default frontend ships with the renderer; `--frontend slang` uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.
 
-## CDC and RDC annotations
+## Domain annotations
 
-`rb hier` can overlay clock-domain and reset-domain information when the corresponding analyzer pass has emitted a JSON map:
+`rb hier` can overlay domain information when a compatible analyzer pass has emitted a JSON map:
 
 ```bash
-# Clock-domain overlay — colors each module by its primary clock
-rtl-buddy-cdc --emit-domain-map -o clocks.json ...
-rb hier demo_top --format dot --cdc-annotations clocks.json | dot -Tsvg -o hier.svg
-
 # With a side legend mapping color → clock name (dot format only)
-rb hier demo_top --format dot --cdc-annotations clocks.json --clock-legend | dot -Tsvg -o hier.svg
+rb hier demo_top --format dot --clock-legend | dot -Tsvg -o hier.svg
 
 # Reset-domain overlay — colors each module by its primary reset
-rtl-buddy-cdc --emit-reset-domain-map -o resets.json ...
 rb hier demo_top --format dot --rdc-annotations resets.json | dot -Tsvg -o hier.svg
 ```
 
@@ -137,7 +132,7 @@ The `Failed to locate rtl-buddy-view` error before the renderer runs is the most
 
 ## Hub integration
 
-The [coordination hub](hub.md) consumes `rb hier`'s JSON output (`--format json`) to drive the rtl-buddy-view SPA's interactive hierarchy view. The `rb hier` clock/reset overlays (`--cdc-annotations`, `--rdc-annotations`) are real CLI flags and are surfaced as overlays in the SPA. The AXI-perf overlay is **not** a `rb hier` flag — it is baked into the SPA view only via `rb hub start --axi-perf-from <axi-perf.json>` (see [Hub](hub.md#axi-perf-overlay-and-notebook-spawning)), which invokes the renderer with `--overlay axi-perf=<path>` internally.
+The [coordination hub](hub.md) consumes `rb hier`'s JSON output (`--format json`) to drive the rtl-buddy-view SPA's interactive hierarchy view. The reset overlay (`--rdc-annotations`) is a real CLI flag and is surfaced in the SPA. The AXI-perf overlay is **not** a `rb hier` flag — it is baked into the SPA view only via `rb hub start --axi-perf-from <axi-perf.json>` (see [Hub](hub.md#axi-perf-overlay-and-notebook-spawning)), which invokes the renderer with `--overlay axi-perf=<path>` internally.
 
 `rb hub start --model <name>` discovers the model's `models.yaml`, invokes `rb hier` under the hood, and serves the result alongside live diagnostics and AXI-perf overlays — `rb hier` is the underlying renderer for both the static CLI use case and the live SPA flow.
 
