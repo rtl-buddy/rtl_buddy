@@ -273,6 +273,30 @@ def audit_xdc(
         c for c in domain_map.get("crossings", []) if c.get("async_per_sdc", True)
     ]
 
+    # A flattening frontend (Yosys `flatten`) collapses every crossing's capture
+    # instance to the design top, so cell-scoped exceptions in the XDC cannot be
+    # matched to a specific crossing. Clock-level coverage (groups / clock-pair
+    # false_path) is still audited correctly; warn only when the XDC actually
+    # relies on cell scoping, so the user knows that half is not being verified.
+    map_flattened = bool(crossings) and all(
+        "." not in c.get("dst_source_instance_path", "") for c in crossings
+    )
+    xdc_has_cell_scope = any(e.from_cells or e.to_cells for e in xc.path_exceptions)
+    if map_flattened and xdc_has_cell_scope:
+        res.findings.append(
+            Finding(
+                severity="warning",
+                kind="frontend_flattened",
+                message=(
+                    "the domain map flattened all crossings to the design top, so "
+                    "cell-scoped XDC exceptions cannot be matched to a crossing — "
+                    "only clock-level coverage was audited. Re-run the analysis with "
+                    "a hierarchy-preserving frontend (frontend: slang) to audit "
+                    "scoped constraints."
+                ),
+            )
+        )
+
     # --- completeness + bus-skew on the SAFE crossing set ---
     for c in crossings:
         src, dst = c.get("src_clock"), c.get("dst_clock")

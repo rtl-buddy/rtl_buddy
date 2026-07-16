@@ -84,6 +84,7 @@ Notes:
 
 - `--format` selects the dialect: **`sdc`** (ASIC / open flow) or **`xdc`** (Vivado, the default). The CDC-relevant subset is identical; only the header differs.
 - Cell selectors are rooted instance paths (`[get_cells u_sync/*]`, the whole source domain as `[get_cells -hierarchical *]`) that resolve for a flat top-level read and, unchanged, when the `--scoped` file is applied `SCOPED_TO_REF`. `--scoped` only drops the top-level clock framing; it does not change cell addressing.
+- **`--scoped` needs a hierarchy-preserving frontend.** IP-relative cells (`SCOPED_TO_REF`) are addressed by the crossing's capture-instance path, which only survives elaboration under the **slang** frontend. The default **yosys** frontend runs `flatten`, collapsing every crossing to the design top — there is no IP-relative cell left to scope to. `--emit-constraints --scoped` on a flattened map is a hard error (it will not silently emit `<top>/*` wildcards that over-constrain the whole IP); set `frontend: slang` on the analysis (install `rtl-buddy-cdc[slang]`), or drop `--scoped` for top-level output. Non-scoped emit is clock-framed and hierarchy-searched, so it works under either frontend.
 - Requires the open `rtl-buddy-cdc` engine (the vendor backend exposes no structured crossing map); naming a `tool: "vivado"` analysis is a config error.
 - Generation is only correct if the analysis classifies the IP's crossings as **safe** — configure the synchronizer recognition (module names + `sync-depth`) first. Machine mode (`--machine`) returns a manifest of every emitted exception and its rationale, plus the recognition verdict.
 - **Requires a recent rtl-buddy-cdc** — the structured maps come from its `--emit-domain-map` / `--emit-reset-domain-map` (newer than plain lint). An analyzer that lacks them produces no map: the command then reports `SKIP` (when the analysis otherwise passed) rather than constraints. If you expected output and got a SKIP, upgrade rtl-buddy-cdc (`uv tool upgrade rtl-buddy-cdc`).
@@ -106,8 +107,9 @@ The audit is a diff between the XDC's exceptions and the open engine's truth, tr
 | `over_waive` | **blocker** | the XDC `set_false_path` / `set_clock_groups -asynchronous` a path rtl-buddy-cdc reports as **not** safely synchronized — the constraint **masks a real metastability bug**. (A `set_max_delay` still *times* the path, so it is not an over-waive.) |
 | `missing_bus_skew` | warning | a multi-bit crossing waived with a bare false-path / clock-group and no `set_bus_skew` — bit-to-bit skew incoherency is unbounded. |
 | `clock_graph` | warning / info | XDC `create_clock` set disagrees with the RTL clocking (extra clock, missing clock, or period mismatch) — can silently change the derived domain set. |
+| `frontend_flattened` | warning | the XDC carries cell-scoped exceptions but the analysis map flattened every crossing to the top (yosys frontend), so those cells can't be matched to a crossing — only clock-level coverage was audited. Re-run with `frontend: slang` to audit scoped constraints. |
 
-A blocker finding exits non-zero. Pair it with `--emit-constraints`: a generated XDC, fed back through `--check-xdc`, audits clean (full coverage, zero over-waive).
+A blocker finding exits non-zero. Pair it with `--emit-constraints`: a generated XDC, fed back through `--check-xdc`, audits clean (full coverage, zero over-waive). Clock-level coverage (groups / clock-pair false-paths) is audited under either frontend; **cell-scoped** exceptions need the `slang` frontend to verify (see the `--scoped` note above).
 
 ### Recognized synchronizers (`recognized-syncs` / `--recognize-sync`)
 

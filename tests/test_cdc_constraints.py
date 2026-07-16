@@ -187,6 +187,50 @@ def test_emitted_scoped_xdc_round_trips_clean_coverage(domain_map, reset_map):
     assert kinds <= {"clock_graph"}, [f.message for f in res.findings]
 
 
+# A map from a flattening frontend (Yosys `flatten`): every crossing's capture
+# instance collapses to the design top, so no IP-relative cell can be formed.
+_FLATTENED_MAP = {
+    "design": {"top": "ip_top"},
+    "clocks": [
+        {"name": "clk_a", "period": 8.0, "ports": ["clk_a"]},
+        {"name": "clk_b", "period": 10.0, "ports": ["clk_b"]},
+    ],
+    "clock_groups": [{"kind": "asynchronous", "members": [["clk_a"], ["clk_b"]]}],
+    "crossings": [
+        {
+            "src_clock": "clk_a",
+            "dst_clock": "clk_b",
+            # source_instance_path flattened to the top; the real endpoint only
+            # survives in *_flop (with a frontend-synthetic name).
+            "src_source_instance_path": "ip_top",
+            "dst_source_instance_path": "ip_top",
+            "src_flop": "ip_top.$driver$flag_q",
+            "dst_flop": "ip_top.$driver$u_sync.sync_chain[0]",
+            "width": 1,
+            "async_per_sdc": True,
+        }
+    ],
+}
+
+
+def test_scoped_flattened_map_is_marked_unscoped_not_wildcarded():
+    # Scoped emit must NOT silently produce `[get_cells ip_top/*]` wildcards.
+    r = generate_constraints(_FLATTENED_MAP, {}, fmt="xdc", scoped=True)
+    assert r.unscoped, "flattened crossing should be reported as unscoped"
+    # no over-broad exception emitted for it
+    assert not any(e["kind"] == "max_delay" for e in r.manifest)
+    assert "[get_cells ip_top/*]" not in r.text
+    assert "UNSCOPED" in r.text and "frontend: slang" in r.text
+
+
+def test_top_level_emit_tolerates_flattened_map():
+    # Non-scoped (top-level) output is hierarchy-searched and clock-framed, so a
+    # flattened map is fine there — no unscoped report, exceptions still emit.
+    r = generate_constraints(_FLATTENED_MAP, {}, fmt="xdc", scoped=False)
+    assert not r.unscoped
+    assert any(e["kind"] == "max_delay" for e in r.manifest)
+
+
 # ---------------------------------------------------------------------------
 # RtlBuddyCdc(emit_maps=True) — argv plumbing + map readback
 # ---------------------------------------------------------------------------
