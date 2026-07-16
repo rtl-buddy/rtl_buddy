@@ -3981,6 +3981,21 @@ class RtlBuddy:
 
         emit = generate_constraints(domain_map, reset_map, fmt=fmt, scoped=scoped)
 
+        if scoped and emit.unscoped:
+            # A flattening frontend collapsed every capture instance to the
+            # design top, so there is no IP-relative cell to scope to. Refuse
+            # rather than emit `<top>/*` wildcards that over-constrain the IP
+            # (and that --check-xdc would then rubber-stamp).
+            raise FatalRtlBuddyError(
+                f"--emit-constraints --scoped for {analysis.get_name()}: "
+                f"{len(emit.unscoped)} crossing(s) flattened to the design top "
+                "(e.g. "
+                + ", ".join(emit.unscoped[:3])
+                + ") — a hierarchy-preserving frontend is required to scope IP "
+                "constraints. Set `frontend: slang` on the CDC analysis (install "
+                "rtl-buddy-cdc[slang]), or drop --scoped for top-level output."
+            )
+
         out_path = None
         if output:
             out_path = (

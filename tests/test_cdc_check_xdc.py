@@ -266,3 +266,41 @@ def test_machine_payload_shape():
         {"severity", "kind", "message", "src_clock", "dst_clock", "target"} <= r.keys()
         for r in rows
     )
+
+
+# A flattening frontend collapses every crossing's capture instance to the top,
+# so cell-scoped exceptions cannot be matched to a crossing.
+_FLATTENED_MAP = {
+    "design": {"top": "ip_top"},
+    "clocks": [{"name": "clk_a", "period": 8.0}, {"name": "clk_b", "period": 10.0}],
+    "crossings": [
+        {
+            "src_clock": "clk_a",
+            "dst_clock": "clk_b",
+            "dst_source_instance_path": "ip_top",  # collapsed: no sub-instance
+            "width": 1,
+            "async_per_sdc": True,
+        }
+    ],
+}
+
+
+def test_flattened_map_warns_when_xdc_uses_cell_scope():
+    # Cell-scoped exceptions can't be verified against a flattened map — warn.
+    xc = extract_cdc_constraints(
+        "set_max_delay -datapath_only 10.0 -from [get_cells u_x/*] "
+        "-to [get_cells u_sync/*]\n"
+    )
+    res = audit_xdc(_FLATTENED_MAP, {"violations": []}, xc)
+    assert _kinds(res)["frontend_flattened"] == 1
+    f = next(f for f in res.findings if f.kind == "frontend_flattened")
+    assert f.severity == "warning" and "frontend: slang" in f.message
+
+
+def test_flattened_map_no_warning_for_clock_only_xdc():
+    # A clock-group waiver audits fine regardless of frontend — no warning.
+    xc = extract_cdc_constraints(
+        "set_clock_groups -asynchronous -group {clk_a} -group {clk_b}\n"
+    )
+    res = audit_xdc(_FLATTENED_MAP, {"violations": []}, xc)
+    assert _kinds(res)["frontend_flattened"] == 0
