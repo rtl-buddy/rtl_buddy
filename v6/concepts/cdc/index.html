@@ -1937,6 +1937,7 @@
 <ul>
 <li><code>--format</code> selects the dialect: <strong><code>sdc</code></strong> (ASIC / open flow) or <strong><code>xdc</code></strong> (Vivado, the default). The CDC-relevant subset is identical; only the header differs.</li>
 <li>Cell selectors are rooted instance paths (<code>[get_cells u_sync/*]</code>, the whole source domain as <code>[get_cells -hierarchical *]</code>) that resolve for a flat top-level read and, unchanged, when the <code>--scoped</code> file is applied <code>SCOPED_TO_REF</code>. <code>--scoped</code> only drops the top-level clock framing; it does not change cell addressing.</li>
+<li><strong><code>--scoped</code> needs a hierarchy-preserving frontend.</strong> IP-relative cells (<code>SCOPED_TO_REF</code>) are addressed by the crossing's capture-instance path, which only survives elaboration under the <strong>slang</strong> frontend. The default <strong>yosys</strong> frontend runs <code>flatten</code>, collapsing every crossing to the design top — there is no IP-relative cell left to scope to. <code>--emit-constraints --scoped</code> on a flattened map is a hard error (it will not silently emit <code>&lt;top&gt;/*</code> wildcards that over-constrain the whole IP); set <code>frontend: slang</code> on the analysis (install <code>rtl-buddy-cdc[slang]</code>), or drop <code>--scoped</code> for top-level output. Non-scoped emit is clock-framed and hierarchy-searched, so it works under either frontend.</li>
 <li>Requires the open <code>rtl-buddy-cdc</code> engine (the vendor backend exposes no structured crossing map); naming a <code>tool: "vivado"</code> analysis is a config error.</li>
 <li>Generation is only correct if the analysis classifies the IP's crossings as <strong>safe</strong> — configure the synchronizer recognition (module names + <code>sync-depth</code>) first. Machine mode (<code>--machine</code>) returns a manifest of every emitted exception and its rationale, plus the recognition verdict.</li>
 <li><strong>Requires a recent rtl-buddy-cdc</strong> — the structured maps come from its <code>--emit-domain-map</code> / <code>--emit-reset-domain-map</code> (newer than plain lint). An analyzer that lacks them produces no map: the command then reports <code>SKIP</code> (when the analysis otherwise passed) rather than constraints. If you expected output and got a SKIP, upgrade rtl-buddy-cdc (<code>uv tool upgrade rtl-buddy-cdc</code>).</li>
@@ -1977,9 +1978,14 @@
 <td>warning / info</td>
 <td>XDC <code>create_clock</code> set disagrees with the RTL clocking (extra clock, missing clock, or period mismatch) — can silently change the derived domain set.</td>
 </tr>
+<tr>
+<td><code>frontend_flattened</code></td>
+<td>warning</td>
+<td>the XDC carries cell-scoped exceptions but the analysis map flattened every crossing to the top (yosys frontend), so those cells can't be matched to a crossing — only clock-level coverage was audited. Re-run with <code>frontend: slang</code> to audit scoped constraints.</td>
+</tr>
 </tbody>
 </table>
-<p>A blocker finding exits non-zero. Pair it with <code>--emit-constraints</code>: a generated XDC, fed back through <code>--check-xdc</code>, audits clean (full coverage, zero over-waive).</p>
+<p>A blocker finding exits non-zero. Pair it with <code>--emit-constraints</code>: a generated XDC, fed back through <code>--check-xdc</code>, audits clean (full coverage, zero over-waive). Clock-level coverage (groups / clock-pair false-paths) is audited under either frontend; <strong>cell-scoped</strong> exceptions need the <code>slang</code> frontend to verify (see the <code>--scoped</code> note above).</p>
 <h3 id="recognized-synchronizers-recognized-syncs-recognize-sync">Recognized synchronizers (<code>recognized-syncs</code> / <code>--recognize-sync</code>)</h3>
 <p>The audit treats anything the analyzer flags as <strong>not</strong> safely synchronized as eligible for an over-waive. When a crossing actually goes through a synchronizer the analyzer can't see structurally — most often a <strong>vendor macro</strong> like <code>xpm_cdc_single</code> whose internals you blackboxed (or that elaborated as a 1-flop stub) — declare it so the audit doesn't raise a false over-waive:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># cdc.yaml</span>
