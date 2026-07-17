@@ -754,9 +754,11 @@ class VlogSim:
                     test=self.test_name,
                     run_id=run_id,
                 ),
+                # WARNING (not INFO) so the pause/resume pair is visible at
+                # default console verbosity.
                 on_exit_queue=lambda queued_sec: log_event(
                     logger,
-                    logging.INFO,
+                    logging.WARNING,
                     "sim.license_granted",
                     test=self.test_name,
                     run_id=run_id,
