@@ -63,6 +63,10 @@ cocotb drives the DUT over VPI, so on a `vcs` builder rtl_buddy injects `-debug_
 
 The footgun: a *narrower* configured flag counts as "covered". If your `builder-opts` set, say, `-debug_access+line` (or `+acc+1`) but not full read/write access, rtl_buddy will **not** add `+all`/`+acc+3`, and cocotb may fail to drive signals it needs to write. Workaround: configure full access yourself (`-debug_access+all` / `+acc+rw`) for cocotb-targeted VCS builders, or drop the narrow flag and let rtl_buddy inject the defaults. `-top` is similarly only injected when the builder hasn't already pinned a top.
 
+## VCS license-queue waits pause `sim_timeout`, so a sim can visibly outlive it
+
+On a `vcs` builder, when `simv` prints the `-licqueue` banner (`Queuing for License` or `Licensed number of users already reached`), rtl_buddy pauses the per-sim `sim_timeout` clock until real simulator output resumes — a sim stuck behind a busy license server can therefore run far longer than its configured timeout without failing. The pause is announced with a `sim.license_queue` warning and the resume with `sim.license_granted` (both include the queued seconds in the log). Total queued time is capped at 1 hour; past the cap the normal timeout resumes counting and the eventual `sim.timeout` error reports the queue wait. Applies only to the `vcs` simulator family. See [Tests](concepts/tests.md#vcs-license-queue-waits-and-sim_timeout).
+
 ## VCS hierarchical seed file
 
 When using VCS with hierarchical instance seeding (`-xlrm hier_inst_seed`), VCS writes a `HierInstanceSeed.txt` file in the simulation directory after the run. `rtl_buddy` looks for this file to record the seed for reproducibility.
