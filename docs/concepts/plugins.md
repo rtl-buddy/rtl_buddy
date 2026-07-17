@@ -101,6 +101,8 @@ See the template repo for a working example.
 
 `sweep` and `preproc` hooks execute via `exec()` inside the `rb` process and share its working directory, which stays at `invocation_cwd` — the directory you ran `rb` from. It is **not** the suite directory. Always build paths from the injected `suite_dir` and `artifact_dir` variables; never call `os.getcwd()` to locate the suite.
 
+Because hooks run via `exec()` rather than `import`, `__name__` is set to the sentinel `"__rtl_buddy_hook__"` — never `"__main__"`. Put hook logic at module top level. If you also want the script runnable standalone (e.g. for local testing outside `rb`), keep only the standalone entry point under `if __name__ == "__main__":` and put the `rb`-invoked logic at module level or in the accompanying `else:` branch; the `__main__` branch is always skipped when `rb` runs the hook.
+
 ```python
 import os
 out = os.path.join(artifact_dir, "gen.sv")   # correct

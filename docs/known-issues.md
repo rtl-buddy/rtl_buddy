@@ -47,6 +47,10 @@ finally:
 
 See [Migrations: v4 to v5](migrations.md#v4-to-v5) for the full behavior change.
 
+## Hook scripts see `__name__ == "__rtl_buddy_hook__"`, never `"__main__"`
+
+`sweep` and `preproc` hooks are `exec()`'d into a hand-built namespace rather than imported, so `__name__` is set explicitly to the sentinel `"__rtl_buddy_hook__"`. If your hook wraps its logic in `if __name__ == "__main__":` (a common habit for scripts meant to also run standalone), that block is **always skipped** under `rb` — the hook silently no-ops. Put hook logic at module top level; reserve the `__main__` branch for a standalone entry point only. See [Plugins](concepts/plugins.md#hook-working-directory).
+
 ## Compilation-unit `bind` under `frontend: verilog` elaborates zero formal cells
 
 A property file that binds its checker module at compilation-unit scope (`bind dut dut_props u_props (...);` at the top level of the file, outside any module) does **not** error under the default `frontend: verilog` — but yosys's native verilog frontend never resolves the bind. The checker is stored as `$abstract` and removed as unused before any assertion cell is generated, so the proof runs against **zero** formal cells. With no guard, sby would prove nothing and report a silent **PASS** — a false pass indistinguishable from a real one.
