@@ -1,5 +1,6 @@
 import signal
 import subprocess
+import time
 
 import pytest
 
@@ -164,3 +165,70 @@ def test_run_managed_process_works_from_worker_thread(monkeypatch):
     t.join(timeout=5.0)
     assert "error" not in result, result.get("error")
     assert result["value"].returncode == 0
+
+
+def test_timeout_pauser_true_lets_process_finish(tmp_path):
+    out_path = tmp_path / "out.log"
+    with open(out_path, "w") as out_fp:
+        start = time.perf_counter()
+        result = process_utils.run_managed_process(
+            ["sleep", "2"],
+            stdout=out_fp,
+            stderr=out_fp,
+            timeout=0.5,
+            timeout_pauser=lambda: True,
+        )
+        elapsed = time.perf_counter() - start
+
+    assert result.timed_out is False
+    assert result.returncode == 0
+    assert elapsed >= 1.5  # the sim ran to completion, not cut short at 0.5s
+
+
+def test_timeout_pauser_false_times_out_quickly(tmp_path):
+    out_path = tmp_path / "out.log"
+    with open(out_path, "w") as out_fp:
+        start = time.perf_counter()
+        result = process_utils.run_managed_process(
+            ["sleep", "2"],
+            stdout=out_fp,
+            stderr=out_fp,
+            timeout=0.5,
+            timeout_returncode=4444,
+            timeout_pauser=lambda: False,
+        )
+        elapsed = time.perf_counter() - start
+
+    assert result.timed_out is True
+    assert result.returncode == 4444
+    assert elapsed < 1.9  # well under the 2s sleep duration
+
+
+def test_timeout_pauser_rejects_capture_output(monkeypatch):
+    def _fail_popen(*args, **kwargs):
+        raise AssertionError("Popen should not be called before validation")
+
+    monkeypatch.setattr(process_utils.subprocess, "Popen", _fail_popen)
+
+    with pytest.raises(ValueError):
+        process_utils.run_managed_process(
+            ["true"],
+            capture_output=True,
+            timeout=1,
+            timeout_pauser=lambda: True,
+        )
+
+
+def test_timeout_pauser_rejects_pipe_stdout(monkeypatch):
+    def _fail_popen(*args, **kwargs):
+        raise AssertionError("Popen should not be called before validation")
+
+    monkeypatch.setattr(process_utils.subprocess, "Popen", _fail_popen)
+
+    with pytest.raises(ValueError):
+        process_utils.run_managed_process(
+            ["true"],
+            stdout=subprocess.PIPE,
+            timeout=1,
+            timeout_pauser=lambda: True,
+        )

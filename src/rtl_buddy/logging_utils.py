@@ -369,7 +369,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "sim.timeout":
             artifacts = _format_artifacts(fields)
             suffix = f"; artifacts: {artifacts}" if artifacts else ""
+            license_queue_sec = fields.get("license_queue_sec")
+            if license_queue_sec is not None:
+                suffix = (
+                    f"; license queue wait {license_queue_sec}s exceeded cap{suffix}"
+                )
             return f"{target or 'sim'}: simulation timed out after {fields.get('timeout_sec')}s{suffix}"
+        case "sim.license_queue":
+            return f"{target or 'sim'}: queuing for a VCS license; sim timeout paused"
+        case "sim.license_granted":
+            return f"{target or 'sim'}: VCS license granted after {fields.get('queued_sec')}s in queue; sim timeout resumed"
         case "sim.replay_seed_missing":
             return f"{fields.get('test')}: replay seed missing at {fields.get('seed_path')}"
         case "sim.hier_seed_missing":
