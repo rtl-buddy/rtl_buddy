@@ -18,7 +18,7 @@ import signal
 import logging
 
 logger = logging.getLogger(__name__)
-from ..hooks import build_hook_namespace
+from ..hooks import exec_hook_script
 from ..seed_mode import SeedMode
 
 from .vlog_filelist import VlogFilelist
@@ -432,16 +432,16 @@ class VlogSim:
 
         # Pass self.test_cfg to the preproc script as root_cfg
         # preproc script can mutate self.test_cfg, which is used for compile and sim
-        ns = build_hook_namespace(
-            script_path,
-            logger=logger,
-            test_cfg=self.test_cfg,
-            root_cfg=self.root_cfg,
-            suite_dir=self.suite_work_dir,
-            artifact_dir=self._get_artifact_dir(),
-        )
         try:
-            exec(code, ns)
+            exec_hook_script(
+                script_path,
+                code,
+                logger=logger,
+                test_cfg=self.test_cfg,
+                root_cfg=self.root_cfg,
+                suite_dir=self.suite_work_dir,
+                artifact_dir=self._get_artifact_dir(),
+            )
         except Exception as e:
             log_event(
                 logger,

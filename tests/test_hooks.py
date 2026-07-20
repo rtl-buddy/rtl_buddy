@@ -13,7 +13,7 @@ These tests exercise both exec() sites (VlogSim.pre() for preproc,
 RtlBuddy._expand_tests_with_sweep() for sweep) plus the helper directly.
 """
 
-from rtl_buddy.hooks import HOOK_MODULE_NAME, build_hook_namespace
+from rtl_buddy.hooks import HOOK_MODULE_NAME, build_hook_namespace, exec_hook_script
 from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.test_runner import RunDepth
@@ -250,3 +250,61 @@ def test_sweep_plain_module_level_logic_still_runs(tmp_path):
     assert error is None
     assert len(test_cfgs) == 1
     assert test_cfgs[0].get_name() == "basic"
+
+
+# --- exec_hook_script: sys.modules registration (issue #343) -----------------
+
+
+def test_exec_hook_script_registers_module_for_dataclass_hooks(tmp_path):
+    """A hook using `from __future__ import annotations` + @dataclass crashes
+    with 'NoneType' object has no attribute '__dict__' unless the sentinel
+    module is registered in sys.modules during exec — CPython 3.11's
+    dataclasses._is_type resolves sys.modules.get(cls.__module__) unguarded."""
+    script = tmp_path / "hook.py"
+    code = (
+        "from __future__ import annotations\n"
+        "import dataclasses\n"
+        "@dataclasses.dataclass\n"
+        "class Vec:\n"
+        "    x: int\n"
+        "    label: str = ''\n"
+        "result = Vec(1).x\n"
+    )
+    script.write_text(code)
+
+    ns = exec_hook_script(str(script), code, foo="bar")
+
+    assert ns["result"] == 1
+    assert ns["foo"] == "bar"
+    assert ns["__name__"] == HOOK_MODULE_NAME
+
+
+def test_exec_hook_script_cleans_sys_modules_on_success_and_raise(tmp_path):
+    import sys
+
+    script = tmp_path / "hook.py"
+    script.write_text("pass\n")
+
+    exec_hook_script(str(script), "pass\n")
+    assert HOOK_MODULE_NAME not in sys.modules
+
+    try:
+        exec_hook_script(str(script), "raise RuntimeError('boom')\n")
+    except RuntimeError:
+        pass
+    assert HOOK_MODULE_NAME not in sys.modules
+
+
+def test_exec_hook_script_restores_previous_sys_modules_binding(tmp_path):
+    import sys
+    import types
+
+    script = tmp_path / "hook.py"
+    script.write_text("pass\n")
+    marker = types.ModuleType(HOOK_MODULE_NAME)
+    sys.modules[HOOK_MODULE_NAME] = marker
+    try:
+        exec_hook_script(str(script), "pass\n")
+        assert sys.modules[HOOK_MODULE_NAME] is marker
+    finally:
+        del sys.modules[HOOK_MODULE_NAME]

@@ -29,7 +29,7 @@ from .docs_access import get_page, get_section, list_pages
 from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
-from .hooks import build_hook_namespace
+from .hooks import exec_hook_script
 from .logging_utils import (
     attach_file_log,
     emit_console_text,
@@ -1163,18 +1163,18 @@ class RtlBuddy:
         with open(script_path, "r") as file:
             code = file.read()
 
-        ns = build_hook_namespace(
-            script_path,
-            logger=logger,
-            TestConfig=TestConfig,
-            test_cfg=test_cfg,
-            root_cfg=self.root_cfg,
-            suite_dir=suite_dir,
-            artifact_dir=str(test_artifact_dir(suite_dir, test_cfg.get_name())),
-            out_test_cfgs=[],
-        )
         try:
-            exec(code, ns)
+            ns = exec_hook_script(
+                script_path,
+                code,
+                logger=logger,
+                TestConfig=TestConfig,
+                test_cfg=test_cfg,
+                root_cfg=self.root_cfg,
+                suite_dir=suite_dir,
+                artifact_dir=str(test_artifact_dir(suite_dir, test_cfg.get_name())),
+                out_test_cfgs=[],
+            )
         except Exception as e:
             log_event(
                 logger,
