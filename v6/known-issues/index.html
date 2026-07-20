@@ -1458,6 +1458,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts see __name__ == "__rtl_buddy_hook__", never "__main__"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1473,6 +1484,17 @@
     <span class="md-ellipsis">
       
         cocotb on VCS skips its VPI-access flags when you already configured any -debug_access/+acc
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vcs-license-queue-waits-pause-sim_timeout-so-a-sim-can-visibly-outlive-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VCS license-queue waits pause sim_timeout, so a sim can visibly outlive it
       
     </span>
   </a>
@@ -1695,6 +1717,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts see __name__ == "__rtl_buddy_hook__", never "__main__"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1710,6 +1743,17 @@
     <span class="md-ellipsis">
       
         cocotb on VCS skips its VPI-access flags when you already configured any -debug_access/+acc
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vcs-license-queue-waits-pause-sim_timeout-so-a-sim-can-visibly-outlive-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VCS license-queue waits pause sim_timeout, so a sim can visibly outlive it
       
     </span>
   </a>
@@ -1871,6 +1915,8 @@
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
 </code></pre></div>
 <p>See <a href="../migrations/#v4-to-v5">Migrations: v4 to v5</a> for the full behavior change.</p>
+<h2 id="hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__">Hook scripts see <code>__name__ == "__rtl_buddy_hook__"</code>, never <code>"__main__"</code></h2>
+<p><code>sweep</code> and <code>preproc</code> hooks are <code>exec()</code>'d into a hand-built namespace rather than imported, so <code>__name__</code> is set explicitly to the sentinel <code>"__rtl_buddy_hook__"</code>. If your hook wraps its logic in <code>if __name__ == "__main__":</code> (a common habit for scripts meant to also run standalone), that block is <strong>always skipped</strong> under <code>rb</code> — the hook silently no-ops. Put hook logic at module top level; reserve the <code>__main__</code> branch for a standalone entry point only. See <a href="../concepts/plugins/#hook-working-directory">Plugins</a>.</p>
 <h2 id="compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells">Compilation-unit <code>bind</code> under <code>frontend: verilog</code> elaborates zero formal cells</h2>
 <p>A property file that binds its checker module at compilation-unit scope (<code>bind dut dut_props u_props (...);</code> at the top level of the file, outside any module) does <strong>not</strong> error under the default <code>frontend: verilog</code> — but yosys's native verilog frontend never resolves the bind. The checker is stored as <code>$abstract</code> and removed as unused before any assertion cell is generated, so the proof runs against <strong>zero</strong> formal cells. With no guard, sby would prove nothing and report a silent <strong>PASS</strong> — a false pass indistinguishable from a real one.</p>
 <p><code>rb fpv</code> guards the primary proof against this: when a verification lists <code>properties:</code>, the generated sby script asserts that at least one formal cell (<code>$assert</code> / <code>$assume</code> / <code>$cover</code> / <code>$live</code> / <code>$check</code>) survives <code>prep</code>. A suite that elaborates none fails loud with:</p>
@@ -1881,6 +1927,8 @@
 <h2 id="cocotb-on-vcs-skips-its-vpi-access-flags-when-you-already-configured-any-debug_accessacc">cocotb on VCS skips its VPI-access flags when you already configured any <code>-debug_access</code>/<code>+acc</code></h2>
 <p>cocotb drives the DUT over VPI, so on a <code>vcs</code> builder rtl_buddy injects <code>-debug_access+all</code> and <code>+acc+3</code> (plus <code>-load &lt;libcocotbvpi_vcs.so&gt;</code> and <code>-LDFLAGS -Wl,--no-as-needed</code>) at elaboration. To avoid fighting a builder that already enables access, the injection is suppressed per token: if <strong>any</strong> configured compile-time opt starts with <code>-debug_access</code> (e.g. <code>-debug_access+all+class</code>) the <code>-debug_access+all</code> is not added, and likewise for any <code>+acc*</code> opt.</p>
 <p>The footgun: a <em>narrower</em> configured flag counts as "covered". If your <code>builder-opts</code> set, say, <code>-debug_access+line</code> (or <code>+acc+1</code>) but not full read/write access, rtl_buddy will <strong>not</strong> add <code>+all</code>/<code>+acc+3</code>, and cocotb may fail to drive signals it needs to write. Workaround: configure full access yourself (<code>-debug_access+all</code> / <code>+acc+rw</code>) for cocotb-targeted VCS builders, or drop the narrow flag and let rtl_buddy inject the defaults. <code>-top</code> is similarly only injected when the builder hasn't already pinned a top.</p>
+<h2 id="vcs-license-queue-waits-pause-sim_timeout-so-a-sim-can-visibly-outlive-it">VCS license-queue waits pause <code>sim_timeout</code>, so a sim can visibly outlive it</h2>
+<p>On a <code>vcs</code> builder, when <code>simv</code> prints the <code>-licqueue</code> banner (<code>Queuing for License</code> or <code>Licensed number of users already reached</code>), rtl_buddy pauses the per-sim <code>sim_timeout</code> clock until real simulator output resumes — a sim stuck behind a busy license server can therefore run far longer than its configured timeout without failing. The pause is announced with a <code>sim.license_queue</code> warning and the resume with <code>sim.license_granted</code> (both include the queued seconds in the log). Total queued time is capped at 1 hour; past the cap the normal timeout resumes counting and the eventual <code>sim.timeout</code> error reports the queue wait. Applies only to the <code>vcs</code> simulator family. See <a href="../concepts/tests/#vcs-license-queue-waits-and-sim_timeout">Tests</a>.</p>
 <h2 id="vcs-hierarchical-seed-file">VCS hierarchical seed file</h2>
 <p>When using VCS with hierarchical instance seeding (<code>-xlrm hier_inst_seed</code>), VCS writes a <code>HierInstanceSeed.txt</code> file in the simulation directory after the run. <code>rtl_buddy</code> looks for this file to record the seed for reproducibility.</p>
 <p>If the file is missing, a <code>sim.hier_seed_missing</code> warning is emitted in the log and the seed is not recorded, but the test result is not affected.</p>
