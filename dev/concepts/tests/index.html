@@ -515,6 +515,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#vcs-license-queue-waits-and-sim_timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VCS license-queue waits and sim_timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#regression-levels" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1677,6 +1688,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#vcs-license-queue-waits-and-sim_timeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VCS license-queue waits and sim_timeout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#regression-levels" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1917,6 +1939,8 @@
 </tr>
 </tbody>
 </table>
+<h3 id="vcs-license-queue-waits-and-sim_timeout">VCS license-queue waits and <code>sim_timeout</code></h3>
+<p>When a VCS <code>simv</code> run is invoked with <code>-licqueue</code> and no seat is free, it prints a <code>Queuing for License</code> banner and blocks until one opens up. <code>rtl_buddy</code> detects that banner (and the <code>Licensed number of users already reached</code> variant) in the sim's output and pauses the <code>sim_timeout</code> clock for as long as the sim is queuing, so a busy license server doesn't cause a false timeout. There is a 1-hour safety cap on total queued time — if the sim is still queuing after that, <code>sim_timeout</code> resumes counting and the sim can time out normally.</p>
 <h3 id="regression-levels">Regression levels</h3>
 <p><code>reglvl</code> controls which tests run during a regression:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># Same level for all builders</span>

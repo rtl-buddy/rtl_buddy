@@ -2,146 +2,146 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/CONTRIBUTING/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/agents/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/install/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/known-issues/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/migrations/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/quickstart/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/abv-simulation/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/axi-profile/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cdc/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/cocotb/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/coverage/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/execution-context/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/expected-failures/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpga/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/fpv/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hier/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/hub/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/mut/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/plugins/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/pnr/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/power/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/regressions/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/root-config/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/simulators/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/spec-traceability/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/synthesis/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tests/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/tool-check/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/wave/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/concepts/xplr/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/development/docs/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/development/guidelines/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/development/setup/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/reference/cli/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
     <url>
          <loc>https://rtl-buddy.github.io/rtl_buddy/dev/reference/yaml/</loc>
-         <lastmod>2026-07-17</lastmod>
+         <lastmod>2026-07-20</lastmod>
     </url>
 </urlset>
