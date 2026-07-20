@@ -1424,6 +1424,31 @@ def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
     assert "write_rtlil" not in script
 
 
+def test_openroad_yosys_script_strips_formal_cells_after_synth(tmp_path):
+    """Mirror of the YosysSynth test: the OpenROAD backend's stage-1 yosys
+    script must strip formal cells after synth and before the netlist is
+    written — OpenROAD's structural `read_verilog` (stage 2, and pnr/power
+    downstream) rejects netlists that carry them."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)})
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "chformal -remove" in script
+    assert script.index("chformal -remove") > script.index("synth -top top")
+    assert script.index("chformal -remove") < script.index("write_verilog")
+
+
 def test_openroad_or_script_has_lef_liberty_verilog_sdc(tmp_path):
     lib = tmp_path / "cells.lib"
     lib.write_text("")
