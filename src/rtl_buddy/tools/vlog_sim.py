@@ -33,6 +33,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
+from .vcs_license import VcsLicenseQueueMonitor
 
 
 def force_symlink(target, link_name):
@@ -740,6 +741,32 @@ class VlogSim:
         s_time = time.time()
         t_time = 0
 
+        license_monitor = None
+        timeout_pauser = None
+        if self._get_simulator_family() == "vcs":
+            license_monitor = VcsLicenseQueueMonitor(
+                log_path,
+                err_path,
+                on_enter_queue=lambda: log_event(
+                    logger,
+                    logging.WARNING,
+                    "sim.license_queue",
+                    test=self.test_name,
+                    run_id=run_id,
+                ),
+                # WARNING (not INFO) so the pause/resume pair is visible at
+                # default console verbosity.
+                on_exit_queue=lambda queued_sec: log_event(
+                    logger,
+                    logging.WARNING,
+                    "sim.license_granted",
+                    test=self.test_name,
+                    run_id=run_id,
+                    queued_sec=round(queued_sec, 2),
+                ),
+            )
+            timeout_pauser = license_monitor.is_waiting
+
         # subprocess pipe stderr to test.err, stdout to test.log
         with task_status(
             f"Running simulation {self.test_name}{'' if run_id is None else f' #{run_id:04d}'}",
@@ -758,19 +785,27 @@ class VlogSim:
                         timeout=timeout,
                         timeout_returncode=4444,
                         terminate_signal=signal.SIGQUIT,
+                        timeout_pauser=timeout_pauser,
                     )
                     returncode = result.returncode
 
                     t_time = time.time() - s_time
                     if result.timed_out:
-                        log_event(
-                            logger,
-                            logging.ERROR,
-                            "sim.timeout",
+                        timeout_fields = dict(
                             test=self.test_name,
                             run_id=run_id,
                             timeout_sec=timeout,
                             **artifact_paths,
+                        )
+                        if license_monitor is not None and license_monitor.cap_exceeded:
+                            timeout_fields["license_queue_sec"] = round(
+                                license_monitor.queue_wait_sec, 2
+                            )
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "sim.timeout",
+                            **timeout_fields,
                         )
 
         with open(randseed_path, "w") as f:

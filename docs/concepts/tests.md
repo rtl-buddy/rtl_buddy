@@ -53,6 +53,10 @@ tests:
 | `preproc` | Pre-processing script (see [Plugins](plugins.md)) |
 | `assertions` | Boolean: compile in SVA (`--assert`) and report firings (see [Assertion-Based Verification](abv-simulation.md)) |
 
+### VCS license-queue waits and `sim_timeout`
+
+When a VCS `simv` run is invoked with `-licqueue` and no seat is free, it prints a `Queuing for License` banner and blocks until one opens up. `rtl_buddy` detects that banner (and the `Licensed number of users already reached` variant) in the sim's output and pauses the `sim_timeout` clock for as long as the sim is queuing, so a busy license server doesn't cause a false timeout. There is a 1-hour safety cap on total queued time — if the sim is still queuing after that, `sim_timeout` resumes counting and the sim can time out normally.
+
 ### Regression levels
 
 `reglvl` controls which tests run during a regression:
