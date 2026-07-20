@@ -1458,6 +1458,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts see __name__ == "__rtl_buddy_hook__", never "__main__"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1706,6 +1717,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hook scripts see __name__ == "__rtl_buddy_hook__", never "__main__"
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1893,6 +1915,8 @@
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
 </code></pre></div>
 <p>See <a href="../migrations/#v4-to-v5">Migrations: v4 to v5</a> for the full behavior change.</p>
+<h2 id="hook-scripts-see-__name__-__rtl_buddy_hook__-never-__main__">Hook scripts see <code>__name__ == "__rtl_buddy_hook__"</code>, never <code>"__main__"</code></h2>
+<p><code>sweep</code> and <code>preproc</code> hooks are <code>exec()</code>'d into a hand-built namespace rather than imported, so <code>__name__</code> is set explicitly to the sentinel <code>"__rtl_buddy_hook__"</code>. If your hook wraps its logic in <code>if __name__ == "__main__":</code> (a common habit for scripts meant to also run standalone), that block is <strong>always skipped</strong> under <code>rb</code> — the hook silently no-ops. Put hook logic at module top level; reserve the <code>__main__</code> branch for a standalone entry point only. See <a href="../concepts/plugins/#hook-working-directory">Plugins</a>.</p>
 <h2 id="compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells">Compilation-unit <code>bind</code> under <code>frontend: verilog</code> elaborates zero formal cells</h2>
 <p>A property file that binds its checker module at compilation-unit scope (<code>bind dut dut_props u_props (...);</code> at the top level of the file, outside any module) does <strong>not</strong> error under the default <code>frontend: verilog</code> — but yosys's native verilog frontend never resolves the bind. The checker is stored as <code>$abstract</code> and removed as unused before any assertion cell is generated, so the proof runs against <strong>zero</strong> formal cells. With no guard, sby would prove nothing and report a silent <strong>PASS</strong> — a false pass indistinguishable from a real one.</p>
 <p><code>rb fpv</code> guards the primary proof against this: when a verification lists <code>properties:</code>, the generated sby script asserts that at least one formal cell (<code>$assert</code> / <code>$assume</code> / <code>$cover</code> / <code>$live</code> / <code>$check</code>) survives <code>prep</code>. A suite that elaborates none fails loud with:</p>
