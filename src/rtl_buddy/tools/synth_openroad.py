@@ -169,6 +169,12 @@ class OpenRoadSynth:
         if eff_synth:
             synth_cmd += f" {eff_synth}"
         lines.append(synth_cmd)
+        # Same rationale as YosysSynth: $assert/$assume/$cover cells from
+        # unguarded immediate assertions would be emitted into the netlist,
+        # which OpenROAD's structural `read_verilog` (stage 2 here, and
+        # pnr/power downstream) rejects. Formal cells are not gates — strip
+        # them; a no-op when the design carries none.
+        lines.append("chformal -remove")
 
         if lib_paths:
             for lib in lib_paths:

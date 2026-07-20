@@ -298,6 +298,12 @@ class YosysSynth:
         if opts.synth_args:
             synth_cmd += f" {opts.synth_args}"
         lines.append(synth_cmd)
+        # Unguarded immediate assertions survive synth as $assert/$assume/
+        # $cover cells and get emitted into the netlist, which structural
+        # Verilog readers (OpenROAD/OpenSTA `read_verilog` for pnr/power)
+        # reject with a syntax error. Formal cells are not gates — strip them
+        # all here; a no-op when the design carries none.
+        lines.append("chformal -remove")
 
         if mapped:
             for lib in lib_paths:
