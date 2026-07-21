@@ -668,9 +668,16 @@ class RtlBuddy:
         return ctx
 
     def _exit_code_from_results(self, suite_results):
+        # The exit code reflects whether rtl_buddy and the tools ran, not the
+        # verdict of the design under test per se. A real FAIL (sim failure,
+        # compile/setup/filelist failure, timeout) or a strict XPASS fails the
+        # run; a NA result — an intentional early stop that only needs hand
+        # checking — does not, nor do PASS/SKIP/XFAIL.
         exit_code = 0
         for suite_result in suite_results:
-            exit_code |= 0 if suite_result["results"].is_pass() else 1
+            results = suite_result["results"]
+            if not results.is_pass() and results.results.get("result") != "NA":
+                exit_code |= 1
         return exit_code
 
     def _apply_xfail_logged(self, res, cfg, event):

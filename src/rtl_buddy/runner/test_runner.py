@@ -134,7 +134,9 @@ class TestRunner:
                 run_id=self.run_id,
                 stage="compile",
             )
-            return CompilePassResults(name=self.name + "/results")
+            return EarlyStopResults(
+                name=self.name + "/results", desc="Stopped early at compile"
+            )
 
         # run simulation
         execute_returncode = vlog_sim.execute(
@@ -221,7 +223,12 @@ class TestRunner:
                 stage="compile",
                 run_ids=run_ids,
             )
-            return [CompilePassResults(name=self.name + "/results") for _ in run_ids]
+            return [
+                EarlyStopResults(
+                    name=self.name + "/results", desc="Stopped early at compile"
+                )
+                for _ in run_ids
+            ]
 
         repeated_results = []
         for run_id in run_ids:

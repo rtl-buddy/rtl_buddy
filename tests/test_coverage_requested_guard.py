@@ -72,7 +72,6 @@ def test_no_coverage_flags_never_triggers_guard(minimal_project: Path):
     runner, rb = _runner()
     result = runner.invoke(rb.app, ["-E", "comp", "test", "basic"])
     assert result.exit_code == 0, result.output
-    assert "COMPILED" in result.output
 
 
 def test_regression_coverage_merge_requested_with_no_data_raises_fatal_error(

@@ -3,8 +3,8 @@
 level window (same semantics as ``rb regression``).
 
 The ``minimal_project`` fixture declares ``basic`` at reglvl 0 and
-``extra`` at reglvl 5. ``-E comp`` keeps compiled tests at result
-COMPILED (see #336) instead of running the stub sim.
+``extra`` at reglvl 5. ``-E comp`` keeps compiled tests at the neutral
+early-stop result NA (see #336) instead of running the stub sim.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def test_reg_level_zero_runs_basic_skips_extra(minimal_project: Path):
     assert result.exit_code == 0, result.output
 
     by_name = _results_by_name(_last_json(result.output))
-    assert by_name["basic"]["result"] == "COMPILED"
+    assert by_name["basic"]["result"] == "NA"
     assert by_name["extra"]["result"] == "SKIP"
 
 
@@ -51,7 +51,7 @@ def test_start_level_five_skips_basic_runs_extra(minimal_project: Path):
 
     by_name = _results_by_name(_last_json(result.output))
     assert by_name["basic"]["result"] == "SKIP"
-    assert by_name["extra"]["result"] == "COMPILED"
+    assert by_name["extra"]["result"] == "NA"
 
 
 def test_start_level_above_both_reglvls_skips_everything(minimal_project: Path):
