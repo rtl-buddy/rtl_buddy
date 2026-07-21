@@ -12,7 +12,6 @@ stop) reliably reproduces the "requested but missing" case.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 from typer.testing import CliRunner
