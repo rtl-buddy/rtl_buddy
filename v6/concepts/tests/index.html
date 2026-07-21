@@ -570,6 +570,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#stopping-early" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stopping early
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result-statuses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result statuses
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#exit-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1743,6 +1765,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#stopping-early" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stopping early
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#result-statuses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Result statuses
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#exit-codes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1952,6 +1996,14 @@
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">vcs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3500</span>
 </code></pre></div>
 <p>Use <code>--reg-level</code> and <code>--start-level</code> on the <code>regression</code> subcommand to select a level range. See <a href="../regressions/">Regressions</a>.</p>
+<p>The <code>test</code> subcommand accepts the same two long-form options (no short flags), so a single <code>tests.yaml</code> suite can be filtered by regression level without a <code>regressions.yaml</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Run only tests with reglvl &lt;= 2000</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">2000</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Run tests with reglvl in [1000, 3000]</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
+</code></pre></div>
+<p>Tests with <code>reglvl</code> above <code>--reg-level</code> or below <code>--start-level</code> are reported as <code>SKIP</code>. Unlike <code>regression</code>, omitting both flags on <code>test</code> runs every test regardless of <code>reglvl</code> — filtering only kicks in once one of the flags is given.</p>
 <h3 id="default-transcript-parsing">Default transcript parsing</h3>
 <p>When <code>uvm</code> is <strong>not</strong> set, <code>rtl_buddy</code> determines the result by parsing <code>artefacts/{test_name}/test.log</code> after simulation. Your testbench must print a result marker to <strong>stdout</strong> at the start of a line:</p>
 <ul>
@@ -1959,12 +2011,12 @@
 <li><code>FAIL &lt;optional detail&gt;</code></li>
 </ul>
 <p>When emitting <code>FAIL</code>, also print an <code>ERR:</code> or <code>FAT:</code> line. The default failure parser expects one:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">test_passed</span><span class="p">)</span><span class="w"> </span><span class="k">begin</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;PASS smoke completed&quot;</span><span class="p">);</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">end</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">begin</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;FAIL smoke completed&quot;</span><span class="p">);</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;ERR: expected done=1 before timeout&quot;</span><span class="p">);</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="k">end</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">test_passed</span><span class="p">)</span><span class="w"> </span><span class="k">begin</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;PASS smoke completed&quot;</span><span class="p">);</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">end</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">begin</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;FAIL smoke completed&quot;</span><span class="p">);</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="p">$</span><span class="n">display</span><span class="p">(</span><span class="s">&quot;ERR: expected done=1 before timeout&quot;</span><span class="p">);</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="k">end</span>
 </code></pre></div>
 <p>Rules to follow:</p>
 <ul>
@@ -1977,9 +2029,9 @@
 </ul>
 <h3 id="uvm-report-parsing">UVM report parsing</h3>
 <p>When <code>uvm</code> is set, <code>rtl_buddy</code> parses the UVM summary at the end of simulation output and fails the test if thresholds are exceeded:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">uvm</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">max_warns</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">max_errors</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">uvm</span><span class="p">:</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">max_warns</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">max_errors</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
 </code></pre></div>
 <p>With <code>uvm</code> enabled, <code>rtl_buddy</code> uses the UVM Report Summary instead of <code>PASS</code> / <code>FAIL</code> transcript markers. Missing or malformed UVM summaries are treated as test failures.</p>
 <h3 id="other-failure-modes">Other failure modes</h3>
@@ -1990,8 +2042,45 @@
 <li>compilation fails</li>
 <li>simulation times out</li>
 </ul>
+<h3 id="stopping-early">Stopping early</h3>
+<p>The global <code>-E</code>/<code>--early-stop</code> option halts a run after a given stage (<code>pre</code>, <code>comp</code>, <code>sim</code>, or <code>post</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rtl-buddy<span class="w"> </span>-E<span class="w"> </span>comp<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
+</code></pre></div>
+<p>Stopping after a successful stage (e.g. <code>comp</code>) reports result <code>NA</code> (e.g. desc "Stopped early at compile") rather than a <code>PASS</code>/<code>FAIL</code> transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other <code>NA</code>. Because the exit code reflects whether <code>rtl_buddy</code> and its tools ran properly rather than the DUT verdict, a successful early stop still exits 0. If compilation itself fails, the result is <code>FAIL</code> with exit code 1, regardless of <code>--early-stop</code>.</p>
+<h3 id="result-statuses">Result statuses</h3>
+<p><code>rtl_buddy</code> reports one of these result statuses per test:</p>
+<table>
+<thead>
+<tr>
+<th>Result</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PASS</code></td>
+<td>A real simulation run completed and the transcript/UVM verdict was a pass</td>
+</tr>
+<tr>
+<td><code>FAIL</code></td>
+<td>A real simulation run failed, or a tool/flow step failed (setup, filelist, compile, sim timeout)</td>
+</tr>
+<tr>
+<td><code>XFAIL</code> / <code>XPASS</code></td>
+<td><code>PASS</code>/<code>FAIL</code> remapped by <code>xfail</code>/<code>xfail_strict</code> — see <a href="../expected-failures/">Expected failures</a></td>
+</tr>
+<tr>
+<td><code>SKIP</code></td>
+<td>A regression-level skip (<code>reglvl</code> outside <code>--reg-level</code>/<code>--start-level</code>)</td>
+</tr>
+<tr>
+<td><code>NA</code></td>
+<td>Everything else, including all intentional early stops — no real pass/fail verdict was produced, so the result needs hand-checking</td>
+</tr>
+</tbody>
+</table>
 <h3 id="exit-codes">Exit codes</h3>
-<p><code>rtl_buddy</code> returns one of three exit codes from test commands:</p>
+<p>The exit code reflects whether <code>rtl_buddy</code> and its tools ran, not the DUT verdict:</p>
 <table>
 <thead>
 <tr>
@@ -2002,11 +2091,11 @@
 <tbody>
 <tr>
 <td>0</td>
-<td>All tests passed</td>
+<td>No real <code>FAIL</code> verdicts — includes <code>PASS</code>, <code>SKIP</code>, <code>XFAIL</code>, and <code>NA</code> (early stops included)</td>
 </tr>
 <tr>
 <td>1</td>
-<td>One or more tests failed</td>
+<td>One or more tests resulted in <code>FAIL</code> (a real fail verdict, or a tool/flow failure such as compilation failure)</td>
 </tr>
 <tr>
 <td>2</td>
@@ -2016,13 +2105,13 @@
 </table>
 <h2 id="running-tests">Running tests</h2>
 <p>Run a named test:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
 </code></pre></div></p>
 <p>Run all tests in a config:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span>
 </code></pre></div></p>
 <p>List tests without running:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
 </code></pre></div></p>
 <h3 id="sharing-compiled-builds-across-tests">Sharing compiled builds across tests</h3>
 <p>By default every test compiles into its own build directory
@@ -2031,8 +2120,8 @@ testbench verilates the design N times. For large designs the verilation
 step dominates wall-clock time.</p>
 <p><code>--share-build</code> opts into reusing one compiled <code>simv</code> across tests whose
 compile inputs are identical:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--share-build
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--share-build
 </code></pre></div>
 <p>The build directory is keyed on a hash of the compile inputs — builder
 executable, compile-time options, plusdefines, compile environment, and the
