@@ -92,3 +92,17 @@ def test_stdlib_import_is_not_flagged(tmp_path: Path):
     script_path = str(suite_b / "preproc.py")
 
     assert vs._check_preproc_imports(ns, script_path) is None
+
+
+def test_import_collision_has_dedicated_human_message():
+    """The preproc.import_collision ERROR event renders a specific message,
+    not the lossy dotted-event fallback."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "preproc.import_collision",
+        {"test": "t", "script": "verif/suite_b/preproc.py", "error": "boom"},
+    )
+    assert msg != "preproc import_collision"
+    assert "t" in msg
+    assert "boom" in msg

@@ -680,6 +680,43 @@ class RtlBuddy:
                 exit_code |= 1
         return exit_code
 
+    def _guard_coverage_requested(
+        self,
+        suite_results,
+        exit_code,
+        *,
+        coverage_merge,
+        coverage_merge_raw,
+        coverage_merge_info_process,
+        coverage_html,
+        coverage_coverview,
+        coverage_dir_summary,
+        coverage_dir_summary_file,
+    ):
+        """Fail loud (#334) when a coverage output flag was requested but no
+        executed (non-skipped) test produced raw coverage data — otherwise the
+        command could succeed without ever emitting the requested artifact.
+        """
+        coverage_requested = (
+            coverage_merge
+            or coverage_merge_raw
+            or coverage_merge_info_process
+            or coverage_html
+            or coverage_coverview
+            or coverage_dir_summary
+            or coverage_dir_summary_file
+        )
+        if (
+            exit_code == 0
+            and coverage_requested
+            and not self.coverage.collect_paths(suite_results)
+            and any(r["results"].results.get("result") != "SKIP" for r in suite_results)
+        ):
+            raise FatalRtlBuddyError(
+                "Coverage output requested but no coverage data was produced by any "
+                "executed test; ensure the selected builder supports coverage instrumentation"
+            )
+
     def _apply_xfail_logged(self, res, cfg, event):
         """Re-interpret one result under cfg's xfail marker, and log it.
 
@@ -1019,25 +1056,17 @@ class RtlBuddy:
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
         exit_code = self._exit_code_from_results(suite_results)
-        coverage_requested = (
-            coverage_merge
-            or coverage_merge_raw
-            or coverage_merge_info_process
-            or coverage_html
-            or coverage_coverview
-            or coverage_dir_summary
-            or coverage_dir_summary_file
+        self._guard_coverage_requested(
+            suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
         )
-        if (
-            exit_code == 0
-            and coverage_requested
-            and not self.coverage.collect_paths(suite_results)
-            and any(r["results"].results.get("result") != "SKIP" for r in suite_results)
-        ):
-            raise FatalRtlBuddyError(
-                "Coverage output requested but no coverage data was produced by any "
-                "executed test; ensure the selected builder supports coverage instrumentation"
-            )
         metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
         metadata.extend(
             self.coverage.build_metadata(
@@ -1617,27 +1646,17 @@ class RtlBuddy:
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
-        coverage_requested = (
-            coverage_merge
-            or coverage_merge_raw
-            or coverage_merge_info_process
-            or coverage_html
-            or coverage_coverview
-            or coverage_dir_summary
-            or coverage_dir_summary_file
+        self._guard_coverage_requested(
+            all_suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
         )
-        if (
-            exit_code == 0
-            and coverage_requested
-            and not self.coverage.collect_paths(all_suite_results)
-            and any(
-                r["results"].results.get("result") != "SKIP" for r in all_suite_results
-            )
-        ):
-            raise FatalRtlBuddyError(
-                "Coverage output requested but no coverage data was produced by any "
-                "executed test; ensure the selected builder supports coverage instrumentation"
-            )
         if (
             coverage_html
             and not coverage_merge
