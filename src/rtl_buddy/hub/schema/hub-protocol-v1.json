@@ -383,6 +383,154 @@
       }
     },
     {
+      "if": { "properties": { "type": { "const": "wave_get_items" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Ask the wave peer (surfer) to enumerate the items currently displayed in its waveform view. Maps to WCP get_item_list + get_item_info.",
+                "properties": {}
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["items"],
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "type": "array",
+                    "description": "Displayed items in view order. An empty array means the view holds no items.",
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "type", "name"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "id":    { "type": "integer", "minimum": 0, "description": "Surfer DisplayedItemRef. Session-scoped handle; pass to wave_remove_items / wave_move_items. May change after a clear/reload — re-query to resync." },
+                        "type":  { "type": "string", "minLength": 1, "description": "Surfer item kind: variable | divider | marker | group | timeline | stream | placeholder." },
+                        "name":  { "type": "string", "description": "Display name. Empty string for an unnamed divider." },
+                        "scope": { "type": "string", "minLength": 1, "description": "Owning wave scope when the item is a variable; omitted otherwise." }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_remove_items" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["ids"],
+                "additionalProperties": false,
+                "properties": {
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1, "description": "DisplayedItemRefs (from wave_add_variables / wave_get_items) to remove." }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": {
+                  "ok":        { "type": "boolean" },
+                  "removed":   { "type": "array", "items": { "type": "integer", "minimum": 0 }, "description": "Subset of the requested ids that were present and are now gone (computed by diffing the item list)." },
+                  "not_found": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "description": "Requested ids that were not in the view to begin with." }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_move_items" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["ids", "to_index"],
+                "additionalProperties": false,
+                "description": "Reorder displayed items: move ids (preserving their relative order) so the block starts at to_index in the visible item list. Maps to WCP move_items.",
+                "properties": {
+                  "ids":      { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1 },
+                  "to_index": { "type": "integer", "minimum": 0, "description": "Target visible index (0 = top of the view)." }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ok"],
+                "additionalProperties": false,
+                "properties": { "ok": { "type": "boolean" } }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "wave_add_comments" } }, "required": ["type"] },
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": { "const": "request" },
+              "payload": {
+                "type": "object",
+                "required": ["texts"],
+                "additionalProperties": false,
+                "description": "Add one or more comment rows (named dividers) to the wave view. Maps to WCP add_dividers.",
+                "properties": {
+                  "texts":    { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "description": "Comment labels, one divider per entry, inserted in order." },
+                  "after_id": { "type": "integer", "minimum": 0, "description": "Optional DisplayedItemRef to insert the comments after. Appended to the end of the view when omitted." }
+                }
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": { "const": "response" },
+              "payload": {
+                "type": "object",
+                "required": ["ids"],
+                "additionalProperties": false,
+                "properties": {
+                  "ids": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "description": "DisplayedItemRefs of the created comment rows, in input order." }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "if": { "properties": { "type": { "const": "view_pan_to" } }, "required": ["type"] },
       "then": {
         "oneOf": [

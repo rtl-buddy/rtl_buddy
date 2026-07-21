@@ -39,6 +39,11 @@ class _FakeListener:
         # (empty queue) returns None — the bridge then falls back to
         # the optimistic empty reply as if surfer never answered.
         self.next_responses: dict[str, list[dict | None]] = {}
+        # Pre-stage await_reply outcomes per WCP command name. Each entry is
+        # a ("response", msg) or ("error", msg) tuple, or None for a timeout.
+        # Ack-returning commands (set_cursor, move_items, remove_items, ...)
+        # are keyed under "ack". Empty queue → None (no surfer reply).
+        self.next_replies: dict[str, list[tuple[str, dict] | None]] = {}
 
     def send_to_surfer(self, frame: dict) -> None:
         self.sent.append(frame)
@@ -48,6 +53,15 @@ class _FakeListener:
         if not queue:
             return None
         return queue.pop(0)
+
+    def await_reply(
+        self, commands: set[str], timeout: float = 2.0
+    ) -> tuple[str, dict] | None:
+        for command in commands:
+            queue = self.next_replies.get(command)
+            if queue:
+                return queue.pop(0)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -453,15 +467,13 @@ def test_wave_add_variables_forwards_ids_and_not_found(hub_in_thread: _HubInThre
         bridge.stop()
 
 
-def test_wave_set_scope_unknown_scope_still_acks_optimistically(
+def test_wave_set_scope_no_reply_acks_best_effort(
     hub_in_thread: _HubInThread,
 ):
-    """surfer's `set_scope` (rtl-buddy fork) acks on success and emits a
-    structured error on unknown-scope, but the bridge replies
-    optimistically with {"ok": True} regardless and does not wait for the
-    surfer-side error. Trade-off: typo detection is lost on the peer
-    side, matching the precedent for set_cursor / set_viewport_to which
-    also reply optimistically with no error propagation."""
+    """When surfer sends no reply (e.g. an older build that doesn't ack
+    set_scope), the best-effort handler still resolves {"ok": True} so the
+    scope-follow path never stalls. An explicit surfer error is propagated
+    instead — see test_wave_set_scope_surfer_error_propagates."""
     host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
     listener = _FakeListener()
     bridge = WaveHubBridge.connect((host, port), listener=listener)
@@ -667,6 +679,267 @@ def test_wave_set_scope_translates_to_wcp_set_scope(
                 "scope": "tb.dut.u_fifo",
             }
         ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+# ---------------------------------------------------------------------------
+# wave-view item management (list / remove / move / comment)
+# ---------------------------------------------------------------------------
+
+
+def _send_request(view_sock, type_: str, payload: dict) -> Envelope:
+    req = Envelope(
+        origin=Origin.VIEW,
+        kind=Kind.REQUEST,
+        type=type_,
+        id=new_id(),
+        payload=payload,
+    )
+    view_sock.sendall(encode(req).encode("utf-8") + b"\n")
+    return req
+
+
+def test_wave_get_items_lists_view(hub_in_thread: _HubInThread):
+    """`wave_get_items` → WCP get_item_list then get_item_info; the bridge
+    flattens surfer's ItemInfo rows into {id, type, name(, scope)}."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_replies["get_item_list"] = [
+        ("response", {"type": "response", "command": "get_item_list", "ids": [3, 5]})
+    ]
+    listener.next_replies["get_item_info"] = [
+        (
+            "response",
+            {
+                "type": "response",
+                "command": "get_item_info",
+                "results": [
+                    {"id": 3, "type": "variable", "name": "tb.dut.u_fifo.wr_ptr_q"},
+                    {"id": 5, "type": "divider", "name": "pointers"},
+                ],
+            },
+        )
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        req = _send_request(view_sock, "wave_get_items", {})
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.id == req.id
+        assert resp.payload == {
+            "items": [
+                {
+                    "id": 3,
+                    "type": "variable",
+                    "name": "tb.dut.u_fifo.wr_ptr_q",
+                    "scope": "tb.dut.u_fifo",
+                },
+                {"id": 5, "type": "divider", "name": "pointers"},
+            ]
+        }
+        # Both WCP commands went out, in order.
+        commands = [c.get("command") for c in listener.sent]
+        assert commands == ["get_item_list", "get_item_info"]
+        assert listener.sent[1]["ids"] == [3, 5]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_get_items_empty_view_skips_info(hub_in_thread: _HubInThread):
+    """An empty item list short-circuits — no get_item_info round-trip."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_replies["get_item_list"] = [
+        ("response", {"type": "response", "command": "get_item_list", "ids": []})
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        _send_request(view_sock, "wave_get_items", {})
+        resp = _recv_line(view_sock)
+        assert resp.payload == {"items": []}
+        assert [c.get("command") for c in listener.sent] == ["get_item_list"]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_get_items_no_surfer_reply_errors(hub_in_thread: _HubInThread):
+    """No reply from surfer → hub error (the caller needs the data)."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()  # nothing staged → await_reply returns None
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        _send_request(view_sock, "wave_get_items", {})
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.ERROR
+        assert resp.payload["code"] == "not_connected"
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_remove_items_reports_removed_and_not_found(hub_in_thread: _HubInThread):
+    """Diff the item list before/after to report genuine removed vs
+    not_found, since surfer's remove_items acks unconditionally."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    # before: [3, 5, 9]; remove_items ack; after: [3, 9]
+    listener.next_replies["get_item_list"] = [
+        (
+            "response",
+            {"type": "response", "command": "get_item_list", "ids": [3, 5, 9]},
+        ),
+        ("response", {"type": "response", "command": "get_item_list", "ids": [3, 9]}),
+    ]
+    listener.next_replies["ack"] = [
+        ("response", {"type": "response", "command": "ack"})
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        _send_request(view_sock, "wave_remove_items", {"ids": [5, 99]})
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {"ok": True, "removed": [5], "not_found": [99]}
+        # remove_items was sent with the requested ids.
+        remove = next(c for c in listener.sent if c.get("command") == "remove_items")
+        assert remove["ids"] == [5, 99]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_move_items_translates_to_wcp_command(hub_in_thread: _HubInThread):
+    """`wave_move_items { ids, to_index }` → WCP move_items { ids,
+    target_index }, strict ack → {"ok": True}."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_replies["ack"] = [
+        ("response", {"type": "response", "command": "ack"})
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        _send_request(view_sock, "wave_move_items", {"ids": [5, 6], "to_index": 0})
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {"ok": True}
+        assert listener.sent == [
+            {
+                "type": "command",
+                "command": "move_items",
+                "ids": [5, 6],
+                "target_index": 0,
+            }
+        ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_move_items_surfer_error_propagates(hub_in_thread: _HubInThread):
+    """A surfer error frame (e.g. unknown id / illegal move) becomes a hub
+    error reply — this is the genuine success/error reporting requirement."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_replies["ack"] = [
+        (
+            "error",
+            {
+                "type": "error",
+                "error": "move_items",
+                "arguments": ["99"],
+                "message": "no item with id 99",
+            },
+        )
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        _send_request(view_sock, "wave_move_items", {"ids": [99], "to_index": 0})
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.ERROR
+        assert resp.payload["code"] == "bad_request"
+        assert resp.payload["message"] == "no item with id 99"
+        assert resp.payload["context"]["surfer_error"] == "move_items"
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_add_comments_returns_ids(hub_in_thread: _HubInThread):
+    """`wave_add_comments { texts }` → WCP add_dividers { names }, returning
+    the new item ids."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_replies["add_dividers"] = [
+        ("response", {"type": "response", "command": "add_dividers", "ids": [7, 8]})
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        _send_request(
+            view_sock,
+            "wave_add_comments",
+            {"texts": ["pointers", "flags"], "after_id": 3},
+        )
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.RESPONSE
+        assert resp.payload == {"ids": [7, 8]}
+        assert listener.sent == [
+            {
+                "type": "command",
+                "command": "add_dividers",
+                "names": ["pointers", "flags"],
+                "after": 3,
+            }
+        ]
+    finally:
+        view_sock.close()
+        bridge.stop()
+
+
+def test_wave_set_scope_surfer_error_propagates(hub_in_thread: _HubInThread):
+    """Best-effort handlers still surface an explicit surfer error: an
+    unknown-scope rejection now comes back as a hub error instead of a
+    false {"ok": True}."""
+    host, port = hub_in_thread.server.host, hub_in_thread.server.port  # type: ignore[union-attr]
+    listener = _FakeListener()
+    listener.next_replies["ack"] = [
+        (
+            "error",
+            {
+                "type": "error",
+                "error": "set_scope",
+                "arguments": [],
+                "message": "no scope tb.dut.does_not_exist",
+            },
+        )
+    ]
+    bridge = WaveHubBridge.connect((host, port), listener=listener)
+    bridge.start()
+    view_sock = _connect_observer(hub_in_thread, Origin.VIEW)
+    try:
+        _send_request(
+            view_sock, "wave_set_scope", {"wave_scope": "tb.dut.does_not_exist"}
+        )
+        resp = _recv_line(view_sock)
+        assert resp.kind is Kind.ERROR
+        assert resp.payload["code"] == "bad_request"
+        assert "no scope" in resp.payload["message"]
     finally:
         view_sock.close()
         bridge.stop()

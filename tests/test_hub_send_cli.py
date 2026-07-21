@@ -443,3 +443,32 @@ def test_send_no_hub_exits_two(monkeypatch, tmp_path):
     result = runner.invoke(send_app, ["state"])
     assert result.exit_code == 2
     assert "no live hub" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# wave-view item management — client-side argument validation
+# ---------------------------------------------------------------------------
+
+
+def test_wave_move_requires_exactly_one_target() -> None:
+    """`wave-move` needs exactly one of --to / --before. These fail before
+    any hub connection, so no fixture is needed."""
+    runner = CliRunner()
+    # neither
+    result = runner.invoke(send_app, ["wave-move", "5", "6"])
+    assert result.exit_code != 0
+    # both
+    result = runner.invoke(send_app, ["wave-move", "5", "--to", "0", "--before", "3"])
+    assert result.exit_code != 0
+
+
+def test_wave_remove_rejects_negative_ids() -> None:
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["wave-remove", "-1"])
+    assert result.exit_code != 0
+
+
+def test_wave_comment_rejects_blank_text() -> None:
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["wave-comment", "   "])
+    assert result.exit_code != 0

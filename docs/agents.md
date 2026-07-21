@@ -31,10 +31,13 @@ Install targets:
 |-------|-------------|-------|
 | User (default) | `~/.claude/skills/rtl_buddy/SKILL.md` | `~/.codex/skills/rtl_buddy/SKILL.md` |
 | Project (`--project`) | `<root>/.claude/skills/rtl_buddy/SKILL.md` | `<root>/.agents/skills/rtl_buddy/SKILL.md` |
+| Explicit dir (`--dir PATH`) | `<PATH>/rtl_buddy/SKILL.md` (single flat target) | — |
 
 User-level is the default because the skill is workflow-pattern guidance that changes rarely across `rtl_buddy` versions; a single copy per machine encourages keeping `rtl_buddy` aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent `rtl_buddy` major — Claude Code's resolution order puts the project copy first, so both scopes can coexist.
 
-For project-level installs, the install command prints the `.gitignore` lines to add. Project root is discovered by walking up for `root_config.yaml` (falling back to `.git/`), so `rtl-buddy skill install --project` is safe to run from a `verif/` subdirectory.
+Use `--dir PATH` when you need the skill written to an arbitrary directory without the `.claude`/`.agents` layout — it writes a single `PATH/rtl_buddy/SKILL.md` (mutually exclusive with `--project`/`--root`).
+
+For project-level installs, the install command prints the `.gitignore` lines to add. Pass `--no-gitignore` to skip that edit. Project root is discovered by walking up for `root_config.yaml` (falling back to `.git/`), so `rtl-buddy skill install --project` is safe to run from a `verif/` subdirectory.
 
 ## Local docs access
 

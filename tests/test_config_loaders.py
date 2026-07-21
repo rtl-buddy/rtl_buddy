@@ -328,6 +328,51 @@ def test_suite_config_missing_testbench_raises(tmp_path):
         SuiteConfig(str(suite))
 
 
+def test_suite_config_missing_models_yaml_keeps_precise_error(tmp_path):
+    """A test referencing a models.yaml that doesn't exist must surface the
+    model loader's 'failed to load' message, not 'Tests section malformed'."""
+    suite = _write_suite(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match=r"failed to load.*models\.yaml"):
+        SuiteConfig(str(suite))
+
+
+def test_suite_config_unknown_model_keeps_precise_error(tmp_path):
+    """A test referencing a model absent from models.yaml must surface the
+    loader's "model 'X' not found", not 'Tests section malformed'."""
+    (tmp_path / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\n"
+        "models:\n"
+        "  - name: mod_a\n"
+        "    filelist: [a.sv]\n"
+    )
+    suite = _write_suite(tmp_path)  # references model 'm'
+    with pytest.raises(FatalRtlBuddyError, match="model 'm' not found"):
+        SuiteConfig(str(suite))
+
+
+def test_suite_config_testbench_handler_keeps_precise_error(tmp_path, monkeypatch):
+    """The testbench-section handler must re-raise FatalRtlBuddyErrors as-is
+    rather than re-wrapping them as 'Testbench section malformed'. No current
+    code path raises one inside the dict build, so inject it: get_name is
+    called once per testbench by the duplicate check, then again by the
+    guarded dict build — fail on the second call."""
+    from rtl_buddy.config.test import TestbenchConfig
+
+    suite = _write_suite(tmp_path)
+    real_get_name = TestbenchConfig.get_name
+    calls = {"n": 0}
+
+    def flaky_get_name(self):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise FatalRtlBuddyError("precise testbench error")
+        return real_get_name(self)
+
+    monkeypatch.setattr(TestbenchConfig, "get_name", flaky_get_name)
+    with pytest.raises(FatalRtlBuddyError, match="precise testbench error"):
+        SuiteConfig(str(suite))
+
+
 def test_suite_config_duplicate_testbench_raises(tmp_path):
     """Two testbenches with the same name in one tests.yaml is a hard
     error — letting the dict-comprehension silently overwrite the

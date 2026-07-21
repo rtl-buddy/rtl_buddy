@@ -704,3 +704,226 @@ def test_rb_hier_view_must_be_dut_or_tb(minimal_project: Path):
         ],
     )
     assert result.exit_code != 0
+
+
+# --- RtlBuddyViewQuery wrapper (unit) --------------------------------------
+
+
+def _query_model(tmp_path: Path) -> ModelConfig:
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir(exist_ok=True)
+    src.write_text("module example; endmodule\n")
+    return ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+
+
+def test_query_wrapper_builds_expected_argv(tmp_path: Path):
+    """Pins the `query` CLI shape promised to the viewer:
+    ``query <verb> <arg> --top <model> --filelist <hier.f>``."""
+    from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
+
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyViewQuery(
+        name="t",
+        model_cfg=_query_model(tmp_path),
+        suite_dir=str(tmp_path),
+        verb="find-module",
+        arg="some_module",
+        executable=str(script),
+    )
+    assert view.run() == 0
+
+    argv = json.loads(record.read_text())
+    assert argv[:3] == ["query", "find-module", "some_module"]
+    assert argv[argv.index("--top") + 1] == "example"
+    fl = Path(argv[argv.index("--filelist") + 1])
+    assert fl.name == "hier.f" and fl.is_file()
+    # Shares `rb hier`'s filelist artefact; its own log sits alongside.
+    assert fl.parent == tmp_path / "artefacts" / "hier" / "example"
+    assert (fl.parent / "query.log").read_text().startswith("$ ")
+
+
+def test_query_wrapper_forwards_verb_specific_flags(tmp_path: Path):
+    from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
+
+    script, record = _make_fake_view(tmp_path)
+    model = _query_model(tmp_path)
+
+    view = RtlBuddyViewQuery(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        verb="source-snippet",
+        arg="example.u_ff",
+        frontend="slang",
+        context=0,
+        line_numbers=False,
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--frontend") + 1] == "slang"
+    assert argv[argv.index("--context") + 1] == "0"
+    assert "--no-line-numbers" in argv
+
+    view = RtlBuddyViewQuery(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        verb="subtree",
+        arg="example.u_ff",
+        subtree_format="tree",
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--format") + 1] == "tree"
+
+
+def test_query_wrapper_gates_flags_by_verb(tmp_path: Path):
+    """Verb-specific knobs are only forwarded to the verbs that accept
+    them — the viewer's own usage validation stays the single source
+    of truth, and a stray --context can't break find-module."""
+    from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
+
+    script, record = _make_fake_view(tmp_path)
+    view = RtlBuddyViewQuery(
+        name="t",
+        model_cfg=_query_model(tmp_path),
+        suite_dir=str(tmp_path),
+        verb="find-module",
+        arg="some_module",
+        subtree_format="tree",
+        context=5,
+        line_numbers=False,
+        executable=str(script),
+    )
+    assert view.run() == 0
+    argv = json.loads(record.read_text())
+    for flag in ("--format", "--context", "--no-line-numbers"):
+        assert flag not in argv
+
+
+def test_query_wrapper_rejects_unknown_verb(tmp_path: Path):
+    from rtl_buddy.errors import FatalRtlBuddyError
+    from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
+
+    script, _ = _make_fake_view(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="unknown verb 'walk'"):
+        RtlBuddyViewQuery(
+            name="t",
+            model_cfg=_query_model(tmp_path),
+            suite_dir=str(tmp_path),
+            verb="walk",
+            arg="x",
+            executable=str(script),
+        )
+
+
+def test_query_wrapper_propagates_exit_code(tmp_path: Path):
+    """A lookup miss exits 1 in the viewer; `rb hier-query` must not
+    flatten that to success."""
+    from rtl_buddy.tools.hier_rtl_buddy_view import RtlBuddyViewQuery
+
+    script, _ = _make_fake_view(tmp_path, exit_code=1)
+    view = RtlBuddyViewQuery(
+        name="t",
+        model_cfg=_query_model(tmp_path),
+        suite_dir=str(tmp_path),
+        verb="subtree",
+        arg="example.nope",
+        executable=str(script),
+    )
+    assert view.run() == 1
+
+
+# --- rb hier-query command (integration through Typer) ---------------------
+
+
+def test_rb_hier_query_invokes_stubbed_viewer(minimal_project: Path):
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier-query",
+            "example",
+            "instances-of",
+            "some_module",
+            "-c",
+            "models.yaml",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[:3] == ["query", "instances-of", "some_module"]
+    assert argv[argv.index("--top") + 1] == "example"
+    assert (minimal_project / "artefacts" / "hier" / "example" / "hier.f").is_file()
+
+
+def test_rb_hier_query_forwards_snippet_options(minimal_project: Path):
+    script, record = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier-query",
+            "example",
+            "source-snippet",
+            "example.u_ff",
+            "-c",
+            "models.yaml",
+            "--context",
+            "4",
+            "--no-line-numbers",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    argv = json.loads(record.read_text())
+    assert argv[argv.index("--context") + 1] == "4"
+    assert "--no-line-numbers" in argv
+
+
+def test_rb_hier_query_unknown_verb_exits_nonzero(minimal_project: Path):
+    script, _ = _make_fake_view(minimal_project)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier-query",
+            "example",
+            "walk",
+            "x",
+            "-c",
+            "models.yaml",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_rb_hier_query_viewer_exit_propagates(minimal_project: Path):
+    script, _ = _make_fake_view(minimal_project, exit_code=1)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "hier-query",
+            "example",
+            "find-module",
+            "nope",
+            "-c",
+            "models.yaml",
+            "--tool",
+            str(script),
+        ],
+    )
+    assert result.exit_code == 1

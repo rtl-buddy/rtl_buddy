@@ -47,14 +47,21 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ regression         run rtl regression                                                │
 │ filelist           generate filelists using models.yaml                              │
 │ hier               render module hierarchy via rtl-buddy-view                        │
+│ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
+│                    subtree, instances-of, port-connections, source-snippet); JSON on │
+│                    stdout                                                            │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
-│ wave-install-nvim  install nvim plugin for rb wave annotation                        │
+│ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
+│                    wave annotation)                                                  │
+│ wave-install-nvim  alias for nvim-install                                            │
 │ synth              run synthesis                                                     │
 │ synth-regression   run synthesis regression                                          │
 │ pnr                run place-and-route                                               │
 │ power              run power analysis                                                │
 │ power-regression   run power analysis regression                                     │
+│ fpga               run FPGA implementation (synth + place + route)                   │
+│ fpga-regression    run FPGA implementation regression                                │
 │ saif               convert FST/VCD trace to SAIF v2.0                                │
 │ cdc                run CDC lint                                                      │
 │ cdc-regression     run CDC lint regression                                           │
@@ -68,6 +75,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ skill              manage the rtl_buddy agent skill                                  │
 │ docs               browse bundled documentation                                      │
 │ spec               spec traceability commands                                        │
+│ xplr               design-space exploration experiment ledger (agent-facing)         │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -82,31 +90,37 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]
 │   test_name      [TEST_NAME]  name of test [default: (run all tests)]                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --test-config                  -c      TEXT  test_config.yaml to use                 │
-│                                              [default: tests.yaml]                   │
-│ --list                                       list tests in the selected test-config  │
-│                                              and exit                                │
-│ --coverage-merge                             merge coverage across selected tests;   │
-│                                              uses raw merge for summary/html and     │
-│                                              info-process for Coverview              │
-│ --coverage-merge-raw                         use raw Verilator merge for merged      │
-│                                              summary/html/Coverview                  │
-│ --coverage-merge-info-process                use info-process merge for merged       │
-│                                              summary/Coverview; HTML merge is not    │
-│                                              supported                               │
-│ --coverage-html                              generate merged LCOV HTML output in     │
-│                                              coverage_merge.html                     │
-│ --coverage-coverview                         generate Coverview zip output from      │
-│                                              coverage info                           │
-│ --coverage-dir-summary                 TEXT  append coverage summary lines for       │
-│                                              repo-relative directory prefixes; may   │
-│                                              be repeated                             │
-│ --coverage-dir-summary-file            TEXT  file containing repo-relative directory │
-│                                              prefixes, one per line                  │
-│ --rnd-new                      -n            use a randomly generated seed instead   │
-│                                              of root config seed                     │
-│ --rnd-last                     -l            reuse last generated seed               │
-│ --help                                       Show this message and exit.             │
+│ --test-config                  -c      TEXT     test_config.yaml to use              │
+│                                                 [default: tests.yaml]                │
+│ --list                                          list tests in the selected           │
+│                                                 test-config and exit                 │
+│ --coverage-merge                                merge coverage across selected       │
+│                                                 tests; uses raw merge for            │
+│                                                 summary/html and info-process for    │
+│                                                 Coverview                            │
+│ --coverage-merge-raw                            use raw Verilator merge for merged   │
+│                                                 summary/html/Coverview               │
+│ --coverage-merge-info-process                   use info-process merge for merged    │
+│                                                 summary/Coverview; HTML merge is not │
+│                                                 supported                            │
+│ --coverage-html                                 generate merged LCOV HTML output in  │
+│                                                 coverage_merge.html                  │
+│ --coverage-coverview                            generate Coverview zip output from   │
+│                                                 coverage info                        │
+│ --coverage-dir-summary                 TEXT     append coverage summary lines for    │
+│                                                 repo-relative directory prefixes;    │
+│                                                 may be repeated                      │
+│ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
+│                                                 directory prefixes, one per line     │
+│ --rnd-new                      -n               use a randomly generated seed        │
+│                                                 instead of root config seed          │
+│ --rnd-last                     -l               reuse last generated seed            │
+│ --share-build                                   reuse one compiled simv across tests │
+│                                                 with identical compile inputs        │
+│                                                 (Verilator builders only)            │
+│ --reg-level                            INTEGER  regression level to stop at          │
+│ --start-level                          INTEGER  regression level to start at         │
+│ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -164,6 +178,9 @@ Usage: rtl-buddy regression [OPTIONS]
 │                                                 may be repeated                      │
 │ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
 │                                                 directory prefixes, one per line     │
+│ --share-build                                   reuse one compiled simv across tests │
+│                                                 with identical compile inputs        │
+│                                                 (Verilator builders only)            │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -226,6 +243,42 @@ Usage: rtl-buddy hier [OPTIONS] NAME
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## hier-query
+
+```text
+Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG                                    
+                                                                                        
+ query the module hierarchy via rtl-buddy-view (find-module, subtree, instances-of,     
+ port-connections, source-snippet); JSON on stdout                                      
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  model name from models.yaml [required]                          │
+│ *    verb      TEXT  query verb: find-module, subtree, instances-of,                 │
+│                      port-connections, or source-snippet                             │
+│                      [required]                                                      │
+│ *    arg       TEXT  verb argument: a module name (find-module, instances-of) or a   │
+│                      dot-separated instance path rooted at the model (subtree,       │
+│                      port-connections, source-snippet)                               │
+│                      [required]                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --model-config  -c                       TEXT     models.yaml to use                 │
+│                                                   [default: models.yaml]             │
+│ --frontend                               TEXT     parser frontend (verible|slang)    │
+│ --format                                 TEXT     subtree only: json (default) or    │
+│                                                   tree                               │
+│ --context                                INTEGER  source-snippet only: context lines │
+│                                                   on each side                       │
+│ --line-numbers      --no-line-numbers             source-snippet only: prefix lines  │
+│                                                   with source line numbers (default  │
+│                                                   on)                                │
+│                                                   [default: line-numbers]            │
+│ --tool                                   TEXT     path to the rtl-buddy-view binary  │
+│                                                   [default: rtl-buddy-view]          │
+│ --help                                            Show this message and exit.        │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## wave
 
 ```text
@@ -263,16 +316,21 @@ Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-## wave-install-nvim
+## nvim-install
 
 ```text
-Usage: rtl-buddy wave-install-nvim [OPTIONS]                                           
+Usage: rtl-buddy nvim-install [OPTIONS]                                                
                                                                                         
- install nvim plugin for rb wave annotation                                             
+ install/update the unified rtl-buddy-nvim editor plugin (hub + wave annotation)        
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --force          overwrite existing installation                                     │
-│ --help           Show this message and exit.                                         │
+│ --force               remove any existing install and re-clone                       │
+│ --update              sync an existing install to the pinned revision                │
+│ --ref           TEXT  override the pinned rtl-buddy-nvim git ref (tag/branch)        │
+│ --source        TEXT  override the rtl-buddy-nvim repo URL or local path (for        │
+│                       offline/dev installs)                                          │
+│ --no-lsp              omit the verible-verilog-ls autostart from the managed setup   │
+│ --help                Show this message and exit.                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -399,9 +457,24 @@ Usage: rtl-buddy cdc [OPTIONS] [CDC_NAME]
 │                             [default: (run all analyses)]                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --cdc-config  -c      TEXT  cdc.yaml to use [default: cdc.yaml]                      │
-│ --list                      list analyses in the selected config and exit            │
-│ --help                      Show this message and exit.                              │
+│ --cdc-config        -c      TEXT       cdc.yaml to use [default: cdc.yaml]           │
+│ --list                                 list analyses in the selected config and exit │
+│ --emit-constraints                     generate scoped CDC timing exceptions from    │
+│                                        the verified crossing set instead of linting  │
+│ --format                    [sdc|xdc]  constraint dialect for --emit-constraints     │
+│                                        [default: xdc]                                │
+│ --scoped                               --emit-constraints: emit IP-relative          │
+│                                        (SCOPED_TO_REF) constraints, omitting         │
+│                                        top-level clock defs/groups                   │
+│ --output            -o      TEXT       --emit-constraints: write to this file        │
+│                                        (default: stdout)                             │
+│ --check-xdc                 FILE       audit a Vivado XDC's CDC exceptions against   │
+│                                        the verified crossing set instead of linting  │
+│ --recognize-sync            REGEX      --check-xdc: instance-path regex for a        │
+│                                        synchronizer the analyzer did not recognize   │
+│                                        (e.g. a blackboxed xpm_cdc_*); repeatable.    │
+│                                        Adds to cdc.yaml's recognized-syncs           │
+│ --help                                 Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1025,6 +1098,15 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ wave-zoom      Zoom + pan surfer to fit [START_FS, END_FS]. Maps to WCP              │
 │                set_viewport_range.                                                   │
 │ wave-zoom-fit  Zoom surfer out to fit the whole waveform. Maps to WCP zoom_to_fit.   │
+│ wave-items     List the items currently in surfer's wave view (id, type, name). Maps │
+│                to WCP get_item_list + get_item_info.                                 │
+│ wave-remove    Ask the wave peer (surfer) to remove items by id. IDs come from       │
+│                wave-add / wave-items. Reports removed vs not_found.                  │
+│ wave-move      Reorder items in surfer's view. Move the given IDS (in the order      │
+│                listed) so the block starts at --to INDEX, or just before --before    │
+│                ID. Exactly one of --to / --before is required.                       │
+│ wave-comment   Add comment rows (named dividers) to surfer's view. Returns the new   │
+│                item ids. Maps to WCP add_dividers.                                   │
 │ view-pan       Ask the view peer (SPA) to pan/center on INSTANCE_PATH.               │
 │ overlay        Flip an overlay's enabled state on the SPA. Built-in NAMES are        │
 │                'clock', 'reset', 'axi-perf', 'wave'; an unknown name is a no-op. Use │
@@ -1249,6 +1331,73 @@ Usage: rtl-buddy hub send wave-zoom-fit [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
+## hub send wave-items
+
+```text
+Usage: rtl-buddy hub send wave-items [OPTIONS]                                         
+                                                                                        
+ List the items currently in surfer's wave view (id, type, name). Maps to WCP           
+ get_item_list + get_item_info.                                                         
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send wave-remove
+
+```text
+Usage: rtl-buddy hub send wave-remove [OPTIONS] IDS...                                 
+                                                                                        
+ Ask the wave peer (surfer) to remove items by id. IDs come from wave-add / wave-items. 
+ Reports removed vs not_found.                                                          
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    ids      IDS...  DisplayedItemRef ids to remove, e.g. 3 5 7 [required]          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send wave-move
+
+```text
+Usage: rtl-buddy hub send wave-move [OPTIONS] IDS...                                   
+                                                                                        
+ Reorder items in surfer's view. Move the given IDS (in the order listed) so the block  
+ starts at --to INDEX, or just before --before ID. Exactly one of --to / --before is    
+ required.                                                                              
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    ids      IDS...  DisplayedItemRef ids to move, e.g. 5 6 [required]              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --to            INTEGER RANGE [x>=0]  target visible index (0 = top of view)         │
+│ --before        INTEGER RANGE [x>=0]  move the block to just before this item id     │
+│                                       (resolved via wave-items)                      │
+│ --help                                Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send wave-comment
+
+```text
+Usage: rtl-buddy hub send wave-comment [OPTIONS] TEXTS...                              
+                                                                                        
+ Add comment rows (named dividers) to surfer's view. Returns the new item ids. Maps to  
+ WCP add_dividers.                                                                      
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    texts      TEXTS...  comment labels, one divider per entry [required]           │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --after        INTEGER RANGE [x>=0]  insert the comments after this item id          │
+│                                      (default: end of view)                          │
+│ --help                               Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
 ## hub send view-pan
 
 ```text
@@ -1418,17 +1567,22 @@ Usage: rtl-buddy skill install [OPTIONS]
  Default scope is user-level (`~/.claude/skills/rtl_buddy/` and                         
  `~/.codex/skills/rtl_buddy/`). Use `--project` to install into the                     
  discovered project root instead; project-level copies take precedence                  
- over user-level when both exist.                                                       
+ over user-level when both exist. Use `--dir PATH` to write a single                    
+ `PATH/rtl_buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
+ layout entirely.                                                                       
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --project                install into the discovered project root instead of the     │
-│                          user home                                                   │
-│ --root             PATH  explicit target root (implies project-level layout)         │
-│ --no-claude              skip writing the Claude Code target                         │
-│ --no-codex               skip writing the Codex target                               │
-│ --dry-run                print what would be written and exit                        │
-│ --force                  overwrite even when content matches                         │
-│ --help                   Show this message and exit.                                 │
+│ --project                   install into the discovered project root instead of the  │
+│                             user home                                                │
+│ --root                PATH  explicit target root (implies project-level layout)      │
+│ --dir                 PATH  write a single flat target at <DIR>/rtl_buddy/SKILL.md,  │
+│                             bypassing the .claude/.agents/.codex layout              │
+│ --no-claude                 skip writing the Claude Code target                      │
+│ --no-codex                  skip writing the Codex target                            │
+│ --no-gitignore              skip updating .gitignore on project-level installs       │
+│ --dry-run                   print what would be written and exit                     │
+│ --force                     overwrite even when content matches                      │
+│ --help                      Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1574,6 +1728,7 @@ Usage: rtl-buddy spec check-design [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --spec-dir          TEXT  Directory to search for specs.yaml files                   │
 │ --design-dir        TEXT  Directory to search for models.yaml files                  │
+│ --block             TEXT  Only include spec blocks with this name; may be repeated   │
 │ --help                    Show this message and exit.                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1588,6 +1743,7 @@ Usage: rtl-buddy spec check-coverage [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --spec-dir         TEXT  Directory to search for specs.yaml files                    │
 │ --verif-dir        TEXT  Directory to search for tests.yaml files                    │
+│ --block            TEXT  Only include spec blocks with this name; may be repeated    │
 │ --help                   Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

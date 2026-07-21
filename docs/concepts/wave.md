@@ -71,23 +71,30 @@ Clicking any signal in Surfer's signal list sets the **active scope** — the mo
 
 ### nvim setup
 
-The annotation feature requires a small nvim plugin. Install it once:
+The annotation feature lives in the [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim) plugin — the same plugin that connects your editor to the [hub](hub.md). Install it once with the unified command:
 
 ```bash
-rb wave-install-nvim
+rb nvim-install
 ```
 
-This copies `rtl_buddy_wave.lua` to `~/.local/share/nvim/site/plugin/`, which nvim auto-sources at startup. No `init.lua` changes are needed. Reinstall after rtl-buddy upgrades with `--force`:
+This clones the plugin (pinned to a revision compatible with this rtl-buddy's hub protocol) into `~/.local/share/nvim/site/pack/rtlbuddy/start/rtl-buddy-nvim` and writes a managed `~/.local/share/nvim/site/plugin/rtl_buddy_setup.lua` that nvim auto-sources at startup — no `init.lua` changes are needed. The managed setup also auto-connects to the hub and, when `verible-verilog-ls` is on `PATH`, starts it for symbol resolution.
+
+Keep it current after an rtl-buddy upgrade:
 
 ```bash
-rb wave-install-nvim --force
+rb nvim-install --update   # sync to the revision pinned by your rtl-buddy
+rb nvim-install --force    # remove and re-install
 ```
+
+`git` is required (the plugin is fetched via `git clone`). For an offline or sibling-checkout install, point at a local path: `rb nvim-install --source /path/to/rtl-buddy-nvim --ref <branch>`.
 
 If the plugin is missing when `rb wave` starts with `editor-sock` configured, a warning is shown:
 
 ```
-WARNING  nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations
+WARNING  nvim plugin not installed — run "rb nvim-install" to enable the hub connection and wave annotations
 ```
+
+Verify the install with `:checkhealth rtlbuddy` in nvim — it reports hub state, LSP attach, and whether wave annotation is enabled.
 
 ### Adding signals to Surfer from nvim
 
@@ -127,7 +134,15 @@ It reads the same `fpv.yaml` (`-c`/`--fpv-config`, default `fpv.yaml`) to resolv
 
 ## Hub integration
 
-When a project [coordination hub](hub.md) is running, `rb wave` opportunistically connects to it as the `wave`-origin peer (the bridge in `tools/wave_hub_bridge.py`; the hub is discovered via `$RTL_BUDDY_HUB` or by walking up to `.rtl-buddy/hub.json`). The bridge forwards Surfer events to the hub (cursor moves → `cursor_time_changed`, plus `scope_changed`, `signal_selected`, and a `wave_values_changed` snapshot on cursor move) and serves hub requests back to Surfer (`wave_add_variables`, `wave_set_cursor`, `wave_set_scope`, `wave_set_viewport`, `wave_zoom_to_range`, `wave_zoom_to_fit`). Time is exchanged in femtoseconds (`time_unit=fs`). If no hub is reachable the bridge stays silent and `rb wave` runs fully standalone — the hub is never required.
+When a project [coordination hub](hub.md) is running, `rb wave` opportunistically connects to it as the `wave`-origin peer (the bridge in `tools/wave_hub_bridge.py`; the hub is discovered via `$RTL_BUDDY_HUB` or by walking up to `.rtl-buddy/hub.json`). The bridge forwards Surfer events to the hub (cursor moves → `cursor_time_changed`, plus `scope_changed`, `signal_selected`, and a `wave_values_changed` snapshot on cursor move) and serves hub requests back to Surfer. Navigation requests are `wave_set_cursor`, `wave_set_scope`, `wave_set_viewport`, `wave_zoom_to_range`, `wave_zoom_to_fit`; item-management requests are `wave_add_variables`, `wave_get_items`, `wave_remove_items`, `wave_move_items`, and `wave_add_comments`. The item-management requests let an agent (over `rb hub send`) inspect and curate the displayed signal/comment list, with genuine success/error reporting — the bridge waits for Surfer's WCP `ack`/response and translates a Surfer `error` frame into a hub `error` instead of replying optimistically. (`wave_move_items` and `wave_add_comments` require the surfer fork's `move_items` / `add_dividers` WCP commands.) Time is exchanged in femtoseconds (`time_unit=fs`). If no hub is reachable the bridge stays silent and `rb wave` runs fully standalone — the hub is never required.
+
+## Time units
+
+The wave stack uses **two different time units** — mixing them silently mis-places the cursor by orders of magnitude:
+
+- **pywellen / FST analysis — timescale *ticks*.** Signal-value reads go through pywellen, whose `Signal.all_changes()` and `Waveform.time_table` return integer **timesteps in the FST's timescale resolution**, not picoseconds. With Verilator's default `1ns/10ps` timescale one tick = 10 ps, so a 10 ns clock period is 1000 ticks and a cursor at 95 ns is tick 9500. Convert ticks to real time with the timescale object from `Waveform.hierarchy.timescale()` (a method — it returns `.factor` / `.unit`, e.g. `10` / `ps`), not a bare multiplier.
+- **Hub / WCP — femtoseconds.** The bridge and `rb hub send wave-cursor <T_FS>` / `wave-zoom <START_FS> <END_FS>` exchange time in **femtoseconds** (`time_unit=fs`); the bridge forwards the fs value to Surfer verbatim with `time_unit=fs` and Surfer converts to its own timestep. At a 10 ps timescale 1 tick = 10 000 fs, so 95 ns = 95 000 000 fs = tick 9500. Pass fs to the `wave-*` verbs — a ps or tick value lands 10³–10⁶× off.
+- **Surfer command files (the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) fork) — timescale ticks.** `cursor_set` / `zoom_range` in a `-c` command file use the same tick unit as pywellen, *not* fs. (This is surfer-side behavior, documented here for the round-trip.)
 
 ## Surfer build
 

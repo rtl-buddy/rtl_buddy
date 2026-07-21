@@ -17,6 +17,7 @@ class SuiteConfigFile:
     filetype: Literal["test_config"] = field(rename="rtl-buddy-filetype")
     testbenches: list[TestbenchConfig]
     tests: list[TestConfigFile]
+    builder: str | None = None
 
 
 class SuiteConfig:
@@ -81,6 +82,8 @@ class SuiteConfig:
 
             try:
                 tbs = {tb.get_name(): tb for tb in data.testbenches}
+            except FatalRtlBuddyError:
+                raise
             except Exception as e:
                 log_event(
                     logger,
@@ -94,13 +97,16 @@ class SuiteConfig:
             config_dir = os.path.dirname(path)
             try:
                 self.tests = {
-                    test.name: test.initialise(config_dir, tbs) for test in data.tests
+                    test.name: test.initialise(config_dir, tbs, data.builder)
+                    for test in data.tests
                 }
             except KeyError:
                 log_event(
                     logger, logging.ERROR, "suite_config.testbench_missing", path=path
                 )
                 raise FatalRtlBuddyError(f"{path}: Requested testbench missing")
+            except FatalRtlBuddyError:
+                raise
             except Exception as e:
                 log_event(
                     logger,

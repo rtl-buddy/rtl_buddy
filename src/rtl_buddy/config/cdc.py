@@ -10,7 +10,7 @@ model + an SDC + optionally a waiver file; the project's
 import logging
 import os
 import pprint
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dc_field
 
 from serde import field, serde
 from serde.yaml import from_yaml
@@ -30,12 +30,16 @@ logger = logging.getLogger(__name__)
 class CdcToolOpts:
     sync_depth: int | None = None
     extra_args: str = ""
+    # Vivado-backend only: the device part used for ``synth_design``
+    # elaboration before ``report_cdc``. Ignored by rtl-buddy-cdc.
+    part: str | None = None
 
 
 @serde
 class CdcToolOptsFile:
     sync_depth: int | None = field(rename="sync-depth", default=None)
     extra_args: str = field(rename="extra-args", default="")
+    part: str | None = None
 
 
 @serde
@@ -60,10 +64,12 @@ class CdcToolConfig:
     def get_opts(self, overrides: dict | None = None) -> CdcToolOpts:
         sync_depth = self._cfg.opts.sync_depth
         extra_args = self._cfg.opts.extra_args
+        part = self._cfg.opts.part
         if overrides:
             sync_depth = overrides.get("sync_depth", sync_depth)
             extra_args = overrides.get("extra_args", extra_args)
-        return CdcToolOpts(sync_depth=sync_depth, extra_args=extra_args)
+            part = overrides.get("part", part)
+        return CdcToolOpts(sync_depth=sync_depth, extra_args=extra_args, part=part)
 
 
 # ---- per-analysis config ---------------------------------------------------
@@ -86,6 +92,19 @@ class CdcConfigFile:
     # can add frontends without an rtl_buddy release. Unknown values
     # are rejected by the analyzer's own arg parser.
     frontend: str | None = None
+    # Modules to treat as black boxes: each is forwarded as-is via a
+    # repeated ``--blackbox <module>`` to the analyzer (rtl-buddy-cdc#259),
+    # stubbing out that module's internals during elaboration. Like
+    # ``frontend`` above, values are intentionally not validated here so the
+    # analyzer owns the accepted-name set. Empty by default (no blackboxing).
+    blackbox: list[str] = field(default_factory=list)
+    # Recognized-synchronizer instance patterns (regexes) for `--check-xdc`.
+    # A crossing the analyzer flags as a violation but whose instance matches
+    # one of these is treated as a real synchronizer the engine did not
+    # recognize structurally (e.g. a blackboxed `xpm_cdc_*` macro): the audit
+    # then requires it to be constrained (completeness) but does NOT report a
+    # correct XDC waiver of it as a dangerous over-waive.
+    recognized_syncs: list[str] = field(rename="recognized-syncs", default_factory=list)
     # Expected-fail markers (pytest-style). Either flag marks the analysis
     # expected-to-fail (a FAIL becomes XFAIL, a pass); they differ only in
     # how an unexpected pass (XPASS) is counted: `xfail` non-strict (XPASS
@@ -113,6 +132,8 @@ class CdcConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             frontend=self.frontend,
+            blackbox=self.blackbox,
+            recognized_syncs=list(self.recognized_syncs),
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -129,8 +150,15 @@ class CdcConfig:
     _reglvl: int | dict | None
     tool_overrides: dict | None
     frontend: str | None = None
+    blackbox: list[str] = dc_field(default_factory=list)
+    recognized_syncs: list[str] = dc_field(default_factory=list)
     xfail: bool = False
     xfail_strict: bool = False
+
+    def get_recognized_syncs(self) -> list[str]:
+        """Instance-path regexes treated as recognized synchronizers in
+        `--check-xdc` (suppress false over-waives; still require coverage)."""
+        return list(self.recognized_syncs)
 
     def is_xfail(self) -> bool:
         """Whether this analysis is expected to fail (either flag set)."""

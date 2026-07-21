@@ -16,12 +16,15 @@ Sequence:
 
 import logging
 import os
+import shutil
 import subprocess
 import threading
 
 from ..config.surfer import SurferConfig
 from ..config.test import TestConfig
-from ..logging_utils import emit_console_text, log_event
+from ..errors import FatalRtlBuddyError
+from ..logging_utils import emit_console_text, log_event, task_status
+from ..process_utils import run_managed_process
 from .surfer_wcp import (
     EditorLauncher,
     SurferSourceResolver,
@@ -32,6 +35,89 @@ from .surfer_wcp import (
 from .wave_hub_bridge import maybe_connect_bridge
 
 logger = logging.getLogger(__name__)
+
+
+def prepare_surfer_trace(
+    trace_path: str, wave_format: str | None, test_name: str
+) -> str:
+    """Adapt a resolved debug trace to a path Surfer (wellen) can open.
+
+    Surfer reads FST and VCD natively, so the default Icarus ``dump.vcd``
+    opens without conversion. Two cases need handling:
+
+    * **VCS VPD** — wellen cannot read ``.vpd``; `rb wave` does not bundle
+      the Synopsys conversion tools (that lives in `rb axi-profile`). Fail
+      with a pointer rather than handing Surfer a file it can't open.
+    * **``wave-format: fst-postproc``** — when the builder requests it and
+      the trace is a VCD, convert to a sibling ``.fst`` via ``vcd2fst``
+      (GTKWave). If ``vcd2fst`` is absent, fall back to the VCD (Surfer
+      reads it anyway) with a warning.
+    """
+    if trace_path.endswith(".vpd"):
+        raise FatalRtlBuddyError(
+            f"rb wave: newest trace for '{test_name}' is a VCS VPD "
+            f"({trace_path}), which Surfer cannot open. Re-run the debug "
+            "sim with a Verilator (FST) or Icarus (VCD) builder, or use "
+            "`rb axi-profile` which converts VPD via vpd2vcd."
+        )
+
+    if wave_format == "fst-postproc" and trace_path.endswith(".vcd"):
+        return _vcd_to_fst(trace_path, test_name)
+
+    return trace_path
+
+
+def _vcd_to_fst(vcd_path: str, test_name: str) -> str:
+    """Convert ``vcd_path`` to a cached sibling ``.fst`` via ``vcd2fst``.
+
+    Cached against the VCD's mtime so repeated `rb wave` invocations skip
+    re-conversion. Returns the VCD unchanged when ``vcd2fst`` is missing.
+    """
+    fst_path = os.path.splitext(vcd_path)[0] + ".fst"
+    if os.path.isfile(fst_path) and os.path.getmtime(fst_path) >= os.path.getmtime(
+        vcd_path
+    ):
+        log_event(
+            logger,
+            logging.INFO,
+            "wave.fst_postproc_cached",
+            test=test_name,
+            fst=fst_path,
+        )
+        return fst_path
+
+    if shutil.which("vcd2fst") is None:
+        log_event(
+            logger,
+            logging.WARNING,
+            "wave.vcd2fst_missing",
+            test=test_name,
+            vcd=vcd_path,
+        )
+        return vcd_path
+
+    with task_status(f"rb wave vcd2fst {test_name}"):
+        result = run_managed_process(
+            ["vcd2fst", vcd_path, fst_path],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(vcd_path),
+        )
+    if result.returncode != 0 or not os.path.isfile(fst_path):
+        log_event(
+            logger,
+            logging.WARNING,
+            "wave.vcd2fst_failed",
+            test=test_name,
+            vcd=vcd_path,
+            returncode=result.returncode,
+        )
+        return vcd_path
+
+    log_event(
+        logger, logging.INFO, "wave.fst_postproc_done", test=test_name, fst=fst_path
+    )
+    return fst_path
 
 
 class WaveLauncher:
@@ -55,10 +141,6 @@ class WaveLauncher:
         self._surfer_file = surfer_file
         self._scope_annotation = scope_annotation
 
-    _NVIM_PLUGIN = os.path.expanduser(
-        "~/.local/share/nvim/site/plugin/rtl_buddy_wave.lua"
-    )
-
     def _check_nvim_plugin(self) -> None:
         """Warn if editor-sock is configured but the nvim plugin is not installed."""
         if not self._surfer_cfg.resolved_editor_sock:
@@ -66,12 +148,14 @@ class WaveLauncher:
         cmd = self._surfer_cfg.editor_cmd.strip()
         if not (cmd.startswith("nvim") or "/nvim" in cmd):
             return
-        if not os.path.isfile(self._NVIM_PLUGIN):
+        from .nvim_install import is_installed, pack_dir
+
+        if not is_installed():
             log_event(
                 logger,
                 logging.WARNING,
                 "wave.nvim_plugin_missing",
-                path=self._NVIM_PLUGIN,
+                path=str(pack_dir()),
             )
 
     def launch(self) -> None:

@@ -53,6 +53,10 @@ tests:
 | `preproc` | Pre-processing script (see [Plugins](plugins.md)) |
 | `assertions` | Boolean: compile in SVA (`--assert`) and report firings (see [Assertion-Based Verification](abv-simulation.md)) |
 
+### VCS license-queue waits and `sim_timeout`
+
+When a VCS `simv` run is invoked with `-licqueue` and no seat is free, it prints a `Queuing for License` banner and blocks until one opens up. `rtl_buddy` detects that banner (and the `Licensed number of users already reached` variant) in the sim's output and pauses the `sim_timeout` clock for as long as the sim is queuing, so a busy license server doesn't cause a false timeout. There is a 1-hour safety cap on total queued time — if the sim is still queuing after that, `sim_timeout` resumes counting and the sim can time out normally.
+
 ### Regression levels
 
 `reglvl` controls which tests run during a regression:
@@ -68,6 +72,18 @@ reglvl:
 ```
 
 Use `--reg-level` and `--start-level` on the `regression` subcommand to select a level range. See [Regressions](regressions.md).
+
+The `test` subcommand accepts the same two long-form options (no short flags), so a single `tests.yaml` suite can be filtered by regression level without a `regressions.yaml`:
+
+```bash
+# Run only tests with reglvl <= 2000
+rtl-buddy test --reg-level 2000
+
+# Run tests with reglvl in [1000, 3000]
+rtl-buddy test --start-level 1000 --reg-level 3000
+```
+
+Tests with `reglvl` above `--reg-level` or below `--start-level` are reported as `SKIP`. Unlike `regression`, omitting both flags on `test` runs every test regardless of `reglvl` — filtering only kicks in once one of the flags is given.
 
 ### Default transcript parsing
 
@@ -117,14 +133,36 @@ The transcript parser is not the only source of failures. `rtl_buddy` also marks
 - compilation fails
 - simulation times out
 
+### Stopping early
+
+The global `-E`/`--early-stop` option halts a run after a given stage (`pre`, `comp`, `sim`, or `post`):
+
+```bash
+rtl-buddy -E comp test smoke
+```
+
+Stopping after a successful stage (e.g. `comp`) reports result `NA` (e.g. desc "Stopped early at compile") rather than a `PASS`/`FAIL` transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other `NA`. Because the exit code reflects whether `rtl_buddy` and its tools ran properly rather than the DUT verdict, a successful early stop still exits 0. If compilation itself fails, the result is `FAIL` with exit code 1, regardless of `--early-stop`.
+
+### Result statuses
+
+`rtl_buddy` reports one of these result statuses per test:
+
+| Result | Meaning |
+|--------|---------|
+| `PASS` | A real simulation run completed and the transcript/UVM verdict was a pass |
+| `FAIL` | A real simulation run failed, or a tool/flow step failed (setup, filelist, compile, sim timeout) |
+| `XFAIL` / `XPASS` | `PASS`/`FAIL` remapped by `xfail`/`xfail_strict` — see [Expected failures](expected-failures.md) |
+| `SKIP` | A regression-level skip (`reglvl` outside `--reg-level`/`--start-level`) |
+| `NA` | Everything else, including all intentional early stops — no real pass/fail verdict was produced, so the result needs hand-checking |
+
 ### Exit codes
 
-`rtl_buddy` returns one of three exit codes from test commands:
+The exit code reflects whether `rtl_buddy` and its tools ran, not the DUT verdict:
 
 | Code | Meaning |
 |------|---------|
-| 0 | All tests passed |
-| 1 | One or more tests failed |
+| 0 | No real `FAIL` verdicts — includes `PASS`, `SKIP`, `XFAIL`, and `NA` (early stops included) |
+| 1 | One or more tests resulted in `FAIL` (a real fail verdict, or a tool/flow failure such as compilation failure) |
 | 2 | Fatal configuration or environment error |
 
 ## Running tests
@@ -143,6 +181,46 @@ List tests without running:
 ```bash
 rtl-buddy test --list
 ```
+
+### Sharing compiled builds across tests
+
+By default every test compiles into its own build directory
+(`artefacts/<test>/obj_dir_<test>`), so a suite of N tests that share one
+testbench verilates the design N times. For large designs the verilation
+step dominates wall-clock time.
+
+`--share-build` opts into reusing one compiled `simv` across tests whose
+compile inputs are identical:
+
+```bash
+rtl-buddy test --share-build
+rtl-buddy regression --share-build
+```
+
+The build directory is keyed on a hash of the compile inputs — builder
+executable, compile-time options, plusdefines, compile environment, and the
+resolved filelist — and lives at `artefacts/.shared-builds/obj_dir_<hash>/`.
+The first test with a given key compiles; subsequent tests find a valid
+`simv` and skip verilation entirely. Runtime-only inputs (plusargs, seeds,
+`timeout`) never affect the key, so tests that differ only in those always
+share. Tests with different `pd` plusdefines hash to different keys and
+compile separately.
+
+After a successful compile, a `rb-compile-stamp.json` recording the exact
+compile inputs (including each source file's size and modification time) is
+written next to the `simv`. Reuse only happens when the stamp matches, so
+editing any file listed in the filelist triggers a rebuild in place.
+
+Caveats:
+
+- Verilator builders only. Other builders log a warning and compile per
+  test as before.
+- Changes inside `+incdir+` include directories are not tracked by the
+  stamp; delete `artefacts/.shared-builds/` (or run without
+  `--share-build`) to force a fresh compile after header-only edits.
+- Toolchain upgrades are likewise invisible to the stamp. See
+  [Known Issues](../known-issues.md#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades)
+  for the full list of untracked inputs.
 
 ## Randomization
 

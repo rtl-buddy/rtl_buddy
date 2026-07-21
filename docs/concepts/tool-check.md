@@ -118,6 +118,8 @@ Emits a structured payload with `tools`, `subcommands`, and a top-level `exit_co
 
 JSON output is the wire format for CI agents and IDE integrations — `rb tool-check --format json` is stable enough to script against. Combine with `--required-for` to narrow the result to a single subcommand.
 
+The global `--machine` flag is also honored: `rb --machine tool-check ...` wraps the same `tools` / `subcommands` / `exit_code` structure inside the standard machine-mode envelope (`{"command": "tool-check", "exit_code": ..., "payload": {...}}`) on stdout, exactly like every other command. Agents driving the [`--machine` loop](../agents.md) should use this form — they get one parseable envelope without needing the command-specific `--format json` flag. `--format json` remains for non-machine callers who want the bare manifest dict.
+
 ## How the manifest works
 
 The single source of truth lives in `src/rtl_buddy/tool_manifest.py`. Each `ToolSpec` declares:

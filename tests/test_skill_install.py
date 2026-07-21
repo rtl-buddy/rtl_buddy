@@ -1,4 +1,13 @@
-from rtl_buddy.skill_install import _update_gitignore
+from typer.testing import CliRunner
+
+from rtl_buddy.skill_install import (
+    SKILL_DIRNAME,
+    SKILL_FILENAME,
+    _update_gitignore,
+    app,
+)
+
+runner = CliRunner()
 
 _SNIPPET = (
     "# rtl_buddy skill (materialized by `rtl-buddy skill install --project`)\n"
@@ -82,3 +91,32 @@ def test_patterns_present_comment_missing(tmp_path):
     result = _update_gitignore(gitignore, _SNIPPET, dry_run=False)
     assert result == "already present"
     assert "# rtl_buddy skill" not in gitignore.read_text()
+
+
+def test_install_dir_flat_target(tmp_path):
+    result = runner.invoke(app, ["install", "--dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    skill = tmp_path / SKILL_DIRNAME / SKILL_FILENAME
+    assert skill.is_file()
+    # flat layout: no .claude / .agents intermediate dirs
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".agents").exists()
+
+
+def test_install_dir_mutually_exclusive_with_project(tmp_path):
+    result = runner.invoke(app, ["install", "--dir", str(tmp_path), "--project"])
+    assert result.exit_code != 0
+    assert "mutually exclusive" in str(result.exception)
+
+
+def test_install_no_gitignore_skips_gitignore(tmp_path):
+    result = runner.invoke(app, ["install", "--root", str(tmp_path), "--no-gitignore"])
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".gitignore").exists()
+    assert ".gitignore:" not in result.output
+
+
+def test_install_project_writes_gitignore_by_default(tmp_path):
+    result = runner.invoke(app, ["install", "--root", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".gitignore").is_file()

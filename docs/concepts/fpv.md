@@ -87,7 +87,7 @@ verifications:
 | `tool_overrides` | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
 | `vacuity` | Optional bool. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived cover properties for every `a \|-> b` antecedent in the property set — flags vacuous proofs. Defaults to false for `cover` / `live` modes. See [Vacuity covers](#vacuity-covers). |
 | `coi` | Optional bool. When true (default), run a yosys cone-of-influence pass and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](#cone-of-influence-coverage). |
-| `frontend` | SystemVerilog frontend: `"verilog"` (default — fast, no plugin, immediate-assert + simple-concurrent SVA only) or `"slang"` (yosys-slang plugin — required for concurrent SVA `\|->` / `\|=>` / sequence operators and for `bind` to elaborate). `slang` requires `cfg-fpv-tools[].opts.plugin-path` in root_config.yaml. See [Choosing a frontend](#choosing-a-frontend). |
+| `frontend` | SystemVerilog frontend: `"verilog"` (default — fast, no plugin, immediate-assert + simple-concurrent SVA only) or `"slang"` (yosys-slang plugin — required for concurrent SVA `\|->` / `\|=>` / sequence operators and for `bind` to elaborate). `slang` requires `cfg-fpv-tools[].opts.plugin-path` in root_config.yaml (or the `RTL_BUDDY_SLANG_PLUGIN` env var). See [Choosing a frontend](#choosing-a-frontend). |
 | `xfail` | Optional bool, default false. Marks the verification as *expected to fail*, **non-strict**. See [Expected failures (xfail)](expected-failures.md). |
 | `xfail_strict` | Optional bool, default false. Like `xfail`, but **strict** — an unexpected pass (`XPASS`) counts as a failure. See [Expected failures (xfail)](expected-failures.md). |
 
@@ -134,7 +134,7 @@ cfg-fpv-tools:
 Two SystemVerilog frontends are supported under `rb fpv`:
 
 - **`frontend: verilog`** (default) — yosys's native verilog reader. No plugin needed. Handles immediate `assert (expr);` inside `always` blocks plus simple concurrent assertions (`assert property (@clk expr);`). Rejects `|->` / `|=>`, `##N`, and sequence operators outright. A compilation-unit-scope SV `bind` is **not** rejected — it parses, but the bound checker module is silently dropped (stored as `$abstract`, then removed as unused), so the proof elaborates **zero** formal cells. `rb fpv` guards against this: a `properties:`-listed suite that produces no assert/assume/cover cells fails loud with an error pointing you at `frontend: slang`, rather than reporting a vacuous PASS — see [Quirks & Known Issues](../known-issues.md#compilation-unit-bind-under-frontend-verilog-elaborates-zero-formal-cells).
-- **`frontend: slang`** — yosys-slang plugin. Required for concurrent SVA implications (`a |-> b`, `a |=> b`), sequence operators, and SV `bind` directives to elaborate. Requires `cfg-fpv-tools[].opts.plugin-path` in `root_config.yaml`.
+- **`frontend: slang`** — yosys-slang plugin. Required for concurrent SVA implications (`a |-> b`, `a |=> b`), sequence operators, and SV `bind` directives to elaborate. Requires `cfg-fpv-tools[].opts.plugin-path` in `root_config.yaml`, or — when that is unset — the `RTL_BUDDY_SLANG_PLUGIN` environment variable (set once per machine, e.g. from a toolchain env script; explicit `plugin-path` wins).
 
 When in doubt, **start with `verilog`** — it's the path most rtl_buddy demos use. Move to `slang` only when you need `|->` / `|=>` for vacuity covers or a richer SVA dialect.
 

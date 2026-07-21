@@ -43,6 +43,9 @@ class _DummyRootCfg:
     def get_rtl_builder_cfg(self):
         return _DummyBuilderCfg()
 
+    def resolve_rtl_builder_cfg(self, _test_builder_name=None):
+        return _DummyBuilderCfg()
+
     def get_use_lcov(self, _):
         return False
 
@@ -76,6 +79,9 @@ class _DummyTestCfg:
 
     def get_name(self):
         return "test_sc"
+
+    def get_builder_name(self):
+        return None
 
     def get_model(self):
         from types import SimpleNamespace

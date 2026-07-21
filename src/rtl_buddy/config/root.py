@@ -31,9 +31,12 @@ from .pnr import PnrToolConfig, PnrToolConfigFile
 from .pnr_platform import PnrPlatformConfig, PnrPlatformConfigFile
 from .power import PowerToolConfig, PowerToolConfigFile
 from .cdc import CdcToolConfig, CdcToolConfigFile
+from .fpga import FpgaToolConfig, FpgaToolConfigFile
+from .fpga_platform import FpgaPlatformConfig, FpgaPlatformConfigFile
 from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
+from .xplr import XplrConfig, XplrConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -133,6 +136,12 @@ class RootConfigFile:
     power_tools: list[PowerToolConfigFile] = field(
         rename="cfg-power-tools", default_factory=list
     )
+    fpga_tools: list[FpgaToolConfigFile] = field(
+        rename="cfg-fpga-tools", default_factory=list
+    )
+    fpga_platforms: list[FpgaPlatformConfigFile] = field(
+        rename="cfg-fpga-platforms", default_factory=list
+    )
     cdc_tools: list[CdcToolConfigFile] = field(
         rename="cfg-cdc-tools", default_factory=list
     )
@@ -144,6 +153,7 @@ class RootConfigFile:
     )
     systemc: SystemCConfigFile | None = field(rename="cfg-systemc", default=None)
     tools: list[ToolVersionConfigFile] = field(rename="cfg-tools", default_factory=list)
+    xplr: XplrConfigFile | None = field(rename="cfg-xplr", default=None)
 
 
 class RootConfig:
@@ -196,11 +206,14 @@ class RootConfig:
         self.pnr_platform_cfgs: dict = {}
         self.pnr_tool_cfgs: dict = {}
         self.power_tool_cfgs: dict = {}
+        self.fpga_tool_cfgs: dict = {}
+        self.fpga_platform_cfgs: dict = {}
         self.cdc_tool_cfgs: dict = {}
         self.fpv_tool_cfgs: dict = {}
         self.synth_effort_cfgs: dict = {}
         self.systemc_cfg: SystemCConfig | None = None
         self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
+        self.xplr_cfg: XplrConfig = XplrConfigFile().initialise()
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -281,6 +294,17 @@ class RootConfig:
                 cfg.name: PowerToolConfig(cfg) for cfg in data.power_tools
             }
 
+            # Populate FPGA tool configs
+            self.fpga_tool_cfgs = {
+                cfg.name: FpgaToolConfig(cfg) for cfg in data.fpga_tools
+            }
+
+            # Populate FPGA platform configs (device part + default XDC)
+            self.fpga_platform_cfgs = {
+                cfg.name: FpgaPlatformConfig(cfg, self.root_cfg_path)
+                for cfg in data.fpga_platforms
+            }
+
             # Populate CDC tool configs
             self.cdc_tool_cfgs = {
                 cfg.name: CdcToolConfig(cfg) for cfg in data.cdc_tools
@@ -304,6 +328,10 @@ class RootConfig:
             self.tool_version_cfgs = {
                 cfg.name: ToolVersionConfig.from_file(cfg) for cfg in data.tools
             }
+
+            # cfg-xplr experiment-ledger policy (optional, single block)
+            if data.xplr is not None:
+                self.xplr_cfg = data.xplr.initialise()
 
             # Record the regression config path; the RegConfig itself is
             # loaded lazily in get_rtl_reg_cfg() so non-simulation commands
@@ -418,6 +446,47 @@ class RootConfig:
           cfg (RtlBuilderConfiguration): The configuration.
         """
         return self.platform_cfg.get_builder()
+
+    def get_rtl_builder_cfg_by_name(self, name):
+        """
+        Get a builder configuration by its cfg-rtl-builder name.
+
+        Args:
+          name (str): Builder name as defined in cfg-rtl-builder.
+        Returns:
+          cfg (RtlBuilderConfig): The matching builder configuration.
+        Raises:
+          FatalRtlBuddyError: If no builder with that name is configured.
+        """
+        cfg = self.rtl_builder_cfgs.get(name)
+        if cfg is None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "builder.not_found",
+                builder=name,
+                available=list(self.rtl_builder_cfgs.keys()),
+            )
+            raise FatalRtlBuddyError(f'builder "{name}" not found in cfg-rtl-builder')
+        return cfg
+
+    def resolve_rtl_builder_cfg(self, test_builder_name=None):
+        """
+        Resolve the effective builder for a test.
+
+        Precedence: a ``--builder`` CLI override forces the builder for every
+        test (it "overrides all others"); otherwise a per-test/suite
+        ``builder:`` selection wins; otherwise the platform default applies.
+
+        Args:
+          test_builder_name (str | None): Builder name from the test/suite
+            ``builder:`` field, or None when unset.
+        Returns:
+          cfg (RtlBuilderConfig): The builder configuration to use.
+        """
+        if self.builder_override is None and test_builder_name is not None:
+            return self.get_rtl_builder_cfg_by_name(test_builder_name)
+        return self.get_rtl_builder_cfg()
 
     def get_rtl_reg_cfg(self):
         """
@@ -546,6 +615,29 @@ class RootConfig:
             )
         return cfg
 
+    def get_fpga_tool_cfg(self, name: str):
+        """
+        Get FPGA tool configuration by name.
+
+        Args:
+          name (str): Tool name as defined in cfg-fpga-tools.
+        Returns:
+          cfg (FpgaToolConfig|None): Matching FPGA tool configuration, or
+            None if no entry with that name is configured. Callers fall
+            back to the bare tool name on PATH when None is returned.
+        """
+        return self.fpga_tool_cfgs.get(name)
+
+    def get_fpga_platform_cfg(self, name: str) -> FpgaPlatformConfig:
+        """Get an FPGA platform configuration by name (cfg-fpga-platforms entry)."""
+        cfg = self.fpga_platform_cfgs.get(name)
+        if cfg is None:
+            raise FatalRtlBuddyError(
+                f"fpga platform '{name}' not found in cfg-fpga-platforms; "
+                f"available: {sorted(self.fpga_platform_cfgs)}"
+            )
+        return cfg
+
     def get_cdc_tool_cfg(self, name: str):
         """
         Get CDC tool configuration by name.
@@ -642,6 +734,20 @@ class RootConfig:
     def get_tool_version_cfg(self, name: str) -> ToolVersionConfig | None:
         """Get optional ``cfg-tools`` min-version pin for the given tool name."""
         return self.tool_version_cfgs.get(name)
+
+    def get_xplr_cfg(self) -> XplrConfig:
+        """
+        Get the xplr experiment-ledger configuration.
+
+        Returns:
+          cfg (XplrConfig): The cfg-xplr block, or the documented
+            defaults when the block is absent. Note xplr commands
+            themselves load this block leniently via
+            ``config.xplr.load_xplr_config`` (they never construct a
+            full RootConfig); this accessor is for code that already
+            holds one.
+        """
+        return self.xplr_cfg
 
     def get_systemc_cfg(self) -> SystemCConfig | None:
         """

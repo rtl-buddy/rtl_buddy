@@ -494,6 +494,58 @@ def test_sby_fpv_constraints_optional_default_unchanged(tmp_path):
     assert content.count("read -sv -formal ") == 2
 
 
+def test_sby_fpv_incdir_in_model_filelist_reaches_sby_as_include_dir(tmp_path):
+    """Regression: a `+incdir+` entry in the model filelist must reach the
+    generated sby script as an include directory, not be misclassified as a
+    source. _write_filelist emits the filelist and _parse_filelist re-reads it;
+    that round-trip must preserve the +incdir+ marker. (write_output strip=True
+    used to drop it, collapsing the dir to a bare path that _parse_filelist then
+    treated as a missing source file — so the include never resolved.)"""
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    inc = tmp_path / "inc"
+    inc.mkdir()
+    (inc / "defs.svh").write_text("// defs\n")
+    src = tmp_path / "top.sv"
+    src.write_text('`include "defs.svh"\nmodule top(); endmodule\n')
+    models = tmp_path / "models.yaml"
+    models.write_text("rtl-buddy-filetype: model_config\n")
+
+    model = ModelConfig(
+        name="top", filelist=["+incdir+inc", "top.sv"], path=str(models)
+    )
+    fpv_cfg = FpvConfig(
+        name="demo",
+        desc="t",
+        model=model,
+        tool="sby",
+        top="top",
+        properties=[],
+        constraints=None,
+        mode="bmc",
+        depth=20,
+        engines=["smtbmc yices"],
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    sby = SbyFpv(
+        name="t/sby", fpv_cfg=fpv_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+
+    sources, incdirs = sby._parse_filelist(sby._write_filelist())
+
+    # the include dir is captured as an incdir, NOT a (missing) source
+    assert any(Path(d).resolve() == inc.resolve() for d in incdirs)
+    assert all(Path(s).resolve() != inc.resolve() for s in sources)
+    assert any(Path(s).name == "top.sv" for s in sources)
+
+    # and it reaches the rendered sby script as a yosys include directive
+    content = Path(sby._write_sby_file(sources, incdirs)).read_text()
+    assert "verilog_defaults -add -I " in content
+    assert any(str(Path(d)) in content for d in incdirs)
+
+
 # ---------------------------------------------------------------------------
 # Vacuous-PASS guard (#260): a bind-based property file that the verilog
 # frontend silently drops elaborates zero formal cells. The generated

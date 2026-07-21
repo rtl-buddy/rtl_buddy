@@ -163,6 +163,9 @@ class _DummyRoot:
     def get_rtl_builder_cfg(self):
         return self._builder
 
+    def resolve_rtl_builder_cfg(self, _test_builder_name=None):
+        return self._builder
+
     def get_use_lcov(self, _family):
         return False
 
@@ -191,6 +194,9 @@ class _DummyTestCfg:
 
     def get_name(self):
         return self.name
+
+    def get_builder_name(self):
+        return None
 
     def get_model(self):
         return self.model

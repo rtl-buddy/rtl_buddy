@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rtl-buddy.dev/schemas/xplr-experiment-1.0.json",
+  "title": "rb xplr experiment record",
+  "type": "object",
+  "required": ["schema_version", "id", "source", "knobs", "outcome", "provenance"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+    "parent": { "type": ["string", "null"] },
+    "hypothesis": { "type": "string" },
+    "source": {
+      "type": "object",
+      "required": ["git_sha"],
+      "additionalProperties": false,
+      "properties": {
+        "git_sha": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "branch": { "type": "string" },
+        "diff_from": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "dirty": { "type": "boolean", "default": false }
+      }
+    },
+    "knobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "from", "to"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "from": { "description": "prior value, any JSON scalar/null" },
+          "to": { "description": "new value, any JSON scalar/null" },
+          "rationale": { "type": "string" },
+          "layer": { "enum": ["source", "flow", "impl"] }
+        }
+      }
+    },
+    "config_snapshot": {
+      "type": "object",
+      "description": "opaque absolute resolved knob state for re-run; rb xplr does not interpret it",
+      "additionalProperties": true
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["pending", "running", "success", "failed"] },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": { "type": ["number", "boolean"] }
+        },
+        "metric_meta": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "direction": { "enum": ["min", "max"] },
+              "unit": { "type": "string" }
+            }
+          }
+        },
+        "artifacts": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["created"],
+      "additionalProperties": false,
+      "properties": {
+        "created": { "type": "string", "format": "date-time" },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "version"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": "string" }
+            }
+          }
+        },
+        "reused_state": { "type": "string" },
+        "agent": { "type": "string" }
+      }
+    }
+  }
+}

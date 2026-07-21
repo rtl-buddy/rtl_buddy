@@ -1,0 +1,309 @@
+"""Generate scoped CDC timing exceptions from rtl-buddy-cdc's verified
+crossing set (issue #291).
+
+This is the *generation* half of the constraint loop: rtl-buddy-cdc already
+derives the clock-domain crossing set and the reset-synchronizer set (its
+``--emit-domain-map`` / ``--emit-reset-domain-map`` outputs); this module turns
+that analysis into the exact timing exceptions a synthesis/P&R flow needs, so
+portable CDC IP never hand-authors per-instance constraints.
+
+Pure functions over the two map JSONs — no subprocess, no tool dependency — so
+the contract is testable against checked-in fixture maps. The CLI layer
+(``rb cdc --emit-constraints``) runs the analysis to produce the maps, then
+calls :func:`generate_constraints`.
+
+Emitted, per verified-safe crossing:
+  * ``set_max_delay -datapath_only`` bounded to the destination clock period
+    (preferred over a bare ``set_false_path`` — it still bounds transit/skew),
+  * ``set_bus_skew`` additionally for multi-bit buses (width > 1), so a
+    false-path on a bus cannot hide bit-to-bit skew incoherency.
+Plus, at the top level (not when ``scoped``):
+  * ``create_clock`` echoed from the analysis SDC and ``set_clock_groups
+    -asynchronous`` for the async domain relationships.
+And, per reset synchronizer:
+  * ``set_false_path`` to the synchronizer's first stage (the async-assert /
+    sync-deassert path is exempt from the data-path timing check).
+
+SDC and XDC share this CDC-relevant subset verbatim; the ``fmt`` switch only
+changes the header and the scoped-cell addressing convention.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ConstraintEntry:
+    """One emitted exception plus why it was emitted (machine manifest row)."""
+
+    kind: str  # max_delay | bus_skew | clock_groups | create_clock | reset_false_path
+    target: str  # the instance / clock the exception applies to
+    width: int = 1
+    rationale: str = ""
+    line: str = ""  # the emitted constraint text
+
+
+@dataclass
+class EmitResult:
+    text: str  # the full constraint file
+    entries: list[ConstraintEntry] = field(default_factory=list)
+    # Scoped crossings whose capture instance flattened to the design top, so no
+    # IP-relative cell selector can be formed (a non-hierarchical frontend, e.g.
+    # Yosys `flatten`). The CLI turns a non-empty list into a hard error rather
+    # than emitting `<top>/*` wildcards that silently over-constrain everything.
+    unscoped: list[str] = field(default_factory=list)
+
+    @property
+    def manifest(self) -> list[dict]:
+        return [
+            {
+                "kind": e.kind,
+                "target": e.target,
+                "width": e.width,
+                "rationale": e.rationale,
+            }
+            for e in self.entries
+        ]
+
+
+def _strip_top(path: str) -> str:
+    """Drop the leading ``<top>.`` so an instance path is relative to the IP.
+
+    ``cdc_ref_top.u_hs.u_req_sync`` -> ``u_hs/u_req_sync`` (Tcl hier sep ``/``).
+    """
+    parts = path.split(".")
+    rel = parts[1:] if len(parts) > 1 else parts
+    return "/".join(rel)
+
+
+def _unscopable(inst: str, top: str) -> bool:
+    """True when an instance path cannot be made IP-relative for scoped output.
+
+    A hierarchy-preserving frontend (slang) reports a crossing's capture
+    instance as ``<top>.u_sync...``; a flattening frontend (Yosys `flatten`)
+    collapses it to the design top itself. In the latter case the only cell
+    selector we could form is ``<top>/*`` — every cell in the IP — which is not
+    a scoped exception at all, so we refuse to emit it.
+    """
+    if not inst:
+        return True
+    rel = _strip_top(inst)
+    return rel == "" or rel == top or inst == top
+
+
+def _cells(path: str) -> str:
+    """A ``get_cells`` selector for the *sequential* cells of an instance path.
+
+    The selector is the instance path stripped of the leading top — relative to
+    the design root for a flat top-level read, or to the IP reference when the
+    scoped file is applied with ``SCOPED_TO_REF``; the same expression resolves
+    in both. ``-filter {IS_SEQUENTIAL}`` keeps only flops: a path exception's
+    start/endpoints must be sequential, and a bare ``<inst>/*`` would also drag
+    in the instance's combinational cells / ``VCC`` / clock buffers, which
+    Vivado then rejects one-by-one (18-401 invalid endpoint / 18-402 invalid
+    startpoint) — noise that hides real findings.
+
+    Note: an earlier form emitted ``[get_cells -hierarchical <rel>/*]``, but
+    Vivado matches ``-hierarchical`` patterns against leaf cell names, so a
+    pattern containing the ``/`` hierarchy separator binds to **nothing** (Vivado
+    12-180 / 12-4739) — the exception then silently constrains no paths. A plain
+    rooted ``[get_cells <rel>/*]`` resolves correctly.
+    """
+    return f"[get_cells {_strip_top(path)}/* -filter {{IS_SEQUENTIAL}}]"
+
+
+def _safe_crossings(domain_map: dict) -> list[dict]:
+    """Crossings the analysis classified as real async crossings to constrain.
+
+    ``async_per_sdc`` marks a crossing the SDC declares asynchronous (the ones
+    that need exceptions); a crossing without it is intra-domain and is left to
+    normal timing.
+    """
+    out = []
+    for c in domain_map.get("crossings", []):
+        if c.get("async_per_sdc", True):
+            out.append(c)
+    return out
+
+
+def _period_for(domain_map: dict, clock: str) -> float | None:
+    for c in domain_map.get("clocks", []):
+        if c.get("name") == clock:
+            return c.get("period")
+    return None
+
+
+def generate_constraints(
+    domain_map: dict,
+    reset_map: dict | None = None,
+    *,
+    fmt: str = "sdc",
+    scoped: bool = False,
+) -> EmitResult:
+    """Build the exception set for ``domain_map`` (+ ``reset_map``).
+
+    ``fmt`` is ``"sdc"`` or ``"xdc"``; ``scoped`` emits IP-relative cell
+    addressing and omits top-level clock defs/groups (which belong to the
+    instantiating design, not the IP).
+    """
+    if fmt not in ("sdc", "xdc"):
+        raise ValueError(f"unknown constraint format {fmt!r} (expected sdc or xdc)")
+    reset_map = reset_map or {}
+    entries: list[ConstraintEntry] = []
+    lines: list[str] = []
+
+    top = domain_map.get("design", {}).get("top", "")
+    lines.append(f"# CDC timing exceptions for {top or 'design'} ({fmt.upper()})")
+    lines.append("# Generated by `rb cdc --emit-constraints` from the verified")
+    lines.append("# crossing set — do not hand-edit; regenerate when the RTL changes.")
+    if scoped:
+        lines.append(
+            "# Scoped: cells are IP-relative; apply with SCOPED_TO_REF so every "
+            "instantiation inherits these (top clock defs/groups belong to the parent)."
+        )
+    lines.append("")
+
+    # --- top-level clock framing (skipped for scoped IP emit) ---
+    if not scoped:
+        for clk in domain_map.get("clocks", []):
+            name, period = clk.get("name"), clk.get("period")
+            ports = clk.get("ports") or [name]
+            if name and period is not None:
+                line = (
+                    f"create_clock -name {name} -period {period} "
+                    f"[get_ports {{{' '.join(ports)}}}]"
+                )
+                lines.append(line)
+                entries.append(
+                    ConstraintEntry(
+                        kind="create_clock",
+                        target=name,
+                        rationale=f"{period} ns clock from the analysis SDC",
+                        line=line,
+                    )
+                )
+        for grp in domain_map.get("clock_groups", []):
+            if grp.get("kind") != "asynchronous":
+                continue
+            members = grp.get("members", [])
+            grp_str = " ".join(f"-group {{{' '.join(m)}}}" for m in members if m)
+            line = f"set_clock_groups -asynchronous {grp_str}"
+            lines.append(line)
+            entries.append(
+                ConstraintEntry(
+                    kind="clock_groups",
+                    target=" / ".join("+".join(m) for m in members),
+                    rationale="domains are mutually asynchronous per the analysis",
+                    line=line,
+                )
+            )
+        lines.append("")
+
+    # --- per-crossing data exceptions ---
+    unscoped: list[str] = []
+    for c in _safe_crossings(domain_map):
+        src_inst = c.get("src_source_instance_path", "")
+        dst_inst = c.get("dst_source_instance_path", "")
+        width = int(c.get("width", 1))
+        dst_clk = c.get("dst_clock", "")
+        if scoped and _unscopable(dst_inst, top):
+            # The capture instance flattened to the design top — no IP-relative
+            # selector exists. Record it (the CLI raises) and emit a visible
+            # marker instead of a `<top>/*` wildcard that over-constrains the IP.
+            tgt = _strip_top(c.get("dst_flop", "")) or dst_clk
+            unscoped.append(tgt)
+            lines.append(
+                f"# UNSCOPED: {c.get('src_clock', '?')} -> {dst_clk} crossing at "
+                f"{tgt} — capture instance flattened to the top; scoped emit needs "
+                "a hierarchy-preserving frontend (frontend: slang)"
+            )
+            continue
+        period = _period_for(domain_map, dst_clk)
+        if period is None:
+            # No period to bound the transit; fall back to a comment so the
+            # gap is visible rather than emitting a wrong number.
+            lines.append(
+                f"# WARNING: no period for {dst_clk}; max_delay for "
+                f"{_strip_top(dst_inst)} omitted (add create_clock to the SDC)"
+            )
+            continue
+        src_clk = c.get("src_clock", "")
+        if "." not in src_inst:
+            # The whole source domain — the analyzer reports the bare top when
+            # the source registers sit directly in the top. In a flat top-level
+            # read, address it by its launch clock: the canonical CDC `-from`,
+            # and, unlike `get_cells *`, every member is a valid set_max_delay /
+            # set_bus_skew startpoint (no combinational/VCC startpoint warnings).
+            # A scoped (SCOPED_TO_REF) file can't name the clock — the parent
+            # owns the clock framing — so it falls back to "every cell in the
+            # reference".
+            frm = (
+                f"[get_clocks {{{src_clk}}}]"
+                if (src_clk and not scoped)
+                else "[get_cells -hierarchical * -filter {IS_SEQUENTIAL}]"
+            )
+        else:
+            frm = _cells(src_inst)
+        to = _cells(dst_inst)
+        md = f"set_max_delay -datapath_only {period} -from {frm} -to {to}"
+        lines.append(md)
+        entries.append(
+            ConstraintEntry(
+                kind="max_delay",
+                target=_strip_top(dst_inst),
+                width=width,
+                rationale=(
+                    f"{dst_clk} crossing bounded to one {dst_clk} period "
+                    f"({period} ns); -datapath_only ignores the unrelated launch clock"
+                ),
+                line=md,
+            )
+        )
+        if width > 1:
+            bs = f"set_bus_skew {period} -from {frm} -to {to}"
+            lines.append(bs)
+            entries.append(
+                ConstraintEntry(
+                    kind="bus_skew",
+                    target=_strip_top(dst_inst),
+                    width=width,
+                    rationale=(
+                        f"{width}-bit bus: bound inter-bit skew to {period} ns so a "
+                        "false_path cannot hide bit-to-bit incoherency"
+                    ),
+                    line=bs,
+                )
+            )
+
+    # --- reset synchronizers ---
+    reset_syncs = reset_map.get("reset_synchronizers", [])
+    seen_reset: set[str] = set()
+    if reset_syncs:
+        lines.append("")
+    for rs in reset_syncs:
+        inst = rs.get("instance_path", "")
+        async_in = rs.get("async_in", "")
+        # One exception per synchronizer instance (the first-stage flop chain
+        # shares the instance); dedupe the per-flop entries the map lists.
+        inst_key = inst.rsplit(".", 1)[0] if "." in inst else inst
+        if inst_key in seen_reset:
+            continue
+        seen_reset.add(inst_key)
+        to = _cells(inst_key)
+        fp = f"set_false_path -to {to}"
+        lines.append(fp)
+        entries.append(
+            ConstraintEntry(
+                kind="reset_false_path",
+                target=_strip_top(inst_key),
+                rationale=(
+                    f"reset synchronizer (async-assert from {async_in}, "
+                    "sync-deassert): the async path is exempt from data-path timing"
+                ),
+                line=fp,
+            )
+        )
+
+    lines.append("")
+    return EmitResult(text="\n".join(lines), entries=entries, unscoped=unscoped)

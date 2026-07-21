@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -83,6 +84,37 @@ _ALL_MARKERS = (
 )
 
 
+def render_slang_read(top: str, incdirs: list[str], sources: list[str]) -> str:
+    """Render the single ``read_slang`` command shared by the proof
+    (``SbyFpv._render_sby``) and the COI walk (``build_yosys_script``).
+
+    These two MUST stay identical so the COI pass parses the exact design the
+    proof did; centralising the line here makes that invariant structural
+    instead of comment-enforced. The only thing callers vary is the ``sources``
+    token list (basenames for the sby workdir vs full paths for COI).
+
+    - ``--single-unit`` compiles the whole filelist as one compilation unit, so
+      ``\\`define`` macros carry across files and a compilation-unit-scope
+      ``\\`bind`` sees modules from sibling files (yosys-slang otherwise treats
+      each file as its own unit).
+    - include dirs go on the read_slang line as ``-I`` (``read_slang`` ignores
+      ``verilog_defaults -add -I``, which only configures yosys's built-in
+      verilog frontend).
+    - ``--no-synthesis-define -DFORMAL=1`` mirrors ``read -formal`` so in-RTL
+      ``\\`ifdef FORMAL`` asserts survive preprocessing (#246).
+
+    Filesystem paths are ``shlex.quote``d: yosys tokenises each script line
+    shell-style, so a single unquoted space (e.g. a path with a space) would
+    break the whole read_slang line (same convention as ``synth_yosys.py``).
+    """
+    inc_args = "".join(f" -I {shlex.quote(inc)}" for inc in incdirs)
+    src_args = " ".join(shlex.quote(s) for s in sources)
+    return (
+        f"read_slang --top {top} --single-unit{inc_args} "
+        f"--no-synthesis-define -DFORMAL=1 {src_args}"
+    )
+
+
 def build_yosys_script(
     *,
     sources: list[str],
@@ -109,21 +141,18 @@ def build_yosys_script(
                 "fpv_coi: frontend='slang' requires a non-empty plugin_path"
             )
         lines.append(f"plugin -i {plugin_path}")
-    for inc in incdirs:
-        lines.append(f"verilog_defaults -add -I {inc}")
+    # Verilog-frontend incdirs go through verilog_defaults; for slang they are
+    # carried on the read_slang line by render_slang_read (read_slang ignores
+    # verilog_defaults).
+    if frontend != "slang":
+        for inc in incdirs:
+            lines.append(f"verilog_defaults -add -I {inc}")
     constraint_files = [constraints] if constraints else []
     all_files = list(sources) + constraint_files + list(properties)
     if frontend == "slang":
-        # Single `read_slang --top <name> <files...>` so `bind`
-        # directives at compilation-unit scope see every declared
-        # module — matches the SbyFpv slang renderer, including
-        # `--no-synthesis-define -DFORMAL=1` (read -formal parity):
-        # without it, in-RTL `ifdef FORMAL asserts vanish at
-        # preprocessing and the COI column reports 0% (#246).
-        src_args = " ".join(all_files)
-        lines.append(
-            f"read_slang --top {top} --no-synthesis-define -DFORMAL=1 {src_args}"
-        )
+        # Shared with the SbyFpv proof renderer so the COI walk parses the same
+        # design; COI passes full paths (no sby workdir) rather than basenames.
+        lines.append(render_slang_read(top, incdirs, all_files))
     else:
         for src in all_files:
             lines.append(f"read -sv -formal {src}")

@@ -1,0 +1,72 @@
+{
+  "tool": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "module": "cdc_bad_top",
+  "summary": {
+    "ports": 5,
+    "cells": 3,
+    "flops": 2,
+    "crossings": 1,
+    "async_crossings": 1,
+    "violations": 1,
+    "suppressed": 0,
+    "baseline_carryover": 0
+  },
+  "by_instance": [
+    {
+      "instance_path": [],
+      "violations": 1,
+      "rules": {
+        "CDC-004": 1
+      }
+    }
+  ],
+  "domains": [
+    {
+      "flop": "$slang$adff$1",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "$slang$adff$2",
+      "clock": "clk_b"
+    }
+  ],
+  "crossings": [
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "dst_flop": "$slang$adff$2",
+      "width": 8,
+      "min_hops": 0,
+      "src_flop": "$slang$adff$1"
+    }
+  ],
+  "violations": [
+    {
+      "rule_id": "CDC-004",
+      "severity": "error",
+      "message": "unprotected bus crossing on clk_a \u2192 clk_b: 8-bit path with no recognized gating or gray-coding (src: $slang$adff$1, dst flop: $slang$adff$2)",
+      "cell_name": "$slang$adff$2",
+      "instance_path": [],
+      "crossing": {
+        "src_clock": "clk_a",
+        "dst_clock": "clk_b",
+        "dst_flop": "$slang$adff$2",
+        "width": 8,
+        "min_hops": 0,
+        "src_flop": "$slang$adff$1"
+      },
+      "location": {
+        "file": "cdc_bad_top.sv",
+        "start_line": 18,
+        "start_column": 3,
+        "end_line": 21,
+        "end_column": 6
+      }
+    }
+  ],
+  "suppressed": [],
+  "baseline_carryover": []
+}

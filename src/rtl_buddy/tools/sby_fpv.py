@@ -30,7 +30,8 @@ from .fpv_vacuity import (
     parse_vacuity_log,
     write_vacuity_module,
 )
-from .fpv_coi import run_coi_analysis
+from .fpv_coi import render_slang_read, run_coi_analysis
+from .synth_yosys import SLANG_PLUGIN_ENV, resolve_plugin_path
 
 
 # Sby's compatibility check requires a minimum yosys; we surface the
@@ -107,20 +108,13 @@ class SbyFpv:
     def _resolve_plugin_path(self, plugin_path: str | None) -> str | None:
         """Resolve a yosys plugin path against the project root.
 
-        Mirrors :func:`tools.synth_yosys.resolve_plugin_path`. Absolute
-        paths pass through; relative paths are taken relative to the
-        project root (the directory containing ``root_config.yaml``).
-        ``None`` returns ``None`` so callers can distinguish
-        unconfigured from configured-but-empty.
+        Delegates to :func:`tools.synth_yosys.resolve_plugin_path`:
+        absolute paths pass through; relative paths are taken relative
+        to the project root (the directory containing
+        ``root_config.yaml``); unconfigured falls back to the
+        ``RTL_BUDDY_SLANG_PLUGIN`` environment variable, then ``None``.
         """
-        if not plugin_path:
-            return None
-        p = Path(plugin_path)
-        if p.is_absolute():
-            return str(p)
-        if self.root_cfg is None:
-            return str(p.resolve())
-        return str((Path(self.root_cfg.get_project_rootdir()) / p).resolve())
+        return resolve_plugin_path(plugin_path, self.root_cfg)
 
     def _coi_script_path(self) -> str:
         return os.path.join(self.artefact_dir, "coi.ys")
@@ -137,13 +131,18 @@ class SbyFpv:
             model_cfg=self.fpv_cfg.get_model(),
             output_path=fl_path,
         )
+        # strip=False: keep the option markers (+incdir+, -v, +libext+, ...) in
+        # the emitted filelist. _parse_filelist below dispatches on exactly
+        # those prefixes to separate include dirs from sources; stripping them
+        # collapses a `+incdir+<dir>` entry to a bare path, which
+        # _parse_filelist then misreads as a (non-existent) source file.
         vlog_fl.write_output(
-            output_filepath=fl_path, unroll=True, strip=True, deduplicate=True
+            output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
         )
         return fl_path
 
     def _parse_filelist(self, fl_path: str) -> tuple[list[str], list[str]]:
-        """Return (source paths, include dirs) from a stripped filelist."""
+        """Return (source paths, include dirs) from the model filelist."""
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
         sources: list[str] = []
         incdirs: list[str] = []
@@ -243,19 +242,19 @@ class SbyFpv:
             if not plugin:
                 raise FatalRtlBuddyError(
                     f"{cfg.get_name()}: fpv frontend=slang requires "
-                    f"`cfg-fpv-tools[].opts.plugin-path` to point at the "
-                    f"built yosys-slang shared library"
+                    f"`cfg-fpv-tools[].opts.plugin-path` (or the "
+                    f"{SLANG_PLUGIN_ENV} environment variable) to point "
+                    f"at the built yosys-slang shared library"
                 )
             # `plugin -i` is idempotent within a yosys session — only
             # emit the directive when slang is actually used so the
             # default verilog path stays plugin-free.
             lines.append(f"plugin -i {plugin}")
-        for inc in incdirs:
-            if frontend == "slang":
-                # slang's preprocessor uses --include-directory; we
-                # accept the same incdirs the filelist already parsed.
-                lines.append(f"verilog_defaults -add -I {inc}")
-            else:
+        # Verilog-frontend incdirs go through verilog_defaults; for slang they
+        # are carried on the read_slang line by render_slang_read (read_slang
+        # ignores verilog_defaults -add -I).
+        if frontend != "slang":
+            for inc in incdirs:
                 lines.append(f"verilog_defaults -add -I {inc}")
         constraints = cfg.get_constraints()
         constraint_files = [constraints] if constraints else []
@@ -266,27 +265,14 @@ class SbyFpv:
             + list(extra_property_files)
         )
         if frontend == "slang":
-            # slang elaborates eagerly and handles SV `bind` directives,
-            # concurrent SVA implications, and full sequence operators
-            # that the native verilog frontend rejects. The `--top`
-            # arg is required for `bind` to resolve — slang's
-            # elaborator only pulls in bound modules under the
-            # designated top. All files are read in one invocation so
-            # bind statements at compilation-unit scope see every
-            # declared module.
-            #
-            # `--no-synthesis-define -DFORMAL=1` mirrors what the
-            # verilog path's `read -formal` does: yosys's verilog
-            # frontend replaces its implicit SYNTHESIS=1 define with
-            # FORMAL=1 in formal mode, while yosys-slang defaults to
-            # SYNTHESIS=1. Without this, in-RTL asserts guarded by
-            # `ifdef FORMAL are preprocessed away and the proof
-            # passes vacuously (#246).
-            src_args = " ".join(os.path.basename(s) for s in all_sources)
-            lines.append(
-                f"read_slang --top {cfg.get_top()} "
-                f"--no-synthesis-define -DFORMAL=1 {src_args}"
-            )
+            # slang elaborates eagerly and handles SV `bind`, concurrent SVA
+            # implications, and sequence operators the native verilog frontend
+            # rejects. The whole filelist is one read_slang command (one
+            # compilation unit, incdirs, formal defines) — see render_slang_read
+            # in fpv_coi, which the COI walk shares so it parses the same design.
+            # Basenames: files are dropped into the sby workdir under [files].
+            slang_sources = [os.path.basename(s) for s in all_sources]
+            lines.append(render_slang_read(cfg.get_top(), incdirs, slang_sources))
         else:
             for src in all_sources:
                 # Use basename — files are dropped into the sby workdir under [files].

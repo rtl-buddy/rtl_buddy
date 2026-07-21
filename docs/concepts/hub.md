@@ -26,7 +26,7 @@ The hub is **server-only**: every external speaker connects *into* the hub. The 
         │       .rtl-buddy/hub.toml        │         └──────────────────────┘
         │                                  │         ┌──────────────────────┐
         │                                  │◀──TCP──▶│  nvim Lua plugin     │
-        │                                  │         │  rtl_buddy_wave.lua  │
+        │                                  │         │  (rtl-buddy-nvim)    │
         └──────────────────────────────────┘         └──────────────────────┘
 ```
 
@@ -192,7 +192,7 @@ Unknown top-level sections fail validation (typo guard). Unknown keys *inside* k
 |---|---|---|
 | **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Loaded from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
 | **`rb wave` bridge** (`tools/wave_hub_bridge.py`) | Line-delimited JSON over TCP on `listen_port` | Started by `rb wave`; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff. |
-| **nvim plugin** (`src/rtl_buddy/nvim/rtl_buddy_wave.lua`) | Line-delimited JSON over TCP on `listen_port` | Connects when the user opens a file rtl-buddy knows how to resolve. |
+| **nvim plugin** ([`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim), installed by `rb nvim-install`) | Line-delimited JSON over TCP on `listen_port` | Auto-connects on startup (the managed setup calls `setup({ auto_connect = true })`). |
 
 Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), and `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one.
 
@@ -218,6 +218,7 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 
 - **State broadcast:** `select INSTANCE_PATH`, `signal SIGNAL`, `cursor T_FS`, `scope WAVE_SCOPE`, `open FILE:LINE[:COL]`.
 - **Wave control** (routed to surfer via the `rb wave` bridge): `wave-add VARIABLES…`, `wave-cursor T_FS`, `wave-scope WAVE_SCOPE`, `wave-pan T_FS`, `wave-zoom START_FS END_FS`, `wave-zoom-fit`.
+- **Wave-view item management** (also via the `rb wave` bridge — lets an agent curate the signal list): `wave-items` (list the displayed items as `{id, type, name}`), `wave-remove IDS…` (reports `removed` vs `not_found`), `wave-move IDS… --to N | --before ID` (reorder), `wave-comment TEXTS… [--after ID]` (add comment rows / dividers, returns their ids). Every verb reports genuine success/error: a surfer-side rejection (unknown id, illegal move, unknown scope) comes back as a hub `error` and a non-zero CLI exit, not a false `{"ok": true}`. `wave-move`/`wave-comment` need the [`rtl-buddy/surfer`](https://github.com/rtl-buddy/surfer) fork with the `move_items` / `add_dividers` WCP commands.
 - **SPA:** `view-pan INSTANCE_PATH`, `overlay NAME --on/--off` (`clock` / `reset` / `axi-perf` / `wave`), `capture --out PATH [--format png|svg] [--scale …]`.
 - **Source:** `open-source FILE:LINE[:COL]`.
 - **Diagnostics:** `diagnose SOURCE ITEM…` (each `ITEM` is `file:line:severity:code:message`; `--clear`, `--instance`).
@@ -251,7 +252,7 @@ The SPA and a deep-dive marimo notebook stay in sync through an in-memory **even
 
 Bring up a TCP client against the hub's `listen_port`, send the `hello` envelope claiming an origin, accept the `welcome` reply, then send / receive state events and requests per [rtl-buddy-view#19](https://github.com/rtl-buddy/rtl-buddy-view/issues/19). The JSON Schema at `src/rtl_buddy/hub/schema/hub-protocol-v1.json` is the contract — validate against it on both sides and unknown `type` strings should be silently dropped (forward-compat rule from §11 of the spec).
 
-The existing peers — `tools/wave_hub_bridge.py` and `src/rtl_buddy/nvim/rtl_buddy_wave.lua` — are the reference adapters. Both stay narrow on purpose: parse the envelope, translate to the peer's native API, route, repeat.
+The existing peers — `tools/wave_hub_bridge.py` and the [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim) plugin — are the reference adapters. Both stay narrow on purpose: parse the envelope, translate to the peer's native API, route, repeat.
 
 ## Reference
 
@@ -259,4 +260,4 @@ The existing peers — `tools/wave_hub_bridge.py` and `src/rtl_buddy/nvim/rtl_bu
 - JSON Schema: `src/rtl_buddy/hub/schema/hub-protocol-v1.json`
 - Implementation: `src/rtl_buddy/hub/`
 - Wave bridge: `src/rtl_buddy/tools/wave_hub_bridge.py`, `src/rtl_buddy/tools/wave_launcher.py`
-- nvim plugin: `src/rtl_buddy/nvim/rtl_buddy_wave.lua`
+- nvim plugin: [`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim) (installer: `src/rtl_buddy/tools/nvim_install.py`, command `rb nvim-install`)

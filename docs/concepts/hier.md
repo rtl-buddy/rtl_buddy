@@ -68,6 +68,31 @@ rb hier basic_traffic --view tb
 
 The model argument matches the `name:` of an entry in `models.yaml`. The runner uses that entry's filelist verbatim — same source of truth that `rb test`, `rb synth`, and `rb cdc` consume. In `--view tb` mode the positional argument is a test name from `tests.yaml` instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from `--tb-top`.
 
+## Querying with `rb hier-query`
+
+`rb hier-query <model> <verb> <arg>` is `rb hier`'s machine-readable sibling: instead of rendering a diagram, it answers a structural question about the model's hierarchy with JSON on stdout, ready for `jq`, shell pipelines, and agent tool use. It shells out to `rtl-buddy-view query` (requires rtl-buddy-view ≥ 0.3.0) and shares `rb hier`'s generated filelist artefact.
+
+```bash
+# the full definition of a module: ports, parameters, instances
+rb hier-query demo_top find-module axi_arbiter
+
+# the hierarchy subtree below an instance path (add --format tree for ASCII)
+rb hier-query demo_top subtree demo_top.u_fabric
+
+# every instance of a module, as instance paths
+rb hier-query demo_top instances-of axi_arbiter | jq -r '.[].instance_path'
+
+# the .port(net) connection list of one instance
+rb hier-query demo_top port-connections demo_top.u_fabric.u_arb0
+
+# the module-definition source of an instance, line-number-prefixed for citation
+rb hier-query demo_top source-snippet demo_top.u_fabric.u_arb0 --context 4
+```
+
+Verb arguments are a module name (`find-module`, `instances-of`) or a dot-separated instance path rooted at the model name (`subtree`, `port-connections`, `source-snippet`). `source-snippet` prints plain text rather than JSON — its output is the line-number-prefixed citation block itself (`--no-line-numbers` disables the prefixes, `--context N` widens the window).
+
+Exit codes follow the query semantics: `0` for an answer (an empty `instances-of` list is a valid answer), `1` for a lookup miss or parse failure — the viewer's diagnostic (e.g. `query: instance path '…' not found`) streams to stderr rather than being captured into a log. `artefacts/hier/<model>/query.log` records the underlying invocation.
+
 ## Parser frontend
 
 `--frontend` is forwarded as-is to `rtl-buddy-view`. The default frontend ships with the renderer; `--frontend slang` uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.

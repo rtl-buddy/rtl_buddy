@@ -1,0 +1,22 @@
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb
+    toplevel: tb
+    filelist:
+      - example.sv
+tests:
+  - name: good_test
+    desc: loadable test, covers DEMO-1
+    model: example
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb
+    covers:
+      - DEMO-1
+    sim_timeout:

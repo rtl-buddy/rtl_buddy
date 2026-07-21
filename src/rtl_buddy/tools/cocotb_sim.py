@@ -38,27 +38,90 @@ def _cocotb_config(*args) -> str:
 
 class CocotbSim(VlogSim):
     """
-    cocotb simulation — Verilator + Python testbench via VPI.
+    cocotb simulation — RTL simulator + Python testbench via VPI.
 
-    Extends VlogSim with cocotb VPI compile flags, runtime env vars,
-    and JUnit XML result parsing.
+    Extends VlogSim with cocotb VPI compile flags, runtime env vars, and
+    JUnit XML result parsing. Verilator, Synopsys VCS, and Icarus Verilog
+    are supported; the simulator-specific wiring is dispatched on the
+    builder's simulator family. Verilator and VCS link/load the VPI shim at
+    compile time; Icarus loads it at run time via `vvp -M/-m`. The runtime
+    env and result parsing are simulator agnostic.
     """
+
+    # Simulator families that cocotb can drive via its VPI shims.
+    _SUPPORTED_FAMILIES = ("verilator", "vcs", "icarus")
+
+    def _cocotb_family(self) -> str:
+        """Resolve and validate the simulator family for this cocotb run."""
+        family = self._get_simulator_family()
+        if family not in self._SUPPORTED_FAMILIES:
+            log_event(
+                logger,
+                logging.ERROR,
+                "cocotb.unsupported_family",
+                test=self.test_name,
+                simulator=family,
+                supported=list(self._SUPPORTED_FAMILIES),
+            )
+            raise FatalRtlBuddyError(
+                f"cocotb is not supported with simulator family '{family}'; "
+                f"use a builder whose family is one of {self._SUPPORTED_FAMILIES}"
+            )
+        return family
 
     def _get_cocotb_results_path(self, run_id=None) -> str:
         return str(Path(self._get_artifact_dir(run_id=run_id)) / "cocotb_results.xml")
 
     def _filter_builder_opts(self, opts: list) -> list:
-        # cocotb uses --exe + verilator.cpp, not --binary's built-in main
-        return [o for o in opts if o != "--binary"]
+        if self._cocotb_family() == "verilator":
+            # cocotb uses --exe + verilator.cpp, not --binary's built-in main
+            return [o for o in opts if o != "--binary"]
+        # VCS and Icarus produce a `simv` executable either way; keep builder
+        # opts intact.
+        return opts
+
+    def _icarus_vvp_extra_args(self) -> list:
+        """Load the cocotb VPI module into `vvp` at run time.
+
+        Mirrors cocotb's own Icarus invocation:
+        `vvp -M $(cocotb-config --lib-dir) -m libcocotbvpi_icarus sim.vvp`.
+        """
+        lib_dir = _cocotb_config("--lib-dir")
+        return ["-M", lib_dir, "-m", "libcocotbvpi_icarus"]
 
     def _get_extra_compile_flags(self) -> list:
+        family = self._cocotb_family()
+        if family == "verilator":
+            flags = self._verilator_compile_flags()
+        elif family == "icarus":
+            flags = self._icarus_compile_flags()
+        else:
+            flags = self._vcs_compile_flags()
+        log_event(
+            logger,
+            logging.DEBUG,
+            "cocotb.compile_flags",
+            test=self.test_name,
+            simulator=family,
+            flags=flags,
+        )
+        return flags
+
+    def _icarus_compile_flags(self) -> list:
+        # iverilog needs no cocotb-specific compile flags: the DUT/TB compile
+        # exactly as for a plain Icarus run, and the VPI module is loaded at
+        # run time by the vvp wrapper (_icarus_vvp_extra_args). Language-level
+        # flags like -g2012 come from the builder's compile-time opts.
+        return []
+
+    def _verilator_compile_flags(self) -> list:
         share = _cocotb_config("--share")
         lib_dir = _cocotb_config("--lib-dir")
         vpi_lib = _cocotb_config("--lib-name-path", "vpi", "verilator")
         libpython = _cocotb_config("--libpython")
         verilator_cpp = str(Path(share) / "lib" / "verilator" / "verilator.cpp")
         ldflags = f"-Wl,-rpath,{lib_dir} {vpi_lib} {libpython}"
-        flags = [
+        return [
             "--cc",
             "--exe",
             verilator_cpp,
@@ -71,13 +134,31 @@ class CocotbSim(VlogSim):
             "-LDFLAGS",
             ldflags,
         ]
-        log_event(
-            logger,
-            logging.DEBUG,
-            "cocotb.compile_flags",
-            test=self.test_name,
-            flags=flags,
-        )
+
+    def _vcs_compile_flags(self) -> list:
+        """VCS elaboration flags that wire in cocotb's VPI shim.
+
+        Mirrors cocotb's own VCS runner: load libcocotbvpi_vcs.so, enable VPI
+        write access (-debug_access+all / +acc), and link with --no-as-needed
+        so the cocotb/libpython dependencies survive the link.
+
+        Flags already present in the builder's configured opts are not
+        duplicated. The de-dup is token-level (not substring): any
+        ``-debug_access*`` or ``+acc*`` token the user configured is taken as
+        "already enables VPI access" so we don't inject our own — see
+        docs/known-issues.md. ``-top`` takes the module as a separate token,
+        so an exact-token check is the right "did the user pin a top?" test.
+        """
+        vpi_lib = _cocotb_config("--lib-name-path", "vpi", "vcs")
+        opts = self.rtl_builder_cfg.get_compile_time_opts(self.rtl_builder_mode)
+        flags = []
+        if not any(o.startswith("-debug_access") for o in opts):
+            flags.append("-debug_access+all")
+        if not any(o.startswith("+acc") for o in opts):
+            flags.append("+acc+3")
+        flags += ["-LDFLAGS", "-Wl,--no-as-needed", "-load", vpi_lib]
+        if "-top" not in opts:
+            flags += ["-top", self.testbench.toplevel]
         return flags
 
     def _get_extra_sim_env(self, run_id=None) -> dict:

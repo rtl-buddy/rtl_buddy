@@ -6,7 +6,7 @@ formatting, WCP frame I/O, and source resolver signal extraction.
 import logging
 import os
 import socket
-from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -739,80 +739,54 @@ class TestPushScopeValuesSameLineGrouping:
 
 
 class TestWaveLauncherCheckNvimPlugin:
-    def _make_launcher(self, surfer_cfg, tmp_plugin_path=None):
+    def _make_launcher(self, surfer_cfg):
         from rtl_buddy.tools.wave_launcher import WaveLauncher
 
-        test_cfg = MagicMock()
         launcher = object.__new__(WaveLauncher)
         launcher._surfer_cfg = surfer_cfg
-        launcher._test_cfg = test_cfg
+        launcher._test_cfg = MagicMock()
         launcher._suite_dir = "/fake/suite"
         launcher._fst_path = "/fake/dump.fst"
         launcher._surfer_file = None
         launcher._scope_annotation = True
-        if tmp_plugin_path is not None:
-            launcher.__class__._NVIM_PLUGIN = tmp_plugin_path
         return launcher
 
-    def test_warning_logged_when_plugin_missing(self, tmp_path):
-        plugin_path = str(tmp_path / "rtl_buddy_wave.lua")  # does NOT exist
+    def _warnings(self, launcher):
+        """Run the check, capturing WARNING-level log_event calls."""
+        log_calls = []
+        with patch(
+            "rtl_buddy.tools.wave_launcher.log_event",
+            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
+        ):
+            launcher._check_nvim_plugin()
+        return [c for c in log_calls if c[0][1] == logging.WARNING]
+
+    def test_warning_logged_when_plugin_missing(self):
         surfer_cfg = _make_surfer_cfg(
             editor_sock="~/.local/share/nvim/surfer.sock",
             editor_cmd="nvim +%l %f",
         )
-        launcher = self._make_launcher(surfer_cfg, plugin_path)
+        launcher = self._make_launcher(surfer_cfg)
+        with patch("rtl_buddy.tools.nvim_install.is_installed", return_value=False):
+            assert len(self._warnings(launcher)) >= 1
 
-        log_calls = []
-        with patch(
-            "rtl_buddy.tools.wave_launcher.log_event",
-            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
-        ):
-            launcher._check_nvim_plugin()
-
-        # At least one WARNING-level log_event call
-        warning_calls = [c for c in log_calls if c[0][1] == logging.WARNING]
-        assert len(warning_calls) >= 1
-
-    def test_no_warning_when_plugin_exists(self, tmp_path):
-        import logging as _logging
-
-        plugin_path = str(tmp_path / "rtl_buddy_wave.lua")
-        Path(plugin_path).touch()  # create the file
+    def test_no_warning_when_plugin_installed(self):
         surfer_cfg = _make_surfer_cfg(
             editor_sock="~/.local/share/nvim/surfer.sock",
             editor_cmd="nvim +%l %f",
         )
-        launcher = self._make_launcher(surfer_cfg, plugin_path)
+        launcher = self._make_launcher(surfer_cfg)
+        with patch("rtl_buddy.tools.nvim_install.is_installed", return_value=True):
+            assert len(self._warnings(launcher)) == 0
 
-        log_calls = []
-        with patch(
-            "rtl_buddy.tools.wave_launcher.log_event",
-            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
-        ):
-            launcher._check_nvim_plugin()
-
-        warning_calls = [c for c in log_calls if c[0][1] == _logging.WARNING]
-        assert len(warning_calls) == 0
-
-    def test_no_warning_when_editor_sock_empty(self, tmp_path):
-        import logging as _logging
-
-        plugin_path = str(tmp_path / "rtl_buddy_wave.lua")  # does NOT exist
+    def test_no_warning_when_editor_sock_empty(self):
         surfer_cfg = _make_surfer_cfg(
-            editor_sock="",  # no sock configured
+            editor_sock="",  # no sock configured — check returns before is_installed
             editor_cmd="nvim +%l %f",
         )
-        launcher = self._make_launcher(surfer_cfg, plugin_path)
-
-        log_calls = []
-        with patch(
-            "rtl_buddy.tools.wave_launcher.log_event",
-            side_effect=lambda *a, **kw: log_calls.append((a, kw)),
-        ):
-            launcher._check_nvim_plugin()
-
-        warning_calls = [c for c in log_calls if c[0][1] == _logging.WARNING]
-        assert len(warning_calls) == 0
+        launcher = self._make_launcher(surfer_cfg)
+        with patch("rtl_buddy.tools.nvim_install.is_installed", return_value=False):
+            assert len(self._warnings(launcher)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -855,3 +829,221 @@ class TestEditorLauncherNvimExecLua:
         expr_val = cmd[expr_idx + 1]
         # The double-quote must be escaped in the Vimscript string context
         assert '\\"' in expr_val
+
+
+# ---------------------------------------------------------------------------
+# WaveformValueReader.check(): fail-loud trace + pywellen surface validation
+# ---------------------------------------------------------------------------
+
+
+class TestWaveformValueReaderCheck:
+    def test_missing_trace_raises_fatal(self):
+        from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+
+        reader = WaveformValueReader("/nonexistent/dump.fst")
+        with pytest.raises(FatalRtlBuddyError, match="not found"):
+            reader.check()
+
+    def test_pywellen_without_random_access_api_raises_fatal(self, tmp_path):
+        from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+
+        fst = tmp_path / "dump.fst"
+        fst.touch()
+        # A Waveform lacking the >=0.25 random-access surface (a stale <0.25
+        # pin, or a future incompatible rewrite).
+        fake_pywellen = SimpleNamespace(Waveform=type("Waveform", (), {}))
+        reader = WaveformValueReader(str(fst))
+        with patch.dict("sys.modules", {"pywellen": fake_pywellen}):
+            with pytest.raises(FatalRtlBuddyError, match="random-access"):
+                reader.check()
+
+    def test_passes_with_random_access_api(self, tmp_path):
+        from rtl_buddy.tools.surfer_wcp import WaveformValueReader
+
+        fst = tmp_path / "dump.fst"
+        fst.touch()
+        # A Waveform exposing the >=0.25 surface: wf[path] lookup, scopes(),
+        # and the timescale getter.
+        attrs = {
+            "__getitem__": lambda self, k: None,
+            "scopes": lambda self: (),
+            "timescale": property(lambda self: None),
+        }
+        fake_pywellen = SimpleNamespace(Waveform=type("Waveform", (), attrs))
+        reader = WaveformValueReader(str(fst))
+        with patch.dict("sys.modules", {"pywellen": fake_pywellen}):
+            reader.check()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# WaveLauncher: fail-loud preflight before Surfer starts (#263)
+# ---------------------------------------------------------------------------
+
+
+class TestWaveLauncherValueReaderPreflight:
+    def test_launch_raises_on_missing_trace_before_surfer_starts(self):
+        from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.tools.wave_launcher import WaveLauncher
+
+        launcher = object.__new__(WaveLauncher)
+        launcher._surfer_cfg = _make_surfer_cfg()
+        launcher._test_cfg = MagicMock()
+        launcher._suite_dir = "/fake/suite"
+        launcher._fst_path = "/nonexistent/dump.fst"
+        launcher._surfer_file = None
+        launcher._scope_annotation = True
+
+        with (
+            patch("rtl_buddy.tools.wave_launcher.SurferSourceResolver"),
+            patch("rtl_buddy.tools.wave_launcher.EditorLauncher"),
+            patch("rtl_buddy.tools.wave_launcher.subprocess.Popen") as popen,
+        ):
+            with pytest.raises(FatalRtlBuddyError, match="not found"):
+                launcher.launch()
+        popen.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# SurferWcpListener.run: graceful teardown on FatalRtlBuddyError (#263)
+# ---------------------------------------------------------------------------
+
+
+class TestListenerFatalErrorTeardown:
+    def test_fatal_from_handler_stops_listener_without_traceback(self):
+        from rtl_buddy.errors import FatalRtlBuddyError
+        from rtl_buddy.tools.surfer_wcp import (
+            EditorLauncher,
+            SurferSourceResolver,
+            SurferWcpListener,
+        )
+
+        surfer_cfg = _make_surfer_cfg()
+        resolver = object.__new__(SurferSourceResolver)
+        resolver._sv_files = []
+        editor = object.__new__(EditorLauncher)
+        editor._surfer_cfg = surfer_cfg
+        listener = SurferWcpListener(surfer_cfg, resolver, editor)
+
+        fake_conn = MagicMock()
+        srv = MagicMock()
+        srv.accept.return_value = (fake_conn, ("127.0.0.1", 12345))
+        listener._srv = srv
+
+        with patch.object(
+            listener,
+            "_handle_connection",
+            side_effect=FatalRtlBuddyError("could not open waveform trace"),
+        ):
+            listener.run()  # must return cleanly, not raise
+
+        assert listener._stop.is_set()
+        fake_conn.close.assert_called()
+
+
+class TestWcpReplyWaiters:
+    """Correlation of WCP response/error frames to pending reply waiters.
+
+    These exercise the real SurferWcpListener waiter subsystem (the
+    wave_hub_bridge tests use a fake listener), covering the genuine
+    success/error reporting path: a response resolves by command name, an
+    error resolves the first error-accepting waiter, and the back-compat
+    await_response ignores errors.
+    """
+
+    def _make_listener(self):
+        from rtl_buddy.tools.surfer_wcp import (
+            SurferSourceResolver,
+            EditorLauncher,
+            SurferWcpListener,
+        )
+
+        surfer_cfg = _make_surfer_cfg()
+        resolver = object.__new__(SurferSourceResolver)
+        resolver._sv_files = []
+        editor = object.__new__(EditorLauncher)
+        editor._surfer_cfg = surfer_cfg
+        return SurferWcpListener(surfer_cfg, resolver, editor)
+
+    def _await_in_thread(self, fn):
+        import threading
+
+        box = {}
+
+        def run():
+            box["result"] = fn()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t, box
+
+    def test_await_reply_resolves_on_matching_response(self):
+        import time as _time
+
+        listener = self._make_listener()
+        frame = {"type": "response", "command": "ack"}
+        t, box = self._await_in_thread(
+            lambda: listener.await_reply({"ack"}, timeout=2.0)
+        )
+        # waiter is registered; dispatch the response
+        deadline = _time.monotonic() + 1.0
+        while _time.monotonic() < deadline and not listener._waiters:
+            _time.sleep(0.01)
+        listener._dispatch_response(frame)
+        t.join(2.0)
+        assert box["result"] == ("response", frame)
+
+    def test_await_reply_resolves_on_error(self):
+        import time as _time
+
+        listener = self._make_listener()
+        err = {"type": "error", "error": "move_items", "message": "bad id"}
+        t, box = self._await_in_thread(
+            lambda: listener.await_reply({"ack"}, timeout=2.0)
+        )
+        deadline = _time.monotonic() + 1.0
+        while _time.monotonic() < deadline and not listener._waiters:
+            _time.sleep(0.01)
+        listener._dispatch_error(err)
+        t.join(2.0)
+        assert box["result"] == ("error", err)
+
+    def test_dispatch_response_correlates_by_command(self):
+        import time as _time
+
+        listener = self._make_listener()
+        # Two waiters: one for get_item_list, one for ack. A get_item_list
+        # response must wake only the matching waiter.
+        t1, box1 = self._await_in_thread(
+            lambda: listener.await_reply({"get_item_list"}, timeout=2.0)
+        )
+        t2, box2 = self._await_in_thread(
+            lambda: listener.await_reply({"ack"}, timeout=2.0)
+        )
+        deadline = _time.monotonic() + 1.0
+        while _time.monotonic() < deadline and len(listener._waiters) < 2:
+            _time.sleep(0.01)
+        list_frame = {"type": "response", "command": "get_item_list", "ids": [1]}
+        listener._dispatch_response(list_frame)
+        t1.join(2.0)
+        assert box1["result"] == ("response", list_frame)
+        # The ack waiter is still pending.
+        assert len(listener._waiters) == 1
+        ack_frame = {"type": "response", "command": "ack"}
+        listener._dispatch_response(ack_frame)
+        t2.join(2.0)
+        assert box2["result"] == ("response", ack_frame)
+
+    def test_await_response_ignores_errors(self):
+        """Back-compat await_response (accept_error=False) must not be
+        resolved by an error frame — it times out instead, so the
+        cursor-driven query path is unchanged."""
+        listener = self._make_listener()
+        t, box = self._await_in_thread(
+            lambda: listener.await_response("query_variable_values", timeout=0.3)
+        )
+        # Dispatch an error; the response waiter should NOT pick it up.
+        listener._dispatch_error({"type": "error", "error": "x", "message": "y"})
+        t.join(2.0)
+        assert box["result"] is None

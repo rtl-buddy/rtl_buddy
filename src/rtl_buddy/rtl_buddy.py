@@ -15,8 +15,10 @@ from typing_extensions import Annotated
 import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
-from .config.root import _discover_root_cfg
+from .config.env_file import apply_env_file
+from .config.root import _discover_root_cfg, discover_project_root
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
+from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
 from .config.model import ModelConfig, ModelConfigLoader
@@ -24,8 +26,10 @@ from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
+from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
+from .hooks import exec_hook_script
 from .logging_utils import (
     attach_file_log,
     emit_console_text,
@@ -43,6 +47,8 @@ from .runner.mut_results import MutResults
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.xfail import apply_xfail
+from .runner.fpga_runner import FpgaRunner
+from .runner.fpga_results import FpgaSkipResults
 from .runner.pnr_runner import PnrRunner
 from .runner.pnr_results import PnrSkipResults
 from .runner.power_runner import PowerRunner
@@ -60,7 +66,7 @@ from .tools.axi_profile_rtl_buddy import (
 )
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
-from .tools.hier_rtl_buddy_view import RtlBuddyView
+from .tools.hier_rtl_buddy_view import RtlBuddyView, RtlBuddyViewQuery
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
@@ -71,6 +77,13 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
+from .config.xplr import load_xplr_config
+from .xplr import analysis as xplr_analysis
+from .xplr import commands as xplr_commands
+from .xplr import dumps_record
+from .xplr import gitprov as xplr_gitprov
+from .xplr import ledger as xplr_ledger
+from .xplr import mockflow as xplr_mockflow
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +106,14 @@ class RtlBuddy:
         "synth-regression",
         "power",
         "power-regression",
+        "fpga",
+        "fpga-regression",
         "cdc",
         "cdc-regression",
         "fpv",
         "fpv-regression",
         "hier",
+        "hier-query",
     }
 
     def cb_builder(value: str | None) -> str | None:
@@ -167,6 +183,12 @@ class RtlBuddy:
         self.app.command("hier", help="render module hierarchy via rtl-buddy-view")(
             self.do_cmd_hier
         )
+        self.app.command(
+            "hier-query",
+            help="query the module hierarchy via rtl-buddy-view "
+            "(find-module, subtree, instances-of, port-connections, "
+            "source-snippet); JSON on stdout",
+        )(self.do_cmd_hier_query)
         self.axi_profile_app.command(
             "run",
             help="ingest a test's FST and emit per-test axi-perf.json",
@@ -217,8 +239,14 @@ class RtlBuddy:
             help="open SymbiYosys counterexample VCD for a failed FPV verification",
         )(self.do_cmd_wave_fpv)
         self.app.command(
-            "wave-install-nvim", help="install nvim plugin for rb wave annotation"
-        )(self.do_wave_install_nvim)
+            "nvim-install",
+            help="install/update the unified rtl-buddy-nvim editor plugin "
+            "(hub + wave annotation)",
+        )(self.do_nvim_install)
+        # Back-compat alias for the pre-#272 annotation-only command.
+        self.app.command("wave-install-nvim", help="alias for nvim-install")(
+            self.do_nvim_install
+        )
         self.app.command("synth", help="run synthesis")(self.do_cmd_synth)
         self.app.command("synth-regression", help="run synthesis regression")(
             self.do_synth_regression
@@ -227,6 +255,12 @@ class RtlBuddy:
         self.app.command("power", help="run power analysis")(self.do_cmd_power)
         self.app.command("power-regression", help="run power analysis regression")(
             self.do_power_regression
+        )
+        self.app.command(
+            "fpga", help="run FPGA implementation (synth + place + route)"
+        )(self.do_cmd_fpga)
+        self.app.command("fpga-regression", help="run FPGA implementation regression")(
+            self.do_fpga_regression
         )
         self.app.command("saif", help="convert FST/VCD trace to SAIF v2.0")(
             self.do_cmd_saif
@@ -278,6 +312,109 @@ class RtlBuddy:
         self.app.add_typer(
             self.spec_app, name="spec", help="spec traceability commands"
         )
+        self.xplr_app = typer.Typer(
+            help=(
+                "tool-agnostic experiment ledger for design-space exploration. "
+                "rb xplr is a bookkeeper, not an optimizer: you declare the "
+                "knob deltas you made and the outcomes your flow produced; it "
+                "pins the source revision and records everything under "
+                "artefacts/xplr/<exp-id>/record.json. Agent-facing: pass the "
+                "global --machine flag for a JSON envelope on stdout, and feed "
+                "JSON manifests in via --json <file|->"
+            ),
+            no_args_is_help=True,
+        )
+        self.xplr_app.command(
+            "register",
+            help="open a new experiment: pin the current git ref, record the "
+            "agent-declared knob manifest, return its experiment id",
+        )(self.do_xplr_register)
+        self.xplr_app.command(
+            "attach-outcome",
+            help="attach flow-declared outcome metrics to an experiment "
+            "(pending/running -> success|failed)",
+        )(self.do_xplr_attach_outcome)
+        self.xplr_app.command(
+            "list",
+            help="list experiments in the ledger (one summary row each)",
+        )(self.do_xplr_list)
+        self.xplr_app.command(
+            "show",
+            help="show one experiment's full record",
+        )(self.do_xplr_show)
+        self.xplr_app.command(
+            "diff",
+            help="pairwise experiment diff: knob delta, direction-aware "
+            "outcome delta, and the git diff between the pinned sources",
+        )(self.do_xplr_diff)
+        self.xplr_app.command(
+            "frontier",
+            help="curate the Pareto frontier (non-dominated set) over the "
+            "declared numeric outcome metrics; dominated, infeasible "
+            "(routed=false), and excluded experiments are reported alongside",
+        )(self.do_xplr_frontier)
+        self.xplr_app.command(
+            "knob-effect",
+            help="per-knob effect history: every experiment that declared "
+            "the knob, with metric deltas vs its parent when available",
+        )(self.do_xplr_knob_effect)
+        self.xplr_app.command(
+            "materialize",
+            help="check the experiment's pinned sha out into its own git "
+            "worktree (isolated build dir; disposable — the branch is the "
+            "durable artifact). Idempotent",
+        )(self.do_xplr_materialize)
+        self.xplr_app.command(
+            "release",
+            help="remove the experiment's worktree (worktree remove + "
+            "prune); the exp branch and the ledger record are kept",
+        )(self.do_xplr_release)
+        self.xplr_app.command(
+            "gc",
+            help="reclaim experiment disk space, non-interactively: evict "
+            "heavy artifacts + worktrees per policy (default keep-frontier "
+            "never touches Pareto-frontier members or their lineage); "
+            "record.json and the pinned sha always survive, so evicted "
+            "experiments can be re-materialized",
+        )(self.do_xplr_gc)
+        self.xplr_mock_app = typer.Typer(
+            help=(
+                "synthetic DSE backend with known optima (dev/CI harness). "
+                "EDA-flavored knobs and metrics over multi-modal benchmark "
+                "landscapes (Rastrigin, ZDT1) with feasibility cliffs and a "
+                "synthetic cost model — instant, deterministic, license-free, "
+                "and self-scoring against the analytic optimum / Pareto front"
+            ),
+            no_args_is_help=True,
+        )
+        self.xplr_mock_app.command(
+            "info",
+            help="list scenarios: knob specs, metric_meta, cost model, and "
+            "the analytic ground truth (optimum / Pareto front)",
+        )(self.do_xplr_mock_info)
+        self.xplr_mock_app.command(
+            "run",
+            help="evaluate one knob vector; with --register, record it as a "
+            "ledger experiment with the outcome attached in one step",
+        )(self.do_xplr_mock_run)
+        self.xplr_mock_app.command(
+            "score",
+            help="score the ledger's mockflow experiments against the ground "
+            "truth: regret (single-objective) or hypervolume + "
+            "distance-to-front (multi-objective)",
+        )(self.do_xplr_mock_score)
+        self.xplr_mock_app.callback()(self._xplr_mock_group_options)
+        self.xplr_app.add_typer(
+            self.xplr_mock_app,
+            name="mock",
+            help="synthetic DSE backend with known optima (dev/CI harness)",
+        )
+        self.xplr_app.callback()(self._xplr_group_options)
+        self.app.add_typer(
+            self.xplr_app,
+            name="xplr",
+            help="design-space exploration experiment ledger (agent-facing)",
+        )
         self.app.command(
             "tool-check",
             help="check installed tool dependencies and subcommand readiness",
@@ -292,10 +429,13 @@ class RtlBuddy:
         self.root_cfg = None
         self.coverage = None
         self.run_depth = RunDepth.POST
+        self.share_build = False
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
         self._builder_override: str | None = None
+        self._artifact_locks = ArtifactLocks()
+        self._xplr_root_override: Path | None = None
 
     def run(self):
         try:
@@ -329,7 +469,7 @@ class RtlBuddy:
     # configured names from the primary config file. The `--list` paths
     # do not need RootConfig, the selected builder, or CoverageReporter,
     # so list-only invocations short-circuit those setup steps.
-    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "cdc", "fpv"}
+    _LIST_FLAG_COMMANDS = {"test", "synth", "pnr", "power", "fpga", "cdc", "fpv"}
 
     def _is_list_invocation(self, ctx: typer.Context) -> bool:
         return (
@@ -478,6 +618,14 @@ class RtlBuddy:
         if list_only:
             return ctx
 
+        # Fail loud if another rtl-buddy process is already using this
+        # artefact tree (#73). Held until process exit; metadata-only
+        # --list paths above stay lock-free.
+        self._artifact_locks.acquire(
+            ctx.artifact_root,
+            command=getattr(self, "_pending_invoked_subcommand", None),
+        )
+
         # Build root_cfg on first entry; on later entries, only rebuild if
         # the new command root walks up to a different root_config.yaml —
         # so regression loops whose suites span project roots get the
@@ -498,6 +646,12 @@ class RtlBuddy:
                 builder_override=self._builder_override,
                 start_dir=ctx.command_root,
             )
+            # Project-local env defaults (.rtl-buddy/.env): applied as
+            # soon as the project root is known, before any tool config
+            # or subprocess reads the environment. Never overrides vars
+            # already set, so within one process the first project's
+            # values win for cross-root regressions.
+            apply_env_file(self.root_cfg.get_project_rootdir())
             self.builder = self.root_cfg.get_builder_name()
             self.coverage = CoverageReporter(self.root_cfg)
             log_event(
@@ -514,10 +668,54 @@ class RtlBuddy:
         return ctx
 
     def _exit_code_from_results(self, suite_results):
+        # The exit code reflects whether rtl_buddy and the tools ran, not the
+        # verdict of the design under test per se. A real FAIL (sim failure,
+        # compile/setup/filelist failure, timeout) or a strict XPASS fails the
+        # run; a NA result — an intentional early stop that only needs hand
+        # checking — does not, nor do PASS/SKIP/XFAIL.
         exit_code = 0
         for suite_result in suite_results:
-            exit_code |= 0 if suite_result["results"].is_pass() else 1
+            results = suite_result["results"]
+            if not results.is_pass() and results.results.get("result") != "NA":
+                exit_code |= 1
         return exit_code
+
+    def _guard_coverage_requested(
+        self,
+        suite_results,
+        exit_code,
+        *,
+        coverage_merge,
+        coverage_merge_raw,
+        coverage_merge_info_process,
+        coverage_html,
+        coverage_coverview,
+        coverage_dir_summary,
+        coverage_dir_summary_file,
+    ):
+        """Fail loud (#334) when a coverage output flag was requested but no
+        executed (non-skipped) test produced raw coverage data — otherwise the
+        command could succeed without ever emitting the requested artifact.
+        """
+        coverage_requested = (
+            coverage_merge
+            or coverage_merge_raw
+            or coverage_merge_info_process
+            or coverage_html
+            or coverage_coverview
+            or coverage_dir_summary
+            or coverage_dir_summary_file
+        )
+        if (
+            exit_code == 0
+            and coverage_requested
+            and not self.coverage.collect_paths(suite_results)
+            and any(r["results"].results.get("result") != "SKIP" for r in suite_results)
+        ):
+            raise FatalRtlBuddyError(
+                "Coverage output requested but no coverage data was produced by any "
+                "executed test; ensure the selected builder supports coverage instrumentation"
+            )
 
     def _apply_xfail_logged(self, res, cfg, event):
         """Re-interpret one result under cfg's xfail marker, and log it.
@@ -551,15 +749,20 @@ class RtlBuddy:
         rows = []
         has_coverage = False
         has_assertions = False
+        builders = set()
         for suite_result in suite_results:
             cov_summary = self._format_coverage_summary(suite_result["results"])
             has_coverage |= cov_summary is not None
             assert_summary = self._format_assertions_summary(suite_result["results"])
             has_assertions |= assert_summary is not None
+            builder = suite_result.get("builder")
+            if builder:
+                builders.add(builder)
             row = {
                 "test_name": suite_result["test_name"],
                 "result": suite_result["results"].results["result"],
                 "desc": suite_result["results"].results["desc"],
+                "builder": builder or "",
             }
             if include_run_id:
                 row["run_id"] = (
@@ -577,6 +780,10 @@ class RtlBuddy:
         if include_run_id:
             columns.append(("run_id", "Run"))
         columns.extend([("result", "Result"), ("desc", "Description")])
+        # Per-row Builder column only when more than one builder is in play;
+        # a single-builder run is named in the footer metadata instead.
+        if len(builders) > 1:
+            columns.append(("builder", "Builder"))
         if has_assertions:
             columns.append(("assertions", "Assertions"))
         if has_coverage:
@@ -591,6 +798,7 @@ class RtlBuddy:
         rows = []
         has_coverage = False
         has_assertions = False
+        builders = set()
         for reg_result in reg_results:
             for suite_result in reg_result["results"]:
                 cov_summary = self._format_coverage_summary(suite_result["results"])
@@ -599,12 +807,16 @@ class RtlBuddy:
                     suite_result["results"]
                 )
                 has_assertions |= assert_summary is not None
+                builder = suite_result.get("builder")
+                if builder:
+                    builders.add(builder)
                 rows.append(
                     {
                         "suite_name": reg_result["test_suite"],
                         "test_name": suite_result["test_name"],
                         "result": suite_result["results"].results["result"],
                         "desc": suite_result["results"].results["desc"],
+                        "builder": builder or "",
                         "assertions": assert_summary or "",
                         "coverage": cov_summary or "",
                     }
@@ -616,6 +828,9 @@ class RtlBuddy:
             ("result", "Result"),
             ("desc", "Description"),
         ]
+        # Per-row Builder column only when more than one builder is in play.
+        if len(builders) > 1:
+            columns.append(("builder", "Builder"))
         if has_assertions:
             columns.append(("assertions", "Assertions"))
         if has_coverage:
@@ -629,6 +844,30 @@ class RtlBuddy:
             if metadata is not None
             else [f"Builder: {self.builder}", f"Builder Mode: {self.rtl_builder_mode}"],
         )
+
+    def _builder_metadata_line(self, suite_cfgs, test_name=None):
+        """Footer line naming the distinct builder(s) the run uses.
+
+        Resolves each test's effective builder (per-test/suite `builder:`,
+        `--builder` override, or platform default) so the summary reflects
+        what actually ran rather than only the platform default. `suite_cfgs`
+        may be one SuiteConfig or an iterable; for regression it lists the
+        union across suites. Renders `Builder: x` for a single builder and
+        `Builders: x, y` when more than one is in play.
+        """
+        if not isinstance(suite_cfgs, (list, tuple)):
+            suite_cfgs = [suite_cfgs]
+        names = sorted(
+            {
+                self.root_cfg.resolve_rtl_builder_cfg(t.get_builder_name()).get_name()
+                for suite_cfg in suite_cfgs
+                for t in suite_cfg.get_tests(test_name)
+            }
+        )
+        if not names:
+            names = [self.builder]
+        label = "Builder" if len(names) == 1 else "Builders"
+        return f"{label}: {', '.join(names)}"
 
     def _display_path(self, path: str, *, base_dir: str | None = None) -> str:
         if base_dir is None:
@@ -731,6 +970,21 @@ class RtlBuddy:
                 "-l", "--rnd-last", help="reuse last generated seed", show_default=False
             ),
         ] = None,
+        share_build: Annotated[
+            bool,
+            typer.Option(
+                "--share-build",
+                help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
+            ),
+        ] = False,
+        reg_level: Annotated[
+            int | None,
+            typer.Option("--reg-level", help="regression level to stop at"),
+        ] = None,
+        start_level: Annotated[
+            int | None,
+            typer.Option("--start-level", help="regression level to start at"),
+        ] = None,
     ):
         """
         run a simple test
@@ -786,6 +1040,7 @@ class RtlBuddy:
             seed_mode = SeedMode.NEW
         elif rnd_last:
             seed_mode = SeedMode.REPLAY
+        self.share_build = share_build
 
         suite_results = self._do_test_suite(
             self.suite_cfg,
@@ -793,12 +1048,26 @@ class RtlBuddy:
             run_ids=[None],
             seed_mode=seed_mode,
             replay_run_id=replay_run_id,
+            reg_level=reg_level,
+            start_level=start_level,
         )
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
-        metadata = [f"Builder: {self.builder}"]
+        exit_code = self._exit_code_from_results(suite_results)
+        self._guard_coverage_requested(
+            suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
+        )
+        metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
         metadata.extend(
             self.coverage.build_metadata(
                 suite_results,
@@ -813,7 +1082,6 @@ class RtlBuddy:
                 dir_summary_paths=dir_summary_paths,
             )
         )
-        exit_code = self._exit_code_from_results(suite_results)
         if self.machine:
             self._emit_machine_result(
                 "test",
@@ -889,7 +1157,7 @@ class RtlBuddy:
                     "RandTest Replay Summary",
                     suite_results,
                     include_run_id=True,
-                    metadata=[f"Builder: {self.builder}"],
+                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
                 )
         else:
             suite_results = self._do_test_suite(
@@ -904,7 +1172,7 @@ class RtlBuddy:
                     "RandTest Results Summary",
                     suite_results,
                     include_run_id=True,
-                    metadata=[f"Builder: {self.builder}"],
+                    metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
                 )
 
         exit_code = self._exit_code_from_results(suite_results)
@@ -924,18 +1192,32 @@ class RtlBuddy:
             )
         raise typer.Exit(exit_code)
 
-    def _append_skip_results(self, test_name, desc, run_ids, suite_results):
+    def _append_skip_results(
+        self, test_name, desc, run_ids, suite_results, builder=None
+    ):
         test_results = SkipResults(name=test_name + "/results", desc=desc)
         for run_id in run_ids:
             suite_results.append(
-                {"test_name": test_name, "randmode_i": run_id, "results": test_results}
+                {
+                    "test_name": test_name,
+                    "randmode_i": run_id,
+                    "results": test_results,
+                    "builder": builder,
+                }
             )
 
-    def _append_setup_results(self, test_name, desc, run_ids, suite_results):
+    def _append_setup_results(
+        self, test_name, desc, run_ids, suite_results, builder=None
+    ):
         test_results = SetupFailResults(name=test_name + "/results", desc=desc)
         for run_id in run_ids:
             suite_results.append(
-                {"test_name": test_name, "randmode_i": run_id, "results": test_results}
+                {
+                    "test_name": test_name,
+                    "randmode_i": run_id,
+                    "results": test_results,
+                    "builder": builder,
+                }
             )
 
     def _expand_tests_with_sweep(self, test_cfg, suite_dir):
@@ -946,18 +1228,18 @@ class RtlBuddy:
         with open(script_path, "r") as file:
             code = file.read()
 
-        ns = {
-            "logger": logger,
-            "TestConfig": TestConfig,
-            "test_cfg": test_cfg,
-            "root_cfg": self.root_cfg,
-            "suite_dir": suite_dir,
-            "artifact_dir": str(test_artifact_dir(suite_dir, test_cfg.get_name())),
-            "out_test_cfgs": [],
-            "__file__": os.path.abspath(script_path),
-        }
         try:
-            exec(code, ns)
+            ns = exec_hook_script(
+                script_path,
+                code,
+                logger=logger,
+                TestConfig=TestConfig,
+                test_cfg=test_cfg,
+                root_cfg=self.root_cfg,
+                suite_dir=suite_dir,
+                artifact_dir=str(test_artifact_dir(suite_dir, test_cfg.get_name())),
+                out_test_cfgs=[],
+            )
         except Exception as e:
             log_event(
                 logger,
@@ -1000,6 +1282,7 @@ class RtlBuddy:
             rtl_builder_mode=self.rtl_builder_mode,
             run_depth=self.run_depth,
             suite_dir=suite_dir,
+            share_build=self.share_build,
         )
 
         if len(run_ids) == 1:
@@ -1013,10 +1296,15 @@ class RtlBuddy:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
         return results
 
-    def _append_results(self, test_name, run_ids, results, suite_results):
+    def _append_results(self, test_name, run_ids, results, suite_results, builder=None):
         for run_id, test_results in zip(run_ids, results):
             suite_results.append(
-                {"test_name": test_name, "randmode_i": run_id, "results": test_results}
+                {
+                    "test_name": test_name,
+                    "randmode_i": run_id,
+                    "results": test_results,
+                    "builder": builder,
+                }
             )
 
     def _format_coverage_summary(self, test_results):
@@ -1054,7 +1342,17 @@ class RtlBuddy:
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         suite_results = []
         for t in tests:
-            t_lvl = t.get_reglvl(self.builder)
+            # The builder this test will actually run on (per-test/suite
+            # `builder:`, a `--builder` override, or the platform default).
+            # Stamped onto each result row so the summary can report it, and
+            # used to resolve any per-builder regression level.
+            t_builder = self.root_cfg.resolve_rtl_builder_cfg(
+                t.get_builder_name()
+            ).get_name()
+            if reg_level is not None or start_level is not None:
+                t_lvl = t.get_reglvl(t_builder)
+            else:
+                t_lvl = 0
             if reg_level is not None and t_lvl > reg_level:
                 log_event(
                     logger,
@@ -1070,6 +1368,7 @@ class RtlBuddy:
                     f"lvl {t_lvl} > cmd end_level {reg_level}",
                     run_ids,
                     suite_results,
+                    builder=t_builder,
                 )
                 continue
 
@@ -1088,6 +1387,7 @@ class RtlBuddy:
                     f"lvl {t_lvl} < cmd start_level {start_level}",
                     run_ids,
                     suite_results,
+                    builder=t_builder,
                 )
                 continue
 
@@ -1095,10 +1395,17 @@ class RtlBuddy:
                 t, suite_dir=suite_dir
             )
             if sweep_error is not None:
-                self._append_setup_results(t.name, sweep_error, run_ids, suite_results)
+                self._append_setup_results(
+                    t.name, sweep_error, run_ids, suite_results, builder=t_builder
+                )
                 continue
 
             for expanded_test_cfg in expanded_tests:
+                # A sweep-expanded test may carry its own `builder:`; resolve
+                # per expansion so the stamped builder matches what runs.
+                exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
+                    expanded_test_cfg.get_builder_name()
+                ).get_name()
                 run_results = self._run_test_cfg_for_run_ids(
                     test_cfg=expanded_test_cfg,
                     run_ids=run_ids,
@@ -1108,7 +1415,11 @@ class RtlBuddy:
                     suite_dir=suite_dir,
                 )
                 self._append_results(
-                    expanded_test_cfg.name, run_ids, run_results, suite_results
+                    expanded_test_cfg.name,
+                    run_ids,
+                    run_results,
+                    suite_results,
+                    builder=exp_builder,
                 )
         return suite_results
 
@@ -1186,6 +1497,13 @@ class RtlBuddy:
                 help="file containing repo-relative directory prefixes, one per line",
             ),
         ] = None,
+        share_build: Annotated[
+            bool,
+            typer.Option(
+                "--share-build",
+                help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
+            ),
+        ] = False,
     ):
         """
         run rtl regression
@@ -1211,6 +1529,7 @@ class RtlBuddy:
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
+        self.share_build = share_build
         log_event(
             logger,
             logging.INFO,
@@ -1218,6 +1537,7 @@ class RtlBuddy:
             reg_config=reg_config,
             reg_level=reg_level,
             start_level=start_level,
+            share_build=share_build,
         )
 
         start_dir = str(self.invocation_cwd)
@@ -1319,10 +1639,21 @@ class RtlBuddy:
             all_suite_results.extend(reg_result["results"])
 
         metadata = [
-            f"Builder: {self.builder}",
+            self._builder_metadata_line(list(self.reg_cfg.get_suite_configs())),
             f"Builder Mode: {self.rtl_builder_mode}",
         ]
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
+        )
+        self._guard_coverage_requested(
+            all_suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
@@ -1589,6 +1920,94 @@ class RtlBuddy:
             cdc_annotations=cdc_annotations,
             rdc_annotations=rdc_annotations,
             clock_legend=clock_legend,
+            executable=tool,
+        )
+        raise typer.Exit(runner.run())
+
+    def do_cmd_hier_query(
+        self,
+        name: Annotated[str, typer.Argument(help="model name from models.yaml")],
+        verb: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "query verb: find-module, subtree, instances-of, "
+                    "port-connections, or source-snippet"
+                )
+            ),
+        ],
+        arg: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "verb argument: a module name (find-module, "
+                    "instances-of) or a dot-separated instance path "
+                    "rooted at the model (subtree, port-connections, "
+                    "source-snippet)"
+                )
+            ),
+        ],
+        model_config: Annotated[
+            str, typer.Option("-c", "--model-config", help="models.yaml to use")
+        ] = "models.yaml",
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="parser frontend (verible|slang)"),
+        ] = None,
+        fmt: Annotated[
+            str | None,
+            typer.Option(
+                "--format",
+                help="subtree only: json (default) or tree",
+            ),
+        ] = None,
+        context: Annotated[
+            int | None,
+            typer.Option(
+                "--context",
+                help="source-snippet only: context lines on each side",
+            ),
+        ] = None,
+        line_numbers: Annotated[
+            bool,
+            typer.Option(
+                "--line-numbers/--no-line-numbers",
+                help="source-snippet only: prefix lines with source "
+                "line numbers (default on)",
+            ),
+        ] = True,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+    ):
+        """
+        query the module hierarchy via rtl-buddy-view (rb hier's
+        machine-readable sibling): JSON answers on stdout for shell
+        pipelines and agent tool use; source-snippet emits
+        line-number-prefixed citation text
+        """
+        ctx = self._enter_command_context(primary_config=model_config)
+        model_cfg = ModelConfigLoader(str(ctx.primary_config)).get_model(name)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.hier_query",
+            command="hier-query",
+            model=name,
+            verb=verb,
+            arg=arg,
+        )
+        runner = RtlBuddyViewQuery(
+            name=self.name + "/hier-query",
+            model_cfg=model_cfg,
+            suite_dir=str(ctx.command_root),
+            verb=verb,
+            arg=arg,
+            frontend=frontend,
+            subtree_format=fmt,
+            context=context,
+            line_numbers=line_numbers,
             executable=tool,
         )
         raise typer.Exit(runner.run())
@@ -2037,6 +2456,13 @@ class RtlBuddy:
                 "--design-dir", help="Directory to search for models.yaml files"
             ),
         ] = None,
+        block: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--block",
+                help="Only include spec blocks with this name; may be repeated",
+            ),
+        ] = None,
     ):
         """
         show which spec blocks have design models referencing them
@@ -2055,6 +2481,16 @@ class RtlBuddy:
             else []
         )
         blocks = all_spec_blocks(specs)
+
+        if block:
+            requested = set(block)
+            found = {b.name for _, b in blocks}
+            missing = requested - found
+            if missing:
+                raise FatalRtlBuddyError(
+                    f"Unknown spec block(s): {', '.join(sorted(missing))}"
+                )
+            blocks = [(cfg, b) for cfg, b in blocks if b.name in requested]
 
         if not blocks:
             emit_console_text("No spec blocks found.", style="yellow")
@@ -2125,6 +2561,13 @@ class RtlBuddy:
                 "--verif-dir", help="Directory to search for tests.yaml files"
             ),
         ] = None,
+        block: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--block",
+                help="Only include spec blocks with this name; may be repeated",
+            ),
+        ] = None,
     ):
         """
         show which spec coverage items are addressed by tests
@@ -2137,14 +2580,31 @@ class RtlBuddy:
         )
 
         specs = discover_spec_configs(search_spec) if os.path.isdir(search_spec) else []
-        suite_tests = (
-            discover_suite_tests(search_verif) if os.path.isdir(search_verif) else []
-        )
+        if os.path.isdir(search_verif):
+            suite_tests, suite_load_failures = discover_suite_tests(search_verif)
+        else:
+            suite_tests, suite_load_failures = [], []
         blocks = all_spec_blocks(specs)
 
+        if block:
+            requested = set(block)
+            found = {b.name for _, b in blocks}
+            missing = requested - found
+            if missing:
+                raise FatalRtlBuddyError(
+                    f"Unknown spec block(s): {', '.join(sorted(missing))}"
+                )
+            blocks = [(cfg, b) for cfg, b in blocks if b.name in requested]
+
         if not blocks:
-            emit_console_text("No spec blocks found.", style="yellow")
-            raise typer.Exit(0)
+            if suite_load_failures:
+                emit_console_text(
+                    f"Suite load failures: {', '.join(suite_load_failures)}",
+                    style="red",
+                )
+            else:
+                emit_console_text("No spec blocks found.", style="yellow")
+            raise typer.Exit(1 if suite_load_failures else 0)
 
         cov_map = build_coverage_map(suite_tests)
 
@@ -2162,8 +2622,14 @@ class RtlBuddy:
                 for cfg, b in blocks
                 for item in b.coverage_items
             ]
-            self._emit_machine_result("spec check-coverage", 0, items=items_out)
-            raise typer.Exit(0)
+            exit_code = 1 if suite_load_failures else 0
+            self._emit_machine_result(
+                "spec check-coverage",
+                exit_code,
+                items=items_out,
+                suite_load_failures=suite_load_failures,
+            )
+            raise typer.Exit(exit_code)
 
         rows = []
         for cfg, b in blocks:
@@ -2191,12 +2657,17 @@ class RtlBuddy:
             rows=rows,
             logger=logger,
         )
+        if suite_load_failures:
+            emit_console_text(
+                f"Suite load failures: {', '.join(suite_load_failures)}",
+                style="red",
+            )
         uncovered = [row["id"] for row in rows if row["covered"] == "no"]
         if uncovered:
             emit_console_text(
                 f"Uncovered items: {', '.join(uncovered)}", style="yellow"
             )
-        raise typer.Exit(0)
+        raise typer.Exit(1 if suite_load_failures else 0)
 
     def _synth_result_row(self, r, *, suite: str | None = None) -> dict:
         res = r["results"].results
@@ -2228,12 +2699,44 @@ class RtlBuddy:
                 row[k] = res[k]
         return row
 
+    def _fpga_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["fpga_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in (
+            "lut",
+            "ff",
+            "bram",
+            "dsp",
+            "wns_ns",
+            "tns_ns",
+            "whs_ns",
+            "timing_met",
+            "fmax_mhz",
+            "failing_endpoints",
+            "failing_paths",
+            "total_power_w",
+            "dynamic_power_w",
+            "static_power_w",
+            "drc_violations",
+            "drc_by_severity",
+            "methodology_warnings",
+        ):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        # bitstream rides through even when None: machine consumers can
+        # tell "bitgen not requested" apart from a pre-fpga payload.
+        if "bitstream" in res:
+            row["bitstream"] = res["bitstream"]
+        return row
+
     def _cdc_result_row(self, r, *, suite: str | None = None) -> dict:
         res = r["results"].results
         row = {"name": r["cdc_name"], "result": res["result"], "desc": res["desc"]}
         if suite is not None:
             row["suite"] = suite
-        for k in ("violations", "suppressed", "crossings"):
+        for k in ("violations", "suppressed", "crossings", "backend", "findings"):
             if k in res and res[k] is not None:
                 row[k] = res[k]
         return row
@@ -2816,6 +3319,308 @@ class RtlBuddy:
     def _exit_code_from_power_results(self, power_results):
         return 0 if all(r["results"].is_pass() for r in power_results) else 1
 
+    def do_cmd_fpga(
+        self,
+        fpga_config: Annotated[
+            str,
+            typer.Option("-c", "--fpga-config", help="fpga.yaml to use"),
+        ] = "fpga.yaml",
+        fpga_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of fpga run",
+                show_default="run all entries in the suite",
+            ),
+        ] = None,
+        list_runs: Annotated[
+            bool,
+            typer.Option(
+                "--list", help="list fpga runs in the selected config and exit"
+            ),
+        ] = False,
+        reg_level: Annotated[
+            int,
+            typer.Option(
+                "-l",
+                "--reg-level",
+                help="run only entries with reglvl at or below this value",
+            ),
+        ] = 0,
+        emit_bitstream: Annotated[
+            bool,
+            typer.Option(
+                "--bitstream",
+                help="generate a bitstream after route (write_bitstream); "
+                "off by default — a smoke/timing run doesn't need bitgen",
+            ),
+        ] = False,
+    ):
+        """run FPGA implementation (synth + place + route)"""
+        ctx = self._enter_command_context(
+            primary_config=fpga_config, list_only=list_runs
+        )
+        suite_cfg = FpgaSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpga",
+            command="fpga",
+            fpga=fpga_name or "all",
+            fpga_config=fpga_config,
+            bitstream=emit_bitstream,
+        )
+
+        if list_runs:
+            if self.machine:
+                self._emit_machine_result(
+                    "fpga --list", 0, names=list(suite_cfg.get_run_names())
+                )
+            else:
+                emit_console_text("  ".join(suite_cfg.get_run_names()), stream="stdout")
+            raise typer.Exit(0)
+
+        results = self._do_fpga_suite(
+            suite_cfg,
+            fpga_name=fpga_name,
+            reg_level=reg_level,
+            emit_bitstream=emit_bitstream,
+        )
+        exit_code = 0 if all(r["results"].is_pass() for r in results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "fpga",
+                exit_code,
+                results=[self._fpga_result_row(r) for r in results],
+            )
+        else:
+            self._render_fpga_summary("FPGA Results Summary", results)
+        raise typer.Exit(exit_code)
+
+    def _do_fpga_suite(
+        self,
+        suite_cfg,
+        *,
+        fpga_name=None,
+        reg_level=0,
+        emit_bitstream: bool = False,
+    ):
+        root_cfg = self.root_cfg
+        runs = suite_cfg.get_runs(fpga_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for run in runs:
+            fpga_level = run.get_reglvl(run.get_tool_name())
+            if reg_level is not None and fpga_level > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "fpga_suite.skip",
+                    fpga=run.get_name(),
+                    reason="above_regression_level",
+                    fpga_level=fpga_level,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "fpga_name": run.get_name(),
+                        "results": FpgaSkipResults(
+                            name=f"{run.get_name()}/results",
+                            desc=f"reglvl {fpga_level} above {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = FpgaRunner(
+                name=run.get_name(),
+                root_cfg=root_cfg,
+                fpga_cfg=run,
+                suite_dir=suite_dir,
+                reglvl_filter=reg_level if reg_level else None,
+                emit_bitstream=emit_bitstream,
+            )
+            res = runner.run()
+            if run.is_xfail():
+                self._apply_xfail_logged(res, run, "fpga_suite.xfail")
+            results.append({"fpga_name": run.get_name(), "results": res})
+        return results
+
+    def _render_fpga_summary(self, title, fpga_results, *, metadata=None):
+        def _fmt_util(entry):
+            if not entry or entry.get("used") is None:
+                return "-"
+            used = entry["used"]
+            pct = entry.get("util_pct")
+            return f"{used} ({pct}%)" if pct is not None else str(used)
+
+        def _fmt_ns(v):
+            return f"{'+' if v >= 0 else ''}{v:.3f} ns" if v is not None else "-"
+
+        has_util = any(
+            any(k in r["results"].results for k in ("lut", "ff", "bram", "dsp"))
+            for r in fpga_results
+        )
+        has_wns = any("wns_ns" in r["results"].results for r in fpga_results)
+        has_whs = any("whs_ns" in r["results"].results for r in fpga_results)
+        has_power = any("total_power_w" in r["results"].results for r in fpga_results)
+        has_drcs = any("drc_violations" in r["results"].results for r in fpga_results)
+        has_meth = any(
+            "methodology_warnings" in r["results"].results for r in fpga_results
+        )
+        has_bit = any(r["results"].results.get("bitstream") for r in fpga_results)
+        rows = []
+        for r in fpga_results:
+            res = r["results"].results
+            row = {
+                "fpga_name": r["fpga_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+            }
+            if has_util:
+                row["luts"] = _fmt_util(res.get("lut"))
+                row["ffs"] = _fmt_util(res.get("ff"))
+                row["brams"] = _fmt_util(res.get("bram"))
+                row["dsps"] = _fmt_util(res.get("dsp"))
+            if has_wns:
+                row["wns"] = _fmt_ns(res.get("wns_ns"))
+            if has_whs:
+                row["whs"] = _fmt_ns(res.get("whs_ns"))
+            if has_power:
+                power = res.get("total_power_w")
+                row["power"] = f"{power:.3f} W" if power is not None else "-"
+            if has_drcs:
+                drcs = res.get("drc_violations")
+                row["drcs"] = str(drcs) if drcs is not None else "-"
+            if has_meth:
+                meth = res.get("methodology_warnings")
+                row["meth"] = str(len(meth)) if meth is not None else "-"
+            if has_bit:
+                row["bit"] = "bit" if res.get("bitstream") else "-"
+            rows.append(row)
+
+        columns = [
+            ("fpga_name", "FPGA Run"),
+            ("result", "Result"),
+            ("desc", "Description"),
+        ]
+        if has_util:
+            columns.append(("luts", "LUTs"))
+            columns.append(("ffs", "FFs"))
+            columns.append(("brams", "BRAMs"))
+            columns.append(("dsps", "DSPs"))
+        if has_wns:
+            columns.append(("wns", "WNS"))
+        if has_whs:
+            columns.append(("whs", "WHS"))
+        if has_power:
+            columns.append(("power", "Power"))
+        if has_drcs:
+            columns.append(("drcs", "DRCs"))
+        if has_meth:
+            columns.append(("meth", "Meth"))
+        if has_bit:
+            columns.append(("bit", "Outputs"))
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def do_fpga_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to fpga_regression.yaml",
+                show_default="Use ./fpga_regression.yaml if present",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="FPGA regression level to stop at"),
+        ] = 0,
+        emit_bitstream: Annotated[
+            bool,
+            typer.Option(
+                "--bitstream",
+                help="generate bitstreams after route (write_bitstream); "
+                "off by default — a smoke/timing regression doesn't need bitgen",
+            ),
+        ] = False,
+    ):
+        """
+        run FPGA implementation regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.fpga_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+            bitstream=emit_bitstream,
+        )
+
+        if reg_config is not None:
+            reg_cfg_path = (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
+        else:
+            local = str(self.invocation_cwd / "fpga_regression.yaml")
+            reg_cfg_path = local if os.path.isfile(local) else None
+            if reg_cfg_path is None:
+                raise FatalRtlBuddyError(
+                    "fpga_regression.yaml not found; pass -c to specify a path"
+                )
+
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
+        fpga_reg = FpgaRegConfig(name=self.name + "/fpga_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running FPGA regression from {orchestration_ctx.command_root}",
+            style="cyan",
+        )
+
+        all_results = []
+        machine_rows = []
+        for suite_cfg in fpga_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "fpga_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_fpga_suite(
+                suite_cfg,
+                fpga_name=None,
+                reg_level=reg_level,
+                emit_bitstream=emit_bitstream,
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._fpga_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
+                )
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+
+        exit_code = 0 if all(r["results"].is_pass() for r in all_results) else 1
+        if self.machine:
+            self._emit_machine_result(
+                "fpga-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_fpga_summary(
+                "FPGA Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
+
     def do_power_regression(
         self,
         reg_config: Annotated[
@@ -3107,6 +3912,58 @@ class RtlBuddy:
                 "--list", help="list analyses in the selected config and exit"
             ),
         ] = False,
+        emit_constraints: Annotated[
+            bool,
+            typer.Option(
+                "--emit-constraints",
+                help="generate scoped CDC timing exceptions from the verified "
+                "crossing set instead of linting",
+            ),
+        ] = False,
+        emit_format: Annotated[
+            str,
+            typer.Option(
+                "--format",
+                help="constraint dialect for --emit-constraints",
+                metavar="[sdc|xdc]",
+                click_type=click.Choice(["sdc", "xdc"]),
+            ),
+        ] = "xdc",
+        scoped: Annotated[
+            bool,
+            typer.Option(
+                "--scoped",
+                help="--emit-constraints: emit IP-relative (SCOPED_TO_REF) "
+                "constraints, omitting top-level clock defs/groups",
+            ),
+        ] = False,
+        output: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--output",
+                help="--emit-constraints: write to this file (default: stdout)",
+            ),
+        ] = None,
+        check_xdc: Annotated[
+            str | None,
+            typer.Option(
+                "--check-xdc",
+                metavar="FILE",
+                help="audit a Vivado XDC's CDC exceptions against the verified "
+                "crossing set instead of linting",
+            ),
+        ] = None,
+        recognize_sync: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--recognize-sync",
+                metavar="REGEX",
+                help="--check-xdc: instance-path regex for a synchronizer the "
+                "analyzer did not recognize (e.g. a blackboxed xpm_cdc_*); "
+                "repeatable. Adds to cdc.yaml's recognized-syncs",
+            ),
+        ] = None,
     ):
         """
         run CDC lint
@@ -3114,6 +3971,20 @@ class RtlBuddy:
         ctx = self._enter_command_context(
             primary_config=cdc_config, list_only=list_cdcs
         )
+        if emit_constraints and check_xdc:
+            raise FatalRtlBuddyError(
+                "--emit-constraints and --check-xdc are mutually exclusive"
+            )
+        if emit_constraints:
+            self._do_emit_constraints(
+                ctx, cdc_config, cdc_name, emit_format, scoped, output
+            )
+            return
+        if check_xdc:
+            self._do_check_xdc(
+                ctx, cdc_config, cdc_name, check_xdc, recognize_sync or []
+            )
+            return
         suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
         log_event(
             logger,
@@ -3145,6 +4016,249 @@ class RtlBuddy:
             )
         else:
             self._render_cdc_summary("CDC Lint Results Summary", cdc_results)
+        raise typer.Exit(exit_code)
+
+    def _run_single_cdc_with_maps(self, ctx, cdc_config, cdc_name, mode):
+        """Resolve a single rtl-buddy-cdc analysis, run it requesting the
+        structured maps, and return ``(analysis, backend, res)``.
+
+        Shared by ``--emit-constraints`` (#291) and ``--check-xdc`` (#290);
+        ``mode`` names the flag for error messages.
+        """
+        from .tools.cdc_rtl_buddy import RtlBuddyCdc
+
+        suite_cfg = CdcSuiteConfig(path=str(ctx.primary_config))
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        analyses = suite_cfg.get_analyses(cdc_name)
+        if not analyses:
+            raise FatalRtlBuddyError(
+                f"no CDC analysis named {cdc_name!r} in {cdc_config}"
+            )
+        if cdc_name is None and len(analyses) > 1:
+            raise FatalRtlBuddyError(
+                f"{mode} needs a single analysis (the IP); name one of: "
+                + ", ".join(a.get_name() for a in analyses)
+            )
+        analysis = analyses[0]
+        tool_name = analysis.get_tool_name()
+        if tool_name != "rtl-buddy-cdc":
+            # Both modes use the open engine's structured crossing map; the
+            # vendor backend has no such map.
+            raise FatalRtlBuddyError(
+                f"{mode} requires the open rtl-buddy-cdc engine; "
+                f"analysis '{analysis.get_name()}' uses tool '{tool_name}'"
+            )
+        tool_cfg = self.root_cfg.get_cdc_tool_cfg(tool_name)
+        backend = RtlBuddyCdc(
+            name=self.name + "/cdc_maps",
+            cdc_cfg=analysis,
+            tool_cfg=tool_cfg,
+            suite_dir=suite_dir,
+            root_cfg=self.root_cfg,
+            emit_maps=True,
+        )
+        return analysis, backend, backend.run()
+
+    def _do_emit_constraints(self, ctx, cdc_config, cdc_name, fmt, scoped, output):
+        """`rb cdc --emit-constraints`: generate scoped CDC timing exceptions
+        (#291) from rtl-buddy-cdc's verified crossing + reset-sync maps."""
+        from .tools.cdc_constraints import generate_constraints
+
+        analysis, backend, res = self._run_single_cdc_with_maps(
+            ctx, cdc_config, cdc_name, "--emit-constraints"
+        )
+        domain_map, reset_map = backend.read_emitted_maps()
+
+        if domain_map is None:
+            # No map can mean two very different things; don't collapse them
+            # into a single exit-0 SKIP.
+            #   (a) the analysis itself failed -> surface it as a failure;
+            #   (b) it ran but the (optional/old) tool emitted no map -> SKIP.
+            verdict = res.results.get("result")
+            failed = verdict not in ("PASS", "SKIP", "XFAIL")
+            log_event(
+                logger,
+                logging.WARNING,
+                "cdc.emit.no_maps",
+                analysis=analysis.get_name(),
+                recognition=verdict,
+                failed=failed,
+            )
+            exit_code = 2 if failed else 0
+            status = "FAIL" if failed else "SKIP"
+            reason = (
+                f"analysis did not pass ({verdict}); see the cdc log"
+                if failed
+                else "rtl-buddy-cdc produced no domain map"
+            )
+            if self.machine:
+                self._emit_machine_result(
+                    "cdc --emit-constraints",
+                    exit_code,
+                    analysis=analysis.get_name(),
+                    status=status,
+                    recognition=verdict,
+                    reason=reason,
+                )
+            else:
+                emit_console_text(
+                    f"emit-constraints {status.lower()} for "
+                    f"{analysis.get_name()}: {reason}",
+                    style="red" if failed else "yellow",
+                )
+            raise typer.Exit(exit_code)
+
+        emit = generate_constraints(domain_map, reset_map, fmt=fmt, scoped=scoped)
+
+        if scoped and emit.unscoped:
+            # A flattening frontend collapsed every capture instance to the
+            # design top, so there is no IP-relative cell to scope to. Refuse
+            # rather than emit `<top>/*` wildcards that over-constrain the IP
+            # (and that --check-xdc would then rubber-stamp).
+            raise FatalRtlBuddyError(
+                f"--emit-constraints --scoped for {analysis.get_name()}: "
+                f"{len(emit.unscoped)} crossing(s) flattened to the design top "
+                "(e.g. "
+                + ", ".join(emit.unscoped[:3])
+                + ") — a hierarchy-preserving frontend is required to scope IP "
+                "constraints. Set `frontend: slang` on the CDC analysis (install "
+                "rtl-buddy-cdc[slang]), or drop --scoped for top-level output."
+            )
+
+        out_path = None
+        if output:
+            out_path = (
+                output
+                if os.path.isabs(output)
+                else os.path.join(self.invocation_cwd, output)
+            )
+            Path(out_path).write_text(emit.text)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "cdc.emit.done",
+            analysis=analysis.get_name(),
+            format=fmt,
+            scoped=scoped,
+            exceptions=len(emit.entries),
+            recognition=res.results.get("result"),
+            output=out_path,
+        )
+
+        if self.machine:
+            self._emit_machine_result(
+                "cdc --emit-constraints",
+                0,
+                analysis=analysis.get_name(),
+                format=fmt,
+                scoped=scoped,
+                output=out_path,
+                recognition=res.results.get("result"),
+                constraints=emit.manifest,
+            )
+        elif out_path:
+            emit_console_text(
+                f"wrote {len(emit.entries)} CDC exception(s) to {out_path}"
+            )
+        else:
+            emit_console_text(emit.text, stream="stdout", markup=False)
+        raise typer.Exit(0)
+
+    def _do_check_xdc(self, ctx, cdc_config, cdc_name, xdc, recognize_sync=None):
+        """`rb cdc --check-xdc <file>`: audit an XDC's CDC exceptions against
+        rtl-buddy-cdc's verified crossing set (#290)."""
+        from .tools.cdc_xdc_audit import audit_xdc, extract_cdc_constraints
+
+        xdc_path = xdc if os.path.isabs(xdc) else os.path.join(self.invocation_cwd, xdc)
+        if not os.path.isfile(xdc_path):
+            raise FatalRtlBuddyError(f"--check-xdc: XDC not found: {xdc_path}")
+
+        analysis, backend, res = self._run_single_cdc_with_maps(
+            ctx, cdc_config, cdc_name, "--check-xdc"
+        )
+        domain_map, _reset = backend.read_emitted_maps()
+        if domain_map is None:
+            verdict = res.results.get("result")
+            failed = verdict not in ("PASS", "SKIP", "XFAIL")
+            log_event(
+                logger,
+                logging.WARNING,
+                "cdc.check_xdc.no_maps",
+                analysis=analysis.get_name(),
+                recognition=verdict,
+                failed=failed,
+            )
+            exit_code = 2 if failed else 0
+            status = "FAIL" if failed else "SKIP"
+            reason = (
+                f"analysis did not pass ({verdict}); see the cdc log"
+                if failed
+                else "rtl-buddy-cdc produced no domain map"
+            )
+            if self.machine:
+                self._emit_machine_result(
+                    "cdc --check-xdc",
+                    exit_code,
+                    analysis=analysis.get_name(),
+                    status=status,
+                    recognition=verdict,
+                    reason=reason,
+                )
+            else:
+                emit_console_text(
+                    f"check-xdc {status.lower()} for {analysis.get_name()}: {reason}",
+                    style="red" if failed else "yellow",
+                )
+            raise typer.Exit(exit_code)
+
+        report = backend.read_report()
+        xc = extract_cdc_constraints(Path(xdc_path).read_text())
+        # Recognized-synchronizer patterns: cdc.yaml's `recognized-syncs` plus
+        # any --recognize-sync overrides given on the command line.
+        recognized = analysis.get_recognized_syncs() + list(recognize_sync or [])
+        audit = audit_xdc(domain_map, report, xc, recognized_syncs=recognized)
+        blockers = audit.blockers
+        # A completeness gap or a dangerous over-waive fails the audit; the
+        # softer findings (bus-skew / clock-graph) are warnings.
+        exit_code = 2 if blockers else 0
+
+        log_event(
+            logger,
+            logging.INFO if not blockers else logging.WARNING,
+            "cdc.check_xdc.done",
+            analysis=analysis.get_name(),
+            xdc=xdc_path,
+            findings=len(audit.findings),
+            blockers=len(blockers),
+        )
+
+        if self.machine:
+            self._emit_machine_result(
+                "cdc --check-xdc",
+                exit_code,
+                analysis=analysis.get_name(),
+                xdc=xdc_path,
+                blockers=len(blockers),
+                findings=audit.to_machine(),
+            )
+        else:
+            if not audit.findings:
+                emit_console_text(
+                    f"check-xdc clean: {analysis.get_name()} — every verified "
+                    "crossing is covered, no over-waives",
+                    style="green",
+                )
+            else:
+                for f in audit.findings:
+                    style = {"blocker": "red", "warning": "yellow"}.get(
+                        f.severity, None
+                    )
+                    emit_console_text(
+                        f"[{f.severity}] {f.kind}: {f.message}",
+                        style=style,
+                        markup=False,
+                    )
         raise typer.Exit(exit_code)
 
     def do_cdc_regression(
@@ -3709,6 +4823,842 @@ class RtlBuddy:
             self._render_mut_summary("Mutation Score", results)
         raise typer.Exit(0)
 
+    # ------------------------------------------------------------------
+    # rb xplr — design-space exploration experiment ledger
+    # ------------------------------------------------------------------
+
+    def _xplr_group_options(
+        self,
+        ctx: typer.Context,
+        root: Annotated[
+            str,
+            typer.Option(
+                "--root",
+                help="anchor project-root discovery at this path instead of "
+                "the current directory (root_config.yaml/.git are resolved "
+                "from here). Group-level: place it between 'xplr' and the "
+                "subcommand, e.g. `rb xplr --root <project> list`. For "
+                "driving a ledger from outside its project checkout",
+            ),
+        ] = None,
+    ):
+        """Group callback: ``--root`` + the full ``xplr <sub>`` command name.
+
+        ``root_options`` only sees the group (``xplr``), so the exit-2
+        machine envelope emitted by :meth:`run` would attribute errors
+        to the bare group name while the success path reports the full
+        subcommand (e.g. ``xplr frontier``). Refining it here keeps the
+        error surface consistent with the success surface.
+        """
+        if ctx.invoked_subcommand:
+            self._pending_invoked_subcommand = f"xplr {ctx.invoked_subcommand}"
+        if ctx.resilient_parsing:
+            return
+        self._xplr_root_override = None
+        if root is not None:
+            path = Path(root)
+            if not path.is_absolute():
+                path = self.invocation_cwd / path
+            path = path.resolve()
+            if not path.is_dir():
+                raise FatalRtlBuddyError(f"xplr --root: {path} is not a directory")
+            self._xplr_root_override = path
+
+    def _enter_xplr_context(self) -> tuple[Path, Path]:
+        """Anchor an xplr command and return (project_root, ledger_root).
+
+        The ledger lives at the project root (``artefacts/xplr``), not a
+        suite directory, so every experiment ends up in one ledger no
+        matter where the agent invoked ``rb`` from. ``rb xplr --root
+        <path>`` anchors the discovery at that path instead of the
+        invocation cwd. ``list_only=True``: xplr needs no
+        RootConfig/builder, and read commands stay lock-free; write
+        commands take a lock on the ledger root only, so a running
+        flow's suite artefact lock is never contended.
+        """
+        start = self._xplr_root_override or self.invocation_cwd
+        try:
+            project_root = discover_project_root(start_dir=start)
+        except FatalRtlBuddyError as exc:
+            raise FatalRtlBuddyError(
+                f"{exc} For xplr commands: rb xplr --root <project> <subcommand>."
+            ) from None
+        ctx = self._enter_command_context(command_root=project_root, list_only=True)
+        return project_root, xplr_ledger.ledger_root(ctx)
+
+    def do_xplr_register(
+        self,
+        json_input: Annotated[
+            str,
+            typer.Option(
+                "--json",
+                help="JSON manifest file, or '-' for stdin: {knobs: [{name, "
+                "from, to, rationale?, layer?}], hypothesis?, parent?, "
+                "config_snapshot?, source?: {git_sha?, branch?, diff_from?}, "
+                "provenance?: {tools?, agent?}}",
+            ),
+        ] = None,
+        baseline: Annotated[
+            str,
+            typer.Option(
+                "--baseline",
+                help="git ref to record as source.diff_from (the RTL-diff "
+                "baseline). Default: the parent experiment's pinned sha "
+                "when 'parent' is given, else HEAD before any snapshot",
+            ),
+        ] = None,
+    ):
+        """
+        open a new experiment: pin the git ref + record the knob manifest
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr register")
+        doc = {}
+        if json_input is not None:
+            doc = xplr_commands.load_json_doc(
+                json_input, cwd=self.invocation_cwd, what="register"
+            )
+        record, path = xplr_commands.register_experiment(
+            root, doc, project_root=project_root, baseline=baseline
+        )
+        if self.machine:
+            self._emit_machine_result(
+                "xplr register",
+                0,
+                id=record.id,
+                record_path=str(path),
+                record=record.to_dict(),
+            )
+        else:
+            emit_console_text(
+                f"registered {record.id} ({len(record.knobs)} knob(s), "
+                f"source {record.source.git_sha[:12]}) -> {path}",
+                style="green",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_attach_outcome(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+        json_input: Annotated[
+            str,
+            typer.Option(
+                "--json",
+                help="JSON outcome file, or '-' for stdin: {status: "
+                "'success'|'failed', metrics?, metric_meta?, artifacts?, "
+                "provenance?: {tools?, reused_state?}}",
+            ),
+        ],
+        force: Annotated[
+            bool,
+            typer.Option(
+                "--force",
+                help="overwrite an outcome that is already terminal (success/failed)",
+            ),
+        ] = False,
+    ):
+        """
+        attach flow-declared outcome metrics to an experiment
+        """
+        _, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr attach-outcome")
+        doc = xplr_commands.load_json_doc(
+            json_input, cwd=self.invocation_cwd, what="attach-outcome"
+        )
+        record, path = xplr_commands.attach_outcome(root, exp_id, doc, force=force)
+        if self.machine:
+            self._emit_machine_result(
+                "xplr attach-outcome",
+                0,
+                id=record.id,
+                record_path=str(path),
+                record=record.to_dict(),
+            )
+        else:
+            emit_console_text(
+                f"attached outcome '{record.outcome.status}' to {record.id} -> {path}",
+                style="green",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_list(
+        self,
+        status: Annotated[
+            str,
+            typer.Option(
+                "--status",
+                help="only experiments with this outcome status "
+                "(pending|running|success|failed)",
+            ),
+        ] = None,
+    ):
+        """
+        list experiments in the ledger
+        """
+        _, root = self._enter_xplr_context()
+        records = xplr_commands.list_experiments(root, status=status)
+        summaries = [xplr_commands.summarize(r) for r in records]
+        if self.machine:
+            self._emit_machine_result("xplr list", 0, experiments=summaries)
+        else:
+            rows = [
+                {
+                    "id": s["id"],
+                    "status": s["status"],
+                    "git_sha": s["git_sha"][:12],
+                    "knobs": str(s["n_knobs"]),
+                    "created": s["created"],
+                    "hypothesis": s.get("hypothesis", "-"),
+                }
+                for s in summaries
+            ]
+            render_summary(
+                title=f"xplr experiments ({len(rows)})",
+                columns=[
+                    ("id", "Experiment"),
+                    ("status", "Status"),
+                    ("git_sha", "Source"),
+                    ("knobs", "Knobs"),
+                    ("created", "Created"),
+                    ("hypothesis", "Hypothesis"),
+                ],
+                rows=rows,
+                logger=logger,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_show(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+    ):
+        """
+        show one experiment's full record
+        """
+        _, root = self._enter_xplr_context()
+        record, path = xplr_commands.get_experiment(root, exp_id)
+        if self.machine:
+            self._emit_machine_result(
+                "xplr show",
+                0,
+                id=record.id,
+                record_path=str(path),
+                record=record.to_dict(),
+            )
+        else:
+            print(dumps_record(record), end="")
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb xplr analysis — frontier / diff / knob-effect (curation only)
+    # ------------------------------------------------------------------
+
+    def do_xplr_frontier(
+        self,
+        metrics: Annotated[
+            str,
+            typer.Option(
+                "--metrics",
+                help="override/declare dominance directions: "
+                "'name:min,name2:max' (record-level metric_meta otherwise)",
+            ),
+        ] = None,
+        prefer: Annotated[
+            str,
+            typer.Option(
+                "--prefer",
+                help="scalar preference to sort the frontier (never drops "
+                "non-dominated points): comma/plus-separated weight*metric, "
+                "e.g. '0.7*lut_pct+0.3*delay_ns'; lower score = better "
+                "after direction normalization",
+            ),
+        ] = None,
+    ):
+        """
+        curate the Pareto frontier over the ledger's outcome metrics
+        """
+        _, root = self._enter_xplr_context()
+        overrides = (
+            xplr_analysis.parse_metric_directions(metrics)
+            if metrics is not None
+            else None
+        )
+        preference = (
+            xplr_analysis.parse_preference(prefer) if prefer is not None else None
+        )
+        records = xplr_ledger.list_records(root)
+        payload = xplr_analysis.pareto_frontier(
+            records, direction_overrides=overrides, preference=preference
+        )
+        if self.machine:
+            self._emit_machine_result("xplr frontier", 0, **payload)
+        else:
+            metric_names = [m["name"] for m in payload["metrics"]]
+            columns = [("id", "Experiment")] + [
+                (
+                    m["name"],
+                    f"{m['name']} ({m['direction']})",
+                )
+                for m in payload["metrics"]
+            ]
+            if preference is not None:
+                columns.append(("score", "Preference"))
+            rows = []
+            for member in payload["frontier"]:
+                row = {"id": member["id"]}
+                for name in metric_names:
+                    row[name] = str(member["metrics"].get(name, "-"))
+                if preference is not None:
+                    row["score"] = f"{member['preference_score']:.4g}"
+                rows.append(row)
+            render_summary(
+                title=f"Pareto frontier ({len(rows)} non-dominated)",
+                columns=columns,
+                rows=rows,
+                logger=logger,
+            )
+            for entry in payload["dominated"]:
+                emit_console_text(
+                    f"dominated: {entry['id']} by {', '.join(entry['dominated_by'])}",
+                    markup=False,
+                )
+            if payload["infeasible"]:
+                emit_console_text(
+                    f"infeasible (routed=false): {', '.join(payload['infeasible'])}",
+                    style="yellow",
+                    markup=False,
+                )
+            for entry in payload["excluded"]:
+                emit_console_text(
+                    f"excluded: {entry['id']} — {entry['reason']}",
+                    style="yellow",
+                    markup=False,
+                )
+        raise typer.Exit(0)
+
+    def do_xplr_diff(
+        self,
+        exp_a: Annotated[
+            str, typer.Argument(metavar="EXP_A", help="first experiment id")
+        ],
+        exp_b: Annotated[
+            str, typer.Argument(metavar="EXP_B", help="second experiment id")
+        ],
+        patch: Annotated[
+            bool,
+            typer.Option(
+                "--patch",
+                help="include the full git diff patch between the pinned "
+                "sources (not just --stat)",
+            ),
+        ] = False,
+    ):
+        """
+        diff two experiments: knob delta, outcome delta, source diff
+        """
+        project_root, root = self._enter_xplr_context()
+        record_a, _ = xplr_commands.get_experiment(root, exp_a)
+        record_b, _ = xplr_commands.get_experiment(root, exp_b)
+        payload = xplr_analysis.diff_records(record_a, record_b)
+        payload["source"] = xplr_commands.source_diff(
+            project_root,
+            record_a.source.to_dict(),
+            record_b.source.to_dict(),
+            patch=patch,
+        )
+        if self.machine:
+            self._emit_machine_result("xplr diff", 0, **payload)
+        else:
+            print(self._render_xplr_diff(payload))
+        raise typer.Exit(0)
+
+    @staticmethod
+    def _render_xplr_diff(payload: dict) -> str:
+        """Readable text rendering of the ``rb xplr diff`` payload."""
+        lines = [f"diff {payload['a']}..{payload['b']}", "knobs:"]
+        knobs = payload["knob_delta"]
+        for knob in knobs["added"]:
+            lines.append(f"  + {knob['name']}: {knob['from']!r} -> {knob['to']!r}")
+        for entry in knobs["changed"]:
+            lines.append(
+                f"  ~ {entry['name']}: {entry['a']['to']!r} -> {entry['b']['to']!r}"
+            )
+        for knob in knobs["reverted"]:
+            lines.append(f"  - {knob['name']} (was -> {knob['to']!r})")
+        for name in knobs["unchanged"]:
+            lines.append(f"  = {name}")
+        if len(lines) == 2:
+            lines.append("  (no knobs declared in either experiment)")
+        outcome = payload["outcome_delta"]
+        lines.append(f"outcome ({outcome['status_a']} -> {outcome['status_b']}):")
+        for row in outcome["metrics"]:
+            direction = row["direction"] or "?"
+            lines.append(
+                f"  {row['name']}: {row['a']} -> {row['b']} "
+                f"(delta {row['delta']:+g}, {direction}, {row['assessment']})"
+            )
+        for name, value in outcome["only_a"].items():
+            lines.append(f"  {name}: {value} -> (absent)")
+        for name, value in outcome["only_b"].items():
+            lines.append(f"  {name}: (absent) -> {value}")
+        source = payload["source"]
+        lines.append(f"source: {source['a']['git_sha']} -> {source['b']['git_sha']}")
+        if source.get("note"):
+            lines.append(f"  note: {source['note']}")
+        if source.get("stat"):
+            lines.extend(f"  {line}" for line in source["stat"].splitlines())
+        if source.get("patch"):
+            lines.append(source["patch"])
+        return "\n".join(lines)
+
+    def do_xplr_knob_effect(
+        self,
+        name: Annotated[
+            str,
+            typer.Argument(
+                metavar="KNOB", help="knob name, e.g. synth.target_freq_mhz"
+            ),
+        ],
+    ):
+        """
+        per-knob effect history across the ledger
+        """
+        _, root = self._enter_xplr_context()
+        records = xplr_ledger.list_records(root)
+        payload = xplr_analysis.knob_effect(records, name)
+        if self.machine:
+            self._emit_machine_result("xplr knob-effect", 0, **payload)
+        else:
+            rows = []
+            for entry in payload["effects"]:
+                deltas = entry.get("metrics_parent_delta", {})
+                rows.append(
+                    {
+                        "exp": entry["exp"],
+                        "status": entry["status"],
+                        "change": f"{entry['from']!r} -> {entry['to']!r}",
+                        "parent": entry.get("parent", "-"),
+                        "delta": ", ".join(
+                            f"{metric}{value:+g}" for metric, value in deltas.items()
+                        )
+                        or "-",
+                        "rationale": entry.get("rationale", "-"),
+                    }
+                )
+            render_summary(
+                title=f"knob-effect: {name} ({len(rows)} experiment(s))",
+                columns=[
+                    ("exp", "Experiment"),
+                    ("status", "Status"),
+                    ("change", "Change"),
+                    ("parent", "Parent"),
+                    ("delta", "Delta vs parent"),
+                    ("rationale", "Rationale"),
+                ],
+                rows=rows,
+                logger=logger,
+            )
+            if "known_knobs" in payload:
+                emit_console_text(
+                    f"knob '{name}' appears in no experiment's manifest",
+                    style="yellow",
+                    markup=False,
+                )
+                if payload["suggestions"]:
+                    emit_console_text(
+                        "did you mean: " + ", ".join(payload["suggestions"]),
+                        style="yellow",
+                        markup=False,
+                    )
+                if payload["known_knobs"]:
+                    emit_console_text(
+                        "known knobs: " + ", ".join(payload["known_knobs"]),
+                        markup=False,
+                    )
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb xplr provenance — worktree isolation + frontier-aware gc (#298)
+    # ------------------------------------------------------------------
+
+    def do_xplr_materialize(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+        path: Annotated[
+            str,
+            typer.Option(
+                "--path",
+                help="worktree location (default: <worktree-root>/<exp>/, "
+                "worktree-root from cfg-xplr, under artefacts/ — keep it "
+                "gitignored)",
+            ),
+        ] = None,
+    ):
+        """
+        create a git worktree at the experiment's pinned sha (idempotent)
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr materialize")
+        record, _ = xplr_commands.get_experiment(root, exp_id)
+        cfg = load_xplr_config(project_root)
+        worktree_path = None
+        if path is not None:
+            worktree_path = Path(path)
+            if not worktree_path.is_absolute():
+                worktree_path = self.invocation_cwd / worktree_path
+        info = xplr_gitprov.materialize(
+            project_root, root, record, cfg, path=worktree_path
+        )
+        if self.machine:
+            self._emit_machine_result("xplr materialize", 0, **info)
+        else:
+            verb = "reusing" if info["reused"] else "materialized"
+            emit_console_text(
+                f"{verb} {record.id} at {info['path']} "
+                f"(source {record.source.git_sha[:12]})",
+                style="green",
+                markup=False,
+            )
+        raise typer.Exit(0)
+
+    def do_xplr_release(
+        self,
+        exp_id: Annotated[
+            str, typer.Argument(metavar="EXP", help="experiment id, e.g. exp-0001")
+        ],
+    ):
+        """
+        remove the experiment's worktree; branch + record are kept
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr release")
+        xplr_commands.get_experiment(root, exp_id)  # fail loudly on unknown id
+        info = xplr_gitprov.release(project_root, root, exp_id)
+        if self.machine:
+            self._emit_machine_result("xplr release", 0, **info)
+        else:
+            message = (
+                f"released worktree of {exp_id} ({info['path']})"
+                if info["removed"]
+                else f"{exp_id} has no worktree to release"
+            )
+            emit_console_text(message, style="green", markup=False)
+        raise typer.Exit(0)
+
+    def do_xplr_gc(
+        self,
+        dry_run: Annotated[
+            bool,
+            typer.Option(
+                "--dry-run",
+                help="report what would be evicted without touching anything",
+            ),
+        ] = False,
+        policy: Annotated[
+            str,
+            typer.Option(
+                "--policy",
+                help="eviction policy for this run: keep-frontier (default; "
+                "frontier members + lineage are never evicted) | "
+                "oldest-first | manual (list candidates, evict nothing)",
+            ),
+        ] = None,
+        target_gb: Annotated[
+            float,
+            typer.Option(
+                "--target-gb",
+                help="gc down to this usage (default: cfg-xplr disk-high-watermark-gb)",
+            ),
+        ] = None,
+    ):
+        """
+        evict heavy artifacts/worktrees to keep disk under the threshold
+        """
+        project_root, root = self._enter_xplr_context()
+        self._artifact_locks.acquire(root, command="xplr gc")
+        cfg = load_xplr_config(project_root)
+        payload = xplr_gitprov.gc(
+            project_root,
+            root,
+            cfg,
+            policy=policy,
+            target_gb=target_gb,
+            dry_run=dry_run,
+        )
+        if self.machine:
+            self._emit_machine_result("xplr gc", 0, **payload)
+        else:
+            gb = xplr_gitprov.GB
+            verb = "would evict" if dry_run else "evicted"
+            emit_console_text(
+                f"xplr gc ({payload['policy']}): "
+                f"{payload['usage_bytes_before'] / gb:.3f} GB used, target "
+                f"{payload['target_bytes'] / gb:.3f} GB — {verb} "
+                f"{len(payload['evicted'])} experiment(s), "
+                f"{payload['bytes_freed_total'] / gb:.3f} GB",
+                markup=False,
+            )
+            for entry in payload["evicted"]:
+                emit_console_text(
+                    f"  {verb} {entry['id']}: {entry['bytes_freed']} bytes "
+                    f"(record.json kept)",
+                    markup=False,
+                )
+            if payload["protected"]:
+                emit_console_text(
+                    "protected (frontier/lineage/non-terminal): "
+                    + ", ".join(payload["protected"]),
+                    markup=False,
+                )
+            for note in payload["notes"]:
+                emit_console_text(f"note: {note}", style="yellow", markup=False)
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb xplr mock — synthetic DSE backend with known optima (#304)
+    # ------------------------------------------------------------------
+
+    def _xplr_mock_group_options(self, ctx: typer.Context):
+        """Refine the command name to ``xplr mock <sub>`` (see xplr group)."""
+        if ctx.invoked_subcommand:
+            self._pending_invoked_subcommand = f"xplr mock {ctx.invoked_subcommand}"
+
+    def do_xplr_mock_info(
+        self,
+        scenario: Annotated[
+            str,
+            typer.Option(
+                "--scenario",
+                help="show one scenario only (rastrigin|zdt1)",
+            ),
+        ] = None,
+    ):
+        """
+        list mockflow scenarios, knob specs, and the analytic ground truth
+        """
+        if scenario is not None:
+            payload = xplr_mockflow.scenario_info(scenario)
+            infos = [payload]
+        else:
+            infos = [
+                xplr_mockflow.scenario_info(s) for s in sorted(xplr_mockflow.SCENARIOS)
+            ]
+            payload = {"scenarios": infos}
+        if self.machine:
+            self._emit_machine_result("xplr mock info", 0, **payload)
+        else:
+            for info in infos:
+                emit_console_text(
+                    f"{info['name']} ({info['objective']}-objective): "
+                    f"{info['description']}",
+                    style="bold",
+                    markup=False,
+                )
+                for knob in info["knobs"]:
+                    domain = (
+                        "|".join(knob["choices"])
+                        if knob["type"] == "choice"
+                        else f"[{knob['range'][0]}, {knob['range'][1]}]"
+                    )
+                    emit_console_text(
+                        f"  knob {knob['name']}: {knob['type']} {domain} "
+                        f"(layer {knob['layer']}, default {knob['default']!r})",
+                        markup=False,
+                    )
+                for combo in info["infeasible_when"]:
+                    pairs = ", ".join(f"{k}={v}" for k, v in combo.items())
+                    emit_console_text(
+                        f"  infeasible (routed=false) when: {pairs}", markup=False
+                    )
+                emit_console_text(
+                    f"  ground truth: {info['ground_truth']['description']}",
+                    markup=False,
+                )
+        raise typer.Exit(0)
+
+    def do_xplr_mock_run(
+        self,
+        scenario: Annotated[
+            str,
+            typer.Option("--scenario", help="scenario name (rastrigin|zdt1)"),
+        ],
+        json_input: Annotated[
+            str,
+            typer.Option(
+                "--json",
+                help="JSON knob-value object {name: value}, or '-' for stdin; "
+                "omitted knobs take their scenario defaults",
+            ),
+        ] = None,
+        seed: Annotated[
+            int,
+            typer.Option("--seed", help="noise seed (irrelevant when --noise is 0)"),
+        ] = 0,
+        noise: Annotated[
+            float,
+            typer.Option(
+                "--noise",
+                help="stddev of seeded Gaussian noise added to the objective "
+                "metrics (simulated run-to-run variance; default 0 = exact)",
+            ),
+        ] = 0.0,
+        register: Annotated[
+            bool,
+            typer.Option(
+                "--register",
+                help="register a ledger experiment AND attach the outcome in "
+                "one step (knobs recorded as from=scenario default)",
+            ),
+        ] = False,
+        source_sha: Annotated[
+            str,
+            typer.Option(
+                "--source-sha",
+                help="with --register: record this sha verbatim as "
+                "source.git_sha (the agent-declared pin path; no dirty bit). "
+                "The escape hatch for sandboxes where the project root is "
+                "not a git repository",
+            ),
+        ] = None,
+        source_branch: Annotated[
+            str,
+            typer.Option(
+                "--source-branch",
+                help="with --source-sha: optional source.branch label, "
+                "recorded verbatim",
+            ),
+        ] = None,
+    ):
+        """
+        evaluate one knob vector against a mockflow scenario
+        """
+        if source_sha is not None and not register:
+            raise FatalRtlBuddyError(
+                "mock run: --source-sha only makes sense with --register "
+                "(a stateless evaluation pins no source)"
+            )
+        if source_branch is not None and source_sha is None:
+            raise FatalRtlBuddyError(
+                "mock run: --source-branch requires --source-sha (a branch "
+                "label alone does not pin a revision)"
+            )
+        values = {}
+        if json_input is not None:
+            values = xplr_commands.load_json_doc(
+                json_input, cwd=self.invocation_cwd, what="mock run"
+            )
+        result = xplr_mockflow.evaluate(scenario, values, seed=seed, noise=noise)
+        payload = dict(result)
+        # `outcome` is shaped exactly as an attach-outcome --json input so
+        # a stateless `mock run` can be piped straight into attach-outcome.
+        payload["outcome"] = xplr_mockflow.outcome_doc(result)
+        if register:
+            project_root, root = self._enter_xplr_context()
+            self._artifact_locks.acquire(root, command="xplr mock run")
+            doc = xplr_mockflow.register_doc(scenario, values, result["knobs"])
+            if source_sha is not None:
+                source: dict = {"git_sha": source_sha}
+                if source_branch is not None:
+                    source["branch"] = source_branch
+                doc["source"] = source
+            try:
+                record, _ = xplr_commands.register_experiment(
+                    root, doc, project_root=project_root
+                )
+            except FatalRtlBuddyError as exc:
+                if source_sha is None and "not a git repository" in str(exc):
+                    raise FatalRtlBuddyError(
+                        f"mock run --register: the project root "
+                        f"({project_root}) is not a git repository with "
+                        "commits, so the source cannot be pinned — pass "
+                        "--source-sha <sha> (and optionally --source-branch) "
+                        "to declare the pin verbatim"
+                    ) from None
+                raise
+            record, path = xplr_commands.attach_outcome(
+                root, record.id, xplr_mockflow.outcome_doc(result)
+            )
+            payload.update(id=record.id, record_path=str(path), record=record.to_dict())
+        if self.machine:
+            self._emit_machine_result("xplr mock run", 0, **payload)
+        else:
+            metrics = ", ".join(
+                f"{name}={value}" for name, value in result["metrics"].items()
+            )
+            emit_console_text(
+                f"mockflow {scenario}: {metrics}",
+                style="green" if result["routed"] else "yellow",
+                markup=False,
+            )
+            if register:
+                emit_console_text(
+                    f"registered {payload['id']} -> {payload['record_path']}",
+                    style="green",
+                    markup=False,
+                )
+        raise typer.Exit(0)
+
+    def do_xplr_mock_score(
+        self,
+        scenario: Annotated[
+            str,
+            typer.Option(
+                "--scenario",
+                help="score one scenario only (default: every scenario with "
+                "mockflow experiments in the ledger)",
+            ),
+        ] = None,
+    ):
+        """
+        score the ledger's mockflow experiments against the ground truth
+        """
+        _, root = self._enter_xplr_context()
+        records = xplr_ledger.list_records(root)
+        if scenario is not None:
+            payload = xplr_mockflow.score_records(records, scenario)
+            scores = [payload]
+        else:
+            found = xplr_mockflow.mockflow_scenarios(records)
+            if not found:
+                raise FatalRtlBuddyError(
+                    "no mockflow experiments in the ledger — run "
+                    "`rb xplr mock run --scenario <s> --register` first"
+                )
+            scores = [xplr_mockflow.score_records(records, s) for s in found]
+            payload = {"scenarios": scores}
+        if self.machine:
+            self._emit_machine_result("xplr mock score", 0, **payload)
+        else:
+            for score in scores:
+                if score["objective"] == "single":
+                    best = score["best"]
+                    detail = (
+                        f"best {best['id']} {score['metric']}="
+                        f"{best[score['metric']]:g}, regret {score['regret']:g}"
+                        if best is not None
+                        else "no feasible experiments"
+                    )
+                else:
+                    detail = (
+                        f"hypervolume {score['hypervolume']:g} "
+                        f"({score['hypervolume_ratio']:.1%} of front), "
+                        f"distance-to-front "
+                        f"{score['distance_to_front'] if score['distance_to_front'] is not None else '-'}"
+                    )
+                emit_console_text(
+                    f"{score['scenario']}: {score['n_feasible']}/"
+                    f"{score['n_experiments']} feasible — {detail}",
+                    markup=False,
+                )
+        raise typer.Exit(0)
+
     def do_cmd_wave(
         self,
         test_name: Annotated[
@@ -3737,7 +5687,8 @@ class RtlBuddy:
         """
         open waveform viewer for a test
         """
-        from .tools.wave_launcher import WaveLauncher
+        from .tools.wave_launcher import WaveLauncher, prepare_surfer_trace
+        from .tools.wave_trace import TRACE_CANDIDATES, newest_trace
 
         self.rtl_builder_mode = "debug"
 
@@ -3759,8 +5710,13 @@ class RtlBuddy:
         suite_dir = str(ctx.command_root)
         test_cfg = suite_cfg.get_tests(test_name)[0]
 
-        fst_path = os.path.join(suite_dir, "artefacts", test_name, "dump.fst")
+        trace_dir = os.path.join(suite_dir, "artefacts", test_name)
         surfer_file = os.path.join(suite_dir, f"{test_name}.surfer")
+
+        # Discover the newest existing dump (FST from Verilator, VCD from
+        # Icarus, VPD from VCS) rather than hardcoding dump.fst, so the
+        # default Icarus path opens without conversion (#321).
+        trace_path = newest_trace(trace_dir)
 
         log_event(
             logger,
@@ -3768,12 +5724,16 @@ class RtlBuddy:
             "command.wave",
             command="wave",
             test=test_name,
-            fst=fst_path,
+            trace=trace_path or "",
         )
 
-        if resim or not os.path.isfile(fst_path):
+        if resim or trace_path is None:
             log_event(
-                logger, logging.INFO, "wave.sim_required", test=test_name, fst=fst_path
+                logger,
+                logging.INFO,
+                "wave.sim_required",
+                test=test_name,
+                trace_dir=trace_dir,
             )
             suite_results = self._do_test_suite(
                 suite_cfg, test_name=test_name, run_ids=[None]
@@ -3783,16 +5743,32 @@ class RtlBuddy:
                 raise FatalRtlBuddyError(
                     f'Debug sim for "{test_name}" failed; cannot open waveform.'
                 )
+            trace_path = newest_trace(trace_dir)
+            if trace_path is None:
+                names = " / ".join(TRACE_CANDIDATES)
+                raise FatalRtlBuddyError(
+                    f'Debug sim for "{test_name}" produced no waveform trace '
+                    f"under {trace_dir} (looked for {names})."
+                )
         else:
             log_event(
-                logger, logging.INFO, "wave.fst_found", test=test_name, fst=fst_path
+                logger,
+                logging.INFO,
+                "wave.trace_found",
+                test=test_name,
+                trace=trace_path,
             )
+
+        builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(test_cfg.get_builder_name())
+        trace_path = prepare_surfer_trace(
+            trace_path, builder_cfg.get_wave_format(), test_name
+        )
 
         WaveLauncher(
             test_cfg=test_cfg,
             surfer_cfg=surfer_cfg,
             suite_dir=suite_dir,
-            fst_path=fst_path,
+            fst_path=trace_path,
             surfer_file=surfer_file if os.path.isfile(surfer_file) else None,
             scope_annotation=not focused_signal,
         ).launch()
@@ -3878,36 +5854,51 @@ class RtlBuddy:
             verification=verif_name,
         )
 
-    def do_wave_install_nvim(
+    def do_nvim_install(
         self,
         force: Annotated[
             bool,
-            typer.Option("--force", help="overwrite existing installation"),
+            typer.Option("--force", help="remove any existing install and re-clone"),
+        ] = False,
+        update: Annotated[
+            bool,
+            typer.Option(
+                "--update", help="sync an existing install to the pinned revision"
+            ),
+        ] = False,
+        ref: Annotated[
+            str | None,
+            typer.Option(
+                "--ref", help="override the pinned rtl-buddy-nvim git ref (tag/branch)"
+            ),
+        ] = None,
+        source: Annotated[
+            str | None,
+            typer.Option(
+                "--source",
+                help="override the rtl-buddy-nvim repo URL or local path "
+                "(for offline/dev installs)",
+            ),
+        ] = None,
+        no_lsp: Annotated[
+            bool,
+            typer.Option(
+                "--no-lsp",
+                help="omit the verible-verilog-ls autostart from the managed setup",
+            ),
         ] = False,
     ):
         """
-        install the rtl_buddy_wave.lua plugin into ~/.local/share/nvim/site/plugin/
+        install/update the unified rtl-buddy-nvim editor plugin (hub + wave annotation)
 
-        The plugin provides the WaveValue highlight group and VimEnter hook
-        needed for rb wave signal value annotation. It is auto-sourced by nvim
-        via runtimepath — no changes to init.lua required.
+        Clones the pinned, hub-compatible rtl-buddy-nvim revision into the nvim
+        pack dir and writes a managed setup file that auto-connects to the hub and
+        renders rb wave signal-value annotations — no manual git clone or init.lua
+        edits. (rb wave-install-nvim is a back-compat alias for this command.)
         """
-        from importlib.resources import files as _res
-        from importlib.metadata import version as _ver
-        from pathlib import Path
+        from .tools.nvim_install import install
 
-        dest_dir = Path(os.path.expanduser("~/.local/share/nvim/site/plugin"))
-        dest = dest_dir / "rtl_buddy_wave.lua"
-
-        if dest.exists() and not force:
-            emit_console_text(f"Already installed: {dest}  (use --force to overwrite)")
-            return
-
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        src = _res("rtl_buddy.nvim").joinpath("rtl_buddy_wave.lua").read_text()
-        dest.write_text(src)
-        emit_console_text(f"Installed: {dest}  (rtl-buddy {_ver('rtl-buddy')})")
-        emit_console_text("Restart nvim for the plugin to take effect.")
+        install(force=force, update=update, ref=ref, source=source, lsp=not no_lsp)
 
     def do_lint(self):
         assert False, "not yet impl"
@@ -4124,6 +6115,14 @@ class RtlBuddy:
         if explain_tool is not None:
             spec = next((s for s in specs if s.name == explain_tool), None)
             if spec is None:
+                if self.machine:
+                    self._emit_machine_result(
+                        "tool-check",
+                        1,
+                        error=f"unknown tool '{explain_tool}'",
+                        known=[s.name for s in specs],
+                    )
+                    raise typer.Exit(1)
                 emit_console_text(
                     f"tool-check: unknown tool '{explain_tool}'. "
                     f"Known: {', '.join(s.name for s in specs)}",
@@ -4134,6 +6133,17 @@ class RtlBuddy:
             status = tm.check_tool(
                 spec, project_root=project_root, probe_versions=probe_versions
             )
+            if self.machine:
+                self._emit_machine_result(
+                    "tool-check",
+                    0,
+                    **tm.build_json_payload(
+                        [status],
+                        tm.subcommand_readiness([status], [spec]),
+                    ),
+                    instructions=tm.explain(spec, status),
+                )
+                raise typer.Exit(0)
             # Plain stdout — Rich's word-wrap would mangle paths.
             print(tm.explain(spec, status))
             raise typer.Exit(0)
@@ -4148,6 +6158,17 @@ class RtlBuddy:
 
         if required_for is not None:
             if required_for not in subcommands:
+                if self.machine:
+                    self._emit_machine_result(
+                        "tool-check",
+                        0,
+                        **tm.build_json_payload([], {}),
+                        note=(
+                            f"subcommand '{required_for}' has no declared "
+                            f"tool dependencies"
+                        ),
+                    )
+                    raise typer.Exit(0)
                 emit_console_text(
                     f"tool-check: subcommand '{required_for}' has no "
                     f"declared tool dependencies",
@@ -4164,6 +6185,26 @@ class RtlBuddy:
             subcommands=tm.subcommand_readiness(statuses, specs),
         )
 
+        # --required-for always enforces (exit 2 on miss); --strict enforces
+        # the global "any required tool missing" check (exit 1). Without
+        # either flag the command is purely informational.
+        envelope_exit = (
+            reported_exit_code if (required_for is not None or strict) else 0
+        )
+
+        # The global --machine flag wins: emit a single JSON envelope on
+        # stdout like every other command (SKILL.md's top rule). The
+        # command-specific --format json is kept for back-compat / non-machine
+        # callers who want the bare manifest dict.
+        if self.machine:
+            self._emit_machine_result(
+                "tool-check",
+                envelope_exit,
+                **tm.build_json_payload(statuses, subcommands),
+                readiness_exit_code=reported_exit_code,
+            )
+            raise typer.Exit(envelope_exit)
+
         # Use raw stdout — Rich's word-wrap would mangle JSON and break the
         # alignment of the tool table.
         if fmt.lower() == "json":
@@ -4173,9 +6214,6 @@ class RtlBuddy:
                 tm.render_text(statuses, subcommands, include_optional=include_optional)
             )
 
-        # --required-for always enforces (exit 2 on miss); --strict enforces
-        # the global "any required tool missing" check (exit 1). Without
-        # either flag the command is purely informational.
         if required_for is not None or strict:
             raise typer.Exit(reported_exit_code)
         raise typer.Exit(0)

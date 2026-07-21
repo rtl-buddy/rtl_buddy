@@ -1,0 +1,408 @@
+{
+  "schema_version": "1.0",
+  "generator": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "design": {
+    "top": "cdc_ref_top",
+    "frontend": "yosys"
+  },
+  "reset_sources": [
+    {
+      "name": "u_rst_a.$slang$adff$2",
+      "source": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": true,
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "name": "u_rst_b.$slang$adff$4",
+      "source": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": true,
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "name": "arst_n",
+      "source": "port",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": false
+    }
+  ],
+  "reset_synchronizers": [
+    {
+      "instance_path": "cdc_ref_top.u_rst_a.$slang$adff$1",
+      "dest_clock": "clk_a",
+      "async_in": "arst_n",
+      "async_in_kind": "port",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_rst_a.$slang$adff$2",
+      "dest_clock": "clk_a",
+      "async_in": "arst_n",
+      "async_in_kind": "port",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_rst_b.$slang$adff$3",
+      "dest_clock": "clk_b",
+      "async_in": "arst_n",
+      "async_in_kind": "port",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_rst_b.$slang$adff$4",
+      "dest_clock": "clk_b",
+      "async_in": "arst_n",
+      "async_in_kind": "port",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    }
+  ],
+  "flop_resets": [
+    {
+      "instance_path": "cdc_ref_top.$slang$adff$5",
+      "clock": "clk_a",
+      "reset": "u_rst_a.$slang$adff$2",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_ref_top.sv",
+        "start_line": 40,
+        "start_column": 3,
+        "end_line": 43,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.$slang$adff$8",
+      "clock": "clk_a",
+      "reset": "u_rst_a.$slang$adff$2",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_ref_top.sv",
+        "start_line": 50,
+        "start_column": 3,
+        "end_line": 53,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_flag_sync.$slang$adff$6",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_flag_sync.$slang$adff$7",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_gray_sync.$slang$adff$10",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_gray_sync.$slang$adff$9",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.$slang$adff$11",
+      "clock": "clk_a",
+      "reset": "u_rst_a.$slang$adff$2",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 82,
+        "start_column": 3,
+        "end_line": 92,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.$slang$adff$12",
+      "clock": "clk_a",
+      "reset": "u_rst_a.$slang$adff$2",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 82,
+        "start_column": 3,
+        "end_line": 92,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.$slang$adff$17",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 102,
+        "start_column": 3,
+        "end_line": 119,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.$slang$adff$18",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 102,
+        "start_column": 3,
+        "end_line": 119,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.$slang$adff$19",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 102,
+        "start_column": 3,
+        "end_line": 119,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.$slang$adff$20",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 102,
+        "start_column": 3,
+        "end_line": 119,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.u_ack_sync.$slang$adff$13",
+      "clock": "clk_a",
+      "reset": "u_rst_a.$slang$adff$2",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.u_ack_sync.$slang$adff$14",
+      "clock": "clk_a",
+      "reset": "u_rst_a.$slang$adff$2",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.u_req_sync.$slang$adff$15",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_hs.u_req_sync.$slang$adff$16",
+      "clock": "clk_b",
+      "reset": "u_rst_b.$slang$adff$4",
+      "reset_kind": "inferred",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 22,
+        "start_column": 3,
+        "end_line": 30,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_rst_a.$slang$adff$1",
+      "clock": "clk_a",
+      "reset": "arst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_rst_a.$slang$adff$2",
+      "clock": "clk_a",
+      "reset": "arst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_rst_b.$slang$adff$3",
+      "clock": "clk_b",
+      "reset": "arst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_ref_top.u_rst_b.$slang$adff$4",
+      "clock": "clk_b",
+      "reset": "arst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_primitives.sv",
+        "start_line": 43,
+        "start_column": 3,
+        "end_line": 51,
+        "end_column": 6
+      }
+    }
+  ],
+  "reset_crossings": []
+}

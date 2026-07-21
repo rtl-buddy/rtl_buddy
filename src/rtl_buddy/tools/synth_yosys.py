@@ -29,9 +29,32 @@ _ABC_SCRIPT_NO_TIMING = (
 _ABC_SCRIPT_WITH_TIMING = _ABC_SCRIPT_NO_TIMING + "; stime -p"
 
 
-def resolve_plugin_path(plugin_path: str, root_cfg) -> str:
+# Machine-level fallback for the yosys-slang plugin location, so toolchain
+# env scripts can provide it once per machine instead of every project
+# hard-coding an absolute path. Explicit config always wins.
+SLANG_PLUGIN_ENV = "RTL_BUDDY_SLANG_PLUGIN"
+
+
+def resolve_plugin_path(plugin_path: str | None, root_cfg) -> str | None:
     """Resolve a Yosys plugin path. Absolute paths pass through; relative
-    paths are taken relative to the project root."""
+    paths are taken relative to the project root. When no path is
+    configured, fall back to ``RTL_BUDDY_SLANG_PLUGIN`` from the
+    environment, which must be absolute after ``~`` expansion — a
+    machine-level variable has no project anchor, and a relative value
+    would otherwise resolve against the tool subprocess CWD (failing
+    only as a silent COI-coverage warning on the FPV side). Returns
+    ``None`` when neither channel is set."""
+    if plugin_path is None or not plugin_path.strip():
+        env = os.environ.get(SLANG_PLUGIN_ENV, "").strip()
+        if not env:
+            return None
+        p = Path(env).expanduser()
+        if not p.is_absolute():
+            raise FatalRtlBuddyError(
+                f"{SLANG_PLUGIN_ENV} must be an absolute path to "
+                f"yosys-slang's slang.so, got {env!r}"
+            )
+        return str(p)
     p = Path(plugin_path)
     if p.is_absolute():
         return str(p)
@@ -81,12 +104,13 @@ def emit_frontend_read_cmds(
         return cmds
 
     if opts.frontend == "slang":
-        if not opts.plugin_path.strip():
+        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
+        if not plugin_abs:
             raise FatalRtlBuddyError(
                 "frontend: slang requires opts.plugin-path to be set "
-                "(path to yosys-slang's slang.so)"
+                "(path to yosys-slang's slang.so), or the "
+                f"{SLANG_PLUGIN_ENV} environment variable to point at it"
             )
-        plugin_abs = resolve_plugin_path(opts.plugin_path, root_cfg)
         cmds.append(f"plugin -i {shlex.quote(plugin_abs)}")
         flags: list[str] = []
         if defines:
@@ -274,6 +298,12 @@ class YosysSynth:
         if opts.synth_args:
             synth_cmd += f" {opts.synth_args}"
         lines.append(synth_cmd)
+        # Unguarded immediate assertions survive synth as $assert/$assume/
+        # $cover cells and get emitted into the netlist, which structural
+        # Verilog readers (OpenROAD/OpenSTA `read_verilog` for pnr/power)
+        # reject with a syntax error. Formal cells are not gates — strip them
+        # all here; a no-op when the design carries none.
+        lines.append("chformal -remove")
 
         if mapped:
             for lib in lib_paths:

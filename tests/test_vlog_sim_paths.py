@@ -56,11 +56,21 @@ class DummyBuilderCfg:
 
 
 class DummyRootCfg:
-    def __init__(self, builder_cfg):
+    def __init__(self, builder_cfg, builders=None, builder_override=None):
         self.builder_cfg = builder_cfg
+        self.builders = builders or {}
+        self.builder_override = builder_override
 
     def get_rtl_builder_cfg(self):
         return self.builder_cfg
+
+    def get_rtl_builder_cfg_by_name(self, name):
+        return self.builders[name]
+
+    def resolve_rtl_builder_cfg(self, test_builder_name=None):
+        if self.builder_override is None and test_builder_name is not None:
+            return self.get_rtl_builder_cfg_by_name(test_builder_name)
+        return self.get_rtl_builder_cfg()
 
     def get_use_lcov(self, _simulator_name):
         return False
@@ -86,15 +96,19 @@ class DummyTestbenchCfg:
 
 
 class DummyTestCfg:
-    def __init__(self, name, model_path):
+    def __init__(self, name, model_path, builder_name=None):
         self.name = name
         self.model = DummyModelCfg(model_path)
         self.tb = DummyTestbenchCfg()
         self.pd = None
         self.uvm = None
+        self.builder_name = builder_name
 
     def get_name(self):
         return self.name
+
+    def get_builder_name(self):
+        return self.builder_name
 
     def get_model(self):
         return self.model
@@ -115,11 +129,24 @@ class DummyTestCfg:
         return None
 
 
-def _make_sim(tmp_path, monkeypatch, *, test_name="basic", builder_cfg=None):
+def _make_sim(
+    tmp_path,
+    monkeypatch,
+    *,
+    test_name="basic",
+    builder_cfg=None,
+    test_builder=None,
+    builders=None,
+    builder_override=None,
+):
     monkeypatch.chdir(tmp_path)
     builder_cfg = builder_cfg or DummyBuilderCfg()
-    root_cfg = DummyRootCfg(builder_cfg)
-    test_cfg = DummyTestCfg(test_name, tmp_path / "models.yaml")
+    root_cfg = DummyRootCfg(
+        builder_cfg, builders=builders, builder_override=builder_override
+    )
+    test_cfg = DummyTestCfg(
+        test_name, tmp_path / "models.yaml", builder_name=test_builder
+    )
     return vlog_sim_module.VlogSim(
         name="rtl_buddy/vlog_sim",
         root_cfg=root_cfg,
@@ -307,6 +334,68 @@ def test_vlog_sim_multiple_runs_keep_runtime_side_files_separate(tmp_path, monke
     ).read_text() == "run=2\n"
 
 
+def test_simulator_family_recognizes_iverilog():
+    from rtl_buddy.config.rtl import RtlBuilderConfig
+
+    cfg = RtlBuilderConfig.__new__(RtlBuilderConfig)
+    cfg.exe = "iverilog"
+    cfg.simulator_family = None
+    assert cfg.get_simulator_family() == "icarus"
+
+    cfg.exe = "/opt/homebrew/bin/iverilog"
+    assert cfg.get_simulator_family() == "icarus"
+
+
+def test_vlog_sim_icarus_simv_path_is_wrapper_in_compile_work_dir(
+    tmp_path, monkeypatch
+):
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(
+            exe="iverilog", simv="ignored", simulator_family="icarus"
+        ),
+    )
+    assert sim._get_simv_path() == str(tmp_path / "artefacts" / "basic" / "simv")
+    assert sim._get_icarus_snapshot_path() == str(
+        tmp_path / "artefacts" / "basic" / "obj_dir_basic" / "simv.vvp"
+    )
+
+
+def test_vlog_sim_icarus_compile_emits_dash_o_snapshot(tmp_path, monkeypatch):
+    captured = {}
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=DummyBuilderCfg(
+            exe="iverilog", simulator_family="icarus", compile_opts=["-g2012"]
+        ),
+    )
+
+    def _fake_run(cmd, capture_output, text, cwd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return ManagedProcessResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+
+    assert sim.compile() == 0
+    snapshot = str(tmp_path / "artefacts" / "basic" / "obj_dir_basic" / "simv.vvp")
+    assert "-o" in captured["cmd"]
+    assert snapshot in captured["cmd"]
+    # The wrapper script is materialized on successful compile.
+    wrapper = Path(tmp_path / "artefacts" / "basic" / "simv")
+    assert wrapper.is_file()
+    assert "exec vvp" in wrapper.read_text()
+    assert snapshot in wrapper.read_text()
+    # And the wrapper is executable so execute()'s existing path works.
+    import os as _os
+
+    assert _os.access(wrapper, _os.X_OK)
+
+
 def test_artifact_path_helpers_match_existing_sanitization():
     assert sanitize_artifact_component("basic") == "basic"
     assert (
@@ -327,3 +416,41 @@ def test_artifact_path_helpers_match_existing_sanitization():
         VlogCov(simulator_name="vcs")._sanitize_artifact_name("with spaces/slash:punct")
         == "with_spaces_slash_punct"
     )
+
+
+def test_vlog_sim_per_test_builder_overrides_platform_default(tmp_path, monkeypatch):
+    """A per-test `builder:` name resolves an alternate cfg-rtl-builder entry."""
+    platform_default = DummyBuilderCfg(exe="verilator", simulator_family="verilator")
+    icarus = DummyBuilderCfg(exe="iverilog", simulator_family="icarus")
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=platform_default,
+        builders={"icarus": icarus},
+        test_builder="icarus",
+    )
+    assert sim.rtl_builder_cfg is icarus
+    assert sim._get_simulator_family() == "icarus"
+
+
+def test_vlog_sim_no_builder_field_keeps_platform_default(tmp_path, monkeypatch):
+    platform_default = DummyBuilderCfg(exe="verilator", simulator_family="verilator")
+    sim = _make_sim(tmp_path, monkeypatch, builder_cfg=platform_default)
+    assert sim.rtl_builder_cfg is platform_default
+
+
+def test_vlog_sim_cli_builder_override_wins_over_per_test_builder(
+    tmp_path, monkeypatch
+):
+    """`--builder` (builder_override) forces the builder for every test."""
+    forced = DummyBuilderCfg(exe="verilator", simulator_family="verilator")
+    icarus = DummyBuilderCfg(exe="iverilog", simulator_family="icarus")
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        builder_cfg=forced,
+        builders={"icarus": icarus},
+        test_builder="icarus",
+        builder_override="verilator",
+    )
+    assert sim.rtl_builder_cfg is forced

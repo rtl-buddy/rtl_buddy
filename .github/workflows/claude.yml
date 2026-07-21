@@ -74,11 +74,16 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           show_full_output: true
+          # Maintains a comment on the PR/issue that Claude updates with its
+          # result — the built-in channel for top-level feedback. Bash `gh`
+          # calls are gated by the action's sandbox and cannot post, so the
+          # comment MCP tools below are the only working write path.
+          track_progress: true
           additional_permissions: |
             actions: read
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           claude_args: |
-            --allowedTools Read,Write,Edit,Bash(git:*),mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)
+            --allowedTools Read,Write,Edit,Bash(git:*),mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment
             --model opus
             --effort medium
           prompt: |
@@ -99,9 +104,11 @@ jobs:
             how well the implementation adheres to it. Make sure to address this specifically in your review.
             Back violations up with exact text in the guidelines you can point to.
 
-            Use `gh pr comment` for top-level feedback. Don't duplicate content that is in inline comments.
-            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) 
-            to highlight specific code issues.
+            Post top-level feedback by updating your tracking comment with
+            `mcp__github_comment__update_claude_comment`.
+            Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`)
+            to highlight specific code issues. Don't duplicate content between the two.
+            Do not use `gh` to post comments — it is gated by the sandbox and will fail.
             Only post GitHub comments - don't submit review text as messages.
 
             Otherwise, the triggering comment and PR context are provided above.

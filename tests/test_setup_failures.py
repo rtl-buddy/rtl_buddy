@@ -66,11 +66,26 @@ class DummySweepTest:
     def get_name(self):
         return self.name
 
+    def get_builder_name(self):
+        return None
+
     def is_xfail(self):
         return False
 
     def get_xfail_strict(self):
         return False
+
+
+class _ResolvingBuilderCfg:
+    def get_name(self):
+        return "vcs"
+
+
+class _ResolvingRootCfg:
+    """Minimal root_cfg for _do_test_suite: only needs to resolve a builder."""
+
+    def resolve_rtl_builder_cfg(self, _test_builder_name=None):
+        return _ResolvingBuilderCfg()
 
 
 class DummySuiteCfg:
@@ -133,7 +148,7 @@ def test_sweep_failure_becomes_setup_fail_result(tmp_path):
 
     rb = RtlBuddy(name="rtl_buddy")
     rb.builder = "vcs"
-    rb.root_cfg = object()
+    rb.root_cfg = _ResolvingRootCfg()
     rb.run_depth = RunDepth.POST
     rb.rtl_builder_mode = "debug"
 
@@ -241,6 +256,9 @@ class DummyRootCfg:
     def get_rtl_builder_cfg(self):
         return DummyBuilderCfg()
 
+    def resolve_rtl_builder_cfg(self, _test_builder_name=None):
+        return DummyBuilderCfg()
+
 
 class DummyTestbench:
     def get_filelist(self):
@@ -253,6 +271,9 @@ class DummyExecuteTestCfg:
 
     def get_name(self):
         return "basic"
+
+    def get_builder_name(self):
+        return None
 
     def get_testbench(self):
         return DummyTestbench()
@@ -423,7 +444,7 @@ def test_suite_dir_for_test_runner_comes_from_suite_cfg_path(tmp_path, monkeypat
 
     rb = RtlBuddy(name="rtl_buddy")
     rb.builder = "vcs"
-    rb.root_cfg = object()
+    rb.root_cfg = _ResolvingRootCfg()
     rb.run_depth = RunDepth.POST
     rb.rtl_builder_mode = "debug"
 

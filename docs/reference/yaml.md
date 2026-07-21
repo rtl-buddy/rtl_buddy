@@ -42,6 +42,19 @@ cfg-rtl-builder:
       reg:
         compile-time: "--binary -sv -o simv"
         run-time: "+verilator+rand+reset+2"
+  - name: "icarus"
+    builder: "iverilog"           # iverilog + vvp; family inferred as "icarus"
+    builder-simv: "simv"
+    sim-rand-seed: 31310
+    sim-rand-seed-prefix: "+seed="
+    wave-format: "fst-postproc"    # optional: vcd2fst the VCD dump for `rb wave`
+    builder-opts:
+      debug:
+        compile-time: "-g2012 -gsupported-assertions -DDUMP"
+        run-time: ""
+      reg:
+        compile-time: "-g2012 -gsupported-assertions"
+        run-time: ""
 
 cfg-verible:
   - name: "verible-macos"
@@ -162,10 +175,11 @@ cfg-rtl-reg:
 - Platform is selected by matching `uname` output against `cfg-platforms[].unames`.
 - `--builder` overrides the platform-selected builder for the current run.
 - `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
+- `cfg-rtl-builder` defines the named simulator builders. `builder` is the compiler executable (bare name on `PATH` or a path). `simulator-family` is optional and drives backend-specific handling (coverage, assertions, Icarus's two-phase `iverilog`→`vvp` flow); when omitted it is inferred from the executable name (`verilator*`→`verilator`, `iverilog*`/`icarus*`→`icarus`, `vcs*`→`vcs`). `wave-format` is optional and only affects `rb wave`: `fst-postproc` runs `vcd2fst` (GTKWave) on a VCD dump to produce a sibling FST before opening Surfer — useful for Icarus, which dumps VCD; if `vcd2fst` is absent the VCD is opened directly (Surfer reads VCD natively). See [Verilator vs Icarus](../concepts/simulators.md) for the capability split.
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
-- `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the bundled nvim plugin first with `rb wave-install-nvim`.
-- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. For the Yosys backend, `opts.synth-args` are appended to the `synth` command and `opts.abc-args` are used by the unmapped ABC step. For the OpenROAD backend, `opts.strategy` controls optional resynthesis (`AREA` = none, `TIMING`/`TIMING_ANNEAL` = `resynth_annealing`, `TIMING_GENETIC` = `resynth_genetic`). `opts.frontend` selects the SystemVerilog parser: `"verilog"` (default) uses Yosys's built-in `read_verilog -sv -defer` per source — fast, lazy elaboration, but a small SV subset. `"slang"` loads the [yosys-slang](https://github.com/povik/yosys-slang) plugin and calls `read_slang` instead — full SV-2017 (package imports, packed-struct typedefs, complex generates) with eager elaboration. `opts.plugin-path` is required when `frontend: slang`; absolute paths pass through and relative paths resolve against the project root. Both options accept per-block overrides via `synth.yaml` `tool_overrides.yosys.frontend` / `.plugin_path` (note: `tool_overrides` keys are snake_case Python attribute names, while `cfg-synth-tools.opts` uses kebab-case YAML — same field, two names, see [synthesis concept doc](../concepts/synthesis.md#systemverilog-frontend) for the convention). The override key is always `yosys` (the elaboration tool), regardless of whether the synth selects `tool: yosys` or `tool: openroad`. The OpenROAD backend runs Yosys for elaboration → write_verilog → OpenROAD reads the netlist, so its elaboration-stage opts come from the `yosys` tool config + `tool_overrides.yosys` block.
+- `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the nvim plugin first with `rb nvim-install`.
+- `cfg-synth-tools` defines synthesis tool entries selected by `synth.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. For the Yosys backend, `opts.synth-args` are appended to the `synth` command and `opts.abc-args` are used by the unmapped ABC step. For the OpenROAD backend, `opts.strategy` controls optional resynthesis (`AREA` = none, `TIMING`/`TIMING_ANNEAL` = `resynth_annealing`, `TIMING_GENETIC` = `resynth_genetic`). `opts.frontend` selects the SystemVerilog parser: `"verilog"` (default) uses Yosys's built-in `read_verilog -sv -defer` per source — fast, lazy elaboration, but a small SV subset. `"slang"` loads the [yosys-slang](https://github.com/povik/yosys-slang) plugin and calls `read_slang` instead — full SV-2017 (package imports, packed-struct typedefs, complex generates) with eager elaboration. `opts.plugin-path` points at yosys-slang's `slang.so` when `frontend: slang`; absolute paths pass through, relative paths resolve against the project root, and when it is unset the `RTL_BUDDY_SLANG_PLUGIN` environment variable is consulted instead (explicit config wins — set the env var once per machine to keep project configs portable; the env value must be absolute after `~` expansion). Both options accept per-block overrides via `synth.yaml` `tool_overrides.yosys.frontend` / `.plugin_path` (note: `tool_overrides` keys are snake_case Python attribute names, while `cfg-synth-tools.opts` uses kebab-case YAML — same field, two names, see [synthesis concept doc](../concepts/synthesis.md#systemverilog-frontend) for the convention). The override key is always `yosys` (the elaboration tool), regardless of whether the synth selects `tool: yosys` or `tool: openroad`. The OpenROAD backend runs Yosys for elaboration → write_verilog → OpenROAD reads the netlist, so its elaboration-stage opts come from the `yosys` tool config + `tool_overrides.yosys` block.
 - `cfg-pdks` defines one entry per process. Each holds *all* PDK-bound assets — Liberty per corner (under `corners:`), `tech-lef` / `macro-lef`, optional `cell-gds`, KLayout `.lyt` / `.lyp` for streamout, `SITE`, and `tie-hi` / `tie-lo` / `fill-cells` for P&R. Paths are resolved relative to `root_config.yaml`. Multiple PDKs can coexist; downstream platform blocks select which one to use.
 - `cfg-synth-platforms` selects a `cfg-pdks` entry + corner for synthesis. Each entry has `name` (referenced by `platform:` in `synth.yaml`), `pdk` (PDK entry name), and `corner` (optional — defaults to the first declared corner). Block-specific LEFs go on the `synth.yaml` entry (`lef-paths:`) on top of the PDK's tech/macro LEFs.
 - `cfg-pnr-platforms` selects a `cfg-pdks` entry + STA corner for place-and-route. Each entry has `name` (referenced by `platform:` in `pnr.yaml`), `pdk`, optional `corner` (defaults to first corner), `cts-buffer` (clock-tree buffer cell), and `routing-layers` with `signal` / `clock` layer ranges.
@@ -253,6 +267,10 @@ models:
 - `testbenches`
 - `tests`
 
+**Optional top-level keys:**
+
+- `builder` — name of a `cfg-rtl-builder` entry used as the suite-wide simulator default; overridable per test (see [Selecting the simulator builder](#selecting-the-simulator-builder)).
+
 **Example:**
 
 ```yaml
@@ -312,13 +330,64 @@ tests:
 | `preproc.path` | string | Path to pre-processing script |
 | `postproc.path` | string | Path to post-processing script (parsed but not yet fully active) |
 | `covers` | list of strings | IDs of spec coverage items this test addresses (e.g. `["BLOCK-COV-01"]`). Used by `rb spec check-coverage`; has no effect at simulation time. |
+| `builder` | string | Name of a `cfg-rtl-builder` entry to simulate this test with. Overrides the suite-wide `builder` and the platform default (see below). |
 | `assertions` | bool | When true and the builder is Verilator, compile in SVA via `--assert` (and `--coverage-user` for cover-property hits) and add an `Assertions` column to the `rb test` results table. See [Assertion-Based Verification](../concepts/abv-simulation.md). |
 | `xfail` | bool | Optional, default false. Marks the test expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. SKIP/NA pass through. Mirrors the `fpv.yaml` field — see [Expected failures (xfail)](../concepts/expected-failures.md). |
 | `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks the test expected-to-fail; strict wins if both are set. |
 
+### Selecting the simulator builder
+
+A test runs on a builder defined in `root_config.yaml`'s `cfg-rtl-builder`. The
+effective builder is resolved with this precedence:
+
+1. **`--builder <name>` CLI override** — forces the builder for every test in the run (it "overrides all others").
+2. **Per-test `builder:`** — set on an individual test entry.
+3. **Suite-wide `builder:`** — the top-level `builder:` key in `tests.yaml`.
+4. **Platform default** — the `builder` selected by the active `cfg-platforms` entry.
+
+When no `builder:` is set anywhere and no `--builder` is passed, the platform
+default applies — so existing suites are unaffected. The chosen builder's
+`simulator-family` (e.g. `verilator`, `icarus`) drives backend-specific
+behavior such as coverage and assertion support. When `reglvl` is a per-builder
+dict, the level is resolved against the test's *effective* builder.
+
+```yaml
+rtl-buddy-filetype: test_config
+builder: icarus            # suite-wide default
+testbenches:
+  - name: "tb_top"
+    filelist: ["tb_top.sv"]
+tests:
+  - name: "smoke"          # uses the suite default (icarus)
+    desc: "sanity test"
+    reglvl: 0
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    testbench: "tb_top"
+  - name: "fast_regress"   # overrides back to verilator for this test
+    desc: "speed-sensitive"
+    reglvl: 0
+    model: "my_design"
+    model_path: "../src/models.yaml"
+    testbench: "tb_top"
+    builder: verilator
+```
+
+**Limitation — coverage follows the platform builder:** coverage collection and
+reporting (`rb test --coverage`, the Coverview packer, and the
+`builder`/`simulator_family` labels on coverage artifacts) key off the
+*platform-selected* builder, not a per-test/suite `builder:`. When a test's
+effective builder differs from the platform default *and* no `--builder`
+override is in effect, the coverage layer can mislabel or misparse results. To
+collect coverage on an alternate builder, either run the suite with
+`--builder <name>` (which forces the builder consistently across simulation and
+coverage) or make that builder the platform default. In practice this mostly
+affects Verilator — the only family that emits line/toggle coverage today; VCS
+and Icarus do not collect coverage through this path.
+
 ### cocotb testbenches
 
-Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode (Verilator only for now). `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
+Adding a `cocotb:` block to a testbench entry switches the runner to cocotb/VPI mode. Builders whose simulator family is `verilator`, `icarus`, or `vcs` are supported (selected via the platform default, a `builder:` field, or `--builder`); any other family raises a fatal error. `toplevel:` is required when `cocotb:` is present; omitting it raises a fatal error at config-load time.
 
 **Prerequisite:** `cocotb` must be installed in the active Python environment (`uv add cocotb` or `pip install cocotb`). The runner invokes `cocotb-config` at compile time; a missing binary surfaces as a `FatalRtlBuddyError` with an actionable message.
 

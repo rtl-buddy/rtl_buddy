@@ -210,6 +210,7 @@ _SUITE_YAML = dedent("""\
         waivers: "mod_b.waivers"
         reglvl: 1000
         frontend: "slang"
+        blackbox: ["sram_macro", "pll_wrap"]
 """)
 
 _MODELS_YAML = dedent("""\
@@ -309,6 +310,16 @@ def test_cdc_suite_config_picks_up_frontend_field(tmp_path):
     assert cdc_b.frontend == "slang"  # explicit in YAML
 
 
+def test_cdc_suite_config_picks_up_blackbox_field(tmp_path):
+    """Per-analysis `blackbox:` round-trips through CdcConfigFile -> CdcConfig."""
+    suite_yaml = _write_suite(tmp_path)
+    cfg = CdcSuiteConfig(str(suite_yaml))
+    cdc_a = cfg.get_analyses("cdc_a")[0]
+    cdc_b = cfg.get_analyses("cdc_b")[0]
+    assert cdc_a.blackbox == []  # not set in YAML -> default empty list
+    assert cdc_b.blackbox == ["sram_macro", "pll_wrap"]  # explicit in YAML
+
+
 # ---------------------------------------------------------------------------
 # CdcRegConfig — YAML loading + per-suite path resolution
 # ---------------------------------------------------------------------------
@@ -342,7 +353,7 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _setup_lint_run(tmp_path, frontend=None):
+def _setup_lint_run(tmp_path, frontend=None, blackbox=None):
     """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
     build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
 
@@ -374,6 +385,7 @@ def _setup_lint_run(tmp_path, frontend=None):
         _reglvl=None,
         tool_overrides=None,
         frontend=frontend,
+        blackbox=blackbox if blackbox is not None else [],
     )
     tool_cfg = CdcToolConfig(
         CdcToolConfigFile(
@@ -404,6 +416,7 @@ def test_lint_argv_omits_frontend_when_unset(tmp_path, monkeypatch):
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend=None)
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
 
     wrapper.run()
 
@@ -416,6 +429,7 @@ def test_lint_argv_adds_frontend_slang(tmp_path, monkeypatch):
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend="slang")
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
 
     wrapper.run()
 
@@ -432,12 +446,127 @@ def test_lint_argv_adds_frontend_yosys_when_explicit(tmp_path, monkeypatch):
     wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, frontend="yosys")
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
 
     wrapper.run()
 
     assert len(calls) == 2
     for cmd in calls:
         assert cmd[cmd.index("--frontend") + 1] == "yosys"
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — --blackbox argv plumbing (rtl-buddy-cdc#259)
+# ---------------------------------------------------------------------------
+
+
+def test_lint_argv_omits_blackbox_when_empty(tmp_path, monkeypatch):
+    """An empty/absent blackbox list adds no `--blackbox` args."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, blackbox=[])
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2  # text + json
+    for cmd in calls:
+        assert "--blackbox" not in cmd
+
+
+def test_lint_argv_adds_blackbox_for_each_module(tmp_path, monkeypatch):
+    """Each blackbox entry is forwarded as a repeated `--blackbox <module>`."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(
+        tmp_path, blackbox=["foo", "bar"]
+    )
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        # Both modules present, each preceded by its own `--blackbox`.
+        bb_values = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--blackbox"]
+        assert bb_values == ["foo", "bar"]
+        assert cmd[cmd.index("--blackbox") + 1] == "foo"
+
+
+# ---------------------------------------------------------------------------
+# RtlBuddyCdc — --project-root plumbing (rtl-buddy-cdc#245)
+# ---------------------------------------------------------------------------
+
+
+def test_lint_argv_adds_project_root_when_supported(tmp_path, monkeypatch):
+    """When the analyzer advertises `--project-root`, both invocations get
+    `--project-root <suite_dir>` so a config's relative `extra_args` paths
+    resolve against the cdc.yaml dir rather than the nested artefact cwd."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: True)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "--project-root" in cmd
+        assert cmd[cmd.index("--project-root") + 1] == str(tmp_path)
+
+
+def test_lint_argv_omits_project_root_when_unsupported(tmp_path, monkeypatch):
+    """An analyzer that predates the flag must not be handed it — passing an
+    unknown option would hard-fail (exit 2). Degrade silently instead."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "--project-root" not in cmd
+
+
+def test_lint_argv_project_root_precedes_extra_args(tmp_path, monkeypatch):
+    """`--project-root` is emitted before `extra_args` so a config can still
+    override the anchor in its own `extra_args` if it ever needs to."""
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    # Inject a path-bearing extra_arg of the kind #245 is about.
+    wrapper.tool_cfg._cfg.opts.extra_args = "--yosys-plugin build/slang.so"
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: True)
+
+    wrapper.run()
+
+    for cmd in calls:
+        assert cmd.index("--project-root") < cmd.index("--yosys-plugin")
+
+
+def test_lint_supports_project_root_probe(monkeypatch):
+    """The capability probe greps `lint --help` and degrades to False on a
+    missing/erroring binary (so the cache never sticks a flag onto an old
+    analyzer)."""
+    from types import SimpleNamespace
+    from rtl_buddy.tools import cdc_rtl_buddy as mod
+
+    mod._lint_supports_project_root.cache_clear()
+
+    def _help_with_flag(cmd, **kwargs):
+        return SimpleNamespace(stdout="... --project-root DIR ...", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", _help_with_flag)
+    assert mod._lint_supports_project_root("cdc-new") is True
+
+    def _boom(cmd, **kwargs):
+        raise FileNotFoundError("no such binary")
+
+    monkeypatch.setattr(mod.subprocess, "run", _boom)
+    assert mod._lint_supports_project_root("cdc-missing") is False
+    mod._lint_supports_project_root.cache_clear()
 
 
 def test_cdc_suite_config_loads_xfail_flags(tmp_path):

@@ -447,21 +447,39 @@ def test_axi_profile_vpd_converters_declared():
     assert "axi-profile" in gtkwave.used_by
 
 
+def test_icarus_simulator_declared():
+    """Icarus (iverilog compile + vvp runtime) is declared as a sim backend.
+
+    `VlogSim` shells out to `iverilog` and the simv wrapper execs `vvp`
+    when a `cfg-rtl-builder` entry / `builder:` selects simulator-family
+    icarus. Both must stay visible to `rb tool-check` so a missing binary
+    surfaces as structured guidance rather than a shell-exec error.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+
+    icarus = by_name["icarus"]
+    assert icarus.binaries == ("iverilog", "vvp")
+    # Opt-in alternate backend: missing Icarus must not gate test readiness
+    # for the default (Verilator) path.
+    assert icarus.optional
+    assert icarus.used_by == ("test", "randtest", "regression")
+
+
 def test_rtl_buddy_view_declares_floor_and_version_probe():
-    """rtl-buddy-view carries a 0.2.1 FLOOR (no upper cap) and a probe.
+    """rtl-buddy-view carries a 0.3.0 FLOOR (no upper cap) and a probe.
 
     rtl_buddy pins no rtl-buddy-view version in pyproject — the manifest
     floor plus the runtime guards are the policy. The probe depends on
     `rtl-buddy-view --version` (rtl-buddy-view#121); the regex must pull
-    X.Y.Z out of its `rtl-buddy-view 0.2.1` output.
+    X.Y.Z out of its `rtl-buddy-view 0.3.0` output.
     """
     by_name = {s.name: s for s in tm.get_manifest()}
     spec = by_name["rtl-buddy-view"]
-    assert spec.minimum_version == "0.2.1"
+    assert spec.minimum_version == "0.3.0"
     assert spec.version_cmd == ("rtl-buddy-view", "--version")
     assert spec.version_regex is not None
-    m = re.search(spec.version_regex, "rtl-buddy-view 0.2.1")
-    assert m is not None and m.group(1) == "0.2.1"
+    m = re.search(spec.version_regex, "rtl-buddy-view 0.3.0")
+    assert m is not None and m.group(1) == "0.3.0"
     # The tagless hatch-vcs dev build still resolves to its base version.
     m = re.search(spec.version_regex, "rtl-buddy-view 0.2.2.dev0+g0f37a432d")
     assert m is not None and m.group(1) == "0.2.2"
@@ -487,15 +505,56 @@ def test_rtl_buddy_view_outdated_below_floor(fake_bin: Path):
     too_old = tm.check_tool(probe_spec, probe_versions=True, cache={})
     assert too_old.status == "outdated"
     assert too_old.version == "0.2.0"
-    assert too_old.minimum_version == "0.2.1"
+    assert too_old.minimum_version == "0.3.0"
 
     _make_exe(
         fake_bin / "rtl-buddy-view",
-        body="#!/bin/sh\necho 'rtl-buddy-view 0.2.1'\n",
+        body="#!/bin/sh\necho 'rtl-buddy-view 0.3.0'\n",
     )
     at_floor = tm.check_tool(probe_spec, probe_versions=True, cache={})
     assert at_floor.status == "ok"
-    assert at_floor.version == "0.2.1"
+    assert at_floor.version == "0.3.0"
+
+
+def test_vivado_spec_declared():
+    """The `vivado` entry gates the optional `rb fpga` flow (#284).
+
+    The version regex must pull the dotted version out of both the
+    `vivado -version` banner ("Vivado v2022.1.2 (64-bit)") and the
+    stylized report-header form ("Vivado v.2022.1.2 (lin64) ...").
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    spec = by_name["vivado"]
+    assert spec.optional
+    assert spec.used_by == ("fpga",)
+    assert spec.binaries == ("vivado",)
+    assert spec.version_cmd == ("vivado", "-version")
+    assert spec.install_hint  # --explain must offer install guidance
+    assert spec.version_regex is not None
+    m = re.search(spec.version_regex, "Vivado v2022.1.2 (64-bit)")
+    assert m is not None and m.group(1) == "2022.1.2"
+    m = re.search(
+        spec.version_regex,
+        "Vivado v.2022.1.2 (lin64) Build 3605665 Fri Aug  5 22:52:02 MDT 2022",
+    )
+    assert m is not None and m.group(1) == "2022.1.2"
+
+
+def test_vivado_version_probe_via_stub(fake_bin: Path):
+    """check_tool drives the real vivado spec against a stub binary."""
+    spec = next(s for s in tm.get_manifest() if s.name == "vivado")
+    _make_exe(
+        fake_bin / "vivado",
+        body=(
+            "#!/bin/sh\n"
+            "echo 'Vivado v2022.1.2 (64-bit)'\n"
+            "echo 'SW Build 3605665 on Fri Aug  5 22:52:02 MDT 2022'\n"
+        ),
+    )
+    status = tm.check_tool(spec, probe_versions=True, cache={})
+    assert status.status == "ok"
+    assert status.version == "2022.1.2"
+    assert status.optional is True
 
 
 def test_fpv_solvers_present_in_manifest():
@@ -584,11 +643,74 @@ def test_cli_tool_check_json(tmp_path: Path):
     assert len(payload["tools"]) > 0
 
 
+def test_cli_tool_check_machine_emits_envelope(tmp_path: Path):
+    """The global --machine flag yields a single JSON envelope on stdout.
+
+    Regression for the cross-phase finding: an agent driving the SKILL.md
+    loop calls `rb --machine tool-check`; the first stdout byte must be `{`
+    (a parseable envelope), not the human text table.
+    """
+    result = _run_rb("--machine", "tool-check", "--no-probe-versions", cwd=tmp_path)
+    assert result.returncode == 0
+    assert result.stdout.lstrip().startswith("{")
+    env = json.loads(result.stdout)
+    assert env["command"] == "tool-check"
+    assert env["exit_code"] == 0
+    payload = env["payload"]
+    assert "tools" in payload and "subcommands" in payload
+    # Bare tool-check is informational: process exits 0 regardless of the
+    # manifest readiness verdict, which rides separately in the payload.
+    assert "readiness_exit_code" in payload
+    assert len(payload["tools"]) > 0
+
+
+def test_cli_tool_check_machine_required_for_missing_exits_2(tmp_path: Path):
+    """--machine + --required-for surfaces the gate verdict in the envelope."""
+    if shutil.which("axi-profiler") is not None:
+        pytest.skip("axi-profiler is installed; cannot exercise miss path")
+    try:
+        from importlib import metadata as md
+
+        md.version("rtl-buddy-axi-profiler")
+        pytest.skip("rtl-buddy-axi-profiler is installed; cannot exercise miss path")
+    except md.PackageNotFoundError:
+        pass
+
+    result = _run_rb(
+        "--machine", "tool-check", "--required-for", "axi-profile", cwd=tmp_path
+    )
+    assert result.returncode == 2
+    env = json.loads(result.stdout)
+    assert env["command"] == "tool-check"
+    assert env["exit_code"] == 2
+    assert env["payload"]["subcommands"]["axi-profile"]["status"] != "ok"
+
+
+def test_cli_tool_check_machine_explain(tmp_path: Path):
+    """--machine --explain wraps the per-tool view + install text in an envelope."""
+    result = _run_rb("--machine", "tool-check", "--explain", "vivado", cwd=tmp_path)
+    assert result.returncode == 0
+    env = json.loads(result.stdout)
+    assert env["command"] == "tool-check"
+    assert "vivado" in env["payload"]["tools"]
+    assert "rb fpga" in env["payload"]["instructions"]
+
+
 def test_cli_tool_check_explain(tmp_path: Path):
     result = _run_rb("tool-check", "--explain", "verible", cwd=tmp_path)
     assert result.returncode == 0
     assert "verible" in result.stdout
     assert "Install" in result.stdout
+
+
+def test_cli_tool_check_explain_vivado(tmp_path: Path):
+    """`rb tool-check --explain vivado` reports the fpga gating entry."""
+    result = _run_rb("tool-check", "--explain", "vivado", cwd=tmp_path)
+    assert result.returncode == 0
+    assert "vivado" in result.stdout
+    assert "rb fpga" in result.stdout
+    assert "Install" in result.stdout
+    assert "Optional: yes" in result.stdout
 
 
 def test_cli_tool_check_explain_unknown_exits_1(tmp_path: Path):

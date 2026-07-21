@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
 
+from .. import tool_manifest as tm
 from ..config.root import RootConfig
 from ..logging_utils import log_event
 from .artifact_paths import sanitize_artifact_component
@@ -106,6 +107,10 @@ class VlogCov:
         Return a filesystem-safe coverage artifact name.
         """
         return sanitize_artifact_component(name)
+
+    def _require_lcov(self):
+        """Assert that genhtml (lcov manifest entry) is available."""
+        tm.require("lcov", self.root_cfg)
 
     def _extract_raw_source_paths(self, raw_path):
         """
@@ -717,6 +722,7 @@ class VlogCov:
             if self._write_lcov(raw_path, lcov_path, source_roots=lcov_source_roots):
                 metrics.lcov_path = lcov_path
                 if html_output:
+                    self._require_lcov()
                     html_base_dir = outdir if html_outdir is None else html_outdir
                     html_dir = os.path.join(html_base_dir, html_dirname)
                     repo_root = str(self._get_repo_root())
@@ -775,6 +781,7 @@ class VlogCov:
         if lcov_path is None or not os.path.exists(lcov_path):
             return None
 
+        self._require_lcov()
         html_base_dir = outdir if html_outdir is None else html_outdir
         html_dir = os.path.join(html_base_dir, html_dirname)
         repo_root = str(self._get_repo_root())
@@ -899,6 +906,7 @@ class VlogCov:
                     merged_lcov_path
                 )
                 if html_output:
+                    self._require_lcov()
                     html_base_dir = outdir if html_outdir is None else html_outdir
                     html_dir = os.path.join(html_base_dir, "coverage_merge.html")
                     repo_root = str(self._get_repo_root())

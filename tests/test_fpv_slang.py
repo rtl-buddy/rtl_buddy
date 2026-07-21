@@ -190,16 +190,49 @@ def test_render_sby_slang_emits_plugin_and_read_slang(tmp_path):
     # `--no-synthesis-define -DFORMAL=1` mirrors `read -formal`
     # semantics (FORMAL=1 replaces the implicit SYNTHESIS=1) so in-RTL
     # `ifdef FORMAL asserts survive preprocessing (#246).
-    assert "read_slang --top dut --no-synthesis-define -DFORMAL=1 dut.sv" in text
+    assert (
+        "read_slang --top dut --single-unit --no-synthesis-define -DFORMAL=1 dut.sv"
+        in text
+    )
     # The verilog-frontend command must NOT appear when slang is on —
     # otherwise yosys re-parses the same file through two frontends
     # and produces duplicated $check cells.
     assert "read -sv -formal" not in text
 
 
-def test_render_sby_slang_without_plugin_path_errors(tmp_path):
+def test_render_sby_slang_passes_single_unit(tmp_path):
+    """The slang read must use --single-unit so the filelist compiles as one
+    compilation unit: `define macros carry across files and a
+    compilation-unit-scope `bind` sees modules from other files, matching how
+    simulators / yosys's verilog frontend treat a filelist. Without it
+    yosys-slang treats each file as its own unit."""
+    sby = _sby_with_frontend(
+        tmp_path,
+        frontend="slang",
+        plugin_path="/path/to/slang.so",
+    )
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/a.sv", "/abs/b.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    read_line = next(ln for ln in text.splitlines() if ln.startswith("read_slang"))
+    assert "--single-unit" in read_line
+    # one read_slang invocation for the whole filelist
+    assert text.count("read_slang") == 1
+
+
+def test_render_sby_slang_without_plugin_path_errors(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.delenv(SLANG_PLUGIN_ENV, raising=False)
     sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path=None)
     out_path = str(tmp_path / "fpv.sby")
+    # The error must name both configuration channels.
     with pytest.raises(FatalRtlBuddyError, match="plugin-path"):
         sby._render_sby(
             output_path=out_path,
@@ -208,6 +241,51 @@ def test_render_sby_slang_without_plugin_path_errors(tmp_path):
             mode="bmc",
             extra_property_files=[],
         )
+    with pytest.raises(FatalRtlBuddyError, match=SLANG_PLUGIN_ENV):
+        sby._render_sby(
+            output_path=out_path,
+            sources=["/abs/dut.sv"],
+            incdirs=[],
+            mode="bmc",
+            extra_property_files=[],
+        )
+
+
+def test_render_sby_slang_env_fallback(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, "/env/slang.so")
+    sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path=None)
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert "plugin -i /env/slang.so" in text
+
+
+def test_render_sby_slang_config_wins_over_env(tmp_path, monkeypatch):
+    from rtl_buddy.tools.synth_yosys import SLANG_PLUGIN_ENV
+
+    monkeypatch.setenv(SLANG_PLUGIN_ENV, "/env/slang.so")
+    sby = _sby_with_frontend(
+        tmp_path, frontend="slang", plugin_path="/configured/slang.so"
+    )
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert "plugin -i /configured/slang.so" in text
+    assert "/env/slang.so" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -243,10 +321,66 @@ def test_build_yosys_script_slang():
     # `read -formal`-parity defines as the sby renderer — without them
     # in-RTL `ifdef FORMAL asserts vanish and COI reports 0% (#246).
     assert (
-        "read_slang --top dut --no-synthesis-define -DFORMAL=1 dut.sv props.sv"
+        "read_slang --top dut --single-unit --no-synthesis-define -DFORMAL=1 dut.sv props.sv"
         in script
     )
     assert "read -sv -formal" not in script
+
+
+def test_build_yosys_script_slang_passes_incdirs_on_read_slang():
+    """For slang, include dirs must be appended to the read_slang command as
+    `-I <dir>`. read_slang ignores `verilog_defaults -add -I` (that only
+    configures yosys's built-in verilog frontend), so emitting incdirs that way
+    leaves `include directives unresolved."""
+    script = build_yosys_script(
+        sources=["dut.sv"],
+        incdirs=["/inc/foo", "/inc/bar"],
+        properties=[],
+        constraints=None,
+        top="dut",
+        frontend="slang",
+        plugin_path="/p/slang.so",
+    )
+    read_line = next(ln for ln in script.splitlines() if ln.startswith("read_slang"))
+    assert "-I /inc/foo" in read_line
+    assert "-I /inc/bar" in read_line
+    # not emitted as a (no-op for slang) verilog_defaults directive
+    assert "verilog_defaults" not in script
+
+
+def test_render_sby_slang_passes_incdirs_on_read_slang(tmp_path):
+    """SbyFpv slang renderer: same contract as the COI builder — incdirs go on
+    the read_slang command line, never via verilog_defaults."""
+    sby = _sby_with_frontend(tmp_path, frontend="slang", plugin_path="/p/slang.so")
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=["/inc/foo"],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    read_line = next(ln for ln in text.splitlines() if ln.startswith("read_slang"))
+    assert "-I /inc/foo" in read_line
+    assert "verilog_defaults" not in text
+
+
+def test_render_slang_read_shell_quotes_paths_with_spaces():
+    """yosys tokenises each script line shell-style, so paths with spaces on the
+    single read_slang line must be shell-quoted or elaboration breaks. Simple
+    names stay bare (shlex.quote is a no-op there), keeping the common case
+    readable."""
+    from rtl_buddy.tools.fpv_coi import render_slang_read
+
+    line = render_slang_read("dut", ["/a b/inc"], ["/x y/dut.sv"])
+    assert "-I '/a b/inc'" in line
+    assert "'/x y/dut.sv'" in line
+
+    bare = render_slang_read("dut", ["/inc"], ["dut.sv"])
+    assert "-I /inc " in bare
+    assert bare.endswith(" dut.sv")
+    assert "'" not in bare
 
 
 def test_build_yosys_script_slang_requires_plugin_path():

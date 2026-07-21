@@ -64,6 +64,13 @@ class RtlBuddyView:
     Single-shot. Constructed per ``rb hier`` invocation.
     """
 
+    # Overridden by :class:`RtlBuddyViewQuery`: the log-event prefix /
+    # spinner label, and whether the viewer's stderr streams through to
+    # the user's terminal instead of being captured into the log file.
+    _event_name = "hier"
+    _status_label = "hier"
+    _stream_stderr = False
+
     def __init__(
         self,
         name: str,
@@ -127,6 +134,15 @@ class RtlBuddyView:
             artefact_root = artefact_root / "tb" / test_cfg.tb.name
         artefact_root.mkdir(parents=True, exist_ok=True)
         self.artefact_dir = str(artefact_root)
+
+    def _event_fields(self) -> dict[str, object]:
+        """Command-specific structured fields for the ``.start`` event.
+
+        ``format`` is a render-only concept; the query subclass logs
+        ``verb``/``arg`` instead so ``hier_query.start`` events don't
+        carry a misleading constant ``format=tree``.
+        """
+        return {"format": self.format}
 
     def _filelist_path(self) -> str:
         return os.path.join(self.artefact_dir, "hier.f")
@@ -266,34 +282,126 @@ class RtlBuddyView:
         cmd = self._build_cmd(fl_path)
         log_path = self._log_path()
 
-        with task_status(f"Running hier {self.model_cfg.name}"):
+        with task_status(f"Running {self._status_label} {self.model_cfg.name}"):
             log_event(
                 logger,
                 logging.INFO,
-                "hier.start",
+                f"{self._event_name}.start",
                 model=self.model_cfg.name,
                 tool=self.executable,
-                format=self.format,
+                **self._event_fields(),
             )
             with open(log_path, "w") as logf:
                 logf.write("$ " + " ".join(cmd) + "\n")
                 logf.flush()
                 # Let the renderer's stdout pass through to the user's
                 # terminal when --output is not used; capture stderr in
-                # the log for diagnosis.
+                # the log for diagnosis. Queries stream stderr through
+                # instead — a lookup miss ("instance path ... not
+                # found") is an interactive answer, not a diagnostic to
+                # bury in a log file.
                 stdout = subprocess.DEVNULL if self.output is not None else None
                 proc = run_managed_process(
                     cmd,
                     stdout=stdout,
-                    stderr=logf,
+                    stderr=None if self._stream_stderr else logf,
                     cwd=self.artefact_dir,
                 )
 
         log_event(
             logger,
             logging.INFO,
-            "hier.done",
+            f"{self._event_name}.done",
             model=self.model_cfg.name,
             returncode=proc.returncode,
         )
         return proc.returncode
+
+
+_QUERY_VERBS = (
+    "find-module",
+    "subtree",
+    "instances-of",
+    "port-connections",
+    "source-snippet",
+)
+
+
+class RtlBuddyViewQuery(RtlBuddyView):
+    """Generates a filelist + invokes ``rtl-buddy-view query <verb>``.
+
+    The CLI face of the viewer's query API (rtl_buddy#198): JSON (or
+    snippet text) answers on stdout, for shell pipelines and agent
+    tool use. Reuses the parent's filelist generation and artefact
+    layout (``artefacts/hier/<model>/hier.f`` is identical for both
+    commands), but streams stderr through to the terminal — a lookup
+    miss is the answer to the user's question, not a diagnostic to
+    capture. ``query.log`` records the invocation alongside hier.log.
+    """
+
+    _event_name = "hier_query"
+    _status_label = "hier-query"
+    _stream_stderr = True
+
+    def __init__(
+        self,
+        name: str,
+        model_cfg: ModelConfig,
+        *,
+        suite_dir: str,
+        verb: str,
+        arg: str,
+        frontend: str | None = None,
+        subtree_format: str | None = None,
+        context: int | None = None,
+        line_numbers: bool = True,
+        executable: str = "rtl-buddy-view",
+    ):
+        super().__init__(
+            name,
+            model_cfg,
+            suite_dir=suite_dir,
+            frontend=frontend,
+            executable=executable,
+        )
+        if verb not in _QUERY_VERBS:
+            raise FatalRtlBuddyError(
+                f"hier-query: unknown verb {verb!r}; "
+                f"expected one of: {', '.join(_QUERY_VERBS)}"
+            )
+        self.verb = verb
+        self.arg = arg
+        # Verb-specific knobs; only forwarded for the verbs that
+        # accept them so the viewer's own usage validation stays the
+        # single source of truth for what combines with what.
+        self.subtree_format = subtree_format
+        self.context = context
+        self.line_numbers = line_numbers
+
+    def _event_fields(self) -> dict[str, object]:
+        return {"verb": self.verb, "arg": self.arg}
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "query.log")
+
+    def _build_cmd(self, fl_path: str) -> list[str]:
+        cmd = [
+            self.executable,
+            "query",
+            self.verb,
+            self.arg,
+            "--top",
+            self.model_cfg.name,
+            "--filelist",
+            fl_path,
+        ]
+        if self.frontend is not None:
+            cmd += ["--frontend", self.frontend]
+        if self.verb == "subtree" and self.subtree_format is not None:
+            cmd += ["--format", self.subtree_format]
+        if self.verb == "source-snippet":
+            if self.context is not None:
+                cmd += ["--context", str(self.context)]
+            if not self.line_numbers:
+                cmd += ["--no-line-numbers"]
+        return cmd

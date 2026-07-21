@@ -1,0 +1,49 @@
+"nextpnr-xilinx" -- Next Generation Place and Route (Version nextpnr-0.6-30-g1f5e266e)
+
+Info: Series: xc7
+Info: Importing module fpga_counter
+Info: Found 41 top-level IO ports
+Info: Constraining clock net 'clk' to 250.00 MHz
+
+Info: Packing IOs..
+Info: Packing constants..
+Info: Packing carries..
+Info: Packing LUT-FFs..
+Info: Packing BRAMs..
+Info: Packing DSPs..
+
+Info: Device utilisation:
+Info: 	          SLICE_LUTX:   142/32600     0%
+Info: 	           SLICE_FFX:    97/65200     0%
+Info: 	              CARRY4:    16/ 8150     0%
+Info: 	            RAMB18E1:     1/  100     1%
+Info: 	             DSP48E1:     1/   90     1%
+Info: 	               IOB33:    41/  150    27%
+Info: 	           BUFGCTRL:     1/   32     3%
+Info: 	                PULL:     0/  150     0%
+
+Info: Placed 42 cells based on constraints.
+Info: Running simulated annealing placer.
+Info: SA placement time 0.40s
+Info: Running router2...
+Info: Routing..
+Info:     route arcs: 1893 success, 0 fail
+Info: Routing complete.
+Info: Router2 time 1.92s
+
+Info: Critical path report for clock 'clk' (posedge -> posedge):
+Info: curr total
+Info:  0.9  0.9  Source mult_a_reg.3_SLICE_FFX.Q
+Info:  1.2  2.1    Net mult_a[3] budget 1.900 ns (24,18) -> (28,21)
+Info:                Sink product_DSP48E1.A[3]
+Info:  3.1  5.2  Source product_DSP48E1.P[11]
+Info:  1.1  6.3    Net product[11] budget 1.900 ns (28,21) -> (29,22)
+Info:                Sink product_reg.11_SLICE_FFX.D
+
+Warning: Max frequency for clock 'clk': 160.00 MHz (FAIL at 250.00 MHz)
+
+Info: Max delay <async>                  -> posedge clk     : 3.18 ns
+Info: Max delay posedge clk     -> <async>                  : 4.71 ns
+
+Info: Checksum: 0x1a2b3c4d
+Info: Program finished normally.

@@ -28,7 +28,7 @@ Keep command execution rooted in explicit contexts rather than ambient `os.getcw
 
 - `invocation_cwd`: the directory where the user ran `rb`. Use it to resolve relative CLI arguments before they become absolute.
 - `command_root`: the directory containing the command's primary config file.
-- `suite_dir`: the command root for per-suite flows such as `tests.yaml`, `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, and `power.yaml`.
+- `suite_dir`: the command root for per-suite flows such as `tests.yaml`, `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, and `fpga.yaml`.
 - `artifact_dir`: the generated workspace for one command item, normally `suite_dir/artefacts/<name>`.
 
 Config-driven commands should be rooted at their primary config file.
@@ -51,6 +51,8 @@ Use these roots unless a command documents a narrower exception:
 | `fpv` | `dirname(fpv.yaml)` | `<suite>/artefacts/<fpv>` | `<artifact>` |
 | `pnr` | `dirname(pnr.yaml)` | `<suite>/artefacts/<pnr>` | `<artifact>` |
 | `power` | `dirname(power.yaml)` | `<suite>/artefacts/<power>` | `<artifact>` |
+| `fpga` | `dirname(fpga.yaml)` | `<suite>/artefacts/<fpga>` | `<artifact>` |
+| `fpga-regression` | `dirname(fpga.yaml)` | `<suite>/artefacts/<fpga>` | `<artifact>` |
 | `hier --view dut` | `dirname(models.yaml)` | `<model_root>/artefacts/hier/<model>` | `<artifact>` |
 | `hier --view tb` | `dirname(tests.yaml)` | `<suite>/artefacts/hier/<test-or-model>` | `<artifact>` |
 | `axi-profile run` | `dirname(tests.yaml)` | `<suite>/artefacts/axi/<test>` | `<artifact>` |
@@ -70,7 +72,7 @@ Resolve config-owned paths from the config file that owns them:
 - `regression.yaml` resolves listed suite configs relative to itself.
 - `tests.yaml` resolves testbench filelists, hook script paths, and suite-local runtime assets relative to the suite directory.
 - `models.yaml` resolves model filelist entries relative to the `models.yaml` file that defined them.
-- `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, and `power.yaml` resolve their own fields relative to their config directory.
+- `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, and `fpga.yaml` resolve their own fields relative to their config directory.
 
 Do not let relative paths silently depend on where the user happened to invoke the command.
 If a path is passed to an external tool, prefer an absolute path unless the value is intentionally artifact-relative.
@@ -201,7 +203,8 @@ Pick one or more from the table below; an issue with no area label is fine for c
 | `area/fpv` | formal property verification (`rb fpv`, sby plus commercial backends) |
 | `area/abv` | assertion-based verification (SVA, properties) in sim |
 | `area/mut` | mutation testing (`rb mut`) |
-| `area/pd` | physical design: `synth`, `pnr`, `power`, and other implementation flows |
+| `area/pd` | ASIC physical design: `synth`, `pnr`, `power` |
+| `area/fpga` | FPGA implementation flow (`rb fpga`, Vivado + open backends) and FPGA-specific checks |
 | `area/hier` | `hier` viewer and `rtl-buddy-view` integration |
 | `area/axi-profile` | `axi-profile` discover, run, notebook, and monitor generation |
 | `area/hub` | the hub server, marimo integration, hub event plumbing |

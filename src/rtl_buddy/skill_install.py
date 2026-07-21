@@ -135,11 +135,27 @@ def cmd_install(
             "--root", help="explicit target root (implies project-level layout)"
         ),
     ] = None,
+    directory: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--dir",
+            help=(
+                "write a single flat target at <DIR>/rtl_buddy/SKILL.md, "
+                "bypassing the .claude/.agents/.codex layout"
+            ),
+        ),
+    ] = None,
     no_claude: Annotated[
         bool, typer.Option("--no-claude", help="skip writing the Claude Code target")
     ] = False,
     no_codex: Annotated[
         bool, typer.Option("--no-codex", help="skip writing the Codex target")
+    ] = False,
+    no_gitignore: Annotated[
+        bool,
+        typer.Option(
+            "--no-gitignore", help="skip updating .gitignore on project-level installs"
+        ),
     ] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="print what would be written and exit")
@@ -153,14 +169,27 @@ def cmd_install(
     Default scope is user-level (`~/.claude/skills/rtl_buddy/` and
     `~/.codex/skills/rtl_buddy/`). Use `--project` to install into the
     discovered project root instead; project-level copies take precedence
-    over user-level when both exist.
+    over user-level when both exist. Use `--dir PATH` to write a single
+    `PATH/rtl_buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`
+    layout entirely.
     """
-    scope, base = _resolve_root(project, root)
-    targets = _targets(
-        scope, base, include_claude=not no_claude, include_codex=not no_codex
-    )
-    if not targets:
-        raise FatalRtlBuddyError("--no-claude and --no-codex leave nothing to install.")
+    if directory is not None:
+        if project or root is not None:
+            raise FatalRtlBuddyError(
+                "--dir is mutually exclusive with --project/--root."
+            )
+        scope = "dir"
+        base = directory.expanduser().resolve()
+        targets = [("skill", base / SKILL_DIRNAME)]
+    else:
+        scope, base = _resolve_root(project, root)
+        targets = _targets(
+            scope, base, include_claude=not no_claude, include_codex=not no_codex
+        )
+        if not targets:
+            raise FatalRtlBuddyError(
+                "--no-claude and --no-codex leave nothing to install."
+            )
 
     skill_text = _bundled_skill_text()
     ver = _package_version()
@@ -198,7 +227,7 @@ def cmd_install(
     else:
         typer.echo(f"Wrote {changed} file(s); {unchanged} already up to date.")
 
-    if scope == "project":
+    if scope == "project" and not no_gitignore:
         gitignore_path = base / ".gitignore"
         result = _update_gitignore(
             gitignore_path, _bundled_gitignore_snippet(), dry_run=dry_run

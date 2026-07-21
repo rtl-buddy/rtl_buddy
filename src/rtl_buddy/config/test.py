@@ -161,6 +161,7 @@ class TestConfig:
     tb: TestbenchConfig
     timeout: int | None
     covers: list[str] | None = None
+    builder_name: str | None = None
     assertions: bool = False
     # Expected-fail markers (pytest-style xfail). A test is treated as
     # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
@@ -183,6 +184,16 @@ class TestConfig:
         name (str): The name of the test
         """
         return self.name
+
+    def get_builder_name(self):
+        """
+        Retrieve the builder selected for this test, if any.
+
+        Returns:
+          builder_name (str | None): Name of a cfg-rtl-builder entry to use
+            for this test, or None to fall back to the suite/platform default.
+        """
+        return self.builder_name
 
     def is_xfail(self) -> bool:
         """Whether this test is expected to fail (either flag set)."""
@@ -443,11 +454,12 @@ class TestConfigFile:
     tb: str = field(rename="testbench")
     timeout: int | None = field(rename="sim_timeout")
     covers: list[str] | None = None
+    builder_name: str | None = field(rename="builder", default=None)
     assertions: bool = False
     xfail: bool = False
     xfail_strict: bool = False
 
-    def initialise(self, config_dir, tbs):
+    def initialise(self, config_dir, tbs, suite_builder=None):
         tb = tbs[self.tb]
         model = ModelConfigLoader(os.path.join(config_dir, self.model_path)).get_model(
             self.model
@@ -474,6 +486,7 @@ class TestConfigFile:
             tb,
             self.timeout,
             covers=self.covers,
+            builder_name=self.builder_name or suite_builder,
             assertions=self.assertions,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,

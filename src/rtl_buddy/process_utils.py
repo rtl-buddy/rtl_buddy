@@ -3,7 +3,7 @@ import signal
 import subprocess
 import threading
 from dataclasses import dataclass
-from typing import IO
+from typing import IO, Callable
 
 
 @dataclass
@@ -46,6 +46,30 @@ def _terminate_process_group(
         proc.wait()
 
 
+_TIMEOUT_PAUSER_POLL_SEC = 0.5
+
+
+def _timeout_result(
+    proc: subprocess.Popen,
+    *,
+    timeout_returncode: int | None,
+    terminate_signal: int,
+    kill_timeout: float,
+) -> ManagedProcessResult:
+    _terminate_process_group(
+        proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
+    )
+    stdout_data, stderr_data = proc.communicate()
+    return ManagedProcessResult(
+        returncode=(
+            timeout_returncode if timeout_returncode is not None else proc.returncode
+        ),
+        stdout=stdout_data,
+        stderr=stderr_data,
+        timed_out=True,
+    )
+
+
 def run_managed_process(
     cmd: list[str],
     *,
@@ -59,15 +83,33 @@ def run_managed_process(
     timeout_returncode: int | None = None,
     terminate_signal: int = signal.SIGTERM,
     kill_timeout: float = 5,
+    timeout_pauser: Callable[[], bool] | None = None,
 ) -> ManagedProcessResult:
     """Run a long-lived tool process with consistent cleanup.
 
     Simulators may need a non-default graceful-stop signal, such as SIGQUIT, to
     flush waveform data before exit.
+
+    ``timeout_pauser``, when given, is polled once per tick while waiting for
+    the process (only meaningful when ``timeout`` is also set). While it
+    returns ``True`` the elapsed tick does not count against ``timeout`` —
+    this lets callers pause the timeout clock during expected, non-hanging
+    waits (e.g. a VCS license queue). Because nothing drains the child's
+    stdout/stderr pipes during the poll loop, ``timeout_pauser`` cannot be
+    combined with ``capture_output=True`` or a ``subprocess.PIPE`` stream.
     """
     if capture_output:
         stdout = subprocess.PIPE
         stderr = subprocess.PIPE
+
+    if timeout_pauser is not None and (
+        stdout == subprocess.PIPE or stderr == subprocess.PIPE
+    ):
+        raise ValueError(
+            "timeout_pauser cannot be combined with pipe-captured output "
+            "(capture_output=True or subprocess.PIPE); nothing drains the "
+            "pipes during the poll loop"
+        )
 
     proc = subprocess.Popen(
         cmd,
@@ -108,25 +150,39 @@ def run_managed_process(
             signal.signal(signum, _signal_handler)
 
     try:
+        if timeout is not None and timeout_pauser is not None:
+            elapsed = 0.0
+            while True:
+                try:
+                    proc.wait(timeout=_TIMEOUT_PAUSER_POLL_SEC)
+                except subprocess.TimeoutExpired:
+                    if not timeout_pauser():
+                        elapsed += _TIMEOUT_PAUSER_POLL_SEC
+                    if elapsed > timeout:
+                        return _timeout_result(
+                            proc,
+                            timeout_returncode=timeout_returncode,
+                            terminate_signal=terminate_signal,
+                            kill_timeout=kill_timeout,
+                        )
+                else:
+                    stdout_data, stderr_data = proc.communicate()
+                    return ManagedProcessResult(
+                        returncode=proc.returncode,
+                        stdout=stdout_data,
+                        stderr=stderr_data,
+                    )
         try:
             stdout_data, stderr_data = proc.communicate(timeout=timeout)
             return ManagedProcessResult(
                 returncode=proc.returncode, stdout=stdout_data, stderr=stderr_data
             )
         except subprocess.TimeoutExpired:
-            _terminate_process_group(
-                proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
-            )
-            stdout_data, stderr_data = proc.communicate()
-            return ManagedProcessResult(
-                returncode=(
-                    timeout_returncode
-                    if timeout_returncode is not None
-                    else proc.returncode
-                ),
-                stdout=stdout_data,
-                stderr=stderr_data,
-                timed_out=True,
+            return _timeout_result(
+                proc,
+                timeout_returncode=timeout_returncode,
+                terminate_signal=terminate_signal,
+                kill_timeout=kill_timeout,
             )
     finally:
         _terminate_process_group(

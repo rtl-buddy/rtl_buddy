@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.1",
+  "generator": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "design": {
+    "top": "cdc_xpm_top",
+    "frontend": "yosys"
+  },
+  "clocks": [
+    {
+      "name": "clk_a",
+      "period": 8.0,
+      "source": "create_clock",
+      "ports": [
+        "clk_a"
+      ]
+    },
+    {
+      "name": "clk_b",
+      "period": 10.0,
+      "source": "create_clock",
+      "ports": [
+        "clk_b"
+      ]
+    }
+  ],
+  "generated_clocks": [],
+  "clock_groups": [
+    {
+      "kind": "asynchronous",
+      "members": [
+        [
+          "clk_a"
+        ],
+        [
+          "clk_b"
+        ]
+      ]
+    }
+  ],
+  "false_path_pairs": [],
+  "flop_domains": [
+    {
+      "instance_path": "cdc_xpm_top.$slang$dff$1",
+      "source_instance_path": "cdc_xpm_top",
+      "clock": "clk_a",
+      "location": {
+        "file": "cdc_xpm_top.sv",
+        "start_line": 23,
+        "start_column": 3,
+        "end_line": 23,
+        "end_column": 49
+      }
+    },
+    {
+      "instance_path": "cdc_xpm_top.u_xpm_single.$slang$dff$2",
+      "source_instance_path": "cdc_xpm_top.u_xpm_single",
+      "clock": "clk_b",
+      "location": {
+        "file": "cdc_xpm_top.sv",
+        "start_line": 12,
+        "start_column": 3,
+        "end_line": 12,
+        "end_column": 46
+      }
+    }
+  ],
+  "port_domains": [
+    {
+      "module": "cdc_xpm_top",
+      "port": "a_flag",
+      "clock": "clk_a",
+      "kind": "input"
+    }
+  ],
+  "crossings": [
+    {
+      "src_clock": "clk_a",
+      "dst_clock": "clk_b",
+      "dst_flop": "cdc_xpm_top.u_xpm_single.$slang$dff$2",
+      "dst_source_instance_path": "cdc_xpm_top.u_xpm_single",
+      "min_hops": 0,
+      "width": 1,
+      "async_per_sdc": true,
+      "src_flop": "cdc_xpm_top.$slang$dff$1",
+      "src_source_instance_path": "cdc_xpm_top"
+    }
+  ],
+  "clock_network_crossings": []
+}

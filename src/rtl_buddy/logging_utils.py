@@ -287,6 +287,21 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return (
                 f"git: {fields.get('branch')} | commit {fields.get('commit')} | clean"
             )
+        case "artifact_lock.contended":
+            # Deferred import: artifact_lock imports log_event from this
+            # module, so a top-level import here would be circular.
+            from .artifact_lock import _describe_holder
+
+            holder = _describe_holder(
+                {
+                    "pid": fields.get("holder_pid"),
+                    "command": fields.get("holder_command"),
+                    "started": fields.get("holder_started"),
+                }
+            )
+            return (
+                f"Another rtl-buddy run is already using {fields.get('path')}{holder}"
+            )
         case "command.test":
             return f"Running test {fields.get('test')}"
         case "command.randtest":
@@ -317,6 +332,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{fields.get('test')}: preproc completed"
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
+        case "preproc.import_collision":
+            return (
+                f"{fields.get('test')}: preproc import collision "
+                f"({fields.get('error')})"
+            )
         case "run.early_stop":
             return f"{target or fields.get('test')}: stopped early after {fields.get('stage')}"
         case "compile.plusdefines":
@@ -335,6 +355,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'compile'}: compile failed (returncode {fields.get('returncode')}){suffix}"
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
+        case "compile.build_reused":
+            return f"{target or 'compile'}: reused shared build {fields.get('build_dir')} (compile skipped)"
+        case "compile.share_build_unsupported":
+            return f"{fields.get('test')}: --share-build only supports Verilator builders; {fields.get('simulator')} compiles per test"
         case "sim.start":
             return f"{target or 'sim'}: simulation started"
         case "sim.output_paths":
@@ -350,7 +374,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "sim.timeout":
             artifacts = _format_artifacts(fields)
             suffix = f"; artifacts: {artifacts}" if artifacts else ""
+            license_queue_sec = fields.get("license_queue_sec")
+            if license_queue_sec is not None:
+                suffix = (
+                    f"; license queue wait {license_queue_sec}s exceeded cap{suffix}"
+                )
             return f"{target or 'sim'}: simulation timed out after {fields.get('timeout_sec')}s{suffix}"
+        case "sim.license_queue":
+            return f"{target or 'sim'}: queuing for a VCS license; sim timeout paused"
+        case "sim.license_granted":
+            return f"{target or 'sim'}: VCS license granted after {fields.get('queued_sec')}s in queue; sim timeout resumed"
         case "sim.replay_seed_missing":
             return f"{fields.get('test')}: replay seed missing at {fields.get('seed_path')}"
         case "sim.hier_seed_missing":
@@ -377,6 +410,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"Wrote filelist to {fields.get('output')}"
         case "verible.path_missing":
             return f"Verible disabled: path not found at {fields.get('path')}"
+        case "verible.path_fallback":
+            return f"Verible: configured path not found at {fields.get('path')}, using PATH"
         case "verible.command":
             return f"Running {fields.get('executable')}"
         case "verible.completed":
@@ -387,7 +422,8 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f'verible: invalid command "{fields.get("command")}"'
         case "wave.nvim_plugin_missing":
             return (
-                f'nvim plugin not installed — run "rb wave-install-nvim" to enable wave annotations'
+                'nvim plugin not installed — run "rb nvim-install" to enable the hub'
+                " connection and wave annotations"
                 f" (expected: {fields.get('path')})"
             )
         case "wave.trace_missing":
@@ -510,8 +546,103 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"'{fields.get('model')}' needs rtl-buddy-view on PATH "
                 f"(rtl-buddy-view exited rc={fields.get('rc')})"
             )
+        case "xplr.record_missing":
+            return (
+                f"xplr: experiment dir '{fields.get('id')}' has no record.json "
+                f"({fields.get('path')}); skipped in listing"
+            )
+        case "xplr.worktree_not_ignored":
+            return (
+                f"xplr: worktree {fields.get('path')} is inside the repo but "
+                f"not gitignored — {fields.get('hint')}"
+            )
+        case "xplr.ledger_not_ignored":
+            return (
+                f"xplr: {fields.get('path')} is inside the repo but not "
+                f"gitignored — {fields.get('hint')}"
+            )
         case "summary":
             return fields.get("title", "Summary")
+        case "cdc.emit.no_maps":
+            return (
+                f'cdc emit "{fields.get("analysis")}": rtl-buddy-cdc produced no '
+                "domain map — cannot generate constraints (check the cdc log / tool version)"
+            )
+        case "cdc.emit.done":
+            dst = fields.get("output") or "stdout"
+            return (
+                f'cdc emit "{fields.get("analysis")}": {fields.get("exceptions")} '
+                f"{str(fields.get('format', '')).upper()} exception(s) -> {dst}"
+            )
+        case "cdc.check_xdc.no_maps":
+            return (
+                f'cdc check-xdc "{fields.get("analysis")}": rtl-buddy-cdc produced '
+                "no domain map — cannot audit (check the cdc log / tool version)"
+            )
+        case "cdc.check_xdc.done":
+            nb = fields.get("blockers", 0)
+            verdict = "clean" if not nb else f"{nb} blocker(s)"
+            return (
+                f'cdc check-xdc "{fields.get("analysis")}": {verdict} '
+                f"({fields.get('findings')} finding(s) vs {fields.get('xdc')})"
+            )
+        case "fpga.no_vivado":
+            return (
+                f'fpga "{fields.get("fpga")}": {fields.get("exe")!r} not found — '
+                "skipping; run `rb tool-check --explain vivado` for install instructions"
+            )
+        case "fpga.no_openxc7":
+            missing = fields.get("missing", [])
+            names = ", ".join(missing) if isinstance(missing, list) else missing
+            return (
+                f'fpga "{fields.get("fpga")}": openXC7 toolchain incomplete '
+                f"(missing: {names}) — skipping; see `rb tool-check --required-for fpga`"
+            )
+        case "fpga.filelist_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": filelist error — {fields.get("error")}'
+            )
+        case "fpga.script_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": flow-script generation failed — '
+                f"{fields.get('error')}"
+            )
+        case "fpga.failed":
+            return (
+                f'fpga "{fields.get("fpga")}": Vivado exited with code '
+                f"{fields.get('returncode')} (log: {fields.get('log')})"
+            )
+        case "fpga.stage_failed":
+            return (
+                f'fpga "{fields.get("fpga")}": stage {fields.get("stage")!r} exited '
+                f"with code {fields.get('returncode')} (log: {fields.get('log')})"
+            )
+        case "fpga.errors_in_log":
+            stage = fields.get("stage")
+            where = f" in {stage}" if stage else ""
+            return (
+                f'fpga "{fields.get("fpga")}": {fields.get("count")} ERROR line(s)'
+                f"{where} — first: {fields.get('first')} (log: {fields.get('log')})"
+            )
+        case "fpga.timing_gate_failed":
+            wns = fields.get("wns_ns")
+            wns_text = f" (WNS={wns} ns)" if wns is not None else ""
+            return (
+                f'fpga "{fields.get("fpga")}": timing not met{wns_text}, '
+                f"{fields.get('failing_endpoints')} failing endpoint(s) — failing the "
+                "run because require-timing-met is set"
+            )
+        case "cdc.no_vivado":
+            return (
+                f'cdc "{fields.get("analysis")}": {fields.get("exe")!r} not found — '
+                "skipping; run `rb tool-check --explain vivado` for install instructions"
+            )
+        case "cdc.vivado_waivers_unsupported":
+            return (
+                f'cdc "{fields.get("analysis")}": rtl-buddy-cdc waiver files do not '
+                "translate to the Vivado backend — waivers ignored; findings still "
+                "carry full detail for downstream filtering"
+            )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
             # This is fine for DEBUG/INFO events. Events logged at WARNING or above

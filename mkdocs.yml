@@ -39,6 +39,7 @@ nav:
       - Execution Context: concepts/execution-context.md
       - Root Config: concepts/root-config.md
       - Tests: concepts/tests.md
+      - Simulators (Verilator vs Icarus): concepts/simulators.md
       - Regressions: concepts/regressions.md
       - Expected Failures (xfail): concepts/expected-failures.md
       - Coverage: concepts/coverage.md
@@ -51,10 +52,12 @@ nav:
       - Synthesis: concepts/synthesis.md
       - Place-and-Route: concepts/pnr.md
       - Power Analysis: concepts/power.md
+      - FPGA Implementation: concepts/fpga.md
       - CDC Lint: concepts/cdc.md
       - Formal Property Verification: concepts/fpv.md
       - Assertion-Based Verification (sim): concepts/abv-simulation.md
       - Mutation Testing: concepts/mut.md
+      - Design-Space Exploration: concepts/xplr.md
       - AXI Profiling: concepts/axi-profile.md
       - Tool Check: concepts/tool-check.md
   - Reference:

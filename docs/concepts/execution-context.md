@@ -107,6 +107,21 @@ out = os.path.join(os.getcwd(), "gen.sv")    # wrong — invocation cwd
 
 A relative path inside a YAML file never depends on where you ran `rb`. Absolute paths pass through unchanged.
 
+## One run per artefact tree
+
+Two `rb` processes writing into the same `artefacts/` tree would interleave compile workspaces, `run-NNNN` directories, and the latest-run symlinks. To prevent this, every artifact-writing command takes an exclusive advisory lock (`flock`) on `<artifact_root>/.rtl-buddy.lock` when it starts, and **fails immediately** — it never waits — if another run already holds it:
+
+```text
+<suite>/artefacts: another rtl-buddy run is already using this artefact tree
+(pid 12345, rb test, started 2026-06-10T14:03:21) — wait for it to finish or kill it
+```
+
+The lock is released by the kernel when the holding process exits — normal completion, crash, or `kill` alike — so there are no stale locks to clean up; the `.rtl-buddy.lock` file itself is just holder metadata and is harmless to leave behind. `rb regression` locks each suite it enters for the lifetime of the run. Metadata-only invocations (`--list`) never take the lock, so listing tests while a run is in flight always works. Suites with *different* artefact trees never contend — run as many in parallel as you like.
+
+The lock covers the **whole artefact tree**, not just the subtree a command writes: when `tests.yaml`, `cdc.yaml`, `synth.yaml`, etc. share a suite directory, any two artifact-writing commands contend — `rb hier` during a long `rb test` in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the `--list` paths and commands anchored elsewhere (another suite, `rb docs`, `rb hub`) remain available.
+
+**The protection is per host.** The guarantee relies on local `flock(2)` semantics and ends at the machine boundary. On a workspace shared over NFS, two runs on **different hosts** may both acquire "the" lock — whether `flock` propagates across NFS depends on the protocol version, mount options, and server lock-daemon configuration, and rtl_buddy does not rely on it. Concurrent runs against the same suite from two machines are not protected; coordinate those yourself.
+
 ## Future: redirecting the artifact root
 
 The artifact root defaults to `command_root/artefacts/`. The `ExecutionContext` carrier is built to accept an explicit override so a future `--artifact-root` flag (or `root_config.yaml` field) can redirect large artifacts — synthesis netlists, simulation waveforms — onto a separate disk without touching command code. None of this is wired today; this page will update when it ships.

@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "generator": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.2.0"
+  },
+  "design": {
+    "top": "cdc_bad_top",
+    "frontend": "yosys"
+  },
+  "reset_sources": [
+    {
+      "name": "rst_n",
+      "source": "port",
+      "polarity": "low",
+      "type": "async",
+      "clock": null,
+      "via_synchronizer": false
+    }
+  ],
+  "reset_synchronizers": [],
+  "flop_resets": [
+    {
+      "instance_path": "cdc_bad_top.$slang$adff$1",
+      "clock": "clk_a",
+      "reset": "rst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_bad_top.sv",
+        "start_line": 13,
+        "start_column": 3,
+        "end_line": 16,
+        "end_column": 6
+      }
+    },
+    {
+      "instance_path": "cdc_bad_top.$slang$adff$2",
+      "clock": "clk_b",
+      "reset": "rst_n",
+      "reset_kind": "port",
+      "polarity": "low",
+      "type": "async",
+      "location": {
+        "file": "cdc_bad_top.sv",
+        "start_line": 18,
+        "start_column": 3,
+        "end_line": 21,
+        "end_column": 6
+      }
+    }
+  ],
+  "reset_crossings": []
+}
