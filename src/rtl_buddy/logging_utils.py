@@ -332,6 +332,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{fields.get('test')}: preproc completed"
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
+        case "preproc.import_collision":
+            return (
+                f"{fields.get('test')}: preproc import collision "
+                f"({fields.get('error')})"
+            )
         case "run.early_stop":
             return f"{target or fields.get('test')}: stopped early after {fields.get('stage')}"
         case "compile.plusdefines":

@@ -1,0 +1,8 @@
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "other"
+    desc: "other block"
+    coverage-items:
+      - id: "OTHER-1"
+        desc: "other coverage item"

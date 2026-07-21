@@ -73,6 +73,18 @@ reglvl:
 
 Use `--reg-level` and `--start-level` on the `regression` subcommand to select a level range. See [Regressions](regressions.md).
 
+The `test` subcommand accepts the same two long-form options (no short flags), so a single `tests.yaml` suite can be filtered by regression level without a `regressions.yaml`:
+
+```bash
+# Run only tests with reglvl <= 2000
+rtl-buddy test --reg-level 2000
+
+# Run tests with reglvl in [1000, 3000]
+rtl-buddy test --start-level 1000 --reg-level 3000
+```
+
+Tests with `reglvl` above `--reg-level` or below `--start-level` are reported as `SKIP`. Unlike `regression`, omitting both flags on `test` runs every test regardless of `reglvl` — filtering only kicks in once one of the flags is given.
+
 ### Default transcript parsing
 
 When `uvm` is **not** set, `rtl_buddy` determines the result by parsing `artefacts/{test_name}/test.log` after simulation. Your testbench must print a result marker to **stdout** at the start of a line:
@@ -121,14 +133,36 @@ The transcript parser is not the only source of failures. `rtl_buddy` also marks
 - compilation fails
 - simulation times out
 
+### Stopping early
+
+The global `-E`/`--early-stop` option halts a run after a given stage (`pre`, `comp`, `sim`, or `post`):
+
+```bash
+rtl-buddy -E comp test smoke
+```
+
+Stopping after a successful stage (e.g. `comp`) reports result `NA` (e.g. desc "Stopped early at compile") rather than a `PASS`/`FAIL` transcript verdict, since simulation never ran to produce one — an early stop is an intentional non-verdict, not evidence the DUT passed, so it needs hand-checking like any other `NA`. Because the exit code reflects whether `rtl_buddy` and its tools ran properly rather than the DUT verdict, a successful early stop still exits 0. If compilation itself fails, the result is `FAIL` with exit code 1, regardless of `--early-stop`.
+
+### Result statuses
+
+`rtl_buddy` reports one of these result statuses per test:
+
+| Result | Meaning |
+|--------|---------|
+| `PASS` | A real simulation run completed and the transcript/UVM verdict was a pass |
+| `FAIL` | A real simulation run failed, or a tool/flow step failed (setup, filelist, compile, sim timeout) |
+| `XFAIL` / `XPASS` | `PASS`/`FAIL` remapped by `xfail`/`xfail_strict` — see [Expected failures](expected-failures.md) |
+| `SKIP` | A regression-level skip (`reglvl` outside `--reg-level`/`--start-level`) |
+| `NA` | Everything else, including all intentional early stops — no real pass/fail verdict was produced, so the result needs hand-checking |
+
 ### Exit codes
 
-`rtl_buddy` returns one of three exit codes from test commands:
+The exit code reflects whether `rtl_buddy` and its tools ran, not the DUT verdict:
 
 | Code | Meaning |
 |------|---------|
-| 0 | All tests passed |
-| 1 | One or more tests failed |
+| 0 | No real `FAIL` verdicts — includes `PASS`, `SKIP`, `XFAIL`, and `NA` (early stops included) |
+| 1 | One or more tests resulted in `FAIL` (a real fail verdict, or a tool/flow failure such as compilation failure) |
 | 2 | Fatal configuration or environment error |
 
 ## Running tests
