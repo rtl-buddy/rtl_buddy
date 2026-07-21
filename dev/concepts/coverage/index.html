@@ -651,6 +651,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Coverage merge modes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#coverage-requested-but-not-produced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage requested but not produced
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1668,6 +1685,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Coverage merge modes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#coverage-requested-but-not-produced" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage requested but not produced
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1832,12 +1866,15 @@
 </tbody>
 </table>
 <p>If none of these flags is given, no merging is done and coverage is reported per test.</p>
+<h3 id="coverage-requested-but-not-produced">Coverage requested but not produced</h3>
+<p>Passing any coverage output flag (<code>--coverage-merge</code>, <code>--coverage-merge-raw</code>, <code>--coverage-merge-info-process</code>, <code>--coverage-html</code>, <code>--coverage-coverview</code>, <code>--coverage-dir-summary</code>, <code>--coverage-dir-summary-file</code>) to <code>test</code> or <code>regression</code> asserts that coverage data will actually be produced. If no executed (non-skipped) test produced raw coverage data — for example, the selected builder mode lacks Verilator coverage instrumentation — the command fails with a configuration error and exits 2, instead of silently succeeding with no coverage artifact. If every selected test was skipped, no error is raised.</p>
 <h2 id="generating-merged-output">Generating merged output</h2>
 <h3 id="lcov-html-report">LCOV HTML report</h3>
 <p>Requires <code>use-lcov: true</code> in <code>cfg-coverage</code>. Not supported with <code>--coverage-merge-info-process</code>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression<span class="w"> </span>--coverage-merge<span class="w"> </span>--coverage-html
 </code></pre></div>
 <p>Output is written to <code>coverage_merge.html</code> in the current directory.</p>
+<p><code>--coverage-html</code> requires <code>genhtml</code> (the <code>lcov</code> entry in <code>rb tool-check</code>). If it is missing, the command fails with the standard dependency error — e.g. "lcov not found — run <code>rb tool-check --explain lcov</code> for install instructions" — instead of an opaque traceback. See <a href="../tool-check/">Tool Dependency Check</a>.</p>
 <h3 id="coverview-zip">Coverview zip</h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>rtl-buddy<span class="w"> </span>--builder-mode<span class="w"> </span>cov<span class="w"> </span>regression<span class="w"> </span>--coverage-merge<span class="w"> </span>--coverage-coverview
 </code></pre></div>

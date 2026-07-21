@@ -1679,6 +1679,7 @@ of once per test (Verilator builders only). See
 <a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--start-level<span class="w"> </span><span class="m">1000</span><span class="w"> </span>--reg-level<span class="w"> </span><span class="m">3000</span>
 </code></pre></div>
 <p>The default is <code>--reg-level 0</code>, which runs only tests with <code>reglvl: 0</code> (must-run sanity tests).</p>
+<p>The <code>test</code> subcommand accepts the same <code>--reg-level</code>/<code>--start-level</code> options (long-form only) for filtering a single suite's <code>tests.yaml</code> without a <code>regressions.yaml</code>. See <a href="../tests/#regression-levels">Regression levels</a>.</p>
 <h2 id="working-directory-behavior">Working directory behavior</h2>
 <p>Unlike <code>test</code>, the <code>regression</code> subcommand <strong>changes directory</strong> into each suite directory before running its tests. This means relative paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved correctly without any extra setup.</p>
 <p>Run <code>regression</code> from the repo root so that the paths in <code>regressions.yaml</code> resolve correctly.</p>
