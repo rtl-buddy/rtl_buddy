@@ -88,12 +88,8 @@ def test_help_declares_reg_level_without_stealing_rnd_last_short_flag(
     # following letter).
     short_flag_l = re.compile(r"-l(?![A-Za-z])")
 
-    rnd_last_line = next(
-        line for line in output.splitlines() if "--rnd-last" in line
-    )
+    rnd_last_line = next(line for line in output.splitlines() if "--rnd-last" in line)
     assert short_flag_l.search(rnd_last_line)
 
-    reg_level_line = next(
-        line for line in output.splitlines() if "--reg-level" in line
-    )
+    reg_level_line = next(line for line in output.splitlines() if "--reg-level" in line)
     assert not short_flag_l.search(reg_level_line)

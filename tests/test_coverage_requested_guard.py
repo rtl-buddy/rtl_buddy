@@ -63,9 +63,7 @@ def test_coverage_requested_but_all_tests_skipped_does_not_raise(
 ):
     """If every test is skipped by the level window, the guard must not fire."""
     runner, rb = _runner()
-    result = runner.invoke(
-        rb.app, ["test", "--start-level", "10", "--coverage-merge"]
-    )
+    result = runner.invoke(rb.app, ["test", "--start-level", "10", "--coverage-merge"])
     assert result.exit_code == 0, result.output
 
 
