@@ -64,6 +64,8 @@ rtl-buddy regression --start-level 1000 --reg-level 3000
 
 The default is `--reg-level 0`, which runs only tests with `reglvl: 0` (must-run sanity tests).
 
+The `test` subcommand accepts the same `--reg-level`/`--start-level` options (long-form only) for filtering a single suite's `tests.yaml` without a `regressions.yaml`. See [Regression levels](tests.md#regression-levels).
+
 ## Working directory behavior
 
 Unlike `test`, the `regression` subcommand **changes directory** into each suite directory before running its tests. This means relative paths in `tests.yaml` (such as `model_path`) are resolved correctly without any extra setup.

@@ -79,6 +79,21 @@ rb spec check-coverage   # which coverage items are addressed by at least one te
 
 `check-coverage` prints a table of all items with a `Covered: yes/no` column and calls out uncovered IDs at the end. Use `--machine` to get JSON output for programmatic consumption.
 
+### Filtering by block
+
+Both `check-design` and `check-coverage` accept a repeatable `--block NAME` to restrict output to specific spec blocks:
+
+```bash
+rb spec check-design --block my_block
+rb spec check-coverage --block ip_cdc_sync --block ip_cdc_handshake
+```
+
+Human output shows only the selected blocks; `--machine` output contains only the selected records. An unknown block name is a configuration error (nonzero exit) rather than an empty successful result.
+
+### Suite load failures
+
+If a `tests.yaml` suite referenced under `--verif-dir` cannot be loaded — for example its `model_path` or design sources are unavailable — `check-coverage` surfaces the load failure and exits nonzero instead of silently dropping the suite and reporting its coverage items as uncovered. In `--machine` mode, the payload includes a `suite_load_failures` list naming the suites that failed to load.
+
 ## Multi-block specs.yaml
 
 A single `specs.yaml` can contain multiple blocks — useful when a directory holds several closely related IP:
@@ -108,4 +123,4 @@ Each design model still points to the same `specs.yaml`; the model `name` select
 | `rb spec check-design` | For every spec block, shows whether a design model references it |
 | `rb spec check-coverage` | For every coverage item, shows which tests cover it and flags uncovered items |
 
-All three commands accept `--spec-dir` to target a subdirectory. `check-design` also accepts `--design-dir`; `check-coverage` accepts `--verif-dir`.
+All three commands accept `--spec-dir` to target a subdirectory. `check-design` also accepts `--design-dir`; `check-coverage` accepts `--verif-dir`. `check-design` and `check-coverage` also accept a repeatable `--block NAME` (see [Filtering by block](#filtering-by-block)).

@@ -23,7 +23,7 @@ scope reports ``is_xfail()``.
 
 # Statuses that always count as a pass. XPASS is handled separately
 # because whether it passes depends on the recorded strictness.
-_BASE_PASS = ("PASS", "SKIP", "XFAIL")
+_BASE_PASS = ("PASS", "SKIP", "XFAIL", "COMPILED")
 
 
 def is_pass_with_xfail(results: dict) -> bool:

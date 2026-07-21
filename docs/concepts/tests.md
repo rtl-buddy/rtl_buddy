@@ -73,6 +73,18 @@ reglvl:
 
 Use `--reg-level` and `--start-level` on the `regression` subcommand to select a level range. See [Regressions](regressions.md).
 
+The `test` subcommand accepts the same two long-form options (no short flags), so a single `tests.yaml` suite can be filtered by regression level without a `regressions.yaml`:
+
+```bash
+# Run only tests with reglvl <= 2000
+rtl-buddy test --reg-level 2000
+
+# Run tests with reglvl in [1000, 3000]
+rtl-buddy test --start-level 1000 --reg-level 3000
+```
+
+Tests with `reglvl` above `--reg-level` or below `--start-level` are reported as `SKIP`. Unlike `regression`, omitting both flags on `test` runs every test regardless of `reglvl` — filtering only kicks in once one of the flags is given.
+
 ### Default transcript parsing
 
 When `uvm` is **not** set, `rtl_buddy` determines the result by parsing `artefacts/{test_name}/test.log` after simulation. Your testbench must print a result marker to **stdout** at the start of a line:
@@ -121,13 +133,23 @@ The transcript parser is not the only source of failures. `rtl_buddy` also marks
 - compilation fails
 - simulation times out
 
+### Stopping early
+
+The global `-E`/`--early-stop` option halts a run after a given stage (`pre`, `comp`, `sim`, or `post`):
+
+```bash
+rtl-buddy -E comp test smoke
+```
+
+Stopping after a successful compile (`comp`) reports result `COMPILED` (`stage: "compile"` in machine output) rather than a `PASS`/`FAIL` transcript verdict, since simulation never ran. `COMPILED` counts as a passing verdict — exit code 0. If compilation itself fails, the result is still `FAIL` with exit code 1, regardless of `--early-stop`.
+
 ### Exit codes
 
 `rtl_buddy` returns one of three exit codes from test commands:
 
 | Code | Meaning |
 |------|---------|
-| 0 | All tests passed |
+| 0 | All tests passed (`COMPILED` counts as passing) |
 | 1 | One or more tests failed |
 | 2 | Fatal configuration or environment error |
 

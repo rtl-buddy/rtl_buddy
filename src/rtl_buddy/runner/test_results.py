@@ -68,6 +68,23 @@ class EarlyStopResults(TestResults):
         )
 
 
+class CompilePassResults(TestResults):
+    """
+    Successful compile-only stop before simulation.
+    """
+
+    def __init__(self, name, desc="Stopped early at compile"):
+        super().__init__(
+            name=name,
+            results={
+                "result": "COMPILED",
+                "name": name,
+                "desc": desc,
+                "stage": "compile",
+            },
+        )
+
+
 class SimTimeoutResults(TestResults):
     """
     Simulation timeout

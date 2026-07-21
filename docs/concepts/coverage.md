@@ -74,6 +74,10 @@ Three merge modes are available, selected by a mutually exclusive flag. Only one
 
 If none of these flags is given, no merging is done and coverage is reported per test.
 
+### Coverage requested but not produced
+
+Passing any coverage output flag (`--coverage-merge`, `--coverage-merge-raw`, `--coverage-merge-info-process`, `--coverage-html`, `--coverage-coverview`, `--coverage-dir-summary`, `--coverage-dir-summary-file`) to `test` or `regression` asserts that coverage data will actually be produced. If no executed (non-skipped) test produced raw coverage data — for example, the selected builder mode lacks Verilator coverage instrumentation — the command fails with a configuration error and exits 2, instead of silently succeeding with no coverage artifact. If every selected test was skipped, no error is raised.
+
 ## Generating merged output
 
 ### LCOV HTML report
@@ -85,6 +89,8 @@ rtl-buddy --builder-mode cov regression --coverage-merge --coverage-html
 ```
 
 Output is written to `coverage_merge.html` in the current directory.
+
+`--coverage-html` requires `genhtml` (the `lcov` entry in `rb tool-check`). If it is missing, the command fails with the standard dependency error — e.g. "lcov not found — run `rb tool-check --explain lcov` for install instructions" — instead of an opaque traceback. See [Tool Dependency Check](tool-check.md).
 
 ### Coverview zip
 
