@@ -61,9 +61,10 @@ def discover_model_configs(root: str) -> list[tuple[str, ModelConfig]]:
     return results
 
 
-def discover_suite_tests(root: str) -> list[tuple[str, object]]:
-    """Walk `root`, load every tests.yaml, return (tests_yaml_path, TestConfig) pairs."""
+def discover_suite_tests(root: str) -> tuple[list[tuple[str, object]], list[str]]:
+    """Walk `root`, load every tests.yaml, return loaded tests and failed paths."""
     results = []
+    failures = []
     for path in _walk_yaml_files(root, "tests.yaml"):
         try:
             suite = SuiteConfig(path)
@@ -73,7 +74,8 @@ def discover_suite_tests(root: str) -> list[tuple[str, object]]:
             log_event(
                 logger, logging.WARNING, "spec_trace.suite_load_failed", path=path
             )
-    return results
+            failures.append(path)
+    return results, failures
 
 
 def build_coverage_map(

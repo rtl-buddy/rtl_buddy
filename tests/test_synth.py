@@ -430,6 +430,24 @@ def test_write_script_basic(tmp_path):
     assert "write_rtlil" in script
 
 
+def test_write_script_strips_formal_cells_after_synth(tmp_path):
+    """Formal cells ($assert/$assume/$cover) from unguarded immediate
+    assertions must be stripped after synth and before the netlist is
+    written — structural Verilog readers (OpenROAD/OpenSTA pnr/power
+    `read_verilog`) reject netlists that carry them."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    ys = _make_yosys(tmp_path, synth_cfg=_make_synth_cfg(model_name="my_top"))
+    script = Path(ys._write_script(str(fl))).read_text()
+
+    assert "chformal -remove" in script
+    assert script.index("chformal -remove") > script.index("synth -top my_top")
+    assert script.index("chformal -remove") < script.index("write_rtlil")
+
+
 def test_write_script_includes_synth_args(tmp_path):
     sv = tmp_path / "top.sv"
     sv.write_text("")
@@ -1404,6 +1422,31 @@ def test_openroad_yosys_script_has_liberty_and_netlist(tmp_path):
     assert f"abc -liberty {lib}" in script
     assert "write_verilog" in script
     assert "write_rtlil" not in script
+
+
+def test_openroad_yosys_script_strips_formal_cells_after_synth(tmp_path):
+    """Mirror of the YosysSynth test: the OpenROAD backend's stage-1 yosys
+    script must strip formal cells after synth and before the netlist is
+    written — OpenROAD's structural `read_verilog` (stage 2, and pnr/power
+    downstream) rejects netlists that carry them."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+
+    root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)})
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "chformal -remove" in script
+    assert script.index("chformal -remove") > script.index("synth -top top")
+    assert script.index("chformal -remove") < script.index("write_verilog")
 
 
 def test_openroad_or_script_has_lef_liberty_verilog_sdc(tmp_path):

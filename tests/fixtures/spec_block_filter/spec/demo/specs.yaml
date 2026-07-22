@@ -1,0 +1,8 @@
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "demo"
+    desc: "demo block"
+    coverage-items:
+      - id: "DEMO-1"
+        desc: "demo coverage item"

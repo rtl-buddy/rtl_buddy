@@ -1,0 +1,22 @@
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb
+    toplevel: tb
+    filelist:
+      - example.sv
+tests:
+  - name: broken_test
+    desc: references a model_path that does not exist, so the suite fails to load
+    model: example
+    model_path: does_not_exist.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb
+    covers:
+      - DEMO-1
+    sim_timeout:

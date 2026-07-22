@@ -16,8 +16,10 @@ import re
 import shlex
 import signal
 import logging
+import types
 
 logger = logging.getLogger(__name__)
+from ..hooks import exec_hook_script
 from ..seed_mode import SeedMode
 
 from .vlog_filelist import VlogFilelist
@@ -33,6 +35,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
+from .vcs_license import VcsLicenseQueueMonitor
 
 
 def force_symlink(target, link_name):
@@ -430,16 +433,16 @@ class VlogSim:
 
         # Pass self.test_cfg to the preproc script as root_cfg
         # preproc script can mutate self.test_cfg, which is used for compile and sim
-        ns = {
-            "logger": logger,
-            "test_cfg": self.test_cfg,
-            "root_cfg": self.root_cfg,
-            "suite_dir": self.suite_work_dir,
-            "artifact_dir": self._get_artifact_dir(),
-            "__file__": os.path.abspath(script_path),
-        }
         try:
-            exec(code, ns)
+            ns = exec_hook_script(
+                script_path,
+                code,
+                logger=logger,
+                test_cfg=self.test_cfg,
+                root_cfg=self.root_cfg,
+                suite_dir=self.suite_work_dir,
+                artifact_dir=self._get_artifact_dir(),
+            )
         except Exception as e:
             log_event(
                 logger,
@@ -452,6 +455,18 @@ class VlogSim:
             logger.debug("preproc traceback", exc_info=True)
             return f"Setup failed in preproc: {e}"
 
+        import_error = self._check_preproc_imports(ns, script_path)
+        if import_error is not None:
+            log_event(
+                logger,
+                logging.ERROR,
+                "preproc.import_collision",
+                test=self.test_name,
+                script=script_path,
+                error=import_error,
+            )
+            return f"Setup failed in preproc: {import_error}"
+
         log_event(
             logger,
             logging.INFO,
@@ -459,6 +474,53 @@ class VlogSim:
             test=self.test_name,
             script=script_path,
         )
+        return None
+
+    def _find_suite_dir(self, start_dir: str, project_root: str) -> str | None:
+        """Walk up from start_dir to project_root, returning first dir with tests.yaml."""
+        start_dir = os.path.abspath(start_dir)
+        project_root = os.path.abspath(project_root)
+        current = start_dir
+        while True:
+            if os.path.isfile(os.path.join(current, "tests.yaml")):
+                return current
+            if current == project_root:
+                break
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+        return None
+
+    def _check_preproc_imports(self, ns, script_path):
+        """Fail loudly if the preproc imported a module from a different suite directory."""
+        script_dir = os.path.dirname(os.path.abspath(script_path))
+        get_root = getattr(self.root_cfg, "get_project_rootdir", None)
+        if get_root is not None:
+            project_root = os.path.abspath(get_root())
+        else:
+            project_root = script_dir
+        script_suite = self._find_suite_dir(script_dir, project_root)
+        for value in ns.values():
+            if not isinstance(value, types.ModuleType):
+                continue
+            mod_file = getattr(value, "__file__", None)
+            if mod_file is None:
+                continue
+            mod_file = os.path.abspath(mod_file)
+            try:
+                if os.path.commonpath([mod_file, project_root]) != project_root:
+                    continue
+            except ValueError:
+                continue
+            mod_dir = os.path.dirname(mod_file)
+            mod_suite = self._find_suite_dir(mod_dir, project_root)
+            if mod_suite is not None and mod_suite != script_suite:
+                return (
+                    f"preproc imported module '{value.__name__}' from a different "
+                    f"suite directory ({mod_suite}); use a unique module name or "
+                    "isolate the helper to avoid sys.modules caching collisions"
+                )
         return None
 
     def compile(self):
@@ -740,6 +802,32 @@ class VlogSim:
         s_time = time.time()
         t_time = 0
 
+        license_monitor = None
+        timeout_pauser = None
+        if self._get_simulator_family() == "vcs":
+            license_monitor = VcsLicenseQueueMonitor(
+                log_path,
+                err_path,
+                on_enter_queue=lambda: log_event(
+                    logger,
+                    logging.WARNING,
+                    "sim.license_queue",
+                    test=self.test_name,
+                    run_id=run_id,
+                ),
+                # WARNING (not INFO) so the pause/resume pair is visible at
+                # default console verbosity.
+                on_exit_queue=lambda queued_sec: log_event(
+                    logger,
+                    logging.WARNING,
+                    "sim.license_granted",
+                    test=self.test_name,
+                    run_id=run_id,
+                    queued_sec=round(queued_sec, 2),
+                ),
+            )
+            timeout_pauser = license_monitor.is_waiting
+
         # subprocess pipe stderr to test.err, stdout to test.log
         with task_status(
             f"Running simulation {self.test_name}{'' if run_id is None else f' #{run_id:04d}'}",
@@ -758,19 +846,27 @@ class VlogSim:
                         timeout=timeout,
                         timeout_returncode=4444,
                         terminate_signal=signal.SIGQUIT,
+                        timeout_pauser=timeout_pauser,
                     )
                     returncode = result.returncode
 
                     t_time = time.time() - s_time
                     if result.timed_out:
-                        log_event(
-                            logger,
-                            logging.ERROR,
-                            "sim.timeout",
+                        timeout_fields = dict(
                             test=self.test_name,
                             run_id=run_id,
                             timeout_sec=timeout,
                             **artifact_paths,
+                        )
+                        if license_monitor is not None and license_monitor.cap_exceeded:
+                            timeout_fields["license_queue_sec"] = round(
+                                license_monitor.queue_wait_sec, 2
+                            )
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "sim.timeout",
+                            **timeout_fields,
                         )
 
         with open(randseed_path, "w") as f:

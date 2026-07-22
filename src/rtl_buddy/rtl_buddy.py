@@ -29,6 +29,7 @@ from .docs_access import get_page, get_section, list_pages
 from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
+from .hooks import exec_hook_script
 from .logging_utils import (
     attach_file_log,
     emit_console_text,
@@ -667,10 +668,54 @@ class RtlBuddy:
         return ctx
 
     def _exit_code_from_results(self, suite_results):
+        # The exit code reflects whether rtl_buddy and the tools ran, not the
+        # verdict of the design under test per se. A real FAIL (sim failure,
+        # compile/setup/filelist failure, timeout) or a strict XPASS fails the
+        # run; a NA result — an intentional early stop that only needs hand
+        # checking — does not, nor do PASS/SKIP/XFAIL.
         exit_code = 0
         for suite_result in suite_results:
-            exit_code |= 0 if suite_result["results"].is_pass() else 1
+            results = suite_result["results"]
+            if not results.is_pass() and results.results.get("result") != "NA":
+                exit_code |= 1
         return exit_code
+
+    def _guard_coverage_requested(
+        self,
+        suite_results,
+        exit_code,
+        *,
+        coverage_merge,
+        coverage_merge_raw,
+        coverage_merge_info_process,
+        coverage_html,
+        coverage_coverview,
+        coverage_dir_summary,
+        coverage_dir_summary_file,
+    ):
+        """Fail loud (#334) when a coverage output flag was requested but no
+        executed (non-skipped) test produced raw coverage data — otherwise the
+        command could succeed without ever emitting the requested artifact.
+        """
+        coverage_requested = (
+            coverage_merge
+            or coverage_merge_raw
+            or coverage_merge_info_process
+            or coverage_html
+            or coverage_coverview
+            or coverage_dir_summary
+            or coverage_dir_summary_file
+        )
+        if (
+            exit_code == 0
+            and coverage_requested
+            and not self.coverage.collect_paths(suite_results)
+            and any(r["results"].results.get("result") != "SKIP" for r in suite_results)
+        ):
+            raise FatalRtlBuddyError(
+                "Coverage output requested but no coverage data was produced by any "
+                "executed test; ensure the selected builder supports coverage instrumentation"
+            )
 
     def _apply_xfail_logged(self, res, cfg, event):
         """Re-interpret one result under cfg's xfail marker, and log it.
@@ -932,6 +977,14 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        reg_level: Annotated[
+            int | None,
+            typer.Option("--reg-level", help="regression level to stop at"),
+        ] = None,
+        start_level: Annotated[
+            int | None,
+            typer.Option("--start-level", help="regression level to start at"),
+        ] = None,
     ):
         """
         run a simple test
@@ -995,8 +1048,22 @@ class RtlBuddy:
             run_ids=[None],
             seed_mode=seed_mode,
             replay_run_id=replay_run_id,
+            reg_level=reg_level,
+            start_level=start_level,
         )
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
+        )
+        exit_code = self._exit_code_from_results(suite_results)
+        self._guard_coverage_requested(
+            suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
@@ -1015,7 +1082,6 @@ class RtlBuddy:
                 dir_summary_paths=dir_summary_paths,
             )
         )
-        exit_code = self._exit_code_from_results(suite_results)
         if self.machine:
             self._emit_machine_result(
                 "test",
@@ -1162,18 +1228,18 @@ class RtlBuddy:
         with open(script_path, "r") as file:
             code = file.read()
 
-        ns = {
-            "logger": logger,
-            "TestConfig": TestConfig,
-            "test_cfg": test_cfg,
-            "root_cfg": self.root_cfg,
-            "suite_dir": suite_dir,
-            "artifact_dir": str(test_artifact_dir(suite_dir, test_cfg.get_name())),
-            "out_test_cfgs": [],
-            "__file__": os.path.abspath(script_path),
-        }
         try:
-            exec(code, ns)
+            ns = exec_hook_script(
+                script_path,
+                code,
+                logger=logger,
+                TestConfig=TestConfig,
+                test_cfg=test_cfg,
+                root_cfg=self.root_cfg,
+                suite_dir=suite_dir,
+                artifact_dir=str(test_artifact_dir(suite_dir, test_cfg.get_name())),
+                out_test_cfgs=[],
+            )
         except Exception as e:
             log_event(
                 logger,
@@ -1577,6 +1643,17 @@ class RtlBuddy:
             f"Builder Mode: {self.rtl_builder_mode}",
         ]
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
+            coverage_dir_summary=coverage_dir_summary,
+            coverage_dir_summary_file=coverage_dir_summary_file,
+        )
+        self._guard_coverage_requested(
+            all_suite_results,
+            exit_code,
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_merge_info_process=coverage_merge_info_process,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
@@ -2379,6 +2456,13 @@ class RtlBuddy:
                 "--design-dir", help="Directory to search for models.yaml files"
             ),
         ] = None,
+        block: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--block",
+                help="Only include spec blocks with this name; may be repeated",
+            ),
+        ] = None,
     ):
         """
         show which spec blocks have design models referencing them
@@ -2397,6 +2481,16 @@ class RtlBuddy:
             else []
         )
         blocks = all_spec_blocks(specs)
+
+        if block:
+            requested = set(block)
+            found = {b.name for _, b in blocks}
+            missing = requested - found
+            if missing:
+                raise FatalRtlBuddyError(
+                    f"Unknown spec block(s): {', '.join(sorted(missing))}"
+                )
+            blocks = [(cfg, b) for cfg, b in blocks if b.name in requested]
 
         if not blocks:
             emit_console_text("No spec blocks found.", style="yellow")
@@ -2467,6 +2561,13 @@ class RtlBuddy:
                 "--verif-dir", help="Directory to search for tests.yaml files"
             ),
         ] = None,
+        block: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--block",
+                help="Only include spec blocks with this name; may be repeated",
+            ),
+        ] = None,
     ):
         """
         show which spec coverage items are addressed by tests
@@ -2479,14 +2580,31 @@ class RtlBuddy:
         )
 
         specs = discover_spec_configs(search_spec) if os.path.isdir(search_spec) else []
-        suite_tests = (
-            discover_suite_tests(search_verif) if os.path.isdir(search_verif) else []
-        )
+        if os.path.isdir(search_verif):
+            suite_tests, suite_load_failures = discover_suite_tests(search_verif)
+        else:
+            suite_tests, suite_load_failures = [], []
         blocks = all_spec_blocks(specs)
 
+        if block:
+            requested = set(block)
+            found = {b.name for _, b in blocks}
+            missing = requested - found
+            if missing:
+                raise FatalRtlBuddyError(
+                    f"Unknown spec block(s): {', '.join(sorted(missing))}"
+                )
+            blocks = [(cfg, b) for cfg, b in blocks if b.name in requested]
+
         if not blocks:
-            emit_console_text("No spec blocks found.", style="yellow")
-            raise typer.Exit(0)
+            if suite_load_failures:
+                emit_console_text(
+                    f"Suite load failures: {', '.join(suite_load_failures)}",
+                    style="red",
+                )
+            else:
+                emit_console_text("No spec blocks found.", style="yellow")
+            raise typer.Exit(1 if suite_load_failures else 0)
 
         cov_map = build_coverage_map(suite_tests)
 
@@ -2504,8 +2622,14 @@ class RtlBuddy:
                 for cfg, b in blocks
                 for item in b.coverage_items
             ]
-            self._emit_machine_result("spec check-coverage", 0, items=items_out)
-            raise typer.Exit(0)
+            exit_code = 1 if suite_load_failures else 0
+            self._emit_machine_result(
+                "spec check-coverage",
+                exit_code,
+                items=items_out,
+                suite_load_failures=suite_load_failures,
+            )
+            raise typer.Exit(exit_code)
 
         rows = []
         for cfg, b in blocks:
@@ -2533,12 +2657,17 @@ class RtlBuddy:
             rows=rows,
             logger=logger,
         )
+        if suite_load_failures:
+            emit_console_text(
+                f"Suite load failures: {', '.join(suite_load_failures)}",
+                style="red",
+            )
         uncovered = [row["id"] for row in rows if row["covered"] == "no"]
         if uncovered:
             emit_console_text(
                 f"Uncovered items: {', '.join(uncovered)}", style="yellow"
             )
-        raise typer.Exit(0)
+        raise typer.Exit(1 if suite_load_failures else 0)
 
     def _synth_result_row(self, r, *, suite: str | None = None) -> dict:
         res = r["results"].results
@@ -3980,6 +4109,21 @@ class RtlBuddy:
             raise typer.Exit(exit_code)
 
         emit = generate_constraints(domain_map, reset_map, fmt=fmt, scoped=scoped)
+
+        if scoped and emit.unscoped:
+            # A flattening frontend collapsed every capture instance to the
+            # design top, so there is no IP-relative cell to scope to. Refuse
+            # rather than emit `<top>/*` wildcards that over-constrain the IP
+            # (and that --check-xdc would then rubber-stamp).
+            raise FatalRtlBuddyError(
+                f"--emit-constraints --scoped for {analysis.get_name()}: "
+                f"{len(emit.unscoped)} crossing(s) flattened to the design top "
+                "(e.g. "
+                + ", ".join(emit.unscoped[:3])
+                + ") — a hierarchy-preserving frontend is required to scope IP "
+                "constraints. Set `frontend: slang` on the CDC analysis (install "
+                "rtl-buddy-cdc[slang]), or drop --scoped for top-level output."
+            )
 
         out_path = None
         if output:

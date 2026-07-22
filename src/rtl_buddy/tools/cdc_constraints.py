@@ -48,6 +48,11 @@ class ConstraintEntry:
 class EmitResult:
     text: str  # the full constraint file
     entries: list[ConstraintEntry] = field(default_factory=list)
+    # Scoped crossings whose capture instance flattened to the design top, so no
+    # IP-relative cell selector can be formed (a non-hierarchical frontend, e.g.
+    # Yosys `flatten`). The CLI turns a non-empty list into a hard error rather
+    # than emitting `<top>/*` wildcards that silently over-constrain everything.
+    unscoped: list[str] = field(default_factory=list)
 
     @property
     def manifest(self) -> list[dict]:
@@ -70,6 +75,21 @@ def _strip_top(path: str) -> str:
     parts = path.split(".")
     rel = parts[1:] if len(parts) > 1 else parts
     return "/".join(rel)
+
+
+def _unscopable(inst: str, top: str) -> bool:
+    """True when an instance path cannot be made IP-relative for scoped output.
+
+    A hierarchy-preserving frontend (slang) reports a crossing's capture
+    instance as ``<top>.u_sync...``; a flattening frontend (Yosys `flatten`)
+    collapses it to the design top itself. In the latter case the only cell
+    selector we could form is ``<top>/*`` — every cell in the IP — which is not
+    a scoped exception at all, so we refuse to emit it.
+    """
+    if not inst:
+        return True
+    rel = _strip_top(inst)
+    return rel == "" or rel == top or inst == top
 
 
 def _cells(path: str) -> str:
@@ -181,11 +201,24 @@ def generate_constraints(
         lines.append("")
 
     # --- per-crossing data exceptions ---
+    unscoped: list[str] = []
     for c in _safe_crossings(domain_map):
         src_inst = c.get("src_source_instance_path", "")
         dst_inst = c.get("dst_source_instance_path", "")
         width = int(c.get("width", 1))
         dst_clk = c.get("dst_clock", "")
+        if scoped and _unscopable(dst_inst, top):
+            # The capture instance flattened to the design top — no IP-relative
+            # selector exists. Record it (the CLI raises) and emit a visible
+            # marker instead of a `<top>/*` wildcard that over-constrains the IP.
+            tgt = _strip_top(c.get("dst_flop", "")) or dst_clk
+            unscoped.append(tgt)
+            lines.append(
+                f"# UNSCOPED: {c.get('src_clock', '?')} -> {dst_clk} crossing at "
+                f"{tgt} — capture instance flattened to the top; scoped emit needs "
+                "a hierarchy-preserving frontend (frontend: slang)"
+            )
+            continue
         period = _period_for(domain_map, dst_clk)
         if period is None:
             # No period to bound the transit; fall back to a comment so the
@@ -273,4 +306,4 @@ def generate_constraints(
         )
 
     lines.append("")
-    return EmitResult(text="\n".join(lines), entries=entries)
+    return EmitResult(text="\n".join(lines), entries=entries, unscoped=unscoped)
