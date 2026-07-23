@@ -406,6 +406,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"filelist directory missing: {fields.get('path')}"
         case "filelist.source_missing":
             return f"filelist source missing: {fields.get('path')}"
+        case "filelist.path_escapes_root":
+            return (
+                f"{fields.get('count')} filelist source(s) resolve outside the "
+                f"project root ({fields.get('root')}): {fields.get('paths')}. "
+                "The sim will compile those out-of-tree files, not any copy "
+                "inside your working tree — a false-green risk in nested git "
+                "worktrees. Verify these paths are intended."
+            )
         case "filelist.write_done":
             return f"Wrote filelist to {fields.get('output')}"
         case "verible.path_missing":
