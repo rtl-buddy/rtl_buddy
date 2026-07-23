@@ -20,6 +20,7 @@ from typer.testing import CliRunner
 
 from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.errors import FilelistError
+from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.tools.vlog_filelist import VlogFilelist
 
@@ -188,6 +189,67 @@ def test_write_output_anchors_test_filelist_on_explicit_suite_dir(
 
     resolved = os.path.normpath(os.path.join(str(artefact_dir), tb_lines[0]))
     assert resolved == str((suite_dir / "tb.sv").resolve())
+
+
+def _make_project(tmp_path: Path) -> tuple[Path, Path]:
+    """A .git-rooted 'worktree' project plus a sibling 'main_checkout',
+    returning (worktree_root, run_f_path). The worktree holds an in-tree
+    source; callers add an out-of-tree source under main_checkout."""
+    worktree = tmp_path / "worktree"
+    (worktree / ".git").mkdir(parents=True)  # project-root marker
+    src = worktree / "design" / "blk" / "src"
+    src.mkdir(parents=True)
+    (src / "blk.sv").write_text("module blk; endmodule\n")
+    artefacts = worktree / "design" / "blk" / "verif" / "artefacts" / "basic"
+    artefacts.mkdir(parents=True)
+    return worktree, artefacts / "run.f"
+
+
+def test_write_output_warns_when_source_escapes_project_root(tmp_path: Path):
+    """A resolved source outside the project root that still exists is the
+    false-green trap (e.g. a nested worktree aliasing the main checkout).
+    It must warn — loudly enough to notice — but not fail the run."""
+    worktree, run_f = _make_project(tmp_path)
+    # An out-of-tree source (absolute path outside the worktree) that exists.
+    main_ip = tmp_path / "main_checkout" / "ip" / "fifo.sv"
+    main_ip.parent.mkdir(parents=True)
+    main_ip.write_text("module fifo; endmodule\n")
+
+    model = ModelConfig(
+        name="blk",
+        filelist=["blk.sv", str(main_ip)],
+        path=str(worktree / "design" / "blk" / "src" / "models.yaml"),
+    )
+
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    fl = VlogFilelist(name="t", model_cfg=model, output_path=str(run_f))
+    fl.write_output(unroll=True)  # does not raise
+
+    assert run_f.is_file()
+    text = log_path.read_text()
+    assert "resolve outside the project root" in text
+    assert str(main_ip) in text
+    # The in-tree source must not be flagged.
+    assert "blk.sv" not in text.split("resolve outside", 1)[1]
+
+
+def test_write_output_no_escape_warning_for_in_tree_sources(tmp_path: Path):
+    """In-tree sources produce no escape warning."""
+    worktree, run_f = _make_project(tmp_path)
+    model = ModelConfig(
+        name="blk",
+        filelist=["blk.sv"],
+        path=str(worktree / "design" / "blk" / "src" / "models.yaml"),
+    )
+
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    fl = VlogFilelist(name="t", model_cfg=model, output_path=str(run_f))
+    fl.write_output(unroll=True)
+
+    assert run_f.is_file()
+    assert "resolve outside the project root" not in log_path.read_text()
 
 
 # --- rb verible filelist (integration through Typer) ---------------------

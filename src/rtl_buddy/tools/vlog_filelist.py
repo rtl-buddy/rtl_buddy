@@ -143,6 +143,8 @@ class VlogFilelist:
     ):
         """Do flatten, strip, and deduplicate after all lines are collected at the top level."""
         output_dir = os.path.abspath(output_dir)
+        project_root = self._project_root(output_dir)
+        escaped: list[str] = []
         out_lines = []
         for line_path, line_option in entries:
             resolved_line_path = os.path.normpath(os.path.join(output_dir, line_path))
@@ -165,6 +167,20 @@ class VlogFilelist:
                         path=line_path,
                     )
 
+            # Escape check: a resolved path outside the project root that
+            # still exists is the false-green trap — the sim compiles that
+            # out-of-tree file, not any copy inside the working tree. This
+            # bites hardest in a nested git worktree, whose parent (the main
+            # checkout) always has a same-named file to satisfy the exists
+            # check above. Warn, don't fail: a cross-repo source can be
+            # legitimate, so the user decides.
+            if (
+                project_root is not None
+                and line_option != "+libext+"
+                and self._escapes(resolved_line_path, project_root)
+            ):
+                escaped.append(resolved_line_path)
+
             if flatten:
                 line_path = os.path.basename(line_path)
 
@@ -180,7 +196,41 @@ class VlogFilelist:
             # logger.debug(f'Post-proc: "{line_option}{line_path}"')
             out_lines.append(line)
 
+        if escaped:
+            log_event(
+                logger,
+                logging.WARNING,
+                "filelist.path_escapes_root",
+                count=len(escaped),
+                root=project_root,
+                paths=", ".join(escaped),
+            )
+
         return out_lines
+
+    @staticmethod
+    def _project_root(output_dir: str) -> str | None:
+        """Project root the generated filelist lives under, or None.
+
+        Anchored on ``output_dir`` (where ``run.f`` is written) rather than
+        cwd so the boundary follows the artefact location. Returns None when
+        no real root (root_config.yaml / .git) is found — without a genuine
+        boundary the escape check would false-positive on every ordinary
+        ``../src/x.sv`` entry, so it is skipped.
+        """
+        from ..config.root import discover_project_root
+        from ..errors import FatalRtlBuddyError
+
+        try:
+            return str(discover_project_root(start_dir=output_dir))
+        except FatalRtlBuddyError:
+            return None
+
+    @staticmethod
+    def _escapes(resolved_path: str, project_root: str) -> bool:
+        """True when ``resolved_path`` falls outside ``project_root``."""
+        rel = os.path.relpath(resolved_path, project_root)
+        return rel == os.pardir or rel.startswith(os.pardir + os.sep)
 
     def write_output(
         self,
