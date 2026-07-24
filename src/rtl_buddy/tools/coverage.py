@@ -146,56 +146,106 @@ class CoverageReporter:
 
         return resolved
 
-    def _dir_summary_metadata(self, lcov_path, dir_summary_paths):
+    @staticmethod
+    def _metrics_payload(metrics):
+        """Structured line/branch/toggle/functional dict for a CoverageMetrics."""
+        return {
+            "line": metrics.line,
+            "branch": metrics.branch,
+            "toggle": metrics.toggle,
+            "functional": metrics.functional,
+        }
+
+    @staticmethod
+    def _dir_summary_lines(records):
+        """Format structured per-prefix records into `Coverage <prefix>: L/B/T/F` lines."""
+        lines = []
+        for r in records:
+            metrics = CoverageMetrics(
+                line=r["line"],
+                branch=r["branch"],
+                toggle=r["toggle"],
+                functional=r["functional"],
+            )
+            lines.append(f"Coverage {r['prefix']}: {metrics.summary_str()}")
+        return lines
+
+    def _dir_summary_records(self, lcov_path, dir_summary_paths):
         """
-        Build summary lines for repo-relative directory prefixes from an LCOV file.
+        Structured per-prefix coverage records parsed from an LCOV file.
+
+        Each record is ``{prefix, line, branch, toggle, functional}`` (toggle and
+        functional are ``None`` here — an LCOV file carries only line/branch).
         """
         if lcov_path is None or not os.path.exists(lcov_path) or not dir_summary_paths:
             return []
 
         cov = self._get_cov_tool()
-        lines = []
+        records = []
         for prefix in dir_summary_paths:
-            metrics = CoverageMetrics()
-            metrics.line, metrics.branch = cov.parse_lcov_summary_for_prefix(
-                lcov_path, prefix
+            line, branch = cov.parse_lcov_summary_for_prefix(lcov_path, prefix)
+            records.append(
+                {
+                    "prefix": prefix,
+                    "line": line,
+                    "branch": branch,
+                    "toggle": None,
+                    "functional": None,
+                }
             )
-            lines.append(f"Coverage {prefix}: {metrics.summary_str()}")
-        return lines
+        return records
 
-    def _dir_summary_metadata_from_dataset_files(
-        self, dataset_files, dir_summary_paths
-    ):
+    def _dir_summary_records_from_dataset_files(self, dataset_files, dir_summary_paths):
         """
-        Build summary lines for repo-relative directory prefixes from typed coverage
-        dataset files, including toggle when available.
+        Structured per-prefix coverage records from typed coverage dataset files,
+        including toggle when available.
         """
         if not dataset_files or not dir_summary_paths:
             return []
 
         cov = self._get_cov_tool()
-        lines = []
+        records = []
         for prefix in dir_summary_paths:
-            metrics = CoverageMetrics()
+            line = branch = toggle = None
 
             line_info = dataset_files.get("line")
             if line_info is not None:
-                metrics.line, _ = cov.parse_lcov_summary_for_prefix(line_info, prefix)
+                line, _ = cov.parse_lcov_summary_for_prefix(line_info, prefix)
 
             branch_info = dataset_files.get("branch")
             if branch_info is not None:
-                _, metrics.branch = cov.parse_lcov_summary_for_prefix(
-                    branch_info, prefix
-                )
+                _, branch = cov.parse_lcov_summary_for_prefix(branch_info, prefix)
 
             toggle_info = dataset_files.get("toggle")
             if toggle_info is not None:
-                _, metrics.toggle = cov.parse_lcov_summary_for_prefix(
-                    toggle_info, prefix
-                )
+                _, toggle = cov.parse_lcov_summary_for_prefix(toggle_info, prefix)
 
-            lines.append(f"Coverage {prefix}: {metrics.summary_str()}")
-        return lines
+            records.append(
+                {
+                    "prefix": prefix,
+                    "line": line,
+                    "branch": branch,
+                    "toggle": toggle,
+                    "functional": None,
+                }
+            )
+        return records
+
+    def _dir_summary_metadata(self, lcov_path, dir_summary_paths):
+        """Summary lines for repo-relative directory prefixes from an LCOV file."""
+        return self._dir_summary_lines(
+            self._dir_summary_records(lcov_path, dir_summary_paths)
+        )
+
+    def _dir_summary_metadata_from_dataset_files(
+        self, dataset_files, dir_summary_paths
+    ):
+        """Summary lines for repo-relative directory prefixes from typed dataset files."""
+        return self._dir_summary_lines(
+            self._dir_summary_records_from_dataset_files(
+                dataset_files, dir_summary_paths
+            )
+        )
 
     def merge(
         self,
@@ -608,9 +658,16 @@ class CoverageReporter:
         dir_summary_paths=None,
     ):
         """
-        Build summary metadata lines for merged or unmerged coverage artifacts.
+        Build coverage artifact summaries for merged or unmerged runs.
+
+        Returns ``(metadata, coverage)`` where ``metadata`` is the list of
+        human-display lines and ``coverage`` is the structured payload
+        ``{"merged": {line,branch,toggle,functional}|None, "dir_summary": [...]}``
+        for machine consumers. ``coverage["merged"]`` is populated only when a
+        merge actually happened.
         """
         metadata = []
+        coverage = {"merged": None, "dir_summary": []}
         if coverage_merge_raw:
             merged_cov = self.merge(
                 suite_results,
@@ -620,13 +677,14 @@ class CoverageReporter:
             )
             if merged_cov is not None:
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
+                coverage["merged"] = self._metrics_payload(merged_cov)
                 if merged_cov.lcov_path is not None:
                     metadata.append(f"Merged LCOV: {merged_cov.lcov_path}")
-                    metadata.extend(
-                        self._dir_summary_metadata(
-                            merged_cov.lcov_path, dir_summary_paths
-                        )
+                    records = self._dir_summary_records(
+                        merged_cov.lcov_path, dir_summary_paths
                     )
+                    metadata.extend(self._dir_summary_lines(records))
+                    coverage["dir_summary"] = records
                     if coverage_coverview:
                         safe_dataset = self._get_cov_tool()._sanitize_artifact_name(
                             self._coverview_dataset_name(suite_name)
@@ -670,14 +728,15 @@ class CoverageReporter:
             merged_dataset_files = None
             if merged_cov is not None:
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
+                coverage["merged"] = self._metrics_payload(merged_cov)
                 if merged_cov.lcov_path is not None:
                     metadata.append(f"Merged LCOV: {merged_cov.lcov_path}")
                     if not coverage_coverview:
-                        metadata.extend(
-                            self._dir_summary_metadata(
-                                merged_cov.lcov_path, dir_summary_paths
-                            )
+                        records = self._dir_summary_records(
+                            merged_cov.lcov_path, dir_summary_paths
                         )
+                        metadata.extend(self._dir_summary_lines(records))
+                        coverage["dir_summary"] = records
                 if merged_cov.html_dir is not None:
                     metadata.append(f"Merged HTML: {merged_cov.html_dir}")
             if coverage_coverview:
@@ -691,11 +750,11 @@ class CoverageReporter:
                 )
                 if merged_info is not None:
                     _, coverview_zip, merged_dataset_files = merged_info
-                    metadata.extend(
-                        self._dir_summary_metadata_from_dataset_files(
-                            merged_dataset_files, dir_summary_paths
-                        )
+                    records = self._dir_summary_records_from_dataset_files(
+                        merged_dataset_files, dir_summary_paths
                     )
+                    metadata.extend(self._dir_summary_lines(records))
+                    coverage["dir_summary"] = records
                     if coverview_zip is not None:
                         metadata.append(f"Merged Coverview: {coverview_zip}")
             if coverage_coverview and coverage_per_test and reg_results is not None:
@@ -719,20 +778,19 @@ class CoverageReporter:
             if merged_info is not None:
                 merged_cov, coverview_zip, merged_dataset_files = merged_info
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
+                coverage["merged"] = self._metrics_payload(merged_cov)
                 if merged_cov.lcov_path is not None:
                     metadata.append(f"Merged LCOV: {merged_cov.lcov_path}")
                     if coverage_coverview:
-                        metadata.extend(
-                            self._dir_summary_metadata_from_dataset_files(
-                                merged_dataset_files, dir_summary_paths
-                            )
+                        records = self._dir_summary_records_from_dataset_files(
+                            merged_dataset_files, dir_summary_paths
                         )
                     else:
-                        metadata.extend(
-                            self._dir_summary_metadata(
-                                merged_cov.lcov_path, dir_summary_paths
-                            )
+                        records = self._dir_summary_records(
+                            merged_cov.lcov_path, dir_summary_paths
                         )
+                    metadata.extend(self._dir_summary_lines(records))
+                    coverage["dir_summary"] = records
                 if merged_cov.html_dir is not None:
                     metadata.append(f"Merged HTML: {merged_cov.html_dir}")
                 if coverview_zip is not None:
@@ -768,4 +826,4 @@ class CoverageReporter:
                     metadata.append(
                         f"Coverage Coverview {test_name_i}: {coverview_zip}"
                     )
-        return metadata
+        return metadata, coverage

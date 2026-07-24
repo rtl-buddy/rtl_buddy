@@ -105,6 +105,13 @@ Conventions inside `payload`:
 - Regression commands populate `payload.results`, with a `"suite"` field on each entry.
 - `docs list` populates `payload.pages` with `slug`, `title`, and `description` from page frontmatter.
 
+When a run computes coverage or formal guardrail results, they ride on `payload` as structured numbers (not display strings), so a consumer can gate on them without re-parsing artifacts:
+
+- **Coverage** (`test`, `regression` with a `--coverage-merge*` flag): each `payload.results` entry that produced coverage carries `"coverage": {line, branch, toggle, functional}` (percentages as floats in `[0, 1]`, or `null` when a metric wasn't collected). A merged run also adds a top-level `payload.coverage` with `merged` (the same four fields aggregated across the run) and, when `--coverage-dir-summary` is given, `dir_summary` (a list of `{prefix, line, branch, toggle, functional}`).
+- **FPV guardrails** (`fpv`, `fpv-regression`): each `payload.results` entry carries `"vacuity"` (per-property witnesses plus `vacuous`/`candidates` counts) and `"coi"` (`percent`, `coi_cells`, `total_cells`, and an `assumes` block with `total`/`in_assert_coi`/`dead`) whenever the run computed them. A vacuous PASS or a dead assume is a false green — gate on these, not just `result`.
+
+These same summaries are also emitted to `rtl_buddy.log` as a `"summary"` event (with `rows` and `metadata`) in machine mode, mirroring the human results table.
+
 ### JSONL log format
 
 In machine mode, each line of `rtl_buddy.log` is a JSON object describing one event:
