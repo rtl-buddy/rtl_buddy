@@ -1068,37 +1068,35 @@ class RtlBuddy:
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
         metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
-        metadata.extend(
-            self.coverage.build_metadata(
-                suite_results,
-                outdir=str(ctx.command_root),
-                suite_name=self.suite_cfg.get_path(),
-                coverage_merge=coverage_merge,
-                coverage_merge_raw=coverage_merge_raw,
-                coverage_html=coverage_html,
-                coverage_coverview=coverage_coverview,
-                coverage_merge_info_process=coverage_merge_info_process,
-                source_roots=[str(ctx.command_root)],
-                dir_summary_paths=dir_summary_paths,
-            )
+        cov_metadata, coverage_payload = self.coverage.build_metadata(
+            suite_results,
+            outdir=str(ctx.command_root),
+            suite_name=self.suite_cfg.get_path(),
+            coverage_merge=coverage_merge,
+            coverage_merge_raw=coverage_merge_raw,
+            coverage_html=coverage_html,
+            coverage_coverview=coverage_coverview,
+            coverage_merge_info_process=coverage_merge_info_process,
+            source_roots=[str(ctx.command_root)],
+            dir_summary_paths=dir_summary_paths,
+        )
+        metadata.extend(cov_metadata)
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_test_summary(
+            "Test Results Summary", suite_results, metadata=metadata
         )
         if self.machine:
-            self._emit_machine_result(
-                "test",
-                exit_code,
-                results=[
-                    {
-                        "name": r["test_name"],
-                        "result": r["results"].results["result"],
-                        "desc": r["results"].results["desc"],
-                    }
+            payload = {
+                "results": [
+                    self._machine_test_row(r["test_name"], r["results"])
                     for r in suite_results
-                ],
-            )
-        else:
-            self._render_test_summary(
-                "Test Results Summary", suite_results, metadata=metadata
-            )
+                ]
+            }
+            coverage = self._machine_coverage_payload(coverage_payload)
+            if coverage is not None:
+                payload["coverage"] = coverage
+            self._emit_machine_result("test", exit_code, **payload)
         raise typer.Exit(exit_code)
 
     def do_rand_test(
@@ -1309,6 +1307,43 @@ class RtlBuddy:
 
     def _format_coverage_summary(self, test_results):
         return self.coverage.format_summary(test_results)
+
+    @staticmethod
+    def _machine_coverage(test_results):
+        """Structured per-test coverage for the machine payload, or None.
+
+        Returns the `{line, branch, toggle, functional}` percentages a machine
+        consumer would gate on — the display string and artifact paths carried
+        by the full coverage dict are dropped. None when the test produced no
+        coverage numbers at all.
+        """
+        cov = test_results.results.get("coverage")
+        if not cov:
+            return None
+        metrics = {k: cov.get(k) for k in ("line", "branch", "toggle", "functional")}
+        if all(v is None for v in metrics.values()):
+            return None
+        return metrics
+
+    def _machine_test_row(self, test_name, test_results, *, suite=None, run_id=None):
+        """Build one machine-mode result row, attaching structured coverage."""
+        res = test_results.results
+        row = {"name": test_name, "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        if run_id is not None:
+            row["run_id"] = run_id
+        cov = self._machine_coverage(test_results)
+        if cov is not None:
+            row["coverage"] = cov
+        return row
+
+    @staticmethod
+    def _machine_coverage_payload(coverage):
+        """Return the merged-coverage payload if it carries data, else None."""
+        if coverage and (coverage.get("merged") or coverage.get("dir_summary")):
+            return coverage
+        return None
 
     @staticmethod
     def _format_assertions_summary(test_results):
@@ -1657,6 +1692,7 @@ class RtlBuddy:
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
+        coverage_payload = {"merged": None, "dir_summary": []}
         if (
             coverage_html
             and not coverage_merge
@@ -1665,61 +1701,62 @@ class RtlBuddy:
         ):
             reg_outdir = str(ctx.command_root)
             for reg_result in reg_results:
-                metadata.extend(
-                    self.coverage.build_metadata(
-                        reg_result["results"],
-                        outdir=reg_outdir,
-                        suite_name=reg_result["test_suite"],
-                        coverage_merge=False,
-                        coverage_merge_raw=False,
-                        coverage_html=True,
-                        coverage_coverview=coverage_coverview,
-                        coverage_per_test=coverage_per_test,
-                        reg_results=reg_results,
-                        coverage_merge_info_process=coverage_merge_info_process,
-                        source_roots=[reg_result["test_suite_path"]],
-                        dir_summary_paths=dir_summary_paths,
-                    )
+                # Per-suite HTML only — no merge, so no structured merged payload.
+                cov_metadata, _ = self.coverage.build_metadata(
+                    reg_result["results"],
+                    outdir=reg_outdir,
+                    suite_name=reg_result["test_suite"],
+                    coverage_merge=False,
+                    coverage_merge_raw=False,
+                    coverage_html=True,
+                    coverage_coverview=coverage_coverview,
+                    coverage_per_test=coverage_per_test,
+                    reg_results=reg_results,
+                    coverage_merge_info_process=coverage_merge_info_process,
+                    source_roots=[reg_result["test_suite_path"]],
+                    dir_summary_paths=dir_summary_paths,
                 )
+                metadata.extend(cov_metadata)
         else:
             reg_outdir = str(ctx.command_root)
             regression_source_roots = [
                 reg_result["test_suite_path"] for reg_result in reg_results
             ]
-            metadata.extend(
-                self.coverage.build_metadata(
-                    all_suite_results,
-                    outdir=reg_outdir,
-                    suite_name=self.reg_cfg.get_path(),
-                    coverage_merge=coverage_merge,
-                    coverage_merge_raw=coverage_merge_raw,
-                    coverage_html=coverage_html,
-                    coverage_coverview=coverage_coverview,
-                    coverage_per_test=coverage_per_test,
-                    reg_results=reg_results,
-                    coverage_merge_info_process=coverage_merge_info_process,
-                    source_roots=regression_source_roots,
-                    dir_summary_paths=dir_summary_paths,
-                )
+            cov_metadata, coverage_payload = self.coverage.build_metadata(
+                all_suite_results,
+                outdir=reg_outdir,
+                suite_name=self.reg_cfg.get_path(),
+                coverage_merge=coverage_merge,
+                coverage_merge_raw=coverage_merge_raw,
+                coverage_html=coverage_html,
+                coverage_coverview=coverage_coverview,
+                coverage_per_test=coverage_per_test,
+                reg_results=reg_results,
+                coverage_merge_info_process=coverage_merge_info_process,
+                source_roots=regression_source_roots,
+                dir_summary_paths=dir_summary_paths,
             )
+            metadata.extend(cov_metadata)
 
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_regression_summary(reg_results, metadata=metadata)
         if self.machine:
-            self._emit_machine_result(
-                "regression",
-                exit_code,
-                results=[
-                    {
-                        "suite": reg_result["test_suite"],
-                        "name": suite_result["test_name"],
-                        "result": suite_result["results"].results["result"],
-                        "desc": suite_result["results"].results["desc"],
-                    }
+            payload = {
+                "results": [
+                    self._machine_test_row(
+                        suite_result["test_name"],
+                        suite_result["results"],
+                        suite=reg_result["test_suite"],
+                    )
                     for reg_result in reg_results
                     for suite_result in reg_result["results"]
-                ],
-            )
-        else:
-            self._render_regression_summary(reg_results, metadata=metadata)
+                ]
+            }
+            coverage = self._machine_coverage_payload(coverage_payload)
+            if coverage is not None:
+                payload["coverage"] = coverage
+            self._emit_machine_result("regression", exit_code, **payload)
         raise typer.Exit(exit_code)
 
     def do_gen_model_filelist(
@@ -2748,6 +2785,12 @@ class RtlBuddy:
             row["suite"] = suite
         for k in ("mode", "depth", "engines", "runtime_s"):
             if k in res and res[k] is not None:
+                row[k] = res[k]
+        # Guardrail results the run already computed: vacuity witnesses, COI
+        # coverage, and dead-assume counts (COI carries an `assumes` block).
+        # A machine consumer gates on these (a vacuous PASS is a false green).
+        for k in ("vacuity", "coi"):
+            if res.get(k):
                 row[k] = res[k]
         return row
 
@@ -4562,14 +4605,15 @@ class RtlBuddy:
 
         fpv_results = self._do_fpv_suite(suite_cfg, fpv_name=fpv_name)
         exit_code = self._exit_code_from_fpv_results(fpv_results)
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_fpv_summary("FPV Results Summary", fpv_results)
         if self.machine:
             self._emit_machine_result(
                 "fpv",
                 exit_code,
                 results=[self._fpv_result_row(r) for r in fpv_results],
             )
-        else:
-            self._render_fpv_summary("FPV Results Summary", fpv_results)
         raise typer.Exit(exit_code)
 
     def do_fpv_regression(
@@ -4642,14 +4686,15 @@ class RtlBuddy:
         self._enter_command_context(command_root=orchestration_ctx.command_root)
 
         exit_code = self._exit_code_from_fpv_results(all_results)
+        # Render in both modes: in machine mode this emits the "summary" log
+        # event (and plain text to stderr), leaving stdout for the envelope.
+        self._render_fpv_summary(
+            "FPV Regression Summary",
+            all_results,
+            metadata=[f"Reg Level: {reg_level}"],
+        )
         if self.machine:
             self._emit_machine_result("fpv-regression", exit_code, results=machine_rows)
-        else:
-            self._render_fpv_summary(
-                "FPV Regression Summary",
-                all_results,
-                metadata=[f"Reg Level: {reg_level}"],
-            )
         raise typer.Exit(exit_code)
 
     # --- mutation testing (rb mut) -----------------------------------------
