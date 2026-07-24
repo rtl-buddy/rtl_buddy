@@ -1480,6 +1480,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#pull-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pull Requests
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#milestones" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1800,6 +1811,17 @@
     <span class="md-ellipsis">
       
         Issue Triage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pull-requests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pull Requests
       
     </span>
   </a>
@@ -2193,6 +2215,9 @@ Pick one or more from the table below; an issue with no area label is fine for c
 </ul>
 <p>The <code>version/patch</code>, <code>version/minor</code>, and <code>version/major</code> labels are reserved for PRs and drive the release workflow.
 Do not apply them to issues.</p>
+<h2 id="pull-requests">Pull Requests</h2>
+<p>Close issues via a <code>Closes #NN</code> keyword in the PR <strong>description</strong> (<code>Fixes</code>/<code>Resolves</code> also work), one line per issue for multi-issue PRs.
+A number in the <em>title</em> or a range like <code>#334-#340</code> does not autoclose.</p>
 <h2 id="milestones">Milestones</h2>
 <p>Use milestones to group issues and PRs that share a long-running, multi-issue effort.
 Single-issue work does not need a milestone.</p>
