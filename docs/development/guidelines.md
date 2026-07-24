@@ -221,6 +221,11 @@ One extra label exists outside the area set:
 The `version/patch`, `version/minor`, and `version/major` labels are reserved for PRs and drive the release workflow.
 Do not apply them to issues.
 
+## Pull Requests
+
+Close issues via a `Closes #NN` keyword in the PR **description** (`Fixes`/`Resolves` also work), one line per issue for multi-issue PRs.
+A number in the *title* or a range like `#334-#340` does not autoclose.
+
 ## Milestones
 
 Use milestones to group issues and PRs that share a long-running, multi-issue effort.
