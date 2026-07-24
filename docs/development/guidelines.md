@@ -221,6 +221,15 @@ One extra label exists outside the area set:
 The `version/patch`, `version/minor`, and `version/major` labels are reserved for PRs and drive the release workflow.
 Do not apply them to issues.
 
+## Pull Requests
+
+Every PR that resolves an issue must close it automatically on merge.
+Put a GitHub closing keyword and the issue number in the PR **description** — `Closes #123` (also accepted: `Fixes #123`, `Resolves #123`).
+For a multi-issue PR, give each issue its own keyword line (`Closes #334`, `Closes #335`, …).
+
+A number in the PR *title* does not autoclose anything, and a range such as `#334-#340` is not parsed at all — spell out every issue with its own keyword in the body.
+A PR that intentionally closes nothing (chore, docs typo, pure refactor) needs no keyword; note that in the description instead so reviewers know the omission is deliberate.
+
 ## Milestones
 
 Use milestones to group issues and PRs that share a long-running, multi-issue effort.
