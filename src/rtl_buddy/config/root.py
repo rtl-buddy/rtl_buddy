@@ -37,6 +37,7 @@ from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
 from .xplr import XplrConfig, XplrConfigFile
+from .dispatch import DispatchConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -154,6 +155,7 @@ class RootConfigFile:
     systemc: SystemCConfigFile | None = field(rename="cfg-systemc", default=None)
     tools: list[ToolVersionConfigFile] = field(rename="cfg-tools", default_factory=list)
     xplr: XplrConfigFile | None = field(rename="cfg-xplr", default=None)
+    dispatch: DispatchConfigFile | None = field(rename="cfg-dispatch", default=None)
 
 
 class RootConfig:
@@ -214,6 +216,7 @@ class RootConfig:
         self.systemc_cfg: SystemCConfig | None = None
         self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
         self.xplr_cfg: XplrConfig = XplrConfigFile().initialise()
+        self.dispatch_cfg: DispatchConfigFile = DispatchConfigFile()
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -332,6 +335,10 @@ class RootConfig:
             # cfg-xplr experiment-ledger policy (optional, single block)
             if data.xplr is not None:
                 self.xplr_cfg = data.xplr.initialise()
+
+            # cfg-dispatch execution backend (optional, single block)
+            if data.dispatch is not None:
+                self.dispatch_cfg = data.dispatch
 
             # Record the regression config path; the RegConfig itself is
             # loaded lazily in get_rtl_reg_cfg() so non-simulation commands
@@ -748,6 +755,16 @@ class RootConfig:
             holds one.
         """
         return self.xplr_cfg
+
+    def get_dispatch_cfg(self) -> DispatchConfigFile:
+        """
+        Get the dispatch (remote test execution) configuration.
+
+        Returns:
+          cfg (DispatchConfigFile): The cfg-dispatch block, or defaults
+            (backend None → local in-process execution) when absent.
+        """
+        return self.dispatch_cfg
 
     def get_systemc_cfg(self) -> SystemCConfig | None:
         """

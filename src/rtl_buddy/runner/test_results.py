@@ -132,3 +132,17 @@ class SetupFailResults(TestResults):
         super().__init__(
             name=name, results={"result": "FAIL", "name": name, "desc": desc}
         )
+
+
+class DispatchFailResults(TestResults):
+    """
+    A dispatched job failed as infrastructure: it was submitted but
+    produced no loadable result envelope (killed by the scheduler,
+    crashed before writing, or wrote garbage). Never silently dropped —
+    the run counts as a FAIL with the collection error in the desc.
+    """
+
+    def __init__(self, name, desc):
+        super().__init__(
+            name=name, results={"result": "FAIL", "name": name, "desc": desc}
+        )

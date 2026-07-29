@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 from serde import serde, field
+from .dispatch import DispatchResourcesFile
 from .model import ModelConfig, ModelConfigLoader
 from .uvm import UVMConfig
 
@@ -67,6 +68,8 @@ class TestbenchConfig:
       toplevel (str | None): Top-level DUT module name. Required for cocotb and SystemC testbenches.
       cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
       systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
+      resources (DispatchResourcesFile | None): default per-job reservation for
+        dispatched runs of this testbench's tests (#351); tests override per field.
     """
 
     name: str
@@ -74,6 +77,7 @@ class TestbenchConfig:
     toplevel: str | None = None
     cocotb: CocotbTestbenchConfig | None = None
     systemc: SystemCTestbenchConfig | None = None
+    resources: DispatchResourcesFile | None = None
 
     def __post_init__(self):
         if self.cocotb is not None and self.systemc is not None:
@@ -163,6 +167,10 @@ class TestConfig:
     covers: list[str] | None = None
     builder_name: str | None = None
     assertions: bool = False
+    # Per-test reservation override for dispatched runs (#351). Layered
+    # field-wise over the testbench's `resources:` and the cfg-dispatch
+    # defaults by config.dispatch.resolve_resources().
+    resources: "DispatchResourcesFile | None" = None
     # Expected-fail markers (pytest-style xfail). A test is treated as
     # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
     # FAIL is reported as XFAIL and counts as a pass; SKIP/NA pass through.
@@ -458,6 +466,7 @@ class TestConfigFile:
     assertions: bool = False
     xfail: bool = False
     xfail_strict: bool = False
+    resources: DispatchResourcesFile | None = None
 
     def initialise(self, config_dir, tbs, suite_builder=None):
         tb = tbs[self.tb]
@@ -490,6 +499,7 @@ class TestConfigFile:
             assertions=self.assertions,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            resources=self.resources,
         )
 
 
