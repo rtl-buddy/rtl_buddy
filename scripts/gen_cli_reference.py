@@ -33,8 +33,6 @@ SUBCOMMANDS = [
     "power",
     "power-regression",
     "saif",
-    "cdc",
-    "cdc-regression",
     "fpv",
     "fpv-regression",
     "tool-check",
@@ -47,9 +45,11 @@ SUBCOMMANDS = [
     "spec",
 ]
 
+EXCLUDED_COMMANDS = {"cdc", "cdc-regression"}
+
 HEADER = """\
 ---
-description: Auto-generated CLI reference for all rtl-buddy commands and their options.
+description: Auto-generated CLI reference for documented rtl-buddy commands and their options.
 ---
 
 # CLI Reference
@@ -97,6 +97,28 @@ def extract_subcommands(help_text):
     return cmds
 
 
+def scrub_help_text(help_text):
+    """Remove commands/options intentionally omitted from the docs reference."""
+    lines = []
+    skip_wrapped = False
+    for line in help_text.splitlines():
+        command_row = re.match(r"^[│|] (cdc|cdc-regression)\s", line)
+        cdc_option = "--cdc-annotations" in line
+        if command_row or cdc_option:
+            skip_wrapped = cdc_option
+            continue
+
+        if skip_wrapped:
+            next_option = re.match(r"^[│|] --", line)
+            panel_end = "╰" in line or "└" in line
+            if not next_option and not panel_end:
+                continue
+            skip_wrapped = False
+
+        lines.append(line.replace("rtl-buddy-cdc", "analysis-tool"))
+    return "\n".join(lines)
+
+
 def emit_command(path, parts):
     """Render ``path`` (a list of command words) and recurse into subcommands.
 
@@ -110,13 +132,16 @@ def emit_command(path, parts):
             raise
         print(f"Warning: skipping `{' '.join(path)}` ({e})", file=sys.stderr)
         return
+    help_text = scrub_help_text(help_text)
     parts.append(f"## {' '.join(path)}\n\n```text\n{help_text}\n```")
     for child in extract_subcommands(help_text):
+        if child in EXCLUDED_COMMANDS:
+            continue
         emit_command(path + [child], parts)
 
 
 def generate():
-    parts = [HEADER, f"## rtl-buddy\n\n```text\n{run_help()}\n```"]
+    parts = [HEADER, f"## rtl-buddy\n\n```text\n{scrub_help_text(run_help())}\n```"]
     for sub in SUBCOMMANDS:
         emit_command([sub], parts)
     return "\n\n".join(parts) + "\n"

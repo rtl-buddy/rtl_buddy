@@ -1,18 +1,18 @@
 ---
-description: How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, cdc, pnr, and power runs.
+description: How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, pnr, and power runs.
 ---
 
 # Expected failures (xfail)
 
 Mark a verification that is **known not to hold** — a teaching property
 that is true but not inductive under FPV `mode: prove`, a test guarding
-an unfixed bug, a CDC lint with intentional violations, a synthesis or
-P&R configuration whose current failure is documented — when you want it
-tracked in the suite rather than deleted.
+an unfixed bug, a synthesis or P&R configuration whose current failure
+is documented — when you want it tracked in the suite rather than
+deleted.
 
 `xfail` and `xfail_strict` are one shared mechanism wired across every
 command whose results carry a PASS / FAIL / SKIP verdict: `fpv.yaml`,
-`tests.yaml`, `synth.yaml`, `cdc.yaml`, `pnr.yaml`, and `power.yaml`. A
+`tests.yaml`, `synth.yaml`, `pnr.yaml`, and `power.yaml`. A
 verification is treated as expected-to-fail when **either** marker is
 set; the verdict is then re-interpreted:
 
@@ -52,7 +52,5 @@ Common contexts:
   under `mode: prove` (see [Writing properties that prove](fpv.md#writing-properties-that-prove-bmc-vs-induction)).
 - **`tests.yaml`** — a test that guards a known unfixed bug or an
   environment limitation.
-- **`cdc.yaml`** — a design with known / intentional CDC violations
-  tracked in the suite.
 - **`synth.yaml` / `pnr.yaml` / `power.yaml`** — a configuration whose
   current failure is documented and tracked.

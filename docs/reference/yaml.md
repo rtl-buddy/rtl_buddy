@@ -1,5 +1,5 @@
 ---
-description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, power.yaml, power_regression.yaml, cdc.yaml, cdc_regression.yaml, fpv.yaml, fpv_regression.yaml, and mut.yaml.
+description: Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, power.yaml, power_regression.yaml, fpv.yaml, fpv_regression.yaml, and mut.yaml.
 ---
 
 # YAML Formats
@@ -148,13 +148,6 @@ cfg-pnr-tools:
   - name: "openroad"
     tool: "openroad"            # bare name → found via PATH; or absolute path
 
-cfg-cdc-tools:
-  - name: "rtl-buddy-cdc"
-    tool: "rtl-buddy-cdc"
-    opts:
-      sync-depth: 2          # forwarded as `--sync-depth N` (CDC-002 required depth)
-      extra-args: ""         # appended verbatim to every invocation
-
 cfg-fpv-tools:
   - name: "sby"
     tool: "sby"              # bare name → found via PATH; or absolute path
@@ -186,7 +179,6 @@ cfg-rtl-reg:
 - `cfg-synth-efforts` defines named synthesis effort levels referenced by `synth.yaml` `effort` fields or the `--effort` CLI flag. Each entry has optional `yosys.synth-args` / `yosys.abc-args` (merged into the Yosys stage) and an `openroad` block. When `openroad.run: false`, the runner falls back to the Yosys-only backend even if `tool: openroad` was selected — useful for a fast quick-look path that needs no LEF/STA. `openroad.pre-sta-tcl` is a raw Tcl snippet injected into `synth.tcl` between `read_sdc` and `report_checks`; use it to insert floorplan/placement/parasitic-estimation steps before timing analysis. When no `cfg-synth-efforts` entries are configured or no effort is selected, a built-in `standard` effort with all defaults is used. Precedence for the same knob: per-synthesis `tool_overrides` > `cfg-synth-efforts` > `cfg-synth-tools`.
 - `cfg-pnr-tools` defines P&R tool entries selected by `pnr.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. When `pnr.yaml` `tool` does not match a `cfg-pnr-tools` entry, the value is used as the executable name directly (bare-name on `PATH` semantics).
 - `cfg-power-tools` defines power-analysis tool entries selected by `power.yaml` `tool` fields. Each entry has `name` (referenced by `tool:` in `power.yaml`) and `tool` (path to the executable, or a bare name if it is available on `PATH`). When `power.yaml` `tool` does not match a `cfg-power-tools` entry, the value is used as the executable name directly (bare-name on `PATH` semantics).
-- `cfg-cdc-tools` defines CDC tool entries selected by `cdc.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. `opts.sync-depth` is forwarded as `--sync-depth N` and controls CDC-002's required synchronizer depth. `opts.extra-args` is appended verbatim to every analyzer invocation.
 - `cfg-fpv-tools` defines FPV tool entries selected by `fpv.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. `opts.timeout` is written to the generated `.sby` `[options]` block as a per-task timeout in seconds. `opts.extra-args` is appended verbatim to every sby invocation. `opts.solver-versions` is an optional map of solver short name → exact version string (e.g. `yices: "2.6.4"`); known solvers are `yices`, `z3`, `boolector`, `bitwuzla`, `btormc`, `abc`. Each pinned solver is probed before every run and the run hard-fails with a single multi-line summary if any version does not match — protects CI reproducibility against drift in locally-installed solvers. `opts.plugin-path` is the path to the yosys-slang shared library; required when any `fpv.yaml` verification picks `frontend: slang`, ignored for the default verilog frontend. Absolute paths pass through; relative paths resolve against the project root (the directory containing `root_config.yaml`).
 - `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd.
 - `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`.
@@ -235,7 +227,6 @@ models:
     filelist:
       - "-F my_design.f"
     spec: "../../spec/my_design/specs.yaml"
-    cdc:   "../../cdc/my_design/cdc.yaml"
     synth: "../../synth/my_design/synth.yaml#fast"
     tests: "../../verif/my_design/tests.yaml"
 ```
@@ -246,7 +237,6 @@ models:
 |-------|------|-------------|
 | `desc` | string | Human-readable model description |
 | `spec` | string | Path to the block's `specs.yaml`, relative to this `models.yaml` file. Used by `rb spec check-design` to link the design model to its specification. |
-| `cdc` | string | Path to the `cdc.yaml` that owns this model's CDC analysis, relative to this `models.yaml`. Optional `#analysis_name` fragment picks one analysis from a multi-analysis file (e.g. `cdc.yaml#full_design`). Read by `rb hub` to enable the clock-domain overlay; absent → overlay unavailable. |
 | `synth` | string | Path to the `synth.yaml` that owns this model's synthesis flow, relative to this `models.yaml`. Same `#synth_name` fragment semantics. Declared now for forward compatibility; no consumer reads it yet. |
 | `tests` | string | Path to the `tests.yaml` that owns this model's testbench/test suite, relative to this `models.yaml`. Same `#test_name` fragment semantics. Declared now for forward compatibility; no consumer reads it yet. |
 
@@ -255,7 +245,7 @@ models:
 - `tests.yaml` references a model by `name` using the `model` and `model_path` fields.
 - Model filelists are parsed by the filelist logic: `-F` recursion, `+incdir+`, `+libext+`, `-v`, `-y`, and plain source paths are all supported.
 - `spec` is not used at simulation time; it is only consumed by the `rb spec` traceability commands.
-- `cdc` / `synth` / `tests` are *back-pointers* — the downstream files still carry their own `model:` + `model_path:` references back to this one. The model-side entry is the source of truth for "which analysis owns this model" when there could otherwise be ambiguity (e.g. two `cdc.yaml` files reference the same model name).
+- `synth` / `tests` are *back-pointers* — the downstream files still carry their own `model:` + `model_path:` references back to this one. The model-side entry is the source of truth for "which flow owns this model" when there could otherwise be ambiguity.
 
 ---
 
@@ -697,98 +687,6 @@ power-configs:
 - `rb power-regression` iterates each listed `power.yaml` and filters runs by `--reg-level`.
 - Paths in `power-configs` are resolved relative to the `power_regression.yaml` file.
 - Each listed suite is anchored on the directory containing its `power.yaml` (the command root); the process working directory is not changed (the v5 [execution context](../concepts/execution-context.md) model).
-
----
-
-## cdc.yaml
-
-**Required keys:**
-
-- `rtl-buddy-filetype: cdc_config`
-- `analyses`
-
-**Example:**
-
-```yaml
-rtl-buddy-filetype: cdc_config
-
-analyses:
-  - name: "ip_cdc_handshake_lint"
-    desc: "CDC lint of the request/ack handshake IP"
-    model: "ip_cdc_handshake"
-    model_path: "../../design/common/models.yaml"
-    tool: "rtl-buddy-cdc"
-    constraints: "ip_cdc_handshake.sdc"
-    waivers: "ip_cdc_handshake.waivers"   # optional
-    reglvl: 0
-
-  - name: "alu_accel_lint"
-    desc: "CDC lint of the ALU accelerator"
-    model: "alu_accel_top"
-    model_path: "../../design/alu_accel/models.yaml"
-    tool: "rtl-buddy-cdc"
-    constraints: "alu_accel_top.sdc"
-    frontend: "slang"   # opt this analysis into the slang elaboration frontend
-    reglvl:
-      default: 0
-      rtl-buddy-cdc: 100
-    tool_overrides:
-      rtl-buddy-cdc:
-        sync_depth: 3
-        extra_args: "--strict"
-```
-
-**Field reference:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Analysis identifier; used on the CLI and in `artefacts/{name}/` |
-| `desc` | string | Human-readable analysis description |
-| `model` | string | Model name from `models.yaml`; also used as the top module for elaboration |
-| `model_path` | string | Path to `models.yaml`, resolved relative to the `cdc.yaml` file |
-| `tool` | string | CDC tool name from `root_config.yaml` `cfg-cdc-tools` |
-| `constraints` | string | SDC file path, resolved relative to the `cdc.yaml` file |
-| `waivers` | string | Optional waiver file path, resolved relative to the `cdc.yaml` file |
-| `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
-| `tool_overrides` | dict | Optional per-tool overrides for `sync_depth` or `extra_args`, keyed by CDC tool name |
-| `frontend` | string | Optional elaboration frontend selector forwarded as-is via `--frontend <value>` to the analyzer subprocess. The set of accepted values is the analyzer's, not rtl_buddy's — for the bundled `rtl-buddy-cdc` backend on current main it's `"yosys"` (built-in) or `"slang"` (full SV-2017 via the optional `pyslang`-backed `[slang]` extra); see the analyzer's own docs for the authoritative list. Unknown values are rejected by the analyzer, not by rtl_buddy. Omit to use the analyzer's own default. |
-| `xfail` | bool | Optional, default false. Marks the CDC analysis expected-to-fail, **non-strict**: a FAIL becomes `XFAIL` (a pass); an unexpected PASS becomes `XPASS` but still counts as a pass. Useful for a design with known/intentional CDC violations tracked in a suite. See [Expected failures (xfail)](../concepts/expected-failures.md). |
-| `xfail_strict` | bool | Optional, default false. Like `xfail` but **strict**: an unexpected PASS (`XPASS`) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set. |
-
-**Runtime effects:**
-
-- `rtl-buddy cdc` loads `cdc.yaml`, resolves sources via `models.yaml`, and dispatches to the backend selected by `tool`.
-- The bundled `rtl-buddy-cdc` backend invokes the standalone `rtl-buddy-cdc lint` CLI as a subprocess. The analysis receives the model's resolved filelist, the SDC, an optional waivers file, the merged tool opts (root `cfg-cdc-tools` baseline plus any matching `tool_overrides.<tool>`), and — when set — `--frontend <value>` from the per-analysis `frontend` field.
-- `frontend` is **per-analysis** (not on `cfg-cdc-tools` opts) — different from the synth side, where the equivalent selector lives on `cfg-synth-tools.opts.frontend`. Per-analysis suits the CDC use case because slang-required and Yosys-only analyses commonly coexist in one suite, and there is no useful project-wide default.
-- Each analysis writes a text report and a machine-readable JSON report under `artefacts/{name}/`; the JSON summary is parsed to populate the pass/fail/skip result for the CLI table.
-- `rtl-buddy cdc <name> --list` lists configured analyses without running them.
-
----
-
-## cdc_regression.yaml
-
-**Required keys:**
-
-- `rtl-buddy-filetype: cdc_reg_config`
-- `cdc-configs`
-
-**Example:**
-
-```yaml
-rtl-buddy-filetype: cdc_reg_config
-
-cdc-configs:
-  - "design/example_block_a/lint/cdc.yaml"
-  - "design/example_block_b/lint/cdc.yaml"
-```
-
-**Runtime effects:**
-
-- `rtl-buddy cdc-regression` iterates each listed `cdc.yaml` file and filters analyses by `--reg-level`.
-- Paths in `cdc-configs` are resolved relative to the `cdc_regression.yaml` file.
-- `cdc-regression` anchors each listed CDC suite on the directory containing its `cdc.yaml` (the command root) and writes artefacts under `<that dir>/artefacts/`; it does not change the process working directory (the v5 [execution context](../concepts/execution-context.md) model).
-
----
 
 ## fpv.yaml
 
