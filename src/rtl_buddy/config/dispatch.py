@@ -89,6 +89,21 @@ def _validate_mem(value):
 
 
 @serde
+class RightsizeConfigFile:
+    """``rightsize:`` sub-block — reservation right-sizing thresholds (#351 P3).
+
+    Utilization below ``over-threshold`` flags a resource over-reserved;
+    above ``near-limit`` (or a TIMEOUT/OOM kill) flags it under-reserved.
+    Suggested reservation = observed peak × ``margin``.
+    """
+
+    report: bool = True
+    over_threshold: float = field(rename="over-threshold", default=0.5)
+    near_limit: float = field(rename="near-limit", default=0.9)
+    margin: float = field(rename="margin", default=1.5)
+
+
+@serde
 class DispatchConfigFile:
     """``cfg-dispatch`` section of root_config.yaml (raw serde form)."""
 
@@ -105,6 +120,7 @@ class DispatchConfigFile:
     # (sbatch --array=1-N%cap). Peak concurrency across a run is roughly
     # this times the number of arrays (resource groups x suites).
     max_jobs_per_array: int = field(rename="max-jobs-per-array", default=200)
+    rightsize: RightsizeConfigFile | None = None
 
     def initialise(self) -> "DispatchConfig":
         """Validate and freeze into the runtime :class:`DispatchConfig`.
@@ -140,6 +156,7 @@ class DispatchConfigFile:
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
             max_jobs_per_array=self.max_jobs_per_array,
+            rightsize=self.rightsize,
         )
 
 
@@ -153,10 +170,14 @@ class DispatchConfig:
     sbatch_args: list = None
     poll_interval: float = 10.0
     max_jobs_per_array: int = 200
+    rightsize: RightsizeConfigFile | None = None
 
     def __post_init__(self):
         if self.sbatch_args is None:
             self.sbatch_args = []
+
+    def effective_rightsize(self) -> RightsizeConfigFile:
+        return self.rightsize if self.rightsize is not None else RightsizeConfigFile()
 
 
 @dataclass

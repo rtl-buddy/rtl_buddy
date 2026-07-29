@@ -327,6 +327,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: compile failed in build job "
                 f"{fields.get('build_job')} — counting it as a compile failure"
             )
+        case "rightsize.advice":
+            return (
+                f"{fields.get('test')}: {fields.get('resource')} reserved "
+                f"{fields.get('reserved')}, peak {fields.get('peak')} "
+                f"({fields.get('utilization')}) → {fields.get('direction')} "
+                f"to {fields.get('suggested')}"
+            )
         case "randtest.dispatch_ignored_for_replay":
             return (
                 f"--dispatch {fields.get('backend')} ignored for replay "
