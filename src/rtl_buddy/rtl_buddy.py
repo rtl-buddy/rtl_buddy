@@ -44,6 +44,7 @@ from .runner.fpv_runner import FpvRunner
 from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
+from .runner.result_io import write_result_json
 from .runner.test_results import SetupFailResults, SkipResults
 from .runner.test_runner import RunDepth, TestRunner
 from .runner.xfail import apply_xfail
@@ -177,6 +178,13 @@ class RtlBuddy:
         self.app.command("regression", help="run rtl regression")(
             self.do_rtl_regression
         )
+        # Remote-dispatch re-entry point (#351): one (test, run_id) run
+        # whose result is serialized for a collecting head process.
+        self.app.command(
+            "_test-job",
+            hidden=True,
+            help="internal: run one (test, run_id) and write its result JSON",
+        )(self.do_cmd_test_job)
         self.app.command("filelist", help="generate filelists using models.yaml")(
             self.do_gen_model_filelist
         )
@@ -1187,6 +1195,185 @@ class RtlBuddy:
                     }
                     for r in suite_results
                 ],
+            )
+        raise typer.Exit(exit_code)
+
+    def _resolve_job_test_cfg(self, suite_cfg, test_name, suite_dir):
+        """Resolve a job's test config by name, honoring sweep expansion.
+
+        Accepts either a base test name from the suite or the name of a
+        sweep-expanded config (jobs are dispatched per expanded config,
+        so both must be addressable). Returns ``(test_cfg, None)`` on
+        success or ``(None, setup_error)`` when a sweep hook failed —
+        the caller turns that into a written ``SetupFailResults`` so the
+        job still produces a result artifact. An unknown name raises
+        ``FatalRtlBuddyError`` (nothing ran; the collector maps the
+        missing result file to an infrastructure failure).
+        """
+        sweep_error_seen = None
+        if test_name in suite_cfg.get_test_names():
+            base = suite_cfg.get_tests(test_name)[0]
+            expanded, sweep_error = self._expand_tests_with_sweep(
+                base, suite_dir=suite_dir
+            )
+            if sweep_error is not None:
+                return None, sweep_error
+            for cfg in expanded:
+                if cfg.name == test_name:
+                    return cfg, None
+            if len(expanded) == 1:
+                return expanded[0], None
+            raise FatalRtlBuddyError(
+                f"test {test_name} sweep-expands to multiple configs "
+                f"[{', '.join(c.name for c in expanded)}]; "
+                "address one by its expanded name"
+            )
+
+        for base in suite_cfg.get_tests():
+            expanded, sweep_error = self._expand_tests_with_sweep(
+                base, suite_dir=suite_dir
+            )
+            if sweep_error is not None:
+                # A broken sweep elsewhere must not mask resolution of
+                # other names, but remember it: the requested name may
+                # have come from this expansion.
+                if sweep_error_seen is None:
+                    sweep_error_seen = sweep_error
+                continue
+            for cfg in expanded:
+                if cfg.name == test_name:
+                    return cfg, None
+
+        if sweep_error_seen is not None:
+            return None, sweep_error_seen
+        raise FatalRtlBuddyError(
+            f"test_name {test_name} not found in suite {suite_cfg.get_path()} "
+            "(after sweep expansion)"
+        )
+
+    def do_cmd_test_job(
+        self,
+        test_name: Annotated[
+            str,
+            typer.Argument(help="test to run (sweep-expanded names accepted)"),
+        ],
+        result_json: Annotated[
+            str,
+            typer.Option(
+                "--result-json",
+                help="path to write the run's result JSON envelope "
+                "(relative to the invocation cwd)",
+            ),
+        ],
+        test_config: Annotated[
+            str, typer.Option("-c", "--test-config", help="test_config.yaml to use")
+        ] = "tests.yaml",
+        run_id: Annotated[
+            int,
+            typer.Option(
+                "--run-id",
+                help="run id for output naming and seed replay",
+                show_default="single unnumbered run",
+            ),
+        ] = None,
+        seed_mode: Annotated[
+            SeedMode,
+            typer.Option("--seed-mode", case_sensitive=False),
+        ] = SeedMode.DEFAULT,
+        replay_run_id: Annotated[
+            int,
+            typer.Option(
+                "--replay-run-id",
+                help="seed run id to replay",
+                show_default="--run-id when --seed-mode replay",
+            ),
+        ] = None,
+        share_build: Annotated[
+            bool,
+            typer.Option(
+                "--share-build",
+                help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
+            ),
+        ] = False,
+    ):
+        """
+        internal: run one (test, run_id) and write its result JSON (#351)
+        """
+        self.rtl_builder_mode = (
+            "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
+        )
+        self.share_build = share_build
+        # Resolve the output path before entering the command context so
+        # a relative --result-json lands where the dispatching process
+        # expects it, not under the suite dir.
+        result_json_path = Path(result_json)
+        if not result_json_path.is_absolute():
+            result_json_path = self.invocation_cwd / result_json_path
+        # Mirror run_multiple's fan-out semantics: a replayed job replays
+        # its own run_id unless told otherwise.
+        if seed_mode == SeedMode.REPLAY and replay_run_id is None:
+            replay_run_id = run_id
+
+        ctx = self._enter_command_context(primary_config=test_config)
+        suite_cfg = SuiteConfig(path=str(ctx.primary_config))
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.test_job",
+            command="_test-job",
+            test=test_name,
+            run_id=run_id,
+            seed_mode=seed_mode.value,
+            result_json=str(result_json_path),
+        )
+
+        test_cfg, setup_error = self._resolve_job_test_cfg(
+            suite_cfg, test_name, suite_dir
+        )
+        if setup_error is not None:
+            res = SetupFailResults(name=test_name + "/results", desc=setup_error)
+            reported_name = test_name
+        else:
+            run_results = self._run_test_cfg_for_run_ids(
+                test_cfg=test_cfg,
+                run_ids=[run_id],
+                seed_mode=seed_mode,
+                replay_run_id=replay_run_id,
+                test_runner_mode={"sim_to_stdout": False},
+                suite_dir=suite_dir,
+            )
+            res = run_results[0]
+            reported_name = test_cfg.get_name()
+
+        write_result_json(
+            result_json_path, test_name=reported_name, run_id=run_id, results=res
+        )
+        exit_code = 0 if res.is_pass() else 1
+        if self.machine:
+            self._emit_machine_result(
+                "_test-job",
+                exit_code,
+                result={
+                    "name": reported_name,
+                    "run_id": run_id,
+                    "result": res.results["result"],
+                    "desc": res.results["desc"],
+                },
+                result_json=str(result_json_path),
+            )
+        else:
+            self._render_test_summary(
+                "Test Job Result",
+                [
+                    {
+                        "test_name": reported_name,
+                        "randmode_i": run_id,
+                        "results": res,
+                    }
+                ],
+                include_run_id=run_id is not None,
+                metadata=[f"Builder: {self.builder}"],
             )
         raise typer.Exit(exit_code)
 

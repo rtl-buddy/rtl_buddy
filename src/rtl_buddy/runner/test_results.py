@@ -29,6 +29,27 @@ class TestResults:
         # PASS/SKIP/XFAIL pass; XPASS passes only for a non-strict xfail.
         return is_pass_with_xfail(self.results)
 
+    def to_json_dict(self):
+        """JSON-serializable form for per-run result artifacts (#351)."""
+        return {
+            "kind": type(self).__name__,
+            "name": self.name,
+            "results": dict(self.results),
+        }
+
+    @staticmethod
+    def from_json_dict(data):
+        """Reconstruct a result from :meth:`to_json_dict` output.
+
+        Always returns a base ``TestResults`` regardless of the original
+        subclass: pass/fail semantics (``is_pass``, xfail) live entirely
+        in the results dict, and subclasses differ only in how they
+        populate it. ``kind`` is carried for reporting, not behavior.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("results"), dict):
+            raise ValueError("malformed test result record")
+        return TestResults(name=data.get("name"), results=dict(data["results"]))
+
     def __str__(self):
         return "test_results: " + pprint.pformat(self.results)
 
