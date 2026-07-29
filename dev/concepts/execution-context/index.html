@@ -987,34 +987,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CDC Lint
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../fpv/" class="md-nav__link">
         
   
@@ -1695,7 +1667,7 @@
 
 
 <h1 id="execution-context">Execution Context</h1>
-<p><code>rtl_buddy</code> commands always anchor their work on the <strong>primary config file</strong> (<code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, …), not on the directory you happened to run <code>rb</code> from. This means the same command produces the same artifact layout regardless of where you invoked it.</p>
+<p><code>rtl_buddy</code> commands always anchor their work on the <strong>primary config file</strong> (<code>tests.yaml</code>, <code>synth.yaml</code>, <code>fpv.yaml</code>, …), not on the directory you happened to run <code>rb</code> from. This means the same command produces the same artifact layout regardless of where you invoked it.</p>
 <p>If you've ever run <code>rb</code> from a design directory and ended up with a stray <code>verif/artefacts/</code> or <code>rtl_buddy.log</code> next to your RTL sources, this page explains why that no longer happens.</p>
 <h2 id="the-three-anchors">The three anchors</h2>
 <p>Every command has three paths it cares about:</p>
@@ -1784,12 +1756,6 @@
 <td><code>&lt;artifact&gt;/&lt;synth&gt;</code></td>
 </tr>
 <tr>
-<td><code>cdc</code></td>
-<td><code>dirname(cdc.yaml)</code></td>
-<td><code>&lt;command_root&gt;/artefacts</code></td>
-<td><code>&lt;artifact&gt;/&lt;cdc&gt;</code></td>
-</tr>
-<tr>
 <td><code>fpv</code></td>
 <td><code>dirname(fpv.yaml)</code></td>
 <td><code>&lt;command_root&gt;/artefacts</code></td>
@@ -1873,7 +1839,7 @@
 <li><code>regression.yaml</code> resolves listed suite configs relative to itself.</li>
 <li><code>tests.yaml</code> resolves testbench filelists, hook script paths, and suite-local assets relative to the suite directory.</li>
 <li><code>models.yaml</code> resolves model filelist entries relative to the <code>models.yaml</code> file that declared them.</li>
-<li><code>synth.yaml</code>, <code>cdc.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, <code>power.yaml</code> resolve their own fields relative to their config directory.</li>
+<li><code>synth.yaml</code>, <code>fpv.yaml</code>, <code>pnr.yaml</code>, <code>power.yaml</code> resolve their own fields relative to their config directory.</li>
 </ul>
 <p>A relative path inside a YAML file never depends on where you ran <code>rb</code>. Absolute paths pass through unchanged.</p>
 <h2 id="one-run-per-artefact-tree">One run per artefact tree</h2>
@@ -1882,7 +1848,7 @@
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>(pid 12345, rb test, started 2026-06-10T14:03:21) — wait for it to finish or kill it
 </code></pre></div>
 <p>The lock is released by the kernel when the holding process exits — normal completion, crash, or <code>kill</code> alike — so there are no stale locks to clean up; the <code>.rtl-buddy.lock</code> file itself is just holder metadata and is harmless to leave behind. <code>rb regression</code> locks each suite it enters for the lifetime of the run. Metadata-only invocations (<code>--list</code>) never take the lock, so listing tests while a run is in flight always works. Suites with <em>different</em> artefact trees never contend — run as many in parallel as you like.</p>
-<p>The lock covers the <strong>whole artefact tree</strong>, not just the subtree a command writes: when <code>tests.yaml</code>, <code>cdc.yaml</code>, <code>synth.yaml</code>, etc. share a suite directory, any two artifact-writing commands contend — <code>rb hier</code> during a long <code>rb test</code> in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the <code>--list</code> paths and commands anchored elsewhere (another suite, <code>rb docs</code>, <code>rb hub</code>) remain available.</p>
+<p>The lock covers the <strong>whole artefact tree</strong>, not just the subtree a command writes: when <code>tests.yaml</code>, <code>synth.yaml</code>, <code>fpv.yaml</code>, etc. share a suite directory, any two artifact-writing commands contend — <code>rb hier</code> during a long <code>rb test</code> in the same suite fails loud even though their outputs are disjoint. This is deliberate: one coarse lock per tree is simple to reason about and free of partial-overlap edge cases. If you need a read-only view mid-run, the <code>--list</code> paths and commands anchored elsewhere (another suite, <code>rb docs</code>, <code>rb hub</code>) remain available.</p>
 <p><strong>The protection is per host.</strong> The guarantee relies on local <code>flock(2)</code> semantics and ends at the machine boundary. On a workspace shared over NFS, two runs on <strong>different hosts</strong> may both acquire "the" lock — whether <code>flock</code> propagates across NFS depends on the protocol version, mount options, and server lock-daemon configuration, and rtl_buddy does not rely on it. Concurrent runs against the same suite from two machines are not protected; coordinate those yourself.</p>
 <h2 id="future-redirecting-the-artifact-root">Future: redirecting the artifact root</h2>
 <p>The artifact root defaults to <code>command_root/artefacts/</code>. The <code>ExecutionContext</code> carrier is built to accept an explicit override so a future <code>--artifact-root</code> flag (or <code>root_config.yaml</code> field) can redirect large artifacts — synthesis netlists, simulation waveforms — onto a separate disk without touching command code. None of this is wired today; this page will update when it ships.</p>

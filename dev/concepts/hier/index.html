@@ -788,10 +788,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cdc-and-rdc-annotations" class="md-nav__link">
+  <a href="#domain-annotations" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CDC and RDC annotations
+        Domain annotations
       
     </span>
   </a>
@@ -978,34 +978,6 @@
     
   
     FPGA Implementation
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CDC Lint
   
 
     
@@ -1642,10 +1614,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cdc-and-rdc-annotations" class="md-nav__link">
+  <a href="#domain-annotations" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CDC and RDC annotations
+        Domain annotations
       
     </span>
   </a>
@@ -1783,7 +1755,7 @@
 <a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="c1"># TB-rooted view — render the testbench for a test, DUT called out as subtree</span>
 <a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>rb<span class="w"> </span>hier<span class="w"> </span>basic_traffic<span class="w"> </span>--view<span class="w"> </span>tb
 </code></pre></div>
-<p>The model argument matches the <code>name:</code> of an entry in <code>models.yaml</code>. The runner uses that entry's filelist verbatim — same source of truth that <code>rb test</code>, <code>rb synth</code>, and <code>rb cdc</code> consume. In <code>--view tb</code> mode the positional argument is a test name from <code>tests.yaml</code> instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from <code>--tb-top</code>.</p>
+<p>The model argument matches the <code>name:</code> of an entry in <code>models.yaml</code>. The runner uses that entry's filelist verbatim — same source of truth that <code>rb test</code> and <code>rb synth</code> consume. In <code>--view tb</code> mode the positional argument is a test name from <code>tests.yaml</code> instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from <code>--tb-top</code>.</p>
 <h2 id="querying-with-rb-hier-query">Querying with <code>rb hier-query</code></h2>
 <p><code>rb hier-query &lt;model&gt; &lt;verb&gt; &lt;arg&gt;</code> is <code>rb hier</code>'s machine-readable sibling: instead of rendering a diagram, it answers a structural question about the model's hierarchy with JSON on stdout, ready for <code>jq</code>, shell pipelines, and agent tool use. It shells out to <code>rtl-buddy-view query</code> (requires rtl-buddy-view ≥ 0.3.0) and shares <code>rb hier</code>'s generated filelist artefact.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># the full definition of a module: ports, parameters, instances</span>
@@ -1805,18 +1777,13 @@
 <p>Exit codes follow the query semantics: <code>0</code> for an answer (an empty <code>instances-of</code> list is a valid answer), <code>1</code> for a lookup miss or parse failure — the viewer's diagnostic (e.g. <code>query: instance path '…' not found</code>) streams to stderr rather than being captured into a log. <code>artefacts/hier/&lt;model&gt;/query.log</code> records the underlying invocation.</p>
 <h2 id="parser-frontend">Parser frontend</h2>
 <p><code>--frontend</code> is forwarded as-is to <code>rtl-buddy-view</code>. The default frontend ships with the renderer; <code>--frontend slang</code> uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.</p>
-<h2 id="cdc-and-rdc-annotations">CDC and RDC annotations</h2>
-<p><code>rb hier</code> can overlay clock-domain and reset-domain information when the corresponding analyzer pass has emitted a JSON map:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Clock-domain overlay — colors each module by its primary clock</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rtl-buddy-cdc<span class="w"> </span>--emit-domain-map<span class="w"> </span>-o<span class="w"> </span>clocks.json<span class="w"> </span>...
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1"># With a side legend mapping color → clock name (dot format only)</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--cdc-annotations<span class="w"> </span>clocks.json<span class="w"> </span>--clock-legend<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># Reset-domain overlay — colors each module by its primary reset</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>rtl-buddy-cdc<span class="w"> </span>--emit-reset-domain-map<span class="w"> </span>-o<span class="w"> </span>resets.json<span class="w"> </span>...
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--rdc-annotations<span class="w"> </span>resets.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<h2 id="domain-annotations">Domain annotations</h2>
+<p><code>rb hier</code> can overlay domain information when a compatible analyzer pass has emitted a JSON map:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># With a side legend mapping color → clock name (dot format only)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--clock-legend<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Reset-domain overlay — colors each module by its primary reset</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--rdc-annotations<span class="w"> </span>resets.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
 </code></pre></div>
 <p>Both annotation files are JSON keyed by hierarchical instance path. <code>rb hier</code> validates that the files exist before invoking the renderer; the renderer's JSON contract (<code>schema_version</code>, <code>tool.*</code>, <code>design.top</code>, <code>nodes</code>, <code>edges</code>) is the integration boundary.</p>
 <p><code>--clock-legend</code> is honored only for <code>--format dot</code>; the tree and Mermaid renderers ignore it.</p>
@@ -1845,7 +1812,7 @@
 <p><code>rb hier</code> exits with the renderer's exit code. A non-zero exit means the renderer reported a parse, elaboration, or output error — check <code>hier.log</code> for the captured stderr.</p>
 <p>The <code>Failed to locate rtl-buddy-view</code> error before the renderer runs is the most common failure mode and indicates that <code>rtl-buddy-view</code> is not installed in the active venv or on <code>PATH</code>. Run <code>rb tool-check --explain rtl-buddy-view</code> for the install hint.</p>
 <h2 id="hub-integration">Hub integration</h2>
-<p>The <a href="../hub/">coordination hub</a> consumes <code>rb hier</code>'s JSON output (<code>--format json</code>) to drive the rtl-buddy-view SPA's interactive hierarchy view. The <code>rb hier</code> clock/reset overlays (<code>--cdc-annotations</code>, <code>--rdc-annotations</code>) are real CLI flags and are surfaced as overlays in the SPA. The AXI-perf overlay is <strong>not</strong> a <code>rb hier</code> flag — it is baked into the SPA view only via <code>rb hub start --axi-perf-from &lt;axi-perf.json&gt;</code> (see <a href="../hub/#axi-perf-overlay-and-notebook-spawning">Hub</a>), which invokes the renderer with <code>--overlay axi-perf=&lt;path&gt;</code> internally.</p>
+<p>The <a href="../hub/">coordination hub</a> consumes <code>rb hier</code>'s JSON output (<code>--format json</code>) to drive the rtl-buddy-view SPA's interactive hierarchy view. The reset overlay (<code>--rdc-annotations</code>) is a real CLI flag and is surfaced in the SPA. The AXI-perf overlay is <strong>not</strong> a <code>rb hier</code> flag — it is baked into the SPA view only via <code>rb hub start --axi-perf-from &lt;axi-perf.json&gt;</code> (see <a href="../hub/#axi-perf-overlay-and-notebook-spawning">Hub</a>), which invokes the renderer with <code>--overlay axi-perf=&lt;path&gt;</code> internally.</p>
 <p><code>rb hub start --model &lt;name&gt;</code> discovers the model's <code>models.yaml</code>, invokes <code>rb hier</code> under the hood, and serves the result alongside live diagnostics and AXI-perf overlays — <code>rb hier</code> is the underlying renderer for both the static CLI use case and the live SPA flow.</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>

@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, power.yaml, power_regression.yaml, cdc.yaml, cdc_regression.yaml, fpv.yaml, fpv_regression.yaml, and mut.yaml.">
+        <meta name="description" content="Canonical reference for rtl_buddy YAML configuration files, including root_config.yaml, regression.yaml, tests.yaml, models.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, power.yaml, power_regression.yaml, fpv.yaml, fpv_regression.yaml, and mut.yaml.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -839,34 +839,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../concepts/cdc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CDC Lint
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../concepts/fpv/" class="md-nav__link">
         
   
@@ -1315,28 +1287,6 @@
     <span class="md-ellipsis">
       
         power_regression.yaml
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cdcyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cdc.yaml
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cdc_regressionyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cdc_regression.yaml
       
     </span>
   </a>
@@ -1830,28 +1780,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cdcyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cdc.yaml
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cdc_regressionyaml" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cdc_regression.yaml
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#fpvyaml" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2066,26 +1994,19 @@
 <a id="__codelineno-0-125" name="__codelineno-0-125" href="#__codelineno-0-125"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span>
 <a id="__codelineno-0-126" name="__codelineno-0-126" href="#__codelineno-0-126"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;openroad&quot;</span><span class="w">            </span><span class="c1"># bare name → found via PATH; or absolute path</span>
 <a id="__codelineno-0-127" name="__codelineno-0-127" href="#__codelineno-0-127"></a>
-<a id="__codelineno-0-128" name="__codelineno-0-128" href="#__codelineno-0-128"></a><span class="nt">cfg-cdc-tools</span><span class="p">:</span>
-<a id="__codelineno-0-129" name="__codelineno-0-129" href="#__codelineno-0-129"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
-<a id="__codelineno-0-130" name="__codelineno-0-130" href="#__codelineno-0-130"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
+<a id="__codelineno-0-128" name="__codelineno-0-128" href="#__codelineno-0-128"></a><span class="nt">cfg-fpv-tools</span><span class="p">:</span>
+<a id="__codelineno-0-129" name="__codelineno-0-129" href="#__codelineno-0-129"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
+<a id="__codelineno-0-130" name="__codelineno-0-130" href="#__codelineno-0-130"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span><span class="w">              </span><span class="c1"># bare name → found via PATH; or absolute path</span>
 <a id="__codelineno-0-131" name="__codelineno-0-131" href="#__codelineno-0-131"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
-<a id="__codelineno-0-132" name="__codelineno-0-132" href="#__codelineno-0-132"></a><span class="w">      </span><span class="nt">sync-depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">          </span><span class="c1"># forwarded as `--sync-depth N` (CDC-002 required depth)</span>
-<a id="__codelineno-0-133" name="__codelineno-0-133" href="#__codelineno-0-133"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">         </span><span class="c1"># appended verbatim to every invocation</span>
-<a id="__codelineno-0-134" name="__codelineno-0-134" href="#__codelineno-0-134"></a>
-<a id="__codelineno-0-135" name="__codelineno-0-135" href="#__codelineno-0-135"></a><span class="nt">cfg-fpv-tools</span><span class="p">:</span>
-<a id="__codelineno-0-136" name="__codelineno-0-136" href="#__codelineno-0-136"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
-<a id="__codelineno-0-137" name="__codelineno-0-137" href="#__codelineno-0-137"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span><span class="w">              </span><span class="c1"># bare name → found via PATH; or absolute path</span>
-<a id="__codelineno-0-138" name="__codelineno-0-138" href="#__codelineno-0-138"></a><span class="w">    </span><span class="nt">opts</span><span class="p">:</span>
-<a id="__codelineno-0-139" name="__codelineno-0-139" href="#__codelineno-0-139"></a><span class="w">      </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span><span class="w">           </span><span class="c1"># per-task timeout in seconds; written to sby [options]</span>
-<a id="__codelineno-0-140" name="__codelineno-0-140" href="#__codelineno-0-140"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">         </span><span class="c1"># appended verbatim to every sby invocation</span>
-<a id="__codelineno-0-141" name="__codelineno-0-141" href="#__codelineno-0-141"></a><span class="w">      </span><span class="nt">solver-versions</span><span class="p">:</span><span class="w">       </span><span class="c1"># optional pins; map solver name → exact version</span>
-<a id="__codelineno-0-142" name="__codelineno-0-142" href="#__codelineno-0-142"></a><span class="w">        </span><span class="nt">yices</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;2.6.4&quot;</span><span class="w">       </span><span class="c1"># known names: yices, z3, boolector, bitwuzla,</span>
-<a id="__codelineno-0-143" name="__codelineno-0-143" href="#__codelineno-0-143"></a><span class="w">        </span><span class="nt">z3</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;4.13.0&quot;</span><span class="w">         </span><span class="c1"># btormc, abc. Hard-fails on mismatch.</span>
-<a id="__codelineno-0-144" name="__codelineno-0-144" href="#__codelineno-0-144"></a><span class="w">      </span><span class="nt">plugin-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tools/yosys-slang/build/slang.so&quot;</span><span class="w">  </span><span class="c1"># required when an fpv.yaml verification picks `frontend: slang`</span>
-<a id="__codelineno-0-145" name="__codelineno-0-145" href="#__codelineno-0-145"></a>
-<a id="__codelineno-0-146" name="__codelineno-0-146" href="#__codelineno-0-146"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
-<a id="__codelineno-0-147" name="__codelineno-0-147" href="#__codelineno-0-147"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
+<a id="__codelineno-0-132" name="__codelineno-0-132" href="#__codelineno-0-132"></a><span class="w">      </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">600</span><span class="w">           </span><span class="c1"># per-task timeout in seconds; written to sby [options]</span>
+<a id="__codelineno-0-133" name="__codelineno-0-133" href="#__codelineno-0-133"></a><span class="w">      </span><span class="nt">extra-args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">         </span><span class="c1"># appended verbatim to every sby invocation</span>
+<a id="__codelineno-0-134" name="__codelineno-0-134" href="#__codelineno-0-134"></a><span class="w">      </span><span class="nt">solver-versions</span><span class="p">:</span><span class="w">       </span><span class="c1"># optional pins; map solver name → exact version</span>
+<a id="__codelineno-0-135" name="__codelineno-0-135" href="#__codelineno-0-135"></a><span class="w">        </span><span class="nt">yices</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;2.6.4&quot;</span><span class="w">       </span><span class="c1"># known names: yices, z3, boolector, bitwuzla,</span>
+<a id="__codelineno-0-136" name="__codelineno-0-136" href="#__codelineno-0-136"></a><span class="w">        </span><span class="nt">z3</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;4.13.0&quot;</span><span class="w">         </span><span class="c1"># btormc, abc. Hard-fails on mismatch.</span>
+<a id="__codelineno-0-137" name="__codelineno-0-137" href="#__codelineno-0-137"></a><span class="w">      </span><span class="nt">plugin-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tools/yosys-slang/build/slang.so&quot;</span><span class="w">  </span><span class="c1"># required when an fpv.yaml verification picks `frontend: slang`</span>
+<a id="__codelineno-0-138" name="__codelineno-0-138" href="#__codelineno-0-138"></a>
+<a id="__codelineno-0-139" name="__codelineno-0-139" href="#__codelineno-0-139"></a><span class="nt">cfg-rtl-reg</span><span class="p">:</span>
+<a id="__codelineno-0-140" name="__codelineno-0-140" href="#__codelineno-0-140"></a><span class="w">  </span><span class="nt">reg-cfg-path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;design/regression.yaml&quot;</span>
 </code></pre></div>
 <p><strong>Runtime effects:</strong></p>
 <ul>
@@ -2103,7 +2024,6 @@
 <li><code>cfg-synth-efforts</code> defines named synthesis effort levels referenced by <code>synth.yaml</code> <code>effort</code> fields or the <code>--effort</code> CLI flag. Each entry has optional <code>yosys.synth-args</code> / <code>yosys.abc-args</code> (merged into the Yosys stage) and an <code>openroad</code> block. When <code>openroad.run: false</code>, the runner falls back to the Yosys-only backend even if <code>tool: openroad</code> was selected — useful for a fast quick-look path that needs no LEF/STA. <code>openroad.pre-sta-tcl</code> is a raw Tcl snippet injected into <code>synth.tcl</code> between <code>read_sdc</code> and <code>report_checks</code>; use it to insert floorplan/placement/parasitic-estimation steps before timing analysis. When no <code>cfg-synth-efforts</code> entries are configured or no effort is selected, a built-in <code>standard</code> effort with all defaults is used. Precedence for the same knob: per-synthesis <code>tool_overrides</code> &gt; <code>cfg-synth-efforts</code> &gt; <code>cfg-synth-tools</code>.</li>
 <li><code>cfg-pnr-tools</code> defines P&amp;R tool entries selected by <code>pnr.yaml</code> <code>tool</code> fields. <code>tool</code> is the path to the executable, or a bare name if it is available on <code>PATH</code>. When <code>pnr.yaml</code> <code>tool</code> does not match a <code>cfg-pnr-tools</code> entry, the value is used as the executable name directly (bare-name on <code>PATH</code> semantics).</li>
 <li><code>cfg-power-tools</code> defines power-analysis tool entries selected by <code>power.yaml</code> <code>tool</code> fields. Each entry has <code>name</code> (referenced by <code>tool:</code> in <code>power.yaml</code>) and <code>tool</code> (path to the executable, or a bare name if it is available on <code>PATH</code>). When <code>power.yaml</code> <code>tool</code> does not match a <code>cfg-power-tools</code> entry, the value is used as the executable name directly (bare-name on <code>PATH</code> semantics).</li>
-<li><code>cfg-cdc-tools</code> defines CDC tool entries selected by <code>cdc.yaml</code> <code>tool</code> fields. <code>tool</code> is the path to the executable, or a bare name if it is available on <code>PATH</code>. <code>opts.sync-depth</code> is forwarded as <code>--sync-depth N</code> and controls CDC-002's required synchronizer depth. <code>opts.extra-args</code> is appended verbatim to every analyzer invocation.</li>
 <li><code>cfg-fpv-tools</code> defines FPV tool entries selected by <code>fpv.yaml</code> <code>tool</code> fields. <code>tool</code> is the path to the executable, or a bare name if it is available on <code>PATH</code>. <code>opts.timeout</code> is written to the generated <code>.sby</code> <code>[options]</code> block as a per-task timeout in seconds. <code>opts.extra-args</code> is appended verbatim to every sby invocation. <code>opts.solver-versions</code> is an optional map of solver short name → exact version string (e.g. <code>yices: "2.6.4"</code>); known solvers are <code>yices</code>, <code>z3</code>, <code>boolector</code>, <code>bitwuzla</code>, <code>btormc</code>, <code>abc</code>. Each pinned solver is probed before every run and the run hard-fails with a single multi-line summary if any version does not match — protects CI reproducibility against drift in locally-installed solvers. <code>opts.plugin-path</code> is the path to the yosys-slang shared library; required when any <code>fpv.yaml</code> verification picks <code>frontend: slang</code>, ignored for the default verilog frontend. Absolute paths pass through; relative paths resolve against the project root (the directory containing <code>root_config.yaml</code>).</li>
 <li><code>cfg-rtl-reg.reg-cfg-path</code> is the fallback regression file for <code>rtl-buddy regression</code> when no <code>./regression.yaml</code> exists in the cwd.</li>
 <li><code>cfg-verible[].path</code> is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing <code>root_config.yaml</code>.</li>
@@ -2143,9 +2063,8 @@
 <a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">filelist</span><span class="p">:</span>
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;-F</span><span class="nv"> </span><span class="s">my_design.f&quot;</span>
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">spec</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../spec/my_design/specs.yaml&quot;</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">cdc</span><span class="p">:</span><span class="w">   </span><span class="s">&quot;../../cdc/my_design/cdc.yaml&quot;</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">synth</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../synth/my_design/synth.yaml#fast&quot;</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../verif/my_design/tests.yaml&quot;</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">synth</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../synth/my_design/synth.yaml#fast&quot;</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../verif/my_design/tests.yaml&quot;</span>
 </code></pre></div>
 <p><strong>Optional fields:</strong></p>
 <table>
@@ -2168,11 +2087,6 @@
 <td>Path to the block's <code>specs.yaml</code>, relative to this <code>models.yaml</code> file. Used by <code>rb spec check-design</code> to link the design model to its specification.</td>
 </tr>
 <tr>
-<td><code>cdc</code></td>
-<td>string</td>
-<td>Path to the <code>cdc.yaml</code> that owns this model's CDC analysis, relative to this <code>models.yaml</code>. Optional <code>#analysis_name</code> fragment picks one analysis from a multi-analysis file (e.g. <code>cdc.yaml#full_design</code>). Read by <code>rb hub</code> to enable the clock-domain overlay; absent → overlay unavailable.</td>
-</tr>
-<tr>
 <td><code>synth</code></td>
 <td>string</td>
 <td>Path to the <code>synth.yaml</code> that owns this model's synthesis flow, relative to this <code>models.yaml</code>. Same <code>#synth_name</code> fragment semantics. Declared now for forward compatibility; no consumer reads it yet.</td>
@@ -2189,7 +2103,7 @@
 <li><code>tests.yaml</code> references a model by <code>name</code> using the <code>model</code> and <code>model_path</code> fields.</li>
 <li>Model filelists are parsed by the filelist logic: <code>-F</code> recursion, <code>+incdir+</code>, <code>+libext+</code>, <code>-v</code>, <code>-y</code>, and plain source paths are all supported.</li>
 <li><code>spec</code> is not used at simulation time; it is only consumed by the <code>rb spec</code> traceability commands.</li>
-<li><code>cdc</code> / <code>synth</code> / <code>tests</code> are <em>back-pointers</em> — the downstream files still carry their own <code>model:</code> + <code>model_path:</code> references back to this one. The model-side entry is the source of truth for "which analysis owns this model" when there could otherwise be ambiguity (e.g. two <code>cdc.yaml</code> files reference the same model name).</li>
+<li><code>synth</code> / <code>tests</code> are <em>back-pointers</em> — the downstream files still carry their own <code>model:</code> + <code>model_path:</code> references back to this one. The model-side entry is the source of truth for "which flow owns this model" when there could otherwise be ambiguity.</li>
 </ul>
 <hr />
 <h2 id="testsyaml">tests.yaml</h2>
@@ -2920,142 +2834,6 @@ and Icarus do not collect coverage through this path.</p>
 <li>Paths in <code>power-configs</code> are resolved relative to the <code>power_regression.yaml</code> file.</li>
 <li>Each listed suite is anchored on the directory containing its <code>power.yaml</code> (the command root); the process working directory is not changed (the v5 <a href="../../concepts/execution-context/">execution context</a> model).</li>
 </ul>
-<hr />
-<h2 id="cdcyaml">cdc.yaml</h2>
-<p><strong>Required keys:</strong></p>
-<ul>
-<li><code>rtl-buddy-filetype: cdc_config</code></li>
-<li><code>analyses</code></li>
-</ul>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc_config</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="nt">analyses</span><span class="p">:</span>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake_lint&quot;</span>
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDC</span><span class="nv"> </span><span class="s">lint</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">request/ack</span><span class="nv"> </span><span class="s">handshake</span><span class="nv"> </span><span class="s">IP&quot;</span>
-<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake&quot;</span>
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/common/models.yaml&quot;</span>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake.sdc&quot;</span>
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">    </span><span class="nt">waivers</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ip_cdc_handshake.waivers&quot;</span><span class="w">   </span><span class="c1"># optional</span>
-<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>
-<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_lint&quot;</span>
-<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;CDC</span><span class="nv"> </span><span class="s">lint</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">ALU</span><span class="nv"> </span><span class="s">accelerator&quot;</span>
-<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_top&quot;</span>
-<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/alu_accel/models.yaml&quot;</span>
-<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;rtl-buddy-cdc&quot;</span>
-<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_top.sdc&quot;</span>
-<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a><span class="w">    </span><span class="nt">frontend</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;slang&quot;</span><span class="w">   </span><span class="c1"># opt this analysis into the slang elaboration frontend</span>
-<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span>
-<a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a><span class="w">      </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a><span class="w">      </span><span class="nt">rtl-buddy-cdc</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
-<a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
-<a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a><span class="w">      </span><span class="nt">rtl-buddy-cdc</span><span class="p">:</span>
-<a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a><span class="w">        </span><span class="nt">sync_depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
-<a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a><span class="w">        </span><span class="nt">extra_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;--strict&quot;</span>
-</code></pre></div>
-<p><strong>Field reference:</strong></p>
-<table>
-<thead>
-<tr>
-<th>Field</th>
-<th>Type</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>name</code></td>
-<td>string</td>
-<td>Analysis identifier; used on the CLI and in <code>artefacts/{name}/</code></td>
-</tr>
-<tr>
-<td><code>desc</code></td>
-<td>string</td>
-<td>Human-readable analysis description</td>
-</tr>
-<tr>
-<td><code>model</code></td>
-<td>string</td>
-<td>Model name from <code>models.yaml</code>; also used as the top module for elaboration</td>
-</tr>
-<tr>
-<td><code>model_path</code></td>
-<td>string</td>
-<td>Path to <code>models.yaml</code>, resolved relative to the <code>cdc.yaml</code> file</td>
-</tr>
-<tr>
-<td><code>tool</code></td>
-<td>string</td>
-<td>CDC tool name from <code>root_config.yaml</code> <code>cfg-cdc-tools</code></td>
-</tr>
-<tr>
-<td><code>constraints</code></td>
-<td>string</td>
-<td>SDC file path, resolved relative to the <code>cdc.yaml</code> file</td>
-</tr>
-<tr>
-<td><code>waivers</code></td>
-<td>string</td>
-<td>Optional waiver file path, resolved relative to the <code>cdc.yaml</code> file</td>
-</tr>
-<tr>
-<td><code>reglvl</code></td>
-<td>int or dict</td>
-<td>Regression level; int for all tools, dict for per-tool with <code>default</code></td>
-</tr>
-<tr>
-<td><code>tool_overrides</code></td>
-<td>dict</td>
-<td>Optional per-tool overrides for <code>sync_depth</code> or <code>extra_args</code>, keyed by CDC tool name</td>
-</tr>
-<tr>
-<td><code>frontend</code></td>
-<td>string</td>
-<td>Optional elaboration frontend selector forwarded as-is via <code>--frontend &lt;value&gt;</code> to the analyzer subprocess. The set of accepted values is the analyzer's, not rtl_buddy's — for the bundled <code>rtl-buddy-cdc</code> backend on current main it's <code>"yosys"</code> (built-in) or <code>"slang"</code> (full SV-2017 via the optional <code>pyslang</code>-backed <code>[slang]</code> extra); see the analyzer's own docs for the authoritative list. Unknown values are rejected by the analyzer, not by rtl_buddy. Omit to use the analyzer's own default.</td>
-</tr>
-<tr>
-<td><code>xfail</code></td>
-<td>bool</td>
-<td>Optional, default false. Marks the CDC analysis expected-to-fail, <strong>non-strict</strong>: a FAIL becomes <code>XFAIL</code> (a pass); an unexpected PASS becomes <code>XPASS</code> but still counts as a pass. Useful for a design with known/intentional CDC violations tracked in a suite. See <a href="../../concepts/expected-failures/">Expected failures (xfail)</a>.</td>
-</tr>
-<tr>
-<td><code>xfail_strict</code></td>
-<td>bool</td>
-<td>Optional, default false. Like <code>xfail</code> but <strong>strict</strong>: an unexpected PASS (<code>XPASS</code>) counts as a failure. Either flag marks it expected-to-fail; strict wins if both are set.</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Runtime effects:</strong></p>
-<ul>
-<li><code>rtl-buddy cdc</code> loads <code>cdc.yaml</code>, resolves sources via <code>models.yaml</code>, and dispatches to the backend selected by <code>tool</code>.</li>
-<li>The bundled <code>rtl-buddy-cdc</code> backend invokes the standalone <code>rtl-buddy-cdc lint</code> CLI as a subprocess. The analysis receives the model's resolved filelist, the SDC, an optional waivers file, the merged tool opts (root <code>cfg-cdc-tools</code> baseline plus any matching <code>tool_overrides.&lt;tool&gt;</code>), and — when set — <code>--frontend &lt;value&gt;</code> from the per-analysis <code>frontend</code> field.</li>
-<li><code>frontend</code> is <strong>per-analysis</strong> (not on <code>cfg-cdc-tools</code> opts) — different from the synth side, where the equivalent selector lives on <code>cfg-synth-tools.opts.frontend</code>. Per-analysis suits the CDC use case because slang-required and Yosys-only analyses commonly coexist in one suite, and there is no useful project-wide default.</li>
-<li>Each analysis writes a text report and a machine-readable JSON report under <code>artefacts/{name}/</code>; the JSON summary is parsed to populate the pass/fail/skip result for the CLI table.</li>
-<li><code>rtl-buddy cdc &lt;name&gt; --list</code> lists configured analyses without running them.</li>
-</ul>
-<hr />
-<h2 id="cdc_regressionyaml">cdc_regression.yaml</h2>
-<p><strong>Required keys:</strong></p>
-<ul>
-<li><code>rtl-buddy-filetype: cdc_reg_config</code></li>
-<li><code>cdc-configs</code></li>
-</ul>
-<p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cdc_reg_config</span>
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="nt">cdc-configs</span><span class="p">:</span>
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_a/lint/cdc.yaml&quot;</span>
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_b/lint/cdc.yaml&quot;</span>
-</code></pre></div>
-<p><strong>Runtime effects:</strong></p>
-<ul>
-<li><code>rtl-buddy cdc-regression</code> iterates each listed <code>cdc.yaml</code> file and filters analyses by <code>--reg-level</code>.</li>
-<li>Paths in <code>cdc-configs</code> are resolved relative to the <code>cdc_regression.yaml</code> file.</li>
-<li><code>cdc-regression</code> anchors each listed CDC suite on the directory containing its <code>cdc.yaml</code> (the command root) and writes artefacts under <code>&lt;that dir&gt;/artefacts/</code>; it does not change the process working directory (the v5 <a href="../../concepts/execution-context/">execution context</a> model).</li>
-</ul>
-<hr />
 <h2 id="fpvyaml">fpv.yaml</h2>
 <p><strong>Required keys:</strong></p>
 <ul>
@@ -3063,45 +2841,45 @@ and Icarus do not collect coverage through this path.</p>
 <li><code>verifications</code></li>
 </ul>
 <p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fpv_config</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="nt">verifications</span><span class="p">:</span>
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_fifo&quot;</span>
-<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Bounded</span><span class="nv"> </span><span class="s">proof</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">FIFO</span><span class="nv"> </span><span class="s">interface</span><span class="nv"> </span><span class="s">assertions&quot;</span>
-<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
-<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
-<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_fifo/models.yaml&quot;</span>
-<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="w">    </span><span class="nt">top</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
-<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;shared_clock_reset.sv&quot;</span><span class="w">   </span><span class="c1"># optional environment assumes</span>
-<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
-<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;demo_fifo_props.sv&quot;</span>
-<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bmc&quot;</span>
-<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
-<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
-<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">yices&quot;</span>
-<a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
-<a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a>
-<a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_fpv&quot;</span>
-<a id="__codelineno-13-20" name="__codelineno-13-20" href="#__codelineno-13-20"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;k-induction</span><span class="nv"> </span><span class="s">prove</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">ALU</span><span class="nv"> </span><span class="s">accelerator</span><span class="nv"> </span><span class="s">invariants&quot;</span>
-<a id="__codelineno-13-21" name="__codelineno-13-21" href="#__codelineno-13-21"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
-<a id="__codelineno-13-22" name="__codelineno-13-22" href="#__codelineno-13-22"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_top&quot;</span>
-<a id="__codelineno-13-23" name="__codelineno-13-23" href="#__codelineno-13-23"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/alu_accel/models.yaml&quot;</span>
-<a id="__codelineno-13-24" name="__codelineno-13-24" href="#__codelineno-13-24"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
-<a id="__codelineno-13-25" name="__codelineno-13-25" href="#__codelineno-13-25"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;alu_accel_props.sv&quot;</span>
-<a id="__codelineno-13-26" name="__codelineno-13-26" href="#__codelineno-13-26"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;prove&quot;</span>
-<a id="__codelineno-13-27" name="__codelineno-13-27" href="#__codelineno-13-27"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span>
-<a id="__codelineno-13-28" name="__codelineno-13-28" href="#__codelineno-13-28"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
-<a id="__codelineno-13-29" name="__codelineno-13-29" href="#__codelineno-13-29"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">z3&quot;</span>
-<a id="__codelineno-13-30" name="__codelineno-13-30" href="#__codelineno-13-30"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;abc</span><span class="nv"> </span><span class="s">pdr&quot;</span>
-<a id="__codelineno-13-31" name="__codelineno-13-31" href="#__codelineno-13-31"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span>
-<a id="__codelineno-13-32" name="__codelineno-13-32" href="#__codelineno-13-32"></a><span class="w">      </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
-<a id="__codelineno-13-33" name="__codelineno-13-33" href="#__codelineno-13-33"></a><span class="w">      </span><span class="nt">sby</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
-<a id="__codelineno-13-34" name="__codelineno-13-34" href="#__codelineno-13-34"></a><span class="w">    </span><span class="nt">xfail</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">           </span><span class="c1"># expected-fail, non-strict (XPASS still passes)</span>
-<a id="__codelineno-13-35" name="__codelineno-13-35" href="#__codelineno-13-35"></a><span class="w">    </span><span class="nt">xfail_strict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">    </span><span class="c1"># expected-fail, strict (XPASS counts as a failure)</span>
-<a id="__codelineno-13-36" name="__codelineno-13-36" href="#__codelineno-13-36"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
-<a id="__codelineno-13-37" name="__codelineno-13-37" href="#__codelineno-13-37"></a><span class="w">      </span><span class="nt">sby</span><span class="p">:</span>
-<a id="__codelineno-13-38" name="__codelineno-13-38" href="#__codelineno-13-38"></a><span class="w">        </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1800</span>
-<a id="__codelineno-13-39" name="__codelineno-13-39" href="#__codelineno-13-39"></a><span class="w">        </span><span class="nt">extra_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fpv_config</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="nt">verifications</span><span class="p">:</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_fifo&quot;</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Bounded</span><span class="nv"> </span><span class="s">proof</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">FIFO</span><span class="nv"> </span><span class="s">interface</span><span class="nv"> </span><span class="s">assertions&quot;</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_fifo/models.yaml&quot;</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">    </span><span class="nt">top</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fifo&quot;</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">    </span><span class="nt">constraints</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;shared_clock_reset.sv&quot;</span><span class="w">   </span><span class="c1"># optional environment assumes</span>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;demo_fifo_props.sv&quot;</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bmc&quot;</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">32</span>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">yices&quot;</span>
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a>
+<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_fpv&quot;</span>
+<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;k-induction</span><span class="nv"> </span><span class="s">prove</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">ALU</span><span class="nv"> </span><span class="s">accelerator</span><span class="nv"> </span><span class="s">invariants&quot;</span>
+<a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a><span class="w">    </span><span class="nt">tool</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sby&quot;</span>
+<a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a><span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;alu_accel_top&quot;</span>
+<a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a><span class="w">    </span><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/alu_accel/models.yaml&quot;</span>
+<a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a><span class="w">    </span><span class="nt">properties</span><span class="p">:</span>
+<a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;alu_accel_props.sv&quot;</span>
+<a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;prove&quot;</span>
+<a id="__codelineno-11-27" name="__codelineno-11-27" href="#__codelineno-11-27"></a><span class="w">    </span><span class="nt">depth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span>
+<a id="__codelineno-11-28" name="__codelineno-11-28" href="#__codelineno-11-28"></a><span class="w">    </span><span class="nt">engines</span><span class="p">:</span>
+<a id="__codelineno-11-29" name="__codelineno-11-29" href="#__codelineno-11-29"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;smtbmc</span><span class="nv"> </span><span class="s">z3&quot;</span>
+<a id="__codelineno-11-30" name="__codelineno-11-30" href="#__codelineno-11-30"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;abc</span><span class="nv"> </span><span class="s">pdr&quot;</span>
+<a id="__codelineno-11-31" name="__codelineno-11-31" href="#__codelineno-11-31"></a><span class="w">    </span><span class="nt">reglvl</span><span class="p">:</span>
+<a id="__codelineno-11-32" name="__codelineno-11-32" href="#__codelineno-11-32"></a><span class="w">      </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+<a id="__codelineno-11-33" name="__codelineno-11-33" href="#__codelineno-11-33"></a><span class="w">      </span><span class="nt">sby</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1000</span>
+<a id="__codelineno-11-34" name="__codelineno-11-34" href="#__codelineno-11-34"></a><span class="w">    </span><span class="nt">xfail</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">           </span><span class="c1"># expected-fail, non-strict (XPASS still passes)</span>
+<a id="__codelineno-11-35" name="__codelineno-11-35" href="#__codelineno-11-35"></a><span class="w">    </span><span class="nt">xfail_strict</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">    </span><span class="c1"># expected-fail, strict (XPASS counts as a failure)</span>
+<a id="__codelineno-11-36" name="__codelineno-11-36" href="#__codelineno-11-36"></a><span class="w">    </span><span class="nt">tool_overrides</span><span class="p">:</span>
+<a id="__codelineno-11-37" name="__codelineno-11-37" href="#__codelineno-11-37"></a><span class="w">      </span><span class="nt">sby</span><span class="p">:</span>
+<a id="__codelineno-11-38" name="__codelineno-11-38" href="#__codelineno-11-38"></a><span class="w">        </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1800</span>
+<a id="__codelineno-11-39" name="__codelineno-11-39" href="#__codelineno-11-39"></a><span class="w">        </span><span class="nt">extra_args</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span>
 </code></pre></div>
 <p><strong>Field reference:</strong></p>
 <table>
@@ -3221,11 +2999,11 @@ and Icarus do not collect coverage through this path.</p>
 <li><code>fpv-configs</code></li>
 </ul>
 <p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fpv_reg_config</span>
-<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
-<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="nt">fpv-configs</span><span class="p">:</span>
-<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_a/fpv/fpv.yaml&quot;</span>
-<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_b/fpv/fpv.yaml&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">fpv_reg_config</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="nt">fpv-configs</span><span class="p">:</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_a/fpv/fpv.yaml&quot;</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;design/example_block_b/fpv/fpv.yaml&quot;</span>
 </code></pre></div>
 <p><strong>Runtime effects:</strong></p>
 <ul>
@@ -3242,27 +3020,27 @@ and Icarus do not collect coverage through this path.</p>
 <li><code>model</code>, <code>model_path</code>, <code>design_file</code>, <code>operators</code>, <code>verify</code></li>
 </ul>
 <p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mut_config</span>
-<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
-<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">demo_top</span>
-<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
-<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="nt">design_file</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/rtl/alu.sv&quot;</span>
-<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>
-<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="nt">operators</span><span class="p">:</span>
-<a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">arith_flip</span>
-<a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bit_op_flip</span>
-<a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_negate</span>
-<a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a>
-<a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="nt">verify</span><span class="p">:</span>
-<a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">  </span><span class="nt">fpv_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../fpv/demo/fpv.yaml&quot;</span>
-<a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">  </span><span class="nt">verification</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_alu_safety&quot;</span>
-<a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">  </span><span class="nt">test_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../verif/demo/tests.yaml&quot;</span>
-<a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a><span class="w">  </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;alu_smoke&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-15-17" name="__codelineno-15-17" href="#__codelineno-15-17"></a><span class="w">  </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-15-18" name="__codelineno-15-18" href="#__codelineno-15-18"></a>
-<a id="__codelineno-15-19" name="__codelineno-15-19" href="#__codelineno-15-19"></a><span class="nt">budget</span><span class="p">:</span>
-<a id="__codelineno-15-20" name="__codelineno-15-20" href="#__codelineno-15-20"></a><span class="w">  </span><span class="nt">max_mutants</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
-<a id="__codelineno-15-21" name="__codelineno-15-21" href="#__codelineno-15-21"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sequential&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mut_config</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">demo_top</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/models.yaml&quot;</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="nt">design_file</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../design/demo_top/rtl/alu.sv&quot;</span>
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="nt">operators</span><span class="p">:</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">arith_flip</span>
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bit_op_flip</span>
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cond_negate</span>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="nt">verify</span><span class="p">:</span>
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a><span class="w">  </span><span class="nt">fpv_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../fpv/demo/fpv.yaml&quot;</span>
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a><span class="w">  </span><span class="nt">verification</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;demo_fpv_alu_safety&quot;</span>
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a><span class="w">  </span><span class="nt">test_config</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;../../verif/demo/tests.yaml&quot;</span>
+<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a><span class="w">  </span><span class="nt">tests</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;alu_smoke&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a><span class="w">  </span><span class="nt">assertions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a>
+<a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a><span class="nt">budget</span><span class="p">:</span>
+<a id="__codelineno-13-20" name="__codelineno-13-20" href="#__codelineno-13-20"></a><span class="w">  </span><span class="nt">max_mutants</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
+<a id="__codelineno-13-21" name="__codelineno-13-21" href="#__codelineno-13-21"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sequential&quot;</span>
 </code></pre></div>
 <p><strong>Field reference:</strong></p>
 <table>
@@ -3371,19 +3149,19 @@ and Icarus do not collect coverage through this path.</p>
 <li><code>blocks</code></li>
 </ul>
 <p><strong>Example:</strong></p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spec_config</span>
-<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
-<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="nt">blocks</span><span class="p">:</span>
-<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
-<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Brief</span><span class="nv"> </span><span class="s">description</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">block&quot;</span>
-<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">    </span><span class="nt">docs</span><span class="p">:</span>
-<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;README.md&quot;</span>
-<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;behavior.md&quot;</span>
-<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
-<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-01&quot;</span>
-<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Normal</span><span class="nv"> </span><span class="s">operation</span><span class="nv"> </span><span class="s">path&quot;</span>
-<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-02&quot;</span>
-<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Error</span><span class="nv"> </span><span class="s">handling</span><span class="nv"> </span><span class="s">and</span><span class="nv"> </span><span class="s">recovery&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="nt">rtl-buddy-filetype</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">spec_config</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="nt">blocks</span><span class="p">:</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;my_design&quot;</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">    </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Brief</span><span class="nv"> </span><span class="s">description</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">block&quot;</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">    </span><span class="nt">docs</span><span class="p">:</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;README.md&quot;</span>
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;behavior.md&quot;</span>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">    </span><span class="nt">coverage-items</span><span class="p">:</span>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-01&quot;</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Normal</span><span class="nv"> </span><span class="s">operation</span><span class="nv"> </span><span class="s">path&quot;</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MY-COV-02&quot;</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="w">        </span><span class="nt">desc</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Error</span><span class="nv"> </span><span class="s">handling</span><span class="nv"> </span><span class="s">and</span><span class="nv"> </span><span class="s">recovery&quot;</span>
 </code></pre></div>
 <p><strong>Block field reference:</strong></p>
 <table>
@@ -3450,8 +3228,8 @@ and Icarus do not collect coverage through this path.</p>
 <li>Add the suite path to <code>regression.yaml</code>.</li>
 <li>Run a smoke pass:</li>
 </ol>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
-<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>&lt;name&gt;<span class="w"> </span>-c<span class="w"> </span>&lt;suite&gt;/tests.yaml
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>&lt;regression.yaml&gt;<span class="w"> </span>-s<span class="w"> </span><span class="m">0</span><span class="w"> </span>-l<span class="w"> </span><span class="m">0</span>
 </code></pre></div>
 
 
