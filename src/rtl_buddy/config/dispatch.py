@@ -101,6 +101,10 @@ class DispatchConfigFile:
     compile: DispatchResourcesFile | None = None
     sbatch_args: list[str] = field(rename="sbatch-args", default_factory=list)
     poll_interval: float = field(rename="poll-interval", default=10.0)
+    # Cap on concurrently *running* elements PER submitted array
+    # (sbatch --array=1-N%cap). Peak concurrency across a run is roughly
+    # this times the number of arrays (resource groups x suites).
+    max_jobs_per_array: int = field(rename="max-jobs-per-array", default=200)
 
     def initialise(self) -> "DispatchConfig":
         """Validate and freeze into the runtime :class:`DispatchConfig`.
@@ -124,12 +128,18 @@ class DispatchConfigFile:
                 time=_validate_time(res.time),
             )
 
+        if self.max_jobs_per_array < 1:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch max-jobs-per-array must be >= 1 "
+                f"(got {self.max_jobs_per_array})."
+            )
         return DispatchConfig(
             backend=self.backend,
             resources=_validated(self.resources),
             compile=_validated(self.compile),
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
+            max_jobs_per_array=self.max_jobs_per_array,
         )
 
 
@@ -142,6 +152,7 @@ class DispatchConfig:
     compile: DispatchResourcesFile | None = None
     sbatch_args: list = None
     poll_interval: float = 10.0
+    max_jobs_per_array: int = 200
 
     def __post_init__(self):
         if self.sbatch_args is None:

@@ -32,6 +32,7 @@ import shlex
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -45,6 +46,66 @@ logger = logging.getLogger(__name__)
 # (COMPLETED/FAILED/TIMEOUT/CANCELLED...) has finished as far as the
 # collector is concerned — the result envelope decides pass/fail.
 _ACTIVE_STATES = "PD,R,S,CG,CF"
+
+# One element per manifest line, indexed by SLURM_ARRAY_TASK_ID. Lines
+# are shlex-quoted, so eval reconstructs the exact argv. A missing line
+# (short/rewritten manifest) fails the element loudly rather than exiting
+# 0 with no envelope, which would surface as a misleading "produced no
+# result (killed/crashed)" in the collector.
+_ARRAY_SCRIPT = """#!/bin/bash
+set -uo pipefail
+cmd=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$1")
+if [ -z "$cmd" ]; then
+  echo "rb: no manifest line ${SLURM_ARRAY_TASK_ID} in $1" >&2
+  exit 2
+fi
+eval "$cmd"
+"""
+
+_SACCT_FORMAT = "JobID,State,ElapsedRaw,TimelimitRaw,AllocCPUS,ReqMem,TotalCPU,MaxRSS"
+
+
+def _parse_mem_to_bytes(text: str) -> int | None:
+    """Parse sacct memory strings like ``2948K`` / ``1.5G`` / ``4Gn``."""
+    text = text.strip().rstrip("nc")  # legacy per-node/per-cpu suffixes
+    if not text:
+        return None
+    scale = {"K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40}
+    unit = text[-1].upper()
+    if unit in scale:
+        try:
+            return int(float(text[:-1]) * scale[unit])
+        except ValueError:
+            return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _parse_cpu_time_to_seconds(text: str) -> float | None:
+    """Parse sacct TotalCPU ``[DD-]HH:MM:SS[.ms]`` / ``MM:SS[.ms]``."""
+    text = text.strip()
+    if not text:
+        return None
+    days = 0
+    if "-" in text:
+        day_part, text = text.split("-", 1)
+        try:
+            days = int(day_part)
+        except ValueError:
+            return None
+    parts = text.split(":")
+    try:
+        parts = [float(p) for p in parts]
+    except ValueError:
+        return None
+    if not 1 <= len(parts) <= 3:
+        return None
+    seconds = 0.0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return days * 86400 + seconds
 
 
 class SlurmDispatchBackend(DispatchBackend):
@@ -201,10 +262,93 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return JobHandle(job_id=job_id, spec=spec)
 
+    def submit_array(
+        self,
+        specs: list[TestJobSpec],
+        *,
+        array_dir: Path,
+        max_parallel: int | None = None,
+        dependency: str | None = None,
+    ) -> list[JobHandle]:
+        if len(specs) <= 1:
+            return [self.submit(spec, dependency=dependency) for spec in specs]
+
+        array_dir = Path(array_dir)
+        array_dir.mkdir(parents=True, exist_ok=True)
+        manifest = array_dir / "manifest.txt"
+        manifest.write_text(
+            "".join(shlex.join(self._job_argv(spec)) + "\n" for spec in specs)
+        )
+        script = array_dir / "array.sh"
+        script.write_text(_ARRAY_SCRIPT)
+        script.chmod(0o755)
+        # Element logs are deterministic (%a = 1-based manifest line), so
+        # collection can point at the exact log on failure.
+        for i, spec in enumerate(specs, start=1):
+            spec.log_path = array_dir / f"slurm-{i}.log"
+
+        array_range = f"1-{len(specs)}"
+        if max_parallel is not None and max_parallel < len(specs):
+            array_range += f"%{max_parallel}"
+        resources = specs[0].resources
+        cmd = [
+            "sbatch",
+            "--parsable",
+            f"--array={array_range}",
+            f"--job-name=rb:{specs[0].test_name}+{len(specs) - 1}",
+            f"--chdir={specs[0].suite_dir}",
+            f"--time={resources.time}",
+            f"--cpus-per-task={resources.cpus}",
+        ]
+        if resources.mem is not None:
+            cmd.append(f"--mem={resources.mem}")
+        cmd.append(f"--output={array_dir}/slurm-%a.log")
+        if dependency is not None:
+            # afterok: array elements only run if the shared build succeeded.
+            cmd.append(f"--dependency=afterok:{dependency}")
+        cmd += self.sbatch_args
+        cmd += [str(script), str(manifest)]
+
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, cwd=specs[0].suite_dir
+        )
+        if proc.returncode != 0:
+            raise FatalRtlBuddyError(
+                f"sbatch array submit failed ({len(specs)} jobs, "
+                f"rc={proc.returncode}): {proc.stderr.strip()}"
+            )
+        base_id = proc.stdout.strip().split(";")[0]
+        if not base_id:
+            raise FatalRtlBuddyError("sbatch returned no job id for array submit")
+        log_event(
+            logger,
+            logging.INFO,
+            "dispatch.array_submitted",
+            backend=self.name,
+            job_id=base_id,
+            jobs=len(specs),
+            array=array_range,
+            time=resources.time,
+            cpus=resources.cpus,
+            mem=resources.mem,
+        )
+        return [
+            JobHandle(job_id=f"{base_id}_{i}", spec=spec)
+            for i, spec in enumerate(specs, start=1)
+        ]
+
+    @staticmethod
+    def _base_ids(handles: list[JobHandle]) -> list[str]:
+        """Unique base job ids — one per array, not per element."""
+        seen: dict[str, None] = {}
+        for h in handles:
+            seen.setdefault(h.job_id.split("_")[0], None)
+        return list(seen)
+
     def wait_all(self, handles: list[JobHandle]) -> None:
         if not handles:
             return
-        ids = ",".join(h.job_id for h in handles)
+        ids = ",".join(self._base_ids(handles))
         cwd = self._cwd_of(handles)
         while True:
             proc = subprocess.run(
@@ -249,8 +393,9 @@ class SlurmDispatchBackend(DispatchBackend):
     def cancel_all(self, handles: list[JobHandle]) -> None:
         if not handles:
             return
+        # Base ids: cancelling an array id cancels every element.
         subprocess.run(
-            ["scancel", *(h.job_id for h in handles)],
+            ["scancel", *self._base_ids(handles)],
             capture_output=True,
             text=True,
             cwd=self._cwd_of(handles),
@@ -262,3 +407,94 @@ class SlurmDispatchBackend(DispatchBackend):
             backend=self.name,
             jobs=len(handles),
         )
+
+    def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
+        """Reserved-vs-used per job from ``sacct``, keyed by handle job id.
+
+        Queries WITHOUT ``-X``: ``MaxRSS``/``TotalCPU`` only populate on
+        step rows (``.batch`` etc.), never the allocation row — usage is
+        folded up to its parent job. Values per job:
+        ``state``, ``elapsed_s``, ``timelimit_s`` (TimelimitRaw is in
+        MINUTES; normalized here), ``alloc_cpus``, ``req_mem_bytes``,
+        ``total_cpu_s``, ``max_rss_bytes``. Missing accounting (no
+        slurmdbd) returns ``{}`` and right-sizing degrades gracefully.
+        """
+        if not handles:
+            return {}
+        # Telemetry is strictly additive — no failure mode of it may fail a
+        # run whose jobs have all completed. sacct may be absent (client
+        # packaging varies; sbatch present does not guarantee sacct) or wedged
+        # against a slow slurmdbd, so guard both and time-box the call.
+        try:
+            proc = subprocess.run(
+                [
+                    "sacct",
+                    "--parsable2",
+                    "--noheader",
+                    f"--format={_SACCT_FORMAT}",
+                    "--jobs",
+                    ",".join(self._base_ids(handles)),
+                ],
+                capture_output=True,
+                text=True,
+                cwd=self._cwd_of(handles),
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.telemetry_unavailable",
+                backend=self.name,
+                error=str(e)[:200],
+            )
+            return {}
+        if proc.returncode != 0:
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.telemetry_unavailable",
+                backend=self.name,
+                error=proc.stderr.strip()[:200],
+            )
+            return {}
+
+        wanted = {h.job_id for h in handles}
+        telemetry: dict[str, dict] = {}
+        for line in proc.stdout.splitlines():
+            fields = line.split("|")
+            if len(fields) != len(_SACCT_FORMAT.split(",")):
+                continue
+            job_id, state, elapsed, limit, cpus, req_mem, total_cpu, max_rss = fields
+            base = job_id.split(".")[0]
+            if base not in wanted:
+                continue
+            entry = telemetry.setdefault(base, {})
+            if "." not in job_id:
+                # Allocation row: state + reservation-side numbers.
+                entry["state"] = state
+                try:
+                    entry["elapsed_s"] = int(elapsed)
+                except ValueError:
+                    pass
+                try:
+                    # sacct's TimelimitRaw is minutes, unlike ElapsedRaw.
+                    entry["timelimit_s"] = int(limit) * 60
+                except ValueError:
+                    pass
+                try:
+                    entry["alloc_cpus"] = int(cpus)
+                except ValueError:
+                    pass
+                if (req_mem_bytes := _parse_mem_to_bytes(req_mem)) is not None:
+                    entry["req_mem_bytes"] = req_mem_bytes
+            else:
+                # Step rows. TotalCPU is per step, so a job's CPU time is the
+                # SUM over steps (.batch + .extern + any srun steps) — max
+                # would under-report once a hook/builder uses srun. MaxRSS is
+                # a high-water mark and folds with max.
+                if (cpu_s := _parse_cpu_time_to_seconds(total_cpu)) is not None:
+                    entry["total_cpu_s"] = entry.get("total_cpu_s", 0.0) + cpu_s
+                if (rss := _parse_mem_to_bytes(max_rss)) is not None:
+                    entry["max_rss_bytes"] = max(entry.get("max_rss_bytes", 0), rss)
+        return telemetry

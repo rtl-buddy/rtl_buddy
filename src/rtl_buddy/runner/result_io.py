@@ -51,6 +51,24 @@ def write_result_json(path, *, test_name, run_id, results):
     return path
 
 
+def attach_telemetry_json(path, telemetry: dict):
+    """Fold scheduler usage telemetry into an existing result envelope.
+
+    Called by the collecting head after the job finished (the job cannot
+    know its own final accounting numbers). Atomic like the writer. A
+    missing envelope is the caller's DispatchFail case — not raised here.
+    """
+    path = Path(path)
+    try:
+        raw = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return
+    raw["telemetry"] = telemetry
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
+    os.replace(tmp, path)
+
+
 def load_result_json(path):
     """Load an envelope written by :func:`write_result_json`.
 

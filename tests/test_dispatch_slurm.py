@@ -42,7 +42,7 @@ def _spec(**overrides) -> TestJobSpec:
 def _fake_run(calls, results):
     """subprocess.run stand-in: records argv, pops canned results."""
 
-    def run(argv, capture_output=True, text=True, cwd=None):
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
         calls.append(list(argv))
         result = (
             results.pop(0)
@@ -174,6 +174,192 @@ def test_cancel_all_scancels_every_job(monkeypatch):
     assert argv == ["scancel", "5", "6"]
 
 
+# ---------------------------------------------------------------- P2: arrays
+
+
+def test_submit_array_builds_manifest_script_and_throttle(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(sbatch_args=["--qos=fast"]))
+
+    specs = [_spec(run_id=i) for i in (1, 2, 3)]
+    array_dir = tmp_path / "array-001"
+    handles = backend.submit_array(specs, array_dir=array_dir, max_parallel=2)
+
+    assert [h.job_id for h in handles] == ["500_1", "500_2", "500_3"]
+    manifest = (array_dir / "manifest.txt").read_text().splitlines()
+    assert len(manifest) == 3
+    assert "--run-id 1" in manifest[0] and "--run-id 3" in manifest[2]
+    assert (array_dir / "array.sh").read_text().startswith("#!/bin/bash")
+    # Element logs are deterministic and stamped back onto the specs.
+    assert specs[0].log_path == array_dir / "slurm-1.log"
+
+    (argv,) = calls
+    assert "--array=1-3%2" in argv
+    assert f"--output={array_dir}/slurm-%a.log" in argv
+    assert "--qos=fast" in argv
+    assert argv[-2:] == [str(array_dir / "array.sh"), str(array_dir / "manifest.txt")]
+
+
+def test_submit_array_no_throttle_when_cap_exceeds_size(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)], array_dir=tmp_path, max_parallel=200
+    )
+    (argv,) = calls
+    assert "--array=1-2" in argv
+
+
+def test_submit_array_single_spec_falls_back_to_submit(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    handles = backend.submit_array([_spec()], array_dir=tmp_path, max_parallel=8)
+    assert [h.job_id for h in handles] == ["9"]
+    (argv,) = calls
+    assert not any(a.startswith("--array") for a in argv)
+    assert "--wrap" in argv
+
+
+def test_wait_and_cancel_use_base_array_ids(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+
+    handles = [
+        JobHandle("500_1", _spec(run_id=1)),
+        JobHandle("500_2", _spec(run_id=2)),
+        JobHandle("42", _spec()),
+    ]
+    backend.wait_all(handles)
+    assert "500,42" in calls[0]
+
+    backend.cancel_all(handles)
+    assert calls[1] == ["scancel", "500", "42"]
+
+
+# ------------------------------------------------------- P2: sacct telemetry
+
+
+def test_collect_telemetry_parses_allocation_and_step_rows(monkeypatch):
+    sacct_out = "\n".join(
+        [
+            # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqMem|TotalCPU|MaxRSS
+            "500_1|COMPLETED|75|60|2|4G||",
+            "500_1.batch|COMPLETED|75||2||01:02.500|2948K",
+            "500_2|TIMEOUT|3600|60|2|4G||",
+            "500_2.batch|CANCELLED|3600||2||59:00.000|1.5G",
+            "42|COMPLETED|10|1|1|500M||",
+            "42.batch|COMPLETED|10||1||00:03.250|10240K",
+        ]
+    )
+    calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    handles = [
+        JobHandle("500_1", _spec(run_id=1)),
+        JobHandle("500_2", _spec(run_id=2)),
+        JobHandle("42", _spec()),
+    ]
+    telemetry = backend.collect_telemetry(handles)
+
+    (argv,) = calls
+    assert argv[0] == "sacct" and "500,42" in argv
+
+    t1 = telemetry["500_1"]
+    assert t1["state"] == "COMPLETED"
+    assert t1["elapsed_s"] == 75
+    assert t1["timelimit_s"] == 3600  # TimelimitRaw is minutes
+    assert t1["alloc_cpus"] == 2
+    assert t1["req_mem_bytes"] == 4 * 2**30
+    assert t1["max_rss_bytes"] == 2948 * 1024
+    assert t1["total_cpu_s"] == 62.5
+
+    t2 = telemetry["500_2"]
+    assert t2["state"] == "TIMEOUT"
+    assert t2["max_rss_bytes"] == int(1.5 * 2**30)
+
+    assert telemetry["42"]["total_cpu_s"] == 3.25
+
+
+def test_collect_telemetry_no_accounting_degrades_to_empty(monkeypatch):
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="sacct: error: accounting disabled"
+            )
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+    assert backend.collect_telemetry([JobHandle("5", _spec())]) == {}
+
+
+def test_mem_and_cpu_time_parsers():
+    assert slurm_module._parse_mem_to_bytes("2948K") == 2948 * 1024
+    assert slurm_module._parse_mem_to_bytes("4Gn") == 4 * 2**30
+    assert slurm_module._parse_mem_to_bytes("1.5G") == int(1.5 * 2**30)
+    assert slurm_module._parse_mem_to_bytes("123") == 123
+    assert slurm_module._parse_mem_to_bytes("") is None
+    assert slurm_module._parse_cpu_time_to_seconds("01:02.500") == 62.5
+    assert slurm_module._parse_cpu_time_to_seconds("2-01:00:00") == 2 * 86400 + 3600
+    assert slurm_module._parse_cpu_time_to_seconds("") is None
+
+
+# ------------------------------------------- P2 review: telemetry robustness
+
+
+def test_collect_telemetry_sums_cpu_time_across_steps(monkeypatch):
+    # TotalCPU is per step; a job's CPU time is the SUM (.batch + srun step),
+    # while MaxRSS stays a high-water max.
+    sacct_out = "\n".join(
+        [
+            "9|COMPLETED|100|60|4|4G||",
+            "9.batch|COMPLETED|100||4||00:10.000|500M",
+            "9.0|COMPLETED|100||4||01:30.000|900M",
+        ]
+    )
+    calls, results = [], [SimpleNamespace(returncode=0, stdout=sacct_out, stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    t = backend.collect_telemetry([JobHandle("9", _spec())])["9"]
+    assert t["total_cpu_s"] == 100.0  # 10s + 90s summed
+    assert t["max_rss_bytes"] == 900 * 2**20  # max, not sum
+
+
+def test_collect_telemetry_missing_sacct_binary_degrades(monkeypatch):
+    # sacct absent (FileNotFoundError) must not fail a finished run.
+    def boom(*a, **k):
+        raise FileNotFoundError("sacct")
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", boom)
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+    assert backend.collect_telemetry([JobHandle("1", _spec())]) == {}
+
+
+def test_collect_telemetry_timeout_degrades(monkeypatch):
+    def slow(*a, **k):
+        raise slurm_module.subprocess.TimeoutExpired(cmd="sacct", timeout=60)
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", slow)
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+    assert backend.collect_telemetry([JobHandle("1", _spec())]) == {}
+
+
+def test_array_script_fails_loud_on_missing_manifest_line():
+    # The array runner exits non-zero (not a silent COMPLETED) when the
+    # SLURM_ARRAY_TASK_ID line is absent.
+    assert "set -uo pipefail" in slurm_module._ARRAY_SCRIPT
+    assert "exit 2" in slurm_module._ARRAY_SCRIPT
+
+
 # ------------------------------------------ dispatched build job + dependency
 
 
@@ -260,3 +446,18 @@ def test_sim_argv_carries_plan(monkeypatch):
     (argv,) = calls
     wrapped = shlex.split(argv[argv.index("--wrap") + 1])
     assert wrapped[wrapped.index("--plan") + 1] == str(plan)
+
+
+def test_submit_array_accepts_dependency(monkeypatch, tmp_path):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="500\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)],
+        array_dir=tmp_path / "array-001",
+        max_parallel=4,
+        dependency="900",
+    )
+    (argv,) = calls
+    assert "--dependency=afterok:900" in argv

@@ -327,6 +327,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: compile failed in build job "
                 f"{fields.get('build_job')} — counting it as a compile failure"
             )
+        case "randtest.dispatch_ignored_for_replay":
+            return (
+                f"--dispatch {fields.get('backend')} ignored for replay "
+                f"(-r {fields.get('replay_run_id')}): a single-seed replay "
+                "runs locally"
+            )
         case "dispatch.cancelled":
             return (
                 f"Cancelled {fields.get('jobs')} outstanding dispatch job(s) "

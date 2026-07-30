@@ -129,3 +129,25 @@ def test_load_unsupported_schema_version_fails_loud(tmp_path: Path):
     out.write_text(json.dumps(envelope))
     with pytest.raises(FatalRtlBuddyError, match="schema_version"):
         load_result_json(out)
+
+
+def test_attach_telemetry_round_trip(tmp_path: Path):
+    from rtl_buddy.runner.result_io import attach_telemetry_json
+
+    out = tmp_path / "result.json"
+    write_result_json(
+        out, test_name="t", run_id=1, results=TestPassResults(name="t/results")
+    )
+    attach_telemetry_json(out, {"state": "COMPLETED", "max_rss_bytes": 1024})
+    envelope = json.loads(out.read_text())
+    assert envelope["telemetry"]["max_rss_bytes"] == 1024
+    # Result payload is untouched and still loads.
+    assert load_result_json(out)["result"].is_pass()
+    assert not out.with_name(out.name + ".tmp").exists()
+
+
+def test_attach_telemetry_missing_file_is_noop(tmp_path: Path):
+    from rtl_buddy.runner.result_io import attach_telemetry_json
+
+    attach_telemetry_json(tmp_path / "nope.json", {"state": "X"})
+    assert not (tmp_path / "nope.json").exists()
