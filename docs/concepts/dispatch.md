@@ -23,7 +23,7 @@ rb randtest my_test 500 --dispatch slurm   # seed fan-out
    stops at compile.
 2. **Fan-out.** One job per `(test, run_id)` is submitted via `sbatch`.
    Jobs with identical resolved resources are grouped into a single Slurm
-   **array**; `cfg-dispatch.max-jobs` maps to the array's `%N` concurrency
+   **array**; `cfg-dispatch.max-jobs-per-array` maps to the array's `%N` concurrency
    throttle. Each job re-invokes `rb _test-job`, whose own compile
    short-circuits on the shared-build stamp, so it runs simulation + post
    only.
@@ -63,7 +63,7 @@ cfg-dispatch:
   sbatch-args:              # passed to sbatch verbatim
     - --partition=verif
     - --account=chip
-  max-jobs: 200             # concurrency throttle, PER submitted array
+  max-jobs-per-array: 200   # concurrency throttle, PER submitted array
   poll-interval: 10         # seconds between queue polls (> 0)
   rightsize:                # reservation right-sizing (see below)
     report: true
@@ -72,10 +72,10 @@ cfg-dispatch:
     margin: 1.5
 ```
 
-`max-jobs` throttles each *submitted array* (`--array=1-N%max-jobs`), not
-the run as a whole — a regression with several reservation shapes across
+`max-jobs-per-array` throttles each *submitted array*
+(`--array=1-N%max-jobs-per-array`), not the run as a whole — a regression with several reservation shapes across
 several suites submits several arrays, so peak concurrency is roughly
-`max-jobs × arrays`. Size it per array, not per cluster.
+`max-jobs-per-array × arrays`. Size it per array, not per cluster.
 
 !!! warning "Quote `time` values"
     YAML 1.1 reads an unquoted `time: 4:00:00` as the **integer 14400**
