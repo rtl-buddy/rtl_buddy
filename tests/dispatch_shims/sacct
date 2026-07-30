@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Fake sacct. Emits over-reservation telemetry (5s of a 60-min limit; 20M
+# of 512M) per recorded job id. Row field order is positionally coupled to
+# _SACCT_FORMAT in src/rtl_buddy/dispatch/slurm.py — if a field is added
+# there, add it here too (the parser silently skips mismatched-width rows).
+db="${RB_SHIM_DB:-$PWD/.rb_shim_jobs}"
+[ -f "$db" ] || exit 0
+# Honor --jobs (base ids) like real sacct: emit only ids under a requested
+# base, so the shim stays honest if a test reuses one DB across runs.
+wanted=""
+prev=""
+for a in "$@"; do [ "$prev" = "--jobs" ] && wanted="$a"; prev="$a"; done
+match() {
+  [ -z "$wanted" ] && return 0
+  local base="${1%%_*}"
+  IFS=',' read -ra ws <<< "$wanted"
+  for w in "${ws[@]}"; do [ "$base" = "$w" ] && return 0; done
+  return 1
+}
+while read -r jid; do
+  [ -z "$jid" ] && continue
+  match "$jid" || continue
+  # JobID|State|ElapsedRaw|TimelimitRaw|AllocCPUS|ReqMem|TotalCPU|MaxRSS
+  echo "${jid}|COMPLETED|5|60|1|512M||"
+  echo "${jid}.batch|COMPLETED|5||1||00:04.000|20480K"
+done < "$db"

@@ -1,0 +1,21 @@
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb
+    toplevel: tb
+    filelist:
+      - src.sv
+tests:
+  - name: wide
+    desc: sweep-expanded test (fans out to an array > 1)
+    model: ms
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+      path: "sweep3.py"
+    testbench: tb
+    sim_timeout:

@@ -1,0 +1,40 @@
+# CI dispatch idempotency fixture: same fake "verilator" builder as
+# dispatch_project, but the regression spans two suites (two model builds)
+# and one suite's test carries a counting `sweep` hook that expands to
+# three variants (an array > 1). Exercised by
+# tests/test_dispatch_ci_shim.py to prove the sweep hook runs exactly once
+# (on the head) regardless of array size or build count.
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "fakevrl"
+    verible: "stub-verible"
+
+cfg-rtl-builder:
+  - name: "fakevrl"
+    builder: "verilator"
+    simulator-family: "verilator"
+    builder-simv: "simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      reg:
+        compile-time: "--binary"
+        run-time: "+quiet"
+
+cfg-verible:
+  - name: "stub-verible"
+    path: "/usr/bin"
+    extra_args: {}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+
+cfg-dispatch:
+  backend: slurm
+  resources:
+    cpus: 1
+    mem: 512M
+    time: "01:00:00"

@@ -1,0 +1,20 @@
+rtl-buddy-filetype: test_config
+testbenches:
+  - name: tb
+    toplevel: tb
+    filelist:
+      - src.sv
+tests:
+  - name: solo
+    desc: plain test in a second suite (a second, sweep-free model build)
+    model: mp
+    model_path: models.yaml
+    reglvl: 0
+    plusargs:
+    plusdefines:
+    uvm:
+    preproc:
+    postproc:
+    sweep:
+    testbench: tb
+    sim_timeout:

@@ -86,20 +86,14 @@ What happens: **nothing heavy runs on the submit host** (usually an
 interactive login node). The head expands the suite once, then submits one
 **build job** per suite that Verilates a shared `simv` per unique compile
 key on a compute node (dispatch implies `--share-build`); it then submits
-one sim job per test, each gated on that build with
-`--dependency=afterok`, so a sim starts only once its shared build
-succeeded and re-enters at simulation. The head waits for the queue to
-drain and collects each job's result into the normal summary and exit
-code. Per-test resource reservations layer `cfg-dispatch.resources` under
-per-testbench/test `resources:` in tests.yaml; see the
-[Slurm client install requirements](../install.md).
+one sim job per test, each gated on that build with `--dependency=afterok`,
+so a sim starts only once its shared build succeeded and re-enters at
+simulation. The head waits for the queue to drain and collects each job's
+result into the normal summary and exit code.
 
-Requirements in brief: a Slurm client on the submit host
-(`sbatch`/`squeue`/`scancel`), a shared filesystem visible at the same
-paths on submit host and compute nodes, and the project's Python
-environment runnable on the compute nodes. `--dispatch` cannot be
-combined with `--early-stop`, and skips the per-tree lock for its jobs
-(see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
+See **[Parallel Dispatch (Slurm)](dispatch.md)** for the full treatment:
+`cfg-dispatch` configuration, per-test `resources:` layering, reservation
+right-sizing advice, requirements, and the agent loop.
 
 ## Full schema
 

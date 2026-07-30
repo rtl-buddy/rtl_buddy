@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Fake Verilator for CI dispatch tests: emit a simv that prints a PASS log.
+mdir=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--Mdir" ] && mdir="$a"
+  prev="$a"
+done
+[ -z "$mdir" ] && { echo "no --Mdir" >&2; exit 1; }
+mkdir -p "$mdir"
+cat > "$mdir/simv" <<'SIMV'
+#!/usr/bin/env bash
+echo "PASS (nwrn=  0)"
+SIMV
+chmod +x "$mdir/simv"
+echo "fake-verilator: wrote $mdir/simv"
