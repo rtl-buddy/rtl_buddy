@@ -63,8 +63,8 @@ cfg-dispatch:
   sbatch-args:              # passed to sbatch verbatim
     - --partition=verif
     - --account=chip
-  max-jobs: 200             # array concurrency throttle
-  poll-interval: 10         # seconds between queue polls
+  max-jobs: 200             # concurrency throttle, PER submitted array
+  poll-interval: 10         # seconds between queue polls (> 0)
   rightsize:                # reservation right-sizing (see below)
     report: true
     over-threshold: 0.5
@@ -72,11 +72,17 @@ cfg-dispatch:
     margin: 1.5
 ```
 
+`max-jobs` throttles each *submitted array* (`--array=1-N%max-jobs`), not
+the run as a whole — a regression with several reservation shapes across
+several suites submits several arrays, so peak concurrency is roughly
+`max-jobs × arrays`. Size it per array, not per cluster.
+
 !!! warning "Quote `time` values"
     YAML 1.1 reads an unquoted `time: 4:00:00` as the **integer 14400**
     (sexagesimal), which Slurm would take as 14400 *minutes* — 10 days.
     rtl_buddy rejects the unquoted form loudly; always write
-    `time: "4:00:00"`.
+    `time: "4:00:00"`. See
+    [Known Issues](../known-issues.md#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal).
 
 ## Per-test reservations
 

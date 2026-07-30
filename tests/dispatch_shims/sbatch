@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Fake sbatch: runs the job(s) synchronously and records element job ids.
+# Job ids are monotonic (derived from the DB) so two arrays in one run
+# never collide and cross-contaminate sacct telemetry rows.
 db="${RB_SHIM_DB:-$PWD/.rb_shim_jobs}"
-jobid=$(( (RANDOM % 9000) + 1000 ))
+log="${RB_SHIM_LOG:-$db.log}"
+jobid=$(( 1000 + $( [ -f "$db" ] && wc -l < "$db" || echo 0 ) ))
 array="" ; wrap="" ; chdir="" ; script="" ; manifest=""
 args=("$@")
 i=0
@@ -16,8 +19,11 @@ while [ $i -lt ${#args[@]} ]; do
   esac
   i=$((i+1))
 done
-[ -n "$chdir" ] && cd "$chdir"
-run_one() { ( eval "$1" ) >/dev/null 2>&1 || true; }
+# Fail loud if the job's chdir is bad, rather than silently running the
+# real _test-job from the wrong directory (an opaque empty-result failure).
+[ -n "$chdir" ] && { cd "$chdir" || { echo "shim sbatch: cd $chdir failed" >&2; exit 1; }; }
+# Tee both streams to $log so a broken _test-job is debuggable in CI.
+run_one() { ( eval "$1" ) >>"$log" 2>&1 || true; }
 if [ -n "$wrap" ]; then
   echo "$jobid" >> "$db"
   run_one "$wrap"

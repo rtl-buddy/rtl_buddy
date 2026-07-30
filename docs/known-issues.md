@@ -159,17 +159,45 @@ Three consequences that can surprise:
 
 ## `--dispatch` silently implies `--share-build`
 
-`regression --dispatch slurm` turns on `--share-build` even if you didn't
-pass it: a **dispatched build job** compiling one shared `simv` per unique
-compile key on a compute node is exactly what lets each sim job skip
-compilation and re-enter at simulation. This changes compile behaviour
-versus a plain local run — tests with identical compile inputs Verilate
-once, not once each — and share-build is Verilator-only, so non-Verilator
-builders fall back to compiling inside each job. The promotion is logged as
-`dispatch.share_build_implied`. Also note `--dispatch` cannot be combined
-with `--early-stop`: a build job compiles and the sim jobs run sim+post, so
-no earlier stop point is expressible per job (rtl_buddy rejects the
-combination loudly rather than ignoring the flag).
+`regression --dispatch slurm` (and `randtest --dispatch slurm`) turn on
+`--share-build` even if you didn't pass it: a **dispatched build job**
+compiling one shared `simv` per unique compile key on a compute node is
+exactly what lets each sim job skip compilation and re-enter at simulation.
+This changes compile behaviour versus a plain local run — tests with
+identical compile inputs Verilate once, not once each — and share-build is
+Verilator-only, so non-Verilator builders fall back to compiling inside
+each job. The promotion is logged as `dispatch.share_build_implied`. Also
+note `--dispatch` cannot be combined with `--early-stop`: a build job
+compiles and the sim jobs run sim+post, so no earlier stop point is
+expressible per job (rtl_buddy rejects the combination loudly rather than
+ignoring the flag). And `randtest -r <n> --dispatch slurm` runs locally — a
+single-seed replay gains nothing from the queue — logging
+`randtest.dispatch_ignored_for_replay` so the ignored flag isn't silent.
+
+## An unquoted `time:` in `cfg-dispatch`/`resources:` is YAML sexagesimal
+
+YAML 1.1 parses an unquoted `time: 4:00:00` as the **integer 14400**
+(base-60), not the string `"4:00:00"`. Slurm would read that as 14400
+*minutes* — a 10-day reservation instead of 4 hours. Leading-zero forms
+like `01:00:00` happen to survive (the resolver needs a non-zero leading
+digit), which is why the trap is easy to miss. rtl_buddy's `_validate_time`
+**rejects the integer form loudly** at config load, telling you to quote
+it — so always write `time: "4:00:00"` (or bare minutes as a string,
+`time: "240"`). Applies everywhere `resources:` appears: `cfg-dispatch`,
+per-testbench, and per-test.
+
+## Reservation right-sizing has floors that can silently suppress advice
+
+The reservation-advice thresholds (`over-threshold`, `near-limit`,
+`margin`) are configurable under `cfg-dispatch.rightsize`, but two guards
+are fixed constants: a **5-minute time floor** and a **128M memory floor**
+on suggestions, plus a keep-ratio that only emits a `reduce` when the
+suggestion actually saves ≥25% of the reservation. Consequence: for any
+time reservation below ~6m40s (`5min ÷ 0.75`), no `reduce` time advice is
+possible regardless of utilization — a very over-provisioned but tiny
+reservation can come back with no advice and no explanation. This is
+deliberate (churn suppression) but not currently tunable; if you get empty
+advice on an obviously over-reserved short job, this is why.
 
 ## Under `--dispatch`, `preproc` runs in both the build job and each sim job
 

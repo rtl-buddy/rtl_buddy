@@ -38,21 +38,15 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 
 ## rb xplr (design-space exploration)
 
-- `rb xplr` is the experiment ledger for DSE loops: it records what YOU changed, pins the source sha, and curates the Pareto frontier. It never proposes the next experiment — you do.
-- The loop: `rb --machine xplr frontier` (+ `xplr show <id>` for a member's `config_snapshot`) -> reason -> apply the change (RTL/tool knob, outside rb) -> `rb --machine xplr register --json manifest.json` -> run the flow -> `rb --machine xplr attach-outcome <id> --json outcome.json` -> repeat.
-- Always declare an experiment `hypothesis` and a per-knob `rationale`, plus `parent` — the ledger is a reasoning trail. Run `rb --machine xplr knob-effect <knob>` before re-trying a knob and `rb --machine xplr diff <a> <b>` to compare candidates.
-- Declare `direction` in `metric_meta` for every metric that should join dominance; report a completed-but-unroutable point as `status=success` with `routed: false` (`failed` means the flow crashed).
-- Dry-run the whole loop with `rb xplr mock run --scenario rastrigin|zdt1` and grade yourself with `rb xplr mock score`. Contract + worked example: `rtl-buddy docs show concepts/xplr`.
+- `rb xplr` is the experiment ledger for DSE loops: it records what YOU changed, pins the source sha, curates the Pareto frontier — it never proposes the next experiment, you do. Loop: `rb --machine xplr frontier` -> reason -> apply the knob (outside rb) -> `xplr register --json manifest.json` -> run -> `xplr attach-outcome <id> --json outcome.json` -> repeat, always with `hypothesis` + per-knob `rationale` + `parent`. Declare `direction` in `metric_meta` for dominance metrics; an unroutable-but-complete point is `status=success` + `routed: false`. Dry-run `rb xplr mock run`. Contract + worked example: `rtl-buddy docs show concepts/xplr`.
 
 ## rb fpga timing closure
 
-- Gate first with `rb --machine tool-check --required-for fpga` (global `--machine` gives the JSON envelope; `payload.subcommands.fpga.status == "ok"` means ready, else `rb tool-check --explain vivado`). Then `rb --machine fpga <run>` runs synth→place→route per `fpga.yaml` (Vivado default; `tool: openxc7` for 7-series). Missed timing is NOT a FAIL: the run passes and the JSON carries `timing_met`, `wns_ns`, `failing_endpoints`, `failing_paths`.
-- Closure loop: run → if `timing_met` is false, read `failing_paths[0]` (`source`/`destination`/`requirement_ns`/`logic_levels`) → hypothesize (clock too fast → relax `create_clock` toward `requirement_ns - wns_ns`; cross-domain or quasi-static path → missing false-path/multicycle exception; many logic levels → pipeline source→destination in RTL) → edit XDC/RTL → rerun → compare `wns_ns`. Worked example: `rtl-buddy docs show concepts/fpga`.
+- Gate with `rb --machine tool-check --required-for fpga` (`payload.subcommands.fpga.status == "ok"`, else `rb tool-check --explain vivado`), then `rb --machine fpga <run>` (synth→place→route per `fpga.yaml`; Vivado default, `tool: openxc7` for 7-series). Missed timing is NOT a FAIL — the JSON carries `timing_met`, `wns_ns`, `failing_paths`. Closure loop: if `timing_met` is false, read `failing_paths[0]` → hypothesize (clock too fast → relax `create_clock` toward `requirement_ns - wns_ns`; cross-domain/quasi-static → false-path/multicycle exception; many `logic_levels` → pipeline in RTL) → edit → rerun → compare `wns_ns`. Worked example: `rtl-buddy docs show concepts/fpga`.
 
 ## rb regression --dispatch slurm
 
-- On a cluster, `rb --machine regression --dispatch slurm` fans tests out as parallel Slurm jobs after one shared build (implies `--share-build`; needs the Slurm client + a shared FS — gate with `rb --machine tool-check --explain slurm`). Same summary/exit-code contract as a local run.
-- Right-size reservations from the loop: after a `--dispatch slurm` run, read `payload.reservation_advice` (one event per finding with `direction`, `suggested`, and an `edit_hint` naming the exact `tests.yaml` field). Apply `raise` advice first (under-reservations cost failed runs), then `reduce`; rerun to confirm the advice retires. rtl_buddy suggests — you edit. Set per-test `resources: {cpus,mem,time}` (quote `time`). Details: `rtl-buddy docs show concepts/dispatch`.
+- `rb --machine regression --dispatch slurm` fans tests out as parallel Slurm jobs after one shared build (implies `--share-build`; gate with `rb --machine tool-check --explain slurm`). Right-size from the loop: read `payload.reservation_advice`, apply each `edit_hint` (`raise` first — under-reservations cost failed runs — then `reduce`), rerun to confirm it retires. rtl_buddy suggests; you edit. Details: `rtl-buddy docs show concepts/dispatch`.
 
 ## Execution context
 

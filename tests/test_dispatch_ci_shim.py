@@ -33,12 +33,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run_regression(tmp_path: Path, extra_args=()):
-    project = tmp_path / "proj"
+def _run_regression(work_dir: Path, extra_args=()):
+    project = work_dir / "proj"
     shutil.copytree(_FIXTURE, project)
     env = dict(os.environ)
     env["PATH"] = f"{_SHIMS}{os.pathsep}{env['PATH']}"
-    env["RB_SHIM_DB"] = str(tmp_path / "jobs.db")
+    env["RB_SHIM_DB"] = str(work_dir / "jobs.db")
+    env["RB_SHIM_LOG"] = str(work_dir / "jobs.log")
     proc = subprocess.run(
         [
             sys.executable,
@@ -61,13 +62,26 @@ def _run_regression(tmp_path: Path, extra_args=()):
     for line in proc.stdout.splitlines():
         if line.startswith('{"command"'):
             envelope = json.loads(line)
-    return proc, envelope, project
+    # The shim tees each _test-job's own stdout/stderr here — the likely
+    # failure mode is a broken job, so surface it in the assertion context.
+    job_log = work_dir / "jobs.log"
+    diag = proc.stdout + proc.stderr
+    if job_log.exists():
+        diag += "\n--- job log ---\n" + job_log.read_text()
+    return proc, envelope, project, diag
 
 
-def test_shim_regression_runs_real_pipeline_to_pass(tmp_path: Path):
-    proc, envelope, project = _run_regression(tmp_path)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert envelope is not None, proc.stdout
+@pytest.fixture(scope="module")
+def shim_run(tmp_path_factory):
+    # One real regression subprocess shared by the assertions below (both
+    # inspect different slices of the same byte-identical run).
+    return _run_regression(tmp_path_factory.mktemp("dispatch"))
+
+
+def test_shim_regression_runs_real_pipeline_to_pass(shim_run):
+    proc, envelope, project, diag = shim_run
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
     results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
     # Both tests ran through the real backend -> real _test-job -> fake
     # verilator's PASS simv.
@@ -82,9 +96,9 @@ def test_shim_regression_runs_real_pipeline_to_pass(tmp_path: Path):
     assert one["result"]["results"]["result"] == "PASS"
 
 
-def test_shim_regression_attaches_sacct_telemetry_and_advice(tmp_path: Path):
-    proc, envelope, project = _run_regression(tmp_path)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+def test_shim_regression_attaches_sacct_telemetry_and_advice(shim_run):
+    proc, envelope, project, diag = shim_run
+    assert proc.returncode == 0, diag
 
     # sacct telemetry (5s of a 60-min limit; 20M of 512M) travels into the
     # envelope and drives over-reservation advice.
