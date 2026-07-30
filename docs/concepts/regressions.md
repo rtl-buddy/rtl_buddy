@@ -82,18 +82,21 @@ parallel [Slurm](https://slurm.schedmd.com/) jobs after the shared build:
 rtl-buddy regression --dispatch slurm
 ```
 
-What happens: the head process compiles one shared `simv` per unique
-compile key (dispatch implies `--share-build`), then submits one job per
-test that re-enters at simulation via the shared build, waits for the
-queue to drain, and collects each job's result into the normal summary
-and exit code. Per-test resource reservations and a right-sizing report
-are configured under `cfg-dispatch`; see
-[cfg-dispatch in root_config.yaml](root-config.md) and the
+What happens: **nothing heavy runs on the submit host** (usually an
+interactive login node). The head expands the suite once, then submits one
+**build job** per suite that Verilates a shared `simv` per unique compile
+key on a compute node (dispatch implies `--share-build`); it then submits
+one sim job per test, each gated on that build with
+`--dependency=afterok`, so a sim starts only once its shared build
+succeeded and re-enters at simulation. The head waits for the queue to
+drain and collects each job's result into the normal summary and exit
+code. Per-test resource reservations layer `cfg-dispatch.resources` under
+per-testbench/test `resources:` in tests.yaml; see the
 [Slurm client install requirements](../install.md).
 
 Requirements in brief: a Slurm client on the submit host
-(`sbatch`/`squeue`/`sacct`/`scancel`), a shared filesystem visible at the
-same paths on submit host and compute nodes, and the project's Python
+(`sbatch`/`squeue`/`scancel`), a shared filesystem visible at the same
+paths on submit host and compute nodes, and the project's Python
 environment runnable on the compute nodes. `--dispatch` cannot be
 combined with `--early-stop`, and skips the per-tree lock for its jobs
 (see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).

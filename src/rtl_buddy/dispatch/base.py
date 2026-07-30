@@ -39,6 +39,14 @@ class BuildJobSpec:
     builder_mode: str = "reg"
     builder_override: str | None = None
     log_path: Path | None = None
+    # Dispatch plan manifest (absolute) written by the head after a single
+    # sweep expansion; the build job compiles exactly its entries instead
+    # of re-running the sweep hook. See ``config.test.TestConfig`` plan
+    # (de)serialization and ``dispatch.plan``.
+    plan_path: Path | None = None
+    # Where the build job records its compile outcome (built/failed test
+    # names); the head loads it at collect for compile-fail parity.
+    result_json: Path | None = None
 
 
 @dataclass
@@ -63,6 +71,9 @@ class TestJobSpec:
     builder_override: str | None = None
     share_build: bool = True
     log_path: Path | None = None
+    # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
+    # from it instead of re-running the suite's sweep hook. See BuildJobSpec.
+    plan_path: Path | None = None
 
     def display_name(self) -> str:
         if self.run_id is None:

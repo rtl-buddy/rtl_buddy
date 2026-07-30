@@ -47,8 +47,15 @@ from .runner.mut_results import MutResults
 from .config.dispatch import resolve_compile_resources, resolve_resources
 from .dispatch import create_dispatch_backend
 from .dispatch.base import BuildJobSpec, TestJobSpec
-from .runner.result_io import load_result_json, write_result_json
+from .dispatch.plan import read_plan_config, read_plan_configs, write_plan
+from .runner.result_io import (
+    load_build_result_json,
+    load_result_json,
+    write_build_result_json,
+    write_result_json,
+)
 from .runner.test_results import (
+    CompileFailResults,
     DispatchFailResults,
     EarlyStopResults,
     SetupFailResults,
@@ -1221,7 +1228,16 @@ class RtlBuddy:
             )
         raise typer.Exit(exit_code)
 
-    def _resolve_job_test_cfg(self, suite_cfg, test_name, suite_dir):
+    def _abs_invocation_path(self, path: str) -> Path:
+        """Resolve ``path`` against the invocation cwd if it is relative.
+
+        A dispatched job's ``--result-json`` / ``--plan`` are given relative
+        to where the head submitted from, not the (re-anchored) suite dir.
+        """
+        p = Path(path)
+        return p if p.is_absolute() else self.invocation_cwd / p
+
+    def _resolve_job_test_cfg(self, suite_cfg, test_name, suite_dir, plan_path=None):
         """Resolve a job's test config by name, honoring sweep expansion.
 
         Accepts either a base test name from the suite or the name of a
@@ -1232,7 +1248,16 @@ class RtlBuddy:
         job still produces a result artifact. An unknown name raises
         ``FatalRtlBuddyError`` (nothing ran; the collector maps the
         missing result file to an infrastructure failure).
+
+        When ``plan_path`` is given, the config is read from the head's
+        dispatch plan first — the suite's sweep hook does not run in this
+        job at all. A name absent from the plan falls through to hook
+        expansion (the plan is an optimization, not a hard dependency).
         """
+        if plan_path is not None:
+            cfg = read_plan_config(self._abs_invocation_path(plan_path), test_name)
+            if cfg is not None:
+                return cfg, None
         sweep_error_seen = None
         if test_name in suite_cfg.get_test_names():
             base = suite_cfg.get_tests(test_name)[0]
@@ -1318,6 +1343,14 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs (Verilator builders only)",
             ),
         ] = False,
+        plan: Annotated[
+            str,
+            typer.Option(
+                "--plan",
+                help="dispatch plan manifest; resolve this test's config from "
+                "it instead of re-running the suite's sweep hook",
+            ),
+        ] = None,
     ):
         """
         internal: run one (test, run_id) and write its result JSON (#351)
@@ -1329,9 +1362,7 @@ class RtlBuddy:
         # Resolve the output path before entering the command context so
         # a relative --result-json lands where the dispatching process
         # expects it, not under the suite dir.
-        result_json_path = Path(result_json)
-        if not result_json_path.is_absolute():
-            result_json_path = self.invocation_cwd / result_json_path
+        result_json_path = self._abs_invocation_path(result_json)
         # Mirror run_multiple's fan-out semantics: a replayed job replays
         # its own run_id unless told otherwise.
         if seed_mode == SeedMode.REPLAY and replay_run_id is None:
@@ -1349,10 +1380,11 @@ class RtlBuddy:
             run_id=run_id,
             seed_mode=seed_mode.value,
             result_json=str(result_json_path),
+            plan=plan,
         )
 
         test_cfg, setup_error = self._resolve_job_test_cfg(
-            suite_cfg, test_name, suite_dir
+            suite_cfg, test_name, suite_dir, plan_path=plan
         )
         if setup_error is not None:
             res = SetupFailResults(name=test_name + "/results", desc=setup_error)
@@ -1419,16 +1451,32 @@ class RtlBuddy:
                 help="reuse one compiled simv across tests with identical compile inputs",
             ),
         ] = True,
+        plan: Annotated[
+            str,
+            typer.Option(
+                "--plan",
+                help="dispatch plan manifest; compile its configs instead of "
+                "re-running the suite's sweep hook",
+            ),
+        ] = None,
+        result_json: Annotated[
+            str,
+            typer.Option(
+                "--result-json",
+                help="path to write the build outcome (built/failed test names)",
+            ),
+        ] = None,
     ):
         """
         internal: compile a suite's runnable tests on a compute node (#351)
 
         Runs PRE+COMPILE (share-build) for every runnable test in the
-        suite so each unique compile key Verilates once. Best-effort: a
-        test whose compile fails is reported but does not fail the job, so
-        the dependent sim jobs still run (a test with no shared build just
-        recompiles in its own sim job). Exit code is always 0 unless the
-        setup itself is fatal.
+        suite so each unique compile key Verilates once. With ``--plan`` the
+        configs come from the head's single sweep expansion (the hook does
+        not run again here). Best-effort: a test whose compile fails is
+        reported but does not fail the job, so the dependent sim jobs still
+        run (a test with no shared build just recompiles in its own sim
+        job). Exit code is always 0 unless the setup itself is fatal.
         """
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
@@ -1445,21 +1493,32 @@ class RtlBuddy:
             test_config=test_config,
             reg_level=reg_level,
             start_level=start_level,
+            plan=plan,
         )
 
+        if plan is not None:
+            # Head-expanded plan: the sweep hook already ran once on the
+            # head, so just rebuild each config — no skip/level logic here
+            # (the head already applied it when writing the plan).
+            configs = read_plan_configs(self._abs_invocation_path(plan))
+        else:
+            # Standalone invocation: expand here. _iter_suite_runnables
+            # applies level filtering + sweep expansion (config-only, no
+            # compile); its skip/setup rows are irrelevant to a build job.
+            discard = []
+            configs = list(
+                self._iter_suite_runnables(
+                    suite_cfg,
+                    test_name=None,
+                    reg_level=reg_level,
+                    start_level=start_level,
+                    run_ids=[None],
+                    suite_results=discard,
+                )
+            )
+
         built, failed = [], []
-        # _iter_suite_runnables applies level filtering + sweep expansion
-        # (config-only, no compile); its skip/setup rows are irrelevant to a
-        # build job, so they are discarded here.
-        discard = []
-        for cfg in self._iter_suite_runnables(
-            suite_cfg,
-            test_name=None,
-            reg_level=reg_level,
-            start_level=start_level,
-            run_ids=[None],
-            suite_results=discard,
-        ):
+        for cfg in configs:
             runner = TestRunner(
                 name=self.name + "/build-job",
                 root_cfg=self.root_cfg,
@@ -1489,6 +1548,12 @@ class RtlBuddy:
             built=len(built),
             failed=len(failed),
         )
+        if result_json is not None:
+            # Persist the outcome so the head can map a compile failure to a
+            # CompileFail row (parity with the in-process path).
+            write_build_result_json(
+                self._abs_invocation_path(result_json), built=built, failed=failed
+            )
         if self.machine:
             self._emit_machine_result("_build-job", 0, built=built, failed=failed)
         # Always exit 0: a per-test compile failure is not a build-job
@@ -1790,22 +1855,48 @@ class RtlBuddy:
         """Dispatched counterpart of :meth:`_do_test_suite` (#351).
 
         Nothing heavy runs on the submit host (usually an interactive login
-        node). Phases: (1) submit a **build job** that Verilates the suite's
-        shared executable on a compute node (`rb _build-job`, share-build).
-        (2) Fan-out — one `rb _test-job` per runnable config, each gated on
-        the build via `--dependency=afterok`, so a sim only starts once its
+        node). Phases: (1) **plan** — expand the suite's sweep hooks *once*
+        on the head and write the resulting configs to a plan manifest.
+        (2) submit a **build job** that Verilates the shared executable on a
+        compute node (`rb _build-job --plan`, share-build). (3) Fan-out —
+        one `rb _test-job --plan` per runnable config, each gated on the
+        build via `--dependency=afterok`, so a sim only starts once its
         shared build succeeded; its own `compile()` then short-circuits on
-        the stamp and it runs SIM+POST. (3) Collect — wait for the queue to
-        drain, load each envelope; a missing/unreadable one becomes a
-        ``DispatchFailResults``. Rows keep the in-process shape and order.
+        the stamp and it runs SIM+POST. Neither the build job nor the sim
+        jobs re-run the sweep hook — they read the plan. (4) Collect — wait
+        for the queue to drain, load each envelope; a missing/unreadable one
+        becomes a ``DispatchFailResults`` (or a ``CompileFailResults`` when
+        the build job recorded that test's compile as failed). Rows keep the
+        in-process shape and order.
         """
         run_ids = [None]
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         dispatch_cfg = self.root_cfg.get_dispatch_cfg()
         suite_results = []
+
+        # (1) Plan: one sweep expansion for the whole suite, on the head.
+        entries = self._plan_dispatch_suite(
+            suite_cfg,
+            reg_level=reg_level,
+            start_level=start_level,
+            run_ids=run_ids,
+            suite_results=suite_results,
+        )
+        if not entries:
+            # Every test filtered out by -l/-s: nothing to compile or run.
+            # Submitting a build job here would queue an rb _build-job that
+            # iterates nothing and make wait_all block on it for zero work.
+            return suite_results
+
+        dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
+        plan_path = write_plan(
+            dispatch_root / f"plan-{os.getpid()}.json",
+            str(suite_cfg.get_path()),
+            [e["cfg"] for e in entries],
+        )
+
         pending = []  # (index into suite_results, JobHandle)
         build_handle = None
-
         try:
             build_handle = self._submit_dispatch_build(
                 suite_cfg,
@@ -1814,15 +1905,15 @@ class RtlBuddy:
                 dispatch_cfg=dispatch_cfg,
                 reg_level=reg_level,
                 start_level=start_level,
+                plan_path=plan_path,
             )
             self._dispatch_submit_sims(
                 suite_cfg,
                 backend,
                 suite_dir=suite_dir,
                 dispatch_cfg=dispatch_cfg,
-                run_ids=run_ids,
-                reg_level=reg_level,
-                start_level=start_level,
+                entries=entries,
+                plan_path=plan_path,
                 dependency=build_handle.job_id,
                 suite_results=suite_results,
                 pending=pending,
@@ -1836,32 +1927,58 @@ class RtlBuddy:
             backend.cancel_all(outstanding)
             raise
 
-        for idx, handle in pending:
-            try:
-                envelope = load_result_json(handle.spec.result_json)
-                results = envelope["result"]
-            except FatalRtlBuddyError as e:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "dispatch.result_missing",
-                    job_id=handle.job_id,
-                    test=handle.spec.test_name,
-                    run_id=handle.spec.run_id,
-                    error=str(e),
-                )
-                results = DispatchFailResults(
-                    name=handle.spec.test_name + "/results",
-                    desc=f"dispatch job {handle.job_id} produced no result "
-                    f"(scheduler kill, crash, or its build job {build_handle.job_id} "
-                    f"failed so afterok cancelled it; see "
-                    f"{handle.spec.log_path}): {e}",
-                )
-            suite_results[idx]["results"] = results
+        self._collect_dispatched(pending, build_handle, suite_results)
         return suite_results
 
+    def _plan_dispatch_suite(
+        self, suite_cfg, *, reg_level, start_level, run_ids, suite_results
+    ):
+        """Expand the suite ONCE for dispatch; return the runnable entries.
+
+        Appends the same skip/setup rows the in-process path emits — and a
+        placeholder row per (runnable test, run_id) — to ``suite_results``
+        in test order, and returns one entry ``{cfg, rows}`` per runnable
+        config (``rows`` = the placeholder indices it owns). Consuming the
+        generator while interleaving the run rows preserves summary order;
+        materializing the runnables lets the build job and sim jobs read the
+        plan instead of re-running the sweep hook.
+        """
+        entries = []
+        for cfg in self._iter_suite_runnables(
+            suite_cfg,
+            test_name=None,
+            reg_level=reg_level,
+            start_level=start_level,
+            run_ids=run_ids,
+            suite_results=suite_results,
+        ):
+            exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
+                cfg.get_builder_name()
+            ).get_name()
+            rows = []
+            for run_id in run_ids:
+                suite_results.append(
+                    {
+                        "test_name": cfg.get_name(),
+                        "randmode_i": run_id,
+                        "results": None,
+                        "builder": exp_builder,
+                    }
+                )
+                rows.append((len(suite_results) - 1, run_id))
+            entries.append({"cfg": cfg, "rows": rows})
+        return entries
+
     def _submit_dispatch_build(
-        self, suite_cfg, backend, *, suite_dir, dispatch_cfg, reg_level, start_level
+        self,
+        suite_cfg,
+        backend,
+        *,
+        suite_dir,
+        dispatch_cfg,
+        reg_level,
+        start_level,
+        plan_path,
     ):
         """Submit the suite's compile as a Slurm build job (compute node)."""
         dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
@@ -1875,7 +1992,13 @@ class RtlBuddy:
             builder_mode=self.rtl_builder_mode,
             builder_override=self._builder_override,
             log_path=dispatch_root / f"build-{os.getpid()}.log",
+            plan_path=plan_path,
+            # Where the build job records which configs compiled; the head
+            # reads it at collect for compile-fail parity.
+            result_json=dispatch_root / f"build-result-{os.getpid()}.json",
         )
+        # A stale build-result must not annotate this run's collection.
+        Path(spec.result_json).unlink(missing_ok=True)
         return backend.submit_build(spec)
 
     def _dispatch_submit_sims(
@@ -1885,25 +2008,22 @@ class RtlBuddy:
         *,
         suite_dir,
         dispatch_cfg,
-        run_ids,
-        reg_level,
-        start_level,
+        entries,
+        plan_path,
         dependency,
         suite_results,
         pending,
     ):
-        """Fan out one sim job per (runnable test, run_id), gated on the build."""
-        for cfg in self._iter_suite_runnables(
-            suite_cfg,
-            test_name=None,
-            reg_level=reg_level,
-            start_level=start_level,
-            run_ids=run_ids,
-            suite_results=suite_results,
-        ):
-            exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
-                cfg.get_builder_name()
-            ).get_name()
+        """Submit one sim job per planned (test, run_id), gated on the build.
+
+        Consumes the head's single expansion (``entries``); it never
+        re-runs the sweep hook. Each sim job reads ``plan_path`` to rebuild
+        its own config.
+        """
+        test_config_path = str(suite_cfg.get_path())
+        for entry in entries:
+            cfg = entry["cfg"]
+            resources = resolve_resources(dispatch_cfg, cfg)
             dispatch_dir = (
                 Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
             )
@@ -1911,7 +2031,7 @@ class RtlBuddy:
             # the --output path before rb _test-job (which would otherwise
             # mkdir it) runs.
             dispatch_dir.mkdir(parents=True, exist_ok=True)
-            for run_id in run_ids:
+            for idx, run_id in entry["rows"]:
                 run_tag = "single" if run_id is None else f"{run_id:04d}"
                 result_json = dispatch_dir / f"result-{run_tag}.json"
                 # A stale envelope from an earlier run must not satisfy
@@ -1920,25 +2040,75 @@ class RtlBuddy:
                 spec = TestJobSpec(
                     test_name=cfg.get_name(),
                     suite_dir=suite_dir,
-                    test_config_path=str(suite_cfg.get_path()),
+                    test_config_path=test_config_path,
                     result_json=result_json,
-                    resources=resolve_resources(dispatch_cfg, cfg),
+                    resources=resources,
                     run_id=run_id,
                     builder_mode=self.rtl_builder_mode,
                     builder_override=self._builder_override,
                     share_build=True,
                     log_path=dispatch_dir / f"slurm-{run_tag}.log",
+                    plan_path=plan_path,
                 )
                 handle = backend.submit(spec, dependency=dependency)
-                suite_results.append(
-                    {
-                        "test_name": cfg.get_name(),
-                        "randmode_i": run_id,
-                        "results": None,
-                        "builder": exp_builder,
-                    }
-                )
-                pending.append((len(suite_results) - 1, handle))
+                pending.append((idx, handle))
+
+    def _collect_dispatched(self, pending, build_handle, suite_results):
+        """Load each sim job's envelope into ``suite_results`` after the wait.
+
+        A missing/unreadable envelope is a ``DispatchFailResults`` — unless
+        the build job recorded that test's compile as failed, in which case
+        it becomes a ``CompileFailResults`` (parity with the in-process
+        path, where a design error is a clean compile fail rather than an
+        infrastructure fail). The build job's log is named alongside the sim
+        log so the user can follow whichever phase failed.
+        """
+        build_result = load_build_result_json(build_handle.spec.result_json)
+        compile_failed = set(build_result["failed"]) if build_result else set()
+        for idx, handle in pending:
+            try:
+                envelope = load_result_json(handle.spec.result_json)
+                results = envelope["result"]
+            except FatalRtlBuddyError as e:
+                if handle.spec.test_name in compile_failed:
+                    # The build job already knows this is a compile failure;
+                    # don't mislabel the (killed) recompile as infra failure.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "dispatch.compile_failed_in_build",
+                        job_id=handle.job_id,
+                        test=handle.spec.test_name,
+                        run_id=handle.spec.run_id,
+                        build_job=build_handle.job_id,
+                    )
+                    results = CompileFailResults(
+                        name=handle.spec.test_name + "/results"
+                    )
+                    results.results["desc"] = (
+                        f"compile failed in build job {build_handle.job_id} "
+                        f"(see {build_handle.spec.log_path})"
+                    )
+                else:
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "dispatch.result_missing",
+                        job_id=handle.job_id,
+                        test=handle.spec.test_name,
+                        run_id=handle.spec.run_id,
+                        error=str(e),
+                    )
+                    results = DispatchFailResults(
+                        name=handle.spec.test_name + "/results",
+                        desc=f"dispatch job {handle.job_id} produced no result "
+                        f"(scheduler kill, crash, or its build job "
+                        f"{build_handle.job_id} failed so afterok cancelled it; "
+                        f"see {handle.spec.log_path} and build log "
+                        f"{build_handle.spec.log_path}): {e}",
+                    )
+            suite_results[idx]["results"] = results
+        return suite_results
 
     def do_rtl_regression(
         self,
@@ -2115,7 +2285,7 @@ class RtlBuddy:
         # Resolve the dispatch backend: CLI --dispatch wins over the
         # cfg-dispatch backend; both default to local (in-process, the
         # unchanged pre-#351 path). Dispatch implies share_build — the
-        # head-node build pass is what lets jobs skip compilation.
+        # dispatched build job is what lets the sim jobs skip compilation.
         backend_name = (
             dispatch
             if dispatch is not None
@@ -2126,14 +2296,15 @@ class RtlBuddy:
         )
         if dispatch_backend is not None:
             # An early-stop before POST can't be honoured per-job: the
-            # head build pass already stops at COMPILE, and dispatched
-            # jobs exist to run SIM+POST. Reject rather than silently
-            # ignore --early-stop (the local path would respect it).
+            # dispatched build job compiles, and the sim jobs exist to run
+            # SIM+POST, so no earlier stop point is expressible per job.
+            # Reject rather than silently ignore --early-stop (the local
+            # path would respect it).
             if self.run_depth != RunDepth.POST:
                 raise FatalRtlBuddyError(
                     f"--early-stop {self.run_depth.value} cannot be combined with "
-                    "--dispatch: the head node builds (stops at compile) and "
-                    "jobs run sim+post; run without --dispatch to stop earlier."
+                    "--dispatch: a build job compiles and the sim jobs run "
+                    "sim+post; run without --dispatch to stop earlier."
                 )
             if not share_build:
                 self.share_build = True

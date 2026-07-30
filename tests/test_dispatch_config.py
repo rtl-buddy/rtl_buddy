@@ -186,6 +186,8 @@ def test_slurm_tool_in_manifest():
 
     slurm = next((s for s in get_manifest() if s.name == "slurm"), None)
     assert slurm is not None
-    assert set(slurm.binaries) == {"sbatch", "squeue", "sacct", "scancel"}
+    # P1 needs only the submit/query/cancel trio; sacct arrives with
+    # right-sizing telemetry in a later phase.
+    assert set(slurm.binaries) == {"sbatch", "squeue", "scancel"}
     assert slurm.optional is True
-    assert "regression" in slurm.used_by
+    assert slurm.used_by == ("regression",)

@@ -255,6 +255,70 @@ def test_dispatch_cancels_already_submitted_on_midway_submit_failure(
     assert backend.cancelled is True
 
 
+def test_build_compile_failure_surfaces_as_compile_fail(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # The build job records "basic" as a compile failure; its sim job's
+    # recompile is then killed (writes no envelope). The head must map that
+    # to a CompileFail — the clean design-error result the in-process path
+    # produces — not an infrastructure DispatchFail.
+    from rtl_buddy.runner.result_io import write_build_result_json
+
+    class _CompileFailBuild(_FakeBackend):
+        def __init__(self):
+            super().__init__(write_results=False)  # sim envelope never appears
+
+        def submit_build(self, spec):
+            write_build_result_json(spec.result_json, built=[], failed=["basic"])
+            return super().submit_build(spec)
+
+    backend = _CompileFailBuild()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert "compile failed in build job" in rows["basic"]["desc"]
+    assert "produced no result" not in rows["basic"]["desc"]
+
+
+def test_empty_suite_submits_no_build_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    # Every test filtered out by the level window: no compile, no jobs, no
+    # build job queued for zero work (which wait_all would then block on).
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-s", "100", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert fake_backend.submitted == []
+
+
+def test_dispatch_writes_plan_and_threads_it_to_jobs(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    # The head writes one plan manifest and hands it to both the build job
+    # and every sim job (so neither re-runs the sweep hook).
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    build = fake_backend.build_submitted[0]
+    assert build.plan_path is not None and Path(build.plan_path).is_file()
+    sim = fake_backend.submitted[0]
+    assert sim.plan_path == build.plan_path
+
+
 def test_early_stop_with_dispatch_rejected(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],

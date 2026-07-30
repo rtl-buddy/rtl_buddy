@@ -322,6 +322,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: compile failed in the dispatch build "
                 "job (its sim job will retry the compile and fail there)"
             )
+        case "dispatch.compile_failed_in_build":
+            return (
+                f"{fields.get('test')}: compile failed in build job "
+                f"{fields.get('build_job')} — counting it as a compile failure"
+            )
         case "dispatch.cancelled":
             return (
                 f"Cancelled {fields.get('jobs')} outstanding dispatch job(s) "

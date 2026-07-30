@@ -61,7 +61,7 @@ def test_submit_builds_sbatch_argv_and_parses_job_id(monkeypatch):
     )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(
-        DispatchConfigFile(sbatch_args=["--partition=verif"])
+        DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
     )
 
     handle = backend.submit(_spec(log_path=Path("/tmp/slurm.log")))
@@ -90,7 +90,7 @@ def test_submit_builds_sbatch_argv_and_parses_job_id(monkeypatch):
 def test_submit_mem_and_run_id_and_seed_flags(monkeypatch):
     calls, results = [], [SimpleNamespace(returncode=0, stdout="7\n", stderr="")]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
-    backend = SlurmDispatchBackend(DispatchConfigFile())
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
     spec = _spec(
         resources=JobResources(cpus=1, mem="24G", time="04:00:00"),
@@ -118,7 +118,7 @@ def test_submit_failure_fails_loud(monkeypatch):
         ],
     )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
-    backend = SlurmDispatchBackend(DispatchConfigFile())
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
     with pytest.raises(FatalRtlBuddyError, match="no partition"):
         backend.submit(_spec())
@@ -133,7 +133,7 @@ def test_wait_all_polls_until_queue_drains(monkeypatch):
     ]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
-    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
     handles = [JobHandle("1", _spec()), JobHandle("2", _spec(run_id=1))]
     backend.wait_all(handles)
@@ -151,7 +151,7 @@ def test_wait_all_treats_squeue_error_as_drained(monkeypatch):
         [SimpleNamespace(returncode=1, stdout="", stderr="Invalid job id specified")],
     )
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
-    backend = SlurmDispatchBackend(DispatchConfigFile(poll_interval=0.0))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
     backend.wait_all([JobHandle("99", _spec())])
     assert len(calls) == 1
@@ -160,14 +160,14 @@ def test_wait_all_treats_squeue_error_as_drained(monkeypatch):
 def test_wait_all_no_handles_is_a_no_op(monkeypatch):
     calls = []
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, []))
-    SlurmDispatchBackend(DispatchConfigFile()).wait_all([])
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all([])
     assert calls == []
 
 
 def test_cancel_all_scancels_every_job(monkeypatch):
     calls, results = [], []
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
-    backend = SlurmDispatchBackend(DispatchConfigFile())
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
     backend.cancel_all([JobHandle("5", _spec()), JobHandle("6", _spec(run_id=2))])
     (argv,) = calls
@@ -183,7 +183,7 @@ def test_submit_build_builds_argv(monkeypatch):
     calls, results = [], [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     backend = SlurmDispatchBackend(
-        DispatchConfigFile(sbatch_args=["--partition=verif"])
+        DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
     )
 
     spec = BuildJobSpec(
@@ -212,7 +212,7 @@ def test_submit_build_builds_argv(monkeypatch):
 def test_submit_sim_with_dependency_adds_afterok(monkeypatch):
     calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
-    backend = SlurmDispatchBackend(DispatchConfigFile())
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
     backend.submit(_spec(), dependency="900")
     (argv,) = calls
@@ -222,8 +222,41 @@ def test_submit_sim_with_dependency_adds_afterok(monkeypatch):
 def test_submit_sim_without_dependency_has_no_flag(monkeypatch):
     calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
-    backend = SlurmDispatchBackend(DispatchConfigFile())
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
 
     backend.submit(_spec())
     (argv,) = calls
     assert not any(a.startswith("--dependency") for a in argv)
+
+
+def test_build_argv_carries_plan_and_result_json(monkeypatch):
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    spec = BuildJobSpec(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+        plan_path=Path("/proj/verif/blk/artefacts/.dispatch/plan-1.json"),
+        result_json=Path("/proj/verif/blk/artefacts/.dispatch/build-result-1.json"),
+    )
+    backend.submit_build(spec)
+    (argv,) = calls
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--plan") + 1] == str(spec.plan_path)
+    assert wrapped[wrapped.index("--result-json") + 1] == str(spec.result_json)
+
+
+def test_sim_argv_carries_plan(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    plan = Path("/proj/verif/blk/artefacts/.dispatch/plan-1.json")
+    backend.submit(_spec(plan_path=plan))
+    (argv,) = calls
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert wrapped[wrapped.index("--plan") + 1] == str(plan)

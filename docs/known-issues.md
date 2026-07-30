@@ -159,18 +159,48 @@ Three consequences that can surprise:
 
 ## `--dispatch` silently implies `--share-build`
 
-`regression --dispatch slurm` (and `randtest --dispatch slurm`) turn on
-`--share-build` even if you didn't pass it: the head-node build pass
-compiling one shared `simv` per unique compile key is exactly what lets
-each dispatched job skip compilation and re-enter at simulation. This
-changes compile behaviour versus a plain local run — tests with identical
-compile inputs Verilate once, not once each — and share-build is
-Verilator-only, so non-Verilator builders fall back to compiling inside
-each job. The promotion is logged as `dispatch.share_build_implied`.
-Also note `--dispatch` cannot be combined with `--early-stop`: the head
-always stops its build at compile and the jobs run sim+post, so an
-earlier stop point can't be honoured per-job (rtl_buddy rejects the
+`regression --dispatch slurm` turns on `--share-build` even if you didn't
+pass it: a **dispatched build job** compiling one shared `simv` per unique
+compile key on a compute node is exactly what lets each sim job skip
+compilation and re-enter at simulation. This changes compile behaviour
+versus a plain local run — tests with identical compile inputs Verilate
+once, not once each — and share-build is Verilator-only, so non-Verilator
+builders fall back to compiling inside each job. The promotion is logged as
+`dispatch.share_build_implied`. Also note `--dispatch` cannot be combined
+with `--early-stop`: a build job compiles and the sim jobs run sim+post, so
+no earlier stop point is expressible per job (rtl_buddy rejects the
 combination loudly rather than ignoring the flag).
+
+## Under `--dispatch`, `preproc` runs in both the build job and each sim job
+
+Hook scripts (`sweep`, `preproc`, `postproc`) are compatibility-sensitive
+APIs, and dispatch changes *how many times* they run:
+
+- **`sweep` runs exactly once**, on the head. The head expands the suite
+  and writes a plan manifest; the build job and every sim job rebuild their
+  configs from the manifest rather than re-running the hook (so a
+  nondeterministic sweep can't expand differently per process and leave a
+  sim job's compile key unbuilt).
+- **`preproc` runs twice**: once in the build job before the shared compile,
+  and again in each sim job before its simulation (locally it runs once per
+  test). A non-idempotent `preproc` — one that generates a stimulus file,
+  bumps a counter, or otherwise has side effects — behaves differently under
+  `--dispatch`. Make `preproc` idempotent, or move one-time setup into the
+  sweep/head path.
+
+## A dispatched compile failure surfaces as CompileFail, not DispatchFail
+
+When a test's compile fails, the build job records it and the head maps the
+row to a **CompileFail** — the same clean design-error result the
+in-process path produces — pointing at the build-job log. (A genuine
+infrastructure failure — a job the scheduler killed, or one that vanished
+without writing a result — is still a `DispatchFail`, and its desc names
+both the sim-job and build-job logs.) The failing test's sim job is still
+submitted and recompiles under its **sim** reservation, not the
+`cfg-dispatch.compile` one; if that recompile is heavier than the sim
+reservation allows it may be OOM/`TIMEOUT`-killed — size `cfg-dispatch`
+reservations so a compile fits, or expect the killed recompile to be folded
+into the CompileFail above.
 
 ## `rb nvim-install` requires git + network, and pins the plugin by hand
 

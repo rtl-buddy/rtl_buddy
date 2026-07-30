@@ -326,7 +326,7 @@ def _builtin_manifest() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="slurm",
-            binaries=("sbatch", "squeue", "sacct", "scancel"),
+            binaries=("sbatch", "squeue", "scancel"),
             version_cmd=("sbatch", "--version"),
             version_regex=r"slurm[- ]?(?:wlm\s+)?([\d.]+)",
             minimum_version=None,
@@ -338,13 +338,11 @@ def _builtin_manifest() -> list[ToolSpec]:
                 "cluster/submit host is provided by your site",
                 "source": "https://slurm.schedmd.com/quickstart_admin.html",
             },
-            used_by=("regression", "randtest"),
+            used_by=("regression",),
             optional=True,
-            description="Slurm workload manager client (sbatch/squeue/sacct/scancel)",
-            notes="Only needed for `regression --dispatch slurm` (and randtest). "
-            "Requires a shared filesystem between the submit host and compute "
-            "nodes; sacct (slurmdbd accounting) is used for reservation "
-            "right-sizing telemetry and degrades gracefully when absent.",
+            description="Slurm workload manager client (sbatch/squeue/scancel)",
+            notes="Only needed for `regression --dispatch slurm`. Requires a "
+            "shared filesystem between the submit host and compute nodes.",
         ),
         ToolSpec(
             name="surfer",

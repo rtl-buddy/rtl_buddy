@@ -4,12 +4,17 @@
 #
 """Slurm dispatch backend (#351 P1).
 
-Each (test, run_id) becomes one ``sbatch --wrap`` job that re-invokes
-``rb _test-job`` from the same Python environment (``sys.executable``,
-which lives on the shared filesystem alongside the project). The head
-process must have compiled the sim executable first with ``share_build``
-so the job's own ``compile()`` short-circuits on the shared-build stamp
-and the job effectively runs SIM + POST only.
+Nothing heavy runs on the submit host (usually an interactive login node).
+The head submits one **build job** per suite (``submit_build`` →
+``rb _build-job``) that Verilates the shared executable on a compute node,
+then one ``sbatch --wrap`` sim job per (test, run_id) (``submit`` →
+``rb _test-job``) gated on that build with ``--dependency=afterok`` — a sim
+only starts once its shared build succeeded, and its own ``compile()`` then
+short-circuits on the shared-build stamp so it effectively runs SIM + POST
+only. Every job re-invokes ``rb`` from the same Python environment
+(``sys.executable``, on the shared filesystem alongside the project), and
+both jobs are handed the head's dispatch plan (``--plan``) so the suite's
+sweep hook is never re-run off the head.
 
 Collection waits for the queue to drain via ``squeue`` polling; loading
 the per-job result envelopes is the caller's job (backend-independent).
@@ -71,6 +76,9 @@ class SlurmDispatchBackend(DispatchBackend):
             "--result-json",
             str(spec.result_json),
         ]
+        if spec.plan_path is not None:
+            # Resolve this test's config from the head's plan — no sweep re-run.
+            argv += ["--plan", str(spec.plan_path)]
         if spec.share_build:
             argv += ["--share-build"]
         if spec.run_id is not None:
@@ -108,6 +116,11 @@ class SlurmDispatchBackend(DispatchBackend):
         if spec.builder_override is not None:
             argv += ["-B", spec.builder_override]
         argv += ["_build-job", "-c", spec.test_config_path, "--share-build"]
+        if spec.plan_path is not None:
+            # Compile exactly the head's planned configs — no sweep re-run.
+            argv += ["--plan", str(spec.plan_path)]
+        if spec.result_json is not None:
+            argv += ["--result-json", str(spec.result_json)]
         if spec.reg_level is not None:
             argv += ["-l", str(spec.reg_level)]
         if spec.start_level is not None:

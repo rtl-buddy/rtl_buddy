@@ -232,6 +232,87 @@ def test_test_config_timeout_default_and_override():
     timeout, is_custom = cfg.get_timeout()
     assert is_custom is False and timeout == cfg.default_timeout
 
+
+# ---------------------------------------------------------------------------
+# TestConfig — dispatch plan (de)serialization (#351)
+# ---------------------------------------------------------------------------
+
+
+def test_testconfig_plan_roundtrip():
+    """A fully-populated TestConfig survives to_plan_dict -> from_plan_dict.
+
+    This is the fidelity guarantee the dispatch plan manifest relies on:
+    the sweep hook runs once on the head, and every field a hook could
+    have set must reach the build/sim jobs unchanged.
+    """
+    import json
+
+    from rtl_buddy.config.dispatch import DispatchResourcesFile
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.config.uvm import UVMConfig
+
+    original = TC(
+        name="axi_soak.W64",
+        desc="soak, 64-bit",
+        model=ModelConfig(
+            name="axi", filelist=["rtl/axi.sv"], desc="axi dut", path="/abs/models.yaml"
+        ),
+        _reglvl={"verilator": 1000, "default": 500},
+        pa={"ITERS": 4000},
+        pd={"WIDTH": 64},
+        uvm=UVMConfig(max_warns=3, max_errors=1),
+        preproc_path="/abs/hooks/pre.py",
+        postproc_path=None,
+        sweep_path="/abs/hooks/sweep.py",
+        tb=TB(name="axi_tb", filelist=["tb/axi_tb.sv"], toplevel="axi_top"),
+        timeout=120,
+        covers=["axi.rd", "axi.wr"],
+        builder_name="verilator",
+        assertions=True,
+        resources=DispatchResourcesFile(cpus=4, mem="16G", time="02:00:00"),
+        xfail=True,
+        xfail_strict=False,
+    )
+
+    plan = original.to_plan_dict()
+    # Must be JSON-safe: the manifest is written as JSON on the shared FS.
+    reloaded = TC.from_plan_dict(json.loads(json.dumps(plan)))
+    assert reloaded == original
+
+
+def test_testconfig_plan_dict_covers_every_field():
+    """Guard: adding a TestConfig field must force a plan-serialization update.
+
+    Fails loudly if a new dataclass field is not carried by to_plan_dict,
+    so a silently-dropped field can't reach a sim job as a default.
+    """
+    import dataclasses
+
+    field_names = {f.name for f in dataclasses.fields(TC)}
+    carried = {TC._PLAN_FIELD_RENAMES.get(n, n) for n in field_names}
+    plan = _make_full_plan_dict()
+    assert carried == set(plan.keys())
+
+
+def _make_full_plan_dict() -> dict:
+    from rtl_buddy.config.model import ModelConfig
+
+    cfg = TC(
+        name="t",
+        desc="d",
+        model=ModelConfig(name="m", filelist=[], path="/abs/models.yaml"),
+        _reglvl=0,
+        pa=None,
+        pd=None,
+        uvm=None,
+        preproc_path=None,
+        postproc_path=None,
+        sweep_path=None,
+        tb=TB(name="tb", filelist=["a.sv"]),
+        timeout=None,
+    )
+    return cfg.to_plan_dict()
+
     cfg.set_timeout(120)
     timeout, is_custom = cfg.get_timeout()
     assert is_custom is True and timeout == 120
