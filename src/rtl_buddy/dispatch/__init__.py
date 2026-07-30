@@ -9,10 +9,11 @@ in-process execution path byte-identical to pre-dispatch behavior.
 """
 
 from ..errors import FatalRtlBuddyError
-from .base import DispatchBackend, JobHandle, TestJobSpec
+from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
 from .slurm import SlurmDispatchBackend
 
 __all__ = [
+    "BuildJobSpec",
     "DispatchBackend",
     "JobHandle",
     "TestJobSpec",

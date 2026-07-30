@@ -172,3 +172,58 @@ def test_cancel_all_scancels_every_job(monkeypatch):
     backend.cancel_all([JobHandle("5", _spec()), JobHandle("6", _spec(run_id=2))])
     (argv,) = calls
     assert argv == ["scancel", "5", "6"]
+
+
+# ------------------------------------------ dispatched build job + dependency
+
+
+def test_submit_build_builds_argv(monkeypatch):
+    from rtl_buddy.dispatch.base import BuildJobSpec
+
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="900\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif"])
+    )
+
+    spec = BuildJobSpec(
+        suite_dir="/proj/verif/blk",
+        test_config_path="/proj/verif/blk/tests.yaml",
+        resources=JobResources(cpus=8, mem="16G", time="02:00:00"),
+        reg_level=1000,
+        log_path=Path("/proj/verif/blk/artefacts/.dispatch/build.log"),
+    )
+    handle = backend.submit_build(spec)
+
+    assert handle.job_id == "900"
+    (argv,) = calls
+    assert argv[0] == "sbatch"
+    assert "--job-name=rb-build" in argv
+    assert "--time=02:00:00" in argv and "--cpus-per-task=8" in argv
+    assert "--mem=16G" in argv
+    assert "--partition=verif" in argv
+    wrapped = shlex.split(argv[argv.index("--wrap") + 1])
+    assert "_build-job" in wrapped
+    assert "--share-build" in wrapped
+    assert wrapped[wrapped.index("-l") + 1] == "1000"
+    assert "_test-job" not in wrapped  # it's a build, not a sim
+
+
+def test_submit_sim_with_dependency_adds_afterok(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    backend.submit(_spec(), dependency="900")
+    (argv,) = calls
+    assert "--dependency=afterok:900" in argv
+
+
+def test_submit_sim_without_dependency_has_no_flag(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="12\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile())
+
+    backend.submit(_spec())
+    (argv,) = calls
+    assert not any(a.startswith("--dependency") for a in argv)

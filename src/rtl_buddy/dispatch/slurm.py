@@ -32,7 +32,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..seed_mode import SeedMode
 from ..tool_manifest import require as require_tool
-from .base import DispatchBackend, JobHandle, TestJobSpec
+from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
 
 logger = logging.getLogger(__name__)
 
@@ -81,28 +81,86 @@ class SlurmDispatchBackend(DispatchBackend):
             argv += ["--replay-run-id", str(spec.replay_run_id)]
         return argv
 
-    def _sbatch_argv(self, spec: TestJobSpec) -> list[str]:
+    def _reservation_argv(self, resources, *, job_name, chdir, log_path) -> list[str]:
+        """Common sbatch reservation flags shared by build and sim jobs."""
         cmd = [
             "sbatch",
             "--parsable",
-            f"--job-name=rb:{spec.display_name()}",
-            f"--chdir={spec.suite_dir}",
+            f"--job-name={job_name}",
+            f"--chdir={chdir}",
             # Always explicit: right-sizing needs a defined time limit,
             # and site partitions may default to UNLIMITED.
-            f"--time={spec.resources.time}",
-            f"--cpus-per-task={spec.resources.cpus}",
+            f"--time={resources.time}",
+            f"--cpus-per-task={resources.cpus}",
         ]
-        if spec.resources.mem is not None:
-            cmd.append(f"--mem={spec.resources.mem}")
-        if spec.log_path is not None:
+        if resources.mem is not None:
+            cmd.append(f"--mem={resources.mem}")
+        if log_path is not None:
             # stderr merges into --output when --error is not given.
-            cmd.append(f"--output={spec.log_path}")
+            cmd.append(f"--output={log_path}")
+        return cmd
+
+    def _build_argv(self, spec: BuildJobSpec) -> list[str]:
+        """The ``rb _build-job`` invocation the build job runs."""
+        argv = [sys.executable, "-m", "rtl_buddy", "--machine"]
+        if spec.builder_mode is not None:
+            argv += ["-M", spec.builder_mode]
+        if spec.builder_override is not None:
+            argv += ["-B", spec.builder_override]
+        argv += ["_build-job", "-c", spec.test_config_path, "--share-build"]
+        if spec.reg_level is not None:
+            argv += ["-l", str(spec.reg_level)]
+        if spec.start_level is not None:
+            argv += ["-s", str(spec.start_level)]
+        return argv
+
+    def submit_build(self, spec: BuildJobSpec) -> JobHandle:
+        cmd = self._reservation_argv(
+            spec.resources,
+            job_name="rb-build",
+            chdir=spec.suite_dir,
+            log_path=spec.log_path,
+        )
+        cmd += self.sbatch_args
+        cmd += ["--wrap", shlex.join(self._build_argv(spec))]
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
+        if proc.returncode != 0:
+            raise FatalRtlBuddyError(
+                f"sbatch failed for build job (rc={proc.returncode}): "
+                f"{proc.stderr.strip()}"
+            )
+        job_id = proc.stdout.strip().split(";")[0]
+        if not job_id:
+            raise FatalRtlBuddyError("sbatch returned no job id for build job")
+        log_event(
+            logger,
+            logging.INFO,
+            "dispatch.build_submitted",
+            backend=self.name,
+            job_id=job_id,
+            suite_dir=spec.suite_dir,
+            time=spec.resources.time,
+            cpus=spec.resources.cpus,
+            mem=spec.resources.mem,
+        )
+        return JobHandle(job_id=job_id, spec=spec)
+
+    def _sbatch_argv(self, spec: TestJobSpec, dependency: str | None) -> list[str]:
+        cmd = self._reservation_argv(
+            spec.resources,
+            job_name=f"rb:{spec.display_name()}",
+            chdir=spec.suite_dir,
+            log_path=spec.log_path,
+        )
+        if dependency is not None:
+            # afterok: the sim only runs if the shared build succeeded.
+            cmd.append(f"--dependency=afterok:{dependency}")
         cmd += self.sbatch_args
         cmd += ["--wrap", shlex.join(self._job_argv(spec))]
         return cmd
 
-    def submit(self, spec: TestJobSpec) -> JobHandle:
-        argv = self._sbatch_argv(spec)
+    def submit(self, spec: TestJobSpec, *, dependency: str | None = None) -> JobHandle:
+        argv = self._sbatch_argv(spec, dependency)
         proc = subprocess.run(argv, capture_output=True, text=True, cwd=spec.suite_dir)
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
@@ -123,6 +181,7 @@ class SlurmDispatchBackend(DispatchBackend):
             job_id=job_id,
             test=spec.test_name,
             run_id=spec.run_id,
+            dependency=dependency,
             time=spec.resources.time,
             cpus=spec.resources.cpus,
             mem=spec.resources.mem,

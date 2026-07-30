@@ -222,3 +222,49 @@ def test_resolve_job_test_cfg_sweep_failure_becomes_setup_error(
     # name may have come from the failed expansion) instead of raising.
     cfg, err = rb._resolve_job_test_cfg(suite_cfg, "mystery", ".")
     assert cfg is None and "Setup failed in sweep" in err
+
+
+# ------------------------------------------------ rb _build-job (#351)
+
+
+def test_build_job_compiles_runnable_tests(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    # A COMP early-stop means "compiled OK" for the build job.
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    # run_depth=COMP + share_build on the build TestRunner.
+    assert stub_runner.last_init["run_depth"].value == "comp"
+    assert stub_runner.last_init["share_build"] is True
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert envelope["command"] == "_build-job"
+    # basic + extra both at/under -l 5.
+    assert set(envelope["payload"]["built"]) == {"basic", "extra"}
+    assert envelope["payload"]["failed"] == []
+
+
+def test_build_job_compile_failure_is_best_effort_exit_0(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    # A per-test compile failure must not fail the build job (afterok
+    # dependents still run; the failing test recompiles in its own sim job).
+    stub_runner.canned = CompileFailResults(name="b/results")
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["--machine", "_build-job", "-c", "tests.yaml"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert "basic" in envelope["payload"]["failed"]
+    assert envelope["payload"]["built"] == []

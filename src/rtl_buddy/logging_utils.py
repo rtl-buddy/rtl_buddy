@@ -317,6 +317,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"Using regression config {fields.get('path')}"
         case "regression.suite_start":
             return f"Running suite {fields.get('suite')}"
+        case "build_job.compile_failed":
+            return (
+                f"{fields.get('test')}: compile failed in the dispatch build "
+                "job (its sim job will retry the compile and fail there)"
+            )
         case "dispatch.cancelled":
             return (
                 f"Cancelled {fields.get('jobs')} outstanding dispatch job(s) "

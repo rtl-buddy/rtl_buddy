@@ -4,11 +4,12 @@
 #
 """Dispatch backend interface (#351).
 
-A dispatch backend runs the SIM+POST phase of tests as external jobs
-after the head process has built the sim executable. The unit of
-dispatch is one (test, run_id): the backend submits ``rb _test-job``
-invocations that each write a ``result.json`` envelope, and the head
-process collects those envelopes into the normal aggregation path.
+A dispatch backend runs the compile AND the SIM+POST phases of tests as
+external jobs — nothing heavy runs on the submit host, which is usually an
+interactive login node. The head submits one **build job** per suite that
+Verilates the shared executable on a compute node, then one ``rb
+_test-job`` per (test, run_id) gated on that build via a scheduler
+dependency; each sim job writes a ``result.json`` the head collects.
 Backends only launch and await jobs — result collection is
 backend-independent (``runner.result_io``).
 """
@@ -19,6 +20,25 @@ from pathlib import Path
 
 from ..config.dispatch import JobResources
 from ..seed_mode import SeedMode
+
+
+@dataclass
+class BuildJobSpec:
+    """Everything a backend needs to launch one suite's build job.
+
+    The job runs ``rb _build-job`` on a compute node — PRE+COMPILE for
+    every runnable test in the suite with share-build, so each unique
+    compile key Verilates once. Sim jobs depend on its success.
+    """
+
+    suite_dir: str
+    test_config_path: str
+    resources: JobResources = field(default_factory=JobResources)
+    reg_level: int | None = None
+    start_level: int | None = None
+    builder_mode: str = "reg"
+    builder_override: str | None = None
+    log_path: Path | None = None
 
 
 @dataclass
@@ -55,7 +75,7 @@ class JobHandle:
     """An accepted submission: the backend's job id plus its spec."""
 
     job_id: str
-    spec: TestJobSpec
+    spec: object
 
 
 class DispatchBackend(ABC):
@@ -69,8 +89,13 @@ class DispatchBackend(ABC):
     name: str = "?"
 
     @abstractmethod
-    def submit(self, spec: TestJobSpec) -> JobHandle:
-        """Submit one job; return its handle without waiting."""
+    def submit_build(self, spec: BuildJobSpec) -> JobHandle:
+        """Submit one suite's build job; return its handle without waiting."""
+
+    @abstractmethod
+    def submit(self, spec: TestJobSpec, *, dependency: str | None = None) -> JobHandle:
+        """Submit one sim job, optionally gated on ``dependency`` (a build
+        job id that must succeed first); return its handle without waiting."""
 
     @abstractmethod
     def wait_all(self, handles: list[JobHandle]) -> None:

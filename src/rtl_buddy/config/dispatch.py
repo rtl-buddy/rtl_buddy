@@ -94,6 +94,11 @@ class DispatchConfigFile:
 
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
+    # Reservation for the head-dispatched build job (Verilation runs on a
+    # compute node, never the submit host). Defaults to `resources` when
+    # unset; give it its own cpus/mem/time when the compile is heavier than
+    # the sims (a large Verilation often is).
+    compile: DispatchResourcesFile | None = None
     sbatch_args: list[str] = field(rename="sbatch-args", default_factory=list)
     poll_interval: float = field(rename="poll-interval", default=10.0)
 
@@ -109,16 +114,20 @@ class DispatchConfigFile:
                 f"cfg-dispatch poll-interval must be > 0 (got {self.poll_interval}); "
                 "a zero interval turns collection into a squeue busy-loop."
             )
-        resources = self.resources
-        if resources is not None:
-            resources = DispatchResourcesFile(
-                cpus=resources.cpus,
-                mem=_validate_mem(resources.mem),
-                time=_validate_time(resources.time),
+
+        def _validated(res):
+            if res is None:
+                return None
+            return DispatchResourcesFile(
+                cpus=res.cpus,
+                mem=_validate_mem(res.mem),
+                time=_validate_time(res.time),
             )
+
         return DispatchConfig(
             backend=self.backend,
-            resources=resources,
+            resources=_validated(self.resources),
+            compile=_validated(self.compile),
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
         )
@@ -130,6 +139,7 @@ class DispatchConfig:
 
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
+    compile: DispatchResourcesFile | None = None
     sbatch_args: list = None
     poll_interval: float = 10.0
 
@@ -172,6 +182,28 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
         if layer.mem is not None:
             # Per-test/testbench resources: are raw serde and may carry the
             # YAML sexagesimal/int trap; validate as they are applied.
+            resolved.mem = _validate_mem(layer.mem)
+        if layer.time is not None:
+            resolved.time = _validate_time(layer.time)
+    return resolved
+
+
+def resolve_compile_resources(dispatch_cfg) -> JobResources:
+    """Resolve the reservation for the dispatched build job.
+
+    ``cfg-dispatch.compile`` over ``cfg-dispatch.resources`` over the
+    built-in defaults, field by field — so the build inherits the sim
+    defaults unless the compile is called out separately.
+    """
+    resolved = JobResources()
+    if dispatch_cfg is None:
+        return resolved
+    for layer in [dispatch_cfg.resources, dispatch_cfg.compile]:
+        if layer is None:
+            continue
+        if layer.cpus is not None:
+            resolved.cpus = layer.cpus
+        if layer.mem is not None:
             resolved.mem = _validate_mem(layer.mem)
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)

@@ -1,9 +1,9 @@
 """Dispatched regression flow tests (#351 P1).
 
 Exercise ``rb regression --dispatch ...`` end-to-end over the
-``minimal_project`` fixture with a fake backend and a stubbed
-``TestRunner``: head-node build pass, fan-out, collection, failure
-mapping, and result ordering — no scheduler or simulator involved.
+``minimal_project`` fixture with a fake backend: dispatched build job,
+sim fan-out gated on it, collection, failure mapping, and result
+ordering — no scheduler or simulator involved.
 """
 
 from __future__ import annotations
@@ -35,11 +35,18 @@ class _FakeBackend(DispatchBackend):
         self.job_result = job_result
         self.write_results = write_results
         self.submitted = []
+        self.build_submitted = []
+        self.dependencies = []
         self.waited = False
         self.cancelled = False
 
-    def submit(self, spec):
+    def submit_build(self, spec):
+        self.build_submitted.append(spec)
+        return JobHandle(job_id="fake-build", spec=spec)
+
+    def submit(self, spec, *, dependency=None):
         self.submitted.append(spec)
+        self.dependencies.append(dependency)
         if self.write_results:
             results = (
                 TestPassResults(name=spec.test_name + "/results")
@@ -105,7 +112,6 @@ def _invoke(args):
 
 def test_dispatched_regression_passes(
     minimal_project: Path,
-    stub_build_runner: type[_StubBuildRunner],
     fake_backend: _FakeBackend,
 ):
     result, rb = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
@@ -116,22 +122,23 @@ def test_dispatched_regression_passes(
     assert fake_backend.waited
     assert not fake_backend.cancelled
 
-    # The head build pass ran with share_build + COMP early-stop.
-    build_kwargs = stub_build_runner.inits[0]
-    assert build_kwargs["share_build"] is True
-    assert build_kwargs["run_depth"].value == "comp"
-    # Dispatch implies share_build for the command as a whole.
-    assert rb.share_build is True
+    # The compile runs as a dispatched build job (never on the head), and
+    # the sim job is gated on it via afterok.
+    assert len(fake_backend.build_submitted) == 1
+    build = fake_backend.build_submitted[0]
+    assert build.resources.time is not None  # compile reservation resolved
+    assert fake_backend.dependencies == ["fake-build"]
 
-    # Jobs carry resolved resources with an always-defined time limit.
+    # Dispatch implies share_build; sim jobs carry a defined reservation.
+    assert rb.share_build is True
     spec = fake_backend.submitted[0]
+    assert spec.share_build is True
     assert spec.resources.time is not None
     assert spec.result_json.is_file()
 
 
 def test_dispatched_regression_missing_result_is_dispatch_fail(
     minimal_project: Path,
-    stub_build_runner: type[_StubBuildRunner],
     fake_backend: _FakeBackend,
 ):
     fake_backend.write_results = False
@@ -149,16 +156,18 @@ def test_dispatched_regression_missing_result_is_dispatch_fail(
     assert "produced no result" in rows["basic"]["desc"]
 
 
-def test_dispatched_regression_compile_fail_submits_nothing(
+def test_dispatched_regression_submits_build_before_sims(
     minimal_project: Path,
-    stub_build_runner: type[_StubBuildRunner],
     fake_backend: _FakeBackend,
 ):
-    stub_build_runner.canned = CompileFailResults(name="build/results")
+    # A build job is always submitted (the compile no longer runs on the
+    # head), and every sim depends on it. Compile failures now surface via
+    # the sim job's own envelope, not by the head refusing to submit.
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
-    assert result.exit_code == 1
-    assert fake_backend.submitted == []
-    assert not fake_backend.waited or fake_backend.submitted == []
+    assert result.exit_code == 0, result.output
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.submitted, "expected sim jobs submitted"
+    assert all(dep == "fake-build" for dep in fake_backend.dependencies)
 
 
 def test_dispatch_local_keeps_in_process_path(
@@ -207,7 +216,7 @@ def test_dispatch_creates_log_parent_before_submit(
     seen_parent_exists = []
 
     class _CheckBackend(_FakeBackend):
-        def submit(self, spec):
+        def submit(self, spec, *, dependency=None):
             seen_parent_exists.append(spec.log_path.parent.is_dir())
             return super().submit(spec)
 
@@ -230,7 +239,7 @@ def test_dispatch_cancels_already_submitted_on_midway_submit_failure(
     from rtl_buddy.errors import FatalRtlBuddyError
 
     class _FlakyBackend(_FakeBackend):
-        def submit(self, spec):
+        def submit(self, spec, *, dependency=None):
             if len(self.submitted) >= 1:
                 raise FatalRtlBuddyError("sbatch: QOS limit reached")
             return super().submit(spec)
