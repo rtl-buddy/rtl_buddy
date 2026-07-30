@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+db="${RB_SHIM_DB:-$PWD/.rb_shim_jobs}"
+[ -f "$db" ] || exit 0
+while read -r jid; do
+  [ -z "$jid" ] && continue
+  echo "${jid}|COMPLETED|5|60|1|512M||"
+  echo "${jid}.batch|COMPLETED|5||1||00:04.000|20480K"
+done < "$db"

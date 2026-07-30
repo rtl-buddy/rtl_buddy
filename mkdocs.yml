@@ -41,6 +41,7 @@ nav:
       - Tests: concepts/tests.md
       - Simulators (Verilator vs Icarus): concepts/simulators.md
       - Regressions: concepts/regressions.md
+      - Parallel Dispatch (Slurm): concepts/dispatch.md
       - Expected Failures (xfail): concepts/expected-failures.md
       - Coverage: concepts/coverage.md
       - Plugins: concepts/plugins.md

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Fake sbatch: runs the job(s) synchronously and records element job ids.
+db="${RB_SHIM_DB:-$PWD/.rb_shim_jobs}"
+jobid=$(( (RANDOM % 9000) + 1000 ))
+array="" ; wrap="" ; chdir="" ; script="" ; manifest=""
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+  a="${args[$i]}"
+  case "$a" in
+    --array=*) array="${a#--array=}";;
+    --chdir=*) chdir="${a#--chdir=}";;
+    --wrap) i=$((i+1)); wrap="${args[$i]}";;
+    --parsable|--time=*|--cpus-per-task=*|--mem=*|--job-name=*|--output=*|--qos=*|--partition=*|-*) : ;;
+    *) if [ -z "$script" ]; then script="$a"; else manifest="$a"; fi;;
+  esac
+  i=$((i+1))
+done
+[ -n "$chdir" ] && cd "$chdir"
+run_one() { ( eval "$1" ) >/dev/null 2>&1 || true; }
+if [ -n "$wrap" ]; then
+  echo "$jobid" >> "$db"
+  run_one "$wrap"
+elif [ -n "$script" ] && [ -n "$manifest" ]; then
+  n=$(wc -l < "$manifest")
+  for k in $(seq 1 "$n"); do
+    echo "${jobid}_${k}" >> "$db"
+    export SLURM_ARRAY_TASK_ID="$k"
+    run_one "bash '$script' '$manifest'"
+  done
+fi
+echo "$jobid"
