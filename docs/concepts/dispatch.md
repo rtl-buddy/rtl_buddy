@@ -36,6 +36,44 @@ Because the head builds once and stops at compile, `--dispatch` cannot be
 combined with `--early-stop`, and dispatched jobs deliberately skip the
 per-tree lock (see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
 
+## How arrays interact with the shared build
+
+Dispatch buckets tests by **two independent keys**, and they need not line
+up:
+
+- **Share-build groups by *compile key*** — a fingerprint of the compile
+  inputs (filelist + compile flags + plusdefines). Tests whose inputs
+  hash identically reuse one `simv` under
+  `artefacts/.shared-builds/obj_dir_<key>/simv`.
+- **Arrays group by *resolved resources*** — the `cpus`/`mem`/`time`
+  reservation. Tests resolving to the same reservation share one `sbatch`
+  array.
+
+These are orthogonal because reservations are about *sim-time* needs while
+compile keys are about *compile inputs*. A smoke test and a soak test of
+the same DUT+testbench reuse one compiled `simv` (same compile key) but
+reserve very different memory/time, so they land in **different arrays**.
+Conversely, two unrelated blocks that happen to reserve the same slot
+share one array but each build their own `simv`.
+
+The sharing is decided entirely on the head, before any array is
+submitted: the build pass Verilates each unique compile key exactly once
+(later configs with the same key short-circuit on the stamp), and **only
+after all builds finish** does it submit arrays. So the counts are
+independent — distinct `simv`s built = distinct compile keys; arrays
+submitted = distinct resource tuples — and any combination is possible
+(one `simv` shared across a 12-element array; three arrays all pointing at
+one `simv`; a single array whose members each have their own `simv`).
+
+Every array element re-runs `compile()`, finds the shared stamp on the
+shared filesystem, short-circuits, and reads the same on-disk `simv`
+**read-only** — which is why elements across different arrays (or suites)
+that share a compile key all point at the same build, and why concurrent
+elements are safe (`_test-job` is a cooperative reader that skips the
+per-tree lock). This all depends on share-build, which is **Verilator
+only**: under a non-Verilator builder there is no shared stamp, so each
+element recompiles inside its own job — correct, just unshared.
+
 ## Requirements
 
 - A Slurm client on the submit host (`sbatch`/`squeue`/`sacct`/`scancel`)
