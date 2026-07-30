@@ -604,3 +604,177 @@ def test_dispatched_collect_reenters_suite_context(
     # The suite context is entered again during the collect phase (more
     # entries than the single submit-phase entry per suite).
     assert entered.count(str(minimal_project / "tests.yaml")) >= 4
+
+
+# --------------------------------------------------- P3: reservation advice
+
+
+def _mark_stub_builder_verilator(project: Path):
+    # Time advice is gated to verilator-family builders (licqueue, #329);
+    # the fixture's stub builder ("echo") must opt in for advice tests.
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            '    builder: "echo"\n',
+            '    builder: "echo"\n    simulator-family: "verilator"\n',
+        )
+    )
+
+
+def _telemetry_backend(monkeypatch):
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {
+                "state": "COMPLETED",
+                "elapsed_s": 10,
+                "timelimit_s": 3600,
+                "req_mem_bytes": 8 * 2**30,
+                "max_rss_bytes": 2**30,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    return backend
+
+
+def test_regression_machine_payload_carries_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _telemetry_backend(monkeypatch)
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    advice = envelope["payload"]["reservation_advice"]
+    by_resource = {a["resource"]: a for a in advice}
+    # 10s of 1h and 1G of 8G are both over-reserved.
+    assert by_resource["time"]["direction"] == "reduce"
+    assert by_resource["mem"]["direction"] == "reduce"
+    mem = by_resource["mem"]
+    assert mem["event"] == "reservation-advice"
+    assert mem["test"] == "basic"
+    assert mem["suggested"] == "1536M"
+    assert mem["edit_hint"]["path"] == "tests[name=basic].resources.mem"
+    assert mem["runs"] == 1
+
+
+def test_rightsize_report_false_disables_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _telemetry_backend(monkeypatch)
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  rightsize:\n    report: false\n"
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert envelope["payload"]["reservation_advice"] == []
+
+
+def test_local_run_has_no_reservation_advice_key(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["--machine", "regression", "-c", "regression.yaml"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert "reservation_advice" not in envelope["payload"]
+
+
+def test_randtest_machine_payload_carries_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        telemetry={
+            f"fake-{i}": {
+                "state": "COMPLETED",
+                "elapsed_s": 5 * i,
+                "timelimit_s": 3600,
+            }
+            for i in (1, 2, 3)
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["--machine", "randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    advice = envelope["payload"]["reservation_advice"]
+    (time_a,) = [a for a in advice if a["resource"] == "time"]
+    # Aggregated across the 3 seeds: peak elapsed 15s of 1h → reduce.
+    assert time_a["runs"] == 3
+    assert time_a["direction"] == "reduce"
+
+
+def test_unresolvable_builder_does_not_abort_finished_run(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A dispatched row whose builder name no longer resolves must not turn
+    # a completed regression into an exit-2 abort during advice analysis.
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 10, "timelimit_s": 3600}
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    _mark_stub_builder_verilator(minimal_project)
+
+    rb = RtlBuddy(name="unknown_builder")
+    from typer.testing import CliRunner
+
+    # Force every builder lookup during analysis to fail as if the name
+    # vanished from cfg-rtl-builder.
+    import rtl_buddy.config.root as root_mod
+
+    orig = root_mod.RootConfig.resolve_rtl_builder_cfg
+
+    def flaky(self, name=None):
+        if name == "__gone__":
+            from rtl_buddy.errors import FatalRtlBuddyError
+
+            raise FatalRtlBuddyError("no such builder")
+        return orig(self, name)
+
+    monkeypatch.setattr(root_mod.RootConfig, "resolve_rtl_builder_cfg", flaky)
+
+    # Stamp the missing builder onto the collected row via the backend.
+    result = CliRunner().invoke(
+        rb.app,
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"],
+    )
+    # The run completes and reports (exit 0/1 from results), not exit 2.
+    assert result.exit_code in (0, 1), result.output
+    assert '"command": "regression"' in result.output

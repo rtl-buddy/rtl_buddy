@@ -48,6 +48,7 @@ from .config.dispatch import resolve_compile_resources, resolve_resources
 from .dispatch import create_dispatch_backend
 from .dispatch.base import BuildJobSpec, TestJobSpec
 from .dispatch.plan import read_plan_config, read_plan_configs, write_plan
+from .dispatch.rightsize import analyze_suite_reservations
 from .runner.result_io import (
     attach_telemetry_json,
     load_build_result_json,
@@ -1212,6 +1213,7 @@ class RtlBuddy:
             if rpt_i is None
             else None
         )
+        reservation_findings = []
         if dispatch_backend is not None:
             self.share_build = True
             state = self._dispatch_suite_submit(
@@ -1231,6 +1233,13 @@ class RtlBuddy:
                 dispatch_backend.cancel_all(handles)
                 raise
             suite_results = self._dispatch_collect(dispatch_backend, state)
+            reservation_findings = self._analyze_reservations(
+                suite_results,
+                suite_display=self._display_path(
+                    str(ctx.primary_config), base_dir=str(self.invocation_cwd)
+                ),
+                suite_config_path=str(Path(ctx.primary_config).resolve()),
+            )
             if not self.machine:
                 self._render_test_summary(
                     "RandTest Results Summary",
@@ -1238,6 +1247,8 @@ class RtlBuddy:
                     include_run_id=True,
                     metadata=[self._builder_metadata_line(self.suite_cfg, test_name)],
                 )
+                if reservation_findings:
+                    self._render_reservation_advice(reservation_findings)
         elif rpt_i is not None:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
@@ -1271,10 +1282,8 @@ class RtlBuddy:
 
         exit_code = self._exit_code_from_results(suite_results)
         if self.machine:
-            self._emit_machine_result(
-                "randtest",
-                exit_code,
-                results=[
+            payload = {
+                "results": [
                     {
                         "name": r["test_name"],
                         "run_id": r["randmode_i"],
@@ -1282,8 +1291,13 @@ class RtlBuddy:
                         "desc": r["results"].results["desc"],
                     }
                     for r in suite_results
-                ],
-            )
+                ]
+            }
+            if dispatch_backend is not None:
+                payload["reservation_advice"] = [
+                    finding.as_event() for finding in reservation_findings
+                ]
+            self._emit_machine_result("randtest", exit_code, **payload)
         raise typer.Exit(exit_code)
 
     def _abs_invocation_path(self, path: str) -> Path:
@@ -2207,6 +2221,76 @@ class RtlBuddy:
             suite_results[idx]["results"] = results
         return suite_results
 
+    def _simulator_family_of(self, builder_name):
+        """Simulator family for a resolved builder name (advice gating).
+
+        Reservation analysis is advisory and runs *after* every job has
+        completed; a row whose builder name no longer resolves must not
+        turn a finished run into an abort. Return ``None`` (family unknown)
+        instead of raising.
+        """
+        try:
+            return self.root_cfg.resolve_rtl_builder_cfg(
+                builder_name
+            ).get_simulator_family()
+        except FatalRtlBuddyError:
+            return None
+
+    def _analyze_reservations(
+        self, suite_results, *, suite_display, suite_config_path=None, reg_level=None
+    ):
+        """Right-size one dispatched suite's rows into advice findings."""
+        rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
+        if not rightsize_cfg.report:
+            return []
+        findings = analyze_suite_reservations(
+            suite_results,
+            suite_display=suite_display,
+            # Absolute tests.yaml path in the machine edit_hint so an agent
+            # whose cwd differs from the invocation cwd can still apply it;
+            # the human table uses the short suite_display.
+            suite_config_path=suite_config_path or suite_display,
+            rightsize_cfg=rightsize_cfg,
+            reg_level=reg_level,
+            simulator_family_of=self._simulator_family_of,
+        )
+        for finding in findings:
+            fields = {k: v for k, v in finding.as_event().items() if k != "event"}
+            log_event(logger, logging.INFO, "rightsize.advice", **fields)
+        return findings
+
+    def _render_reservation_advice(self, findings):
+        rows = [
+            {
+                "suite": f.suite,
+                "test": f.test,
+                "resource": f.resource,
+                "reserved": f.reserved,
+                "peak": f.peak,
+                "utilization": f"{f.utilization:.0%}",
+                "advice": f"{f.direction} → {f.suggested}",
+            }
+            for f in findings
+        ]
+        render_summary(
+            title="Reservation Advice (reserved vs used)",
+            columns=[
+                ("suite", "Suite"),
+                ("test", "Test"),
+                ("resource", "Resource"),
+                ("reserved", "Reserved"),
+                ("peak", "Peak used"),
+                ("utilization", "Util"),
+                ("advice", "Advice"),
+            ],
+            rows=rows,
+            logger=logger,
+            metadata=[
+                "rtl-buddy suggests; apply by editing the named "
+                "resources: field in tests.yaml"
+            ],
+        )
+
     def do_rtl_regression(
         self,
         reg_config: Annotated[
@@ -2414,6 +2498,7 @@ class RtlBuddy:
 
         exit_code = 0
         reg_results = []
+        reservation_findings = []
         # Per-suite ExecutionContext re-anchors the file log under each
         # tests.yaml directory. The process CWD is intentionally not
         # changed; the test runner already passes suite_dir explicitly to
@@ -2458,11 +2543,20 @@ class RtlBuddy:
                 # suite's — matching the in-process per-suite fidelity.
                 self._enter_command_context(primary_config=suite_cfg.get_path())
                 suite_results = self._dispatch_collect(dispatch_backend, state)
+                suite_display = self._display_path(
+                    suite_cfg.get_path(), base_dir=start_dir
+                )
+                reservation_findings.extend(
+                    self._analyze_reservations(
+                        suite_results,
+                        suite_display=suite_display,
+                        suite_config_path=str(Path(suite_cfg.get_path()).resolve()),
+                        reg_level=reg_level,
+                    )
+                )
                 reg_results.append(
                     {
-                        "test_suite": self._display_path(
-                            suite_cfg.get_path(), base_dir=start_dir
-                        ),
+                        "test_suite": suite_display,
                         "test_suite_path": str(
                             Path(suite_cfg.get_path()).resolve().parent
                         ),
@@ -2585,6 +2679,8 @@ class RtlBuddy:
         # Render in both modes: in machine mode this emits the "summary" log
         # event (and plain text to stderr), leaving stdout for the envelope.
         self._render_regression_summary(reg_results, metadata=metadata)
+        if reservation_findings and not self.machine:
+            self._render_reservation_advice(reservation_findings)
         if self.machine:
             payload = {
                 "results": [
@@ -2600,6 +2696,10 @@ class RtlBuddy:
             coverage = self._machine_coverage_payload(coverage_payload)
             if coverage is not None:
                 payload["coverage"] = coverage
+            if dispatch_backend is not None:
+                payload["reservation_advice"] = [
+                    finding.as_event() for finding in reservation_findings
+                ]
             self._emit_machine_result("regression", exit_code, **payload)
         raise typer.Exit(exit_code)
 
