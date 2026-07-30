@@ -147,6 +147,30 @@ Three consequences that can surprise:
   NFS depends on protocol version, mount options, and the server's lock
   daemon — rtl_buddy assumes it doesn't. Same-host concurrent runs are the
   protected case; cross-host coordination is on you.
+- **Dispatched jobs deliberately skip the lock.** Under
+  `regression --dispatch slurm`, the head process holds the lock but the
+  per-test `rb _test-job` jobs do **not** take it — they are cooperative
+  delegates writing disjoint `run-*` dirs and reading the shared build
+  read-only. The consequence: while a dispatched regression is running,
+  nothing stops you from starting a second `rb test` in the same tree,
+  because the head's lock does not cover what the jobs are doing on the
+  compute nodes. Don't launch other commands against a tree that has a
+  dispatch run in flight.
+
+## `--dispatch` silently implies `--share-build`
+
+`regression --dispatch slurm` (and `randtest --dispatch slurm`) turn on
+`--share-build` even if you didn't pass it: the head-node build pass
+compiling one shared `simv` per unique compile key is exactly what lets
+each dispatched job skip compilation and re-enter at simulation. This
+changes compile behaviour versus a plain local run — tests with identical
+compile inputs Verilate once, not once each — and share-build is
+Verilator-only, so non-Verilator builders fall back to compiling inside
+each job. The promotion is logged as `dispatch.share_build_implied`.
+Also note `--dispatch` cannot be combined with `--early-stop`: the head
+always stops its build at compile and the jobs run sim+post, so an
+earlier stop point can't be honoured per-job (rtl_buddy rejects the
+combination loudly rather than ignoring the flag).
 
 ## `rb nvim-install` requires git + network, and pins the plugin by hand
 

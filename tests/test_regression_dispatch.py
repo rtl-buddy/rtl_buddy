@@ -192,3 +192,75 @@ def test_cfg_dispatch_backend_used_when_no_cli_flag(
     result, _ = _invoke(["regression", "-c", "regression.yaml"])
     assert result.exit_code == 0, result.output
     assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+
+
+# --------------------------------------------- P1 review: robustness fixes
+
+
+def test_dispatch_creates_log_parent_before_submit(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Regression for the blocking bug: the sbatch --output parent must
+    # exist at submit time (slurmstepd opens it before rb _test-job runs).
+    seen_parent_exists = []
+
+    class _CheckBackend(_FakeBackend):
+        def submit(self, spec):
+            seen_parent_exists.append(spec.log_path.parent.is_dir())
+            return super().submit(spec)
+
+    backend = _CheckBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert seen_parent_exists == [True]
+
+
+def test_dispatch_cancels_already_submitted_on_midway_submit_failure(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Two tests at -l 5; the second submit raises. The first must be
+    # cancelled, not left running after the head exits.
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    class _FlakyBackend(_FakeBackend):
+        def submit(self, spec):
+            if len(self.submitted) >= 1:
+                raise FatalRtlBuddyError("sbatch: QOS limit reached")
+            return super().submit(spec)
+
+    backend = _FlakyBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code != 0
+    assert backend.cancelled is True
+
+
+def test_early_stop_with_dispatch_rejected(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    result, _ = _invoke(
+        [
+            "--early-stop",
+            "comp",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "slurm",
+        ]
+    )
+    assert result.exit_code != 0
+    assert fake_backend.submitted == []

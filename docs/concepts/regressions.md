@@ -72,6 +72,32 @@ Unlike `test`, the `regression` subcommand **changes directory** into each suite
 
 Run `regression` from the repo root so that the paths in `regressions.yaml` resolve correctly.
 
+## Parallel dispatch via Slurm
+
+By default a regression runs every test in-process, one at a time
+(`--dispatch local`). On a cluster you can instead fan the tests out as
+parallel [Slurm](https://slurm.schedmd.com/) jobs after the shared build:
+
+```bash
+rtl-buddy regression --dispatch slurm
+```
+
+What happens: the head process compiles one shared `simv` per unique
+compile key (dispatch implies `--share-build`), then submits one job per
+test that re-enters at simulation via the shared build, waits for the
+queue to drain, and collects each job's result into the normal summary
+and exit code. Per-test resource reservations and a right-sizing report
+are configured under `cfg-dispatch`; see
+[cfg-dispatch in root_config.yaml](root-config.md) and the
+[Slurm client install requirements](../install.md).
+
+Requirements in brief: a Slurm client on the submit host
+(`sbatch`/`squeue`/`sacct`/`scancel`), a shared filesystem visible at the
+same paths on submit host and compute nodes, and the project's Python
+environment runnable on the compute nodes. `--dispatch` cannot be
+combined with `--early-stop`, and skips the per-tree lock for its jobs
+(see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
+
 ## Full schema
 
 See [YAML Formats: regressions.yaml](../reference/yaml.md#regressionyaml) for the complete field reference.

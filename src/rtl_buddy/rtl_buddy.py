@@ -1699,6 +1699,67 @@ class RtlBuddy:
         suite_results = []
         pending = []  # (index into suite_results, JobHandle)
 
+        # Guard the entire build+submit fan-out, not just the wait: a
+        # mid-fan-out sbatch failure (bad --mem, QOS limit, transient
+        # slurmctld) or a Ctrl-C during the serial build pass must not
+        # leave already-submitted jobs running after the head exits and
+        # releases its #73 artefact-tree lock.
+        try:
+            self._dispatch_build_and_submit(
+                suite_cfg,
+                backend,
+                suite_dir=suite_dir,
+                dispatch_cfg=dispatch_cfg,
+                run_ids=run_ids,
+                reg_level=reg_level,
+                start_level=start_level,
+                suite_results=suite_results,
+                pending=pending,
+            )
+            handles = [handle for _, handle in pending]
+            if handles:
+                backend.wait_all(handles)
+        except BaseException:
+            backend.cancel_all([handle for _, handle in pending])
+            raise
+
+        for idx, handle in pending:
+            try:
+                envelope = load_result_json(handle.spec.result_json)
+                results = envelope["result"]
+            except FatalRtlBuddyError as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "dispatch.result_missing",
+                    job_id=handle.job_id,
+                    test=handle.spec.test_name,
+                    run_id=handle.spec.run_id,
+                    error=str(e),
+                )
+                results = DispatchFailResults(
+                    name=handle.spec.test_name + "/results",
+                    desc=f"dispatch job {handle.job_id} produced no result "
+                    f"(killed by the scheduler or crashed; see "
+                    f"{handle.spec.log_path}): {e}",
+                )
+            suite_results[idx]["results"] = results
+        return suite_results
+
+    def _dispatch_build_and_submit(
+        self,
+        suite_cfg,
+        backend,
+        *,
+        suite_dir,
+        dispatch_cfg,
+        run_ids,
+        reg_level,
+        start_level,
+        suite_results,
+        pending,
+    ):
+        """Head-node build pass + job submission (see caller for the guard)."""
         for cfg in self._iter_suite_runnables(
             suite_cfg,
             test_name=None,
@@ -1737,11 +1798,16 @@ class RtlBuddy:
                 )
                 continue
 
+            dispatch_dir = (
+                Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
+            )
+            # Create it on the head before submit: the sbatch job's
+            # --output log path lives here, and slurmstepd opens that file
+            # (failing the whole job) before rb _test-job — which is what
+            # would otherwise mkdir it — ever runs.
+            dispatch_dir.mkdir(parents=True, exist_ok=True)
             for run_id in run_ids:
                 run_tag = "single" if run_id is None else f"{run_id:04d}"
-                dispatch_dir = (
-                    Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
-                )
                 result_json = dispatch_dir / f"result-{run_tag}.json"
                 # A stale envelope from an earlier run must not satisfy
                 # this run's collection.
@@ -1768,38 +1834,6 @@ class RtlBuddy:
                     }
                 )
                 pending.append((len(suite_results) - 1, handle))
-
-        if pending:
-            handles = [handle for _, handle in pending]
-            try:
-                backend.wait_all(handles)
-            except BaseException:
-                # Interrupt or fatal error on the head: don't leave the
-                # fleet running.
-                backend.cancel_all(handles)
-                raise
-            for idx, handle in pending:
-                try:
-                    envelope = load_result_json(handle.spec.result_json)
-                    results = envelope["result"]
-                except FatalRtlBuddyError as e:
-                    log_event(
-                        logger,
-                        logging.ERROR,
-                        "dispatch.result_missing",
-                        job_id=handle.job_id,
-                        test=handle.spec.test_name,
-                        run_id=handle.spec.run_id,
-                        error=str(e),
-                    )
-                    results = DispatchFailResults(
-                        name=handle.spec.test_name + "/results",
-                        desc=f"dispatch job {handle.job_id} produced no result "
-                        f"(killed by the scheduler or crashed; see "
-                        f"{handle.spec.log_path}): {e}",
-                    )
-                suite_results[idx]["results"] = results
-        return suite_results
 
     def do_rtl_regression(
         self,
@@ -1985,14 +2019,25 @@ class RtlBuddy:
         dispatch_backend = create_dispatch_backend(
             backend_name, self.root_cfg.get_dispatch_cfg()
         )
-        if dispatch_backend is not None and not share_build:
-            self.share_build = True
-            log_event(
-                logger,
-                logging.INFO,
-                "dispatch.share_build_implied",
-                backend=dispatch_backend.name,
-            )
+        if dispatch_backend is not None:
+            # An early-stop before POST can't be honoured per-job: the
+            # head build pass already stops at COMPILE, and dispatched
+            # jobs exist to run SIM+POST. Reject rather than silently
+            # ignore --early-stop (the local path would respect it).
+            if self.run_depth != RunDepth.POST:
+                raise FatalRtlBuddyError(
+                    f"--early-stop {self.run_depth.value} cannot be combined with "
+                    "--dispatch: the head node builds (stops at compile) and "
+                    "jobs run sim+post; run without --dispatch to stop earlier."
+                )
+            if not share_build:
+                self.share_build = True
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.share_build_implied",
+                    backend=dispatch_backend.name,
+                )
 
         exit_code = 0
         reg_results = []

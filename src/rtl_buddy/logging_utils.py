@@ -317,6 +317,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"Using regression config {fields.get('path')}"
         case "regression.suite_start":
             return f"Running suite {fields.get('suite')}"
+        case "dispatch.cancelled":
+            return (
+                f"Cancelled {fields.get('jobs')} outstanding dispatch job(s) "
+                f"on the {fields.get('backend')} backend"
+            )
+        case "dispatch.result_missing":
+            state = fields.get("scheduler_state")
+            state_note = f" (scheduler state {state})" if state else ""
+            return (
+                f"Dispatch job {fields.get('job_id')} for "
+                f"{fields.get('test')} produced no result{state_note} — "
+                "counting it as a failure"
+            )
         case "suite.skip":
             reason = "skip reason unavailable"
             if fields.get("reason") == "above_regression_level":

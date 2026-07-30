@@ -13,6 +13,13 @@ and the job effectively runs SIM + POST only.
 
 Collection waits for the queue to drain via ``squeue`` polling; loading
 the per-job result envelopes is the caller's job (backend-independent).
+
+The Slurm client calls (``sbatch`` / ``squeue`` / ``scancel``) use plain
+``subprocess.run`` rather than ``run_managed_process``: they are short,
+synchronous probes that submit or poll and return immediately, not
+long-lived simulation processes that need signal-forwarding / cleanup.
+Each passes an explicit ``cwd`` per the engineering guidelines, since the
+head process cwd is re-anchored per suite during a regression.
 """
 
 import logging
@@ -24,6 +31,7 @@ import time
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..seed_mode import SeedMode
+from ..tool_manifest import require as require_tool
 from .base import DispatchBackend, JobHandle, TestJobSpec
 
 logger = logging.getLogger(__name__)
@@ -38,8 +46,15 @@ class SlurmDispatchBackend(DispatchBackend):
     name = "slurm"
 
     def __init__(self, dispatch_cfg):
+        # Fail with the manifest's install hint, not a raw FileNotFoundError
+        # from the first subprocess.run, when the Slurm client is absent.
+        require_tool("slurm")
         self.sbatch_args = list(dispatch_cfg.sbatch_args)
         self.poll_interval = dispatch_cfg.poll_interval
+
+    @staticmethod
+    def _cwd_of(handles: list[JobHandle]) -> str | None:
+        return handles[0].spec.suite_dir if handles else None
 
     def _job_argv(self, spec: TestJobSpec) -> list[str]:
         """The ``rb _test-job`` invocation the batch script runs."""
@@ -88,7 +103,7 @@ class SlurmDispatchBackend(DispatchBackend):
 
     def submit(self, spec: TestJobSpec) -> JobHandle:
         argv = self._sbatch_argv(spec)
-        proc = subprocess.run(argv, capture_output=True, text=True)
+        proc = subprocess.run(argv, capture_output=True, text=True, cwd=spec.suite_dir)
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
                 f"sbatch failed for {spec.display_name()} "
@@ -118,6 +133,7 @@ class SlurmDispatchBackend(DispatchBackend):
         if not handles:
             return
         ids = ",".join(h.job_id for h in handles)
+        cwd = self._cwd_of(handles)
         while True:
             proc = subprocess.run(
                 [
@@ -130,6 +146,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 ],
                 capture_output=True,
                 text=True,
+                cwd=cwd,
             )
             # squeue errors ("Invalid job id specified") once every job
             # has aged out of the queue — that is completion, not failure.
@@ -164,6 +181,7 @@ class SlurmDispatchBackend(DispatchBackend):
             ["scancel", *(h.job_id for h in handles)],
             capture_output=True,
             text=True,
+            cwd=self._cwd_of(handles),
         )
         log_event(
             logger,

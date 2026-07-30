@@ -179,6 +179,10 @@ Usage: rtl-buddy regression [OPTIONS]
 │ --share-build                                   reuse one compiled simv across tests │
 │                                                 with identical compile inputs        │
 │                                                 (Verilator builders only)            │
+│ --dispatch                             TEXT     execution backend for test runs      │
+│                                                 (local, slurm)                       │
+│                                                 [default: (cfg-dispatch backend,     │
+│                                                 else local)]                         │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

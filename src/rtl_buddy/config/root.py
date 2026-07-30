@@ -37,7 +37,7 @@ from .fpv import FpvToolConfig, FpvToolConfigFile
 from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
 from .xplr import XplrConfig, XplrConfigFile
-from .dispatch import DispatchConfigFile
+from .dispatch import DispatchConfig, DispatchConfigFile
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -216,7 +216,7 @@ class RootConfig:
         self.systemc_cfg: SystemCConfig | None = None
         self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
         self.xplr_cfg: XplrConfig = XplrConfigFile().initialise()
-        self.dispatch_cfg: DispatchConfigFile = DispatchConfigFile()
+        self.dispatch_cfg: DispatchConfig = DispatchConfigFile().initialise()
         self.platform_cfg = None
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
@@ -338,7 +338,7 @@ class RootConfig:
 
             # cfg-dispatch execution backend (optional, single block)
             if data.dispatch is not None:
-                self.dispatch_cfg = data.dispatch
+                self.dispatch_cfg = data.dispatch.initialise()
 
             # Record the regression config path; the RegConfig itself is
             # loaded lazily in get_rtl_reg_cfg() so non-simulation commands
@@ -756,13 +756,13 @@ class RootConfig:
         """
         return self.xplr_cfg
 
-    def get_dispatch_cfg(self) -> DispatchConfigFile:
+    def get_dispatch_cfg(self) -> DispatchConfig:
         """
-        Get the dispatch (remote test execution) configuration.
+        Get the validated dispatch (remote test execution) configuration.
 
         Returns:
-          cfg (DispatchConfigFile): The cfg-dispatch block, or defaults
-            (backend None → local in-process execution) when absent.
+          cfg (DispatchConfig): The initialised cfg-dispatch block, or
+            defaults (backend None → local in-process execution) when absent.
         """
         return self.dispatch_cfg
 

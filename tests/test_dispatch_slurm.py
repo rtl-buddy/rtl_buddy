@@ -20,6 +20,13 @@ from rtl_buddy.seed_mode import SeedMode
 from rtl_buddy.dispatch import slurm as slurm_module
 
 
+@pytest.fixture(autouse=True)
+def _no_tool_check(monkeypatch):
+    # SlurmDispatchBackend.__init__ asserts the Slurm client is installed;
+    # these unit tests construct it directly with no sbatch on PATH.
+    monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
+
+
 def _spec(**overrides) -> TestJobSpec:
     defaults = dict(
         test_name="basic",
@@ -35,7 +42,7 @@ def _spec(**overrides) -> TestJobSpec:
 def _fake_run(calls, results):
     """subprocess.run stand-in: records argv, pops canned results."""
 
-    def run(argv, capture_output=True, text=True):
+    def run(argv, capture_output=True, text=True, cwd=None):
         calls.append(list(argv))
         result = (
             results.pop(0)

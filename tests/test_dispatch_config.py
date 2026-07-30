@@ -70,7 +70,10 @@ def test_create_backend_local_and_none_mean_in_process():
     assert create_dispatch_backend("local", cfg) is None
 
 
-def test_create_backend_slurm():
+def test_create_backend_slurm(monkeypatch):
+    import rtl_buddy.dispatch.slurm as slurm_module
+
+    monkeypatch.setattr(slurm_module, "require_tool", lambda name: None)
     backend = create_dispatch_backend("slurm", DispatchConfigFile())
     assert isinstance(backend, SlurmDispatchBackend)
 
@@ -141,3 +144,48 @@ def test_tests_yaml_resources_parse_and_resolve(minimal_project: Path):
     # extra has no test-level override: testbench + defaults only.
     res = resolve_resources(DispatchConfigFile(), extra)
     assert (res.cpus, res.mem, res.time) == (2, "8G", DEFAULT_JOB_TIME)
+
+
+# ---------------------------------------------- P1 review: config validation
+
+
+def test_poll_interval_zero_rejected():
+    with pytest.raises(FatalRtlBuddyError, match="poll-interval must be > 0"):
+        DispatchConfigFile(poll_interval=0.0).initialise()
+
+
+def test_time_int_from_yaml_sexagesimal_rejected(minimal_project: Path):
+    # `time: 4:00:00` unquoted -> YAML int 14400 -> must fail loud, not
+    # silently become a 10-day reservation.
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  resources:\n    time: 4:00:00\n"
+    )
+    with pytest.raises(FatalRtlBuddyError, match="parsed as an integer"):
+        RootConfig(name="t/root", start_dir=minimal_project)
+
+
+def test_time_quoted_ok(minimal_project: Path):
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + '\ncfg-dispatch:\n  resources:\n    time: "4:00:00"\n'
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.resources.time == "4:00:00"
+
+
+def test_time_bad_shape_rejected():
+    from rtl_buddy.config.dispatch import DispatchConfigFile, DispatchResourcesFile
+
+    with pytest.raises(FatalRtlBuddyError, match="not a valid Slurm time"):
+        DispatchConfigFile(resources=DispatchResourcesFile(time="banana")).initialise()
+
+
+def test_slurm_tool_in_manifest():
+    from rtl_buddy.tool_manifest import get_manifest
+
+    slurm = next((s for s in get_manifest() if s.name == "slurm"), None)
+    assert slurm is not None
+    assert set(slurm.binaries) == {"sbatch", "squeue", "sacct", "scancel"}
+    assert slurm.optional is True
+    assert "regression" in slurm.used_by
