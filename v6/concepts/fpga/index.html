@@ -18,7 +18,7 @@
         <link rel="prev" href="../power/">
       
       
-        <link rel="next" href="../cdc/">
+        <link rel="next" href="../fpv/">
       
       
         
@@ -1098,34 +1098,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CDC Lint
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -2345,7 +2317,7 @@
 <p><code>report_power</code> runs post-route on every pass, and the results carry the headline watts: <code>total_power_w</code> (total on-chip), <code>dynamic_power_w</code>, and <code>static_power_w</code> (device static). This is the FPGA realization of <a href="https://github.com/rtl-buddy/rtl_buddy/issues/103">issue #103</a> — where <code>rb power</code> answers "what does this netlist burn on an ASIC flow", <code>rb fpga</code> answers the same question for an FPGA target, from the vendor's own post-route power model. The human summary table shows the total; machine mode carries all three.</p>
 <p>Treat the absolute numbers with the report's own caveats: a post-route vector-less estimate (the raw <code>power.rpt</code> records Vivado's confidence level, typically <em>Low</em> without simulation activity data) is for trend-tracking across runs, not signoff.</p>
 <h2 id="methodology-warnings">Methodology warnings</h2>
-<p><code>report_methodology</code> runs alongside the other post-route reports and its findings surface as <code>methodology_warnings</code> — a list of <code>{id, severity, description}</code> entries with Vivado's rule ids (<code>TIMING-18</code>, <code>SYNTH-*</code>, ...) and severities kept verbatim. The same framing as the <a href="../cdc/#vivado-backend-second-opinion-not-authority">CDC second-opinion backend</a> applies: these are vendor findings rtl_buddy surfaces, not a ruleset it adopts as canonical — they are <strong>informational and never flip pass/fail</strong>. The human summary shows the count (the <code>Meth</code> column); machine mode carries the full list; the raw report stays in <code>methodology.rpt</code> for digging.</p>
+<p><code>report_methodology</code> runs alongside the other post-route reports and its findings surface as <code>methodology_warnings</code> — a list of <code>{id, severity, description}</code> entries with Vivado's rule ids (<code>TIMING-18</code>, <code>SYNTH-*</code>, ...) and severities kept verbatim. These are vendor findings rtl_buddy surfaces, not a ruleset it adopts as canonical — they are <strong>informational and never flip pass/fail</strong>. The human summary shows the count (the <code>Meth</code> column); machine mode carries the full list; the raw report stays in <code>methodology.rpt</code> for digging.</p>
 <h2 id="passfail-detection">Pass/fail detection</h2>
 <p>A run is PASS when:</p>
 <ol>
@@ -2358,7 +2330,6 @@
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
 <li>Include-directory (<code>+incdir+</code>) propagation into <code>synth_design</code> / <code>synth_xilinx</code>.</li>
-<li>Vivado's <code>report_cdc</code> is integrated as a second-opinion backend of <a href="../cdc/#vivado-backend-second-opinion-not-authority"><code>rb cdc</code></a>, not of <code>rb fpga</code>.</li>
 </ul>
 
 

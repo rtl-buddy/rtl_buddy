@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/v6/concepts/fpv/">
       
       
-        <link rel="prev" href="../cdc/">
+        <link rel="prev" href="../fpga/">
       
       
         <link rel="next" href="../abv-simulation/">
@@ -821,34 +821,6 @@
     
   
     FPGA Implementation
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CDC Lint
   
 
     
@@ -2215,9 +2187,9 @@
 <p><code>rb fpv</code> drives SymbiYosys through a generated <code>.sby</code> config that consumes the model's filelist plus a list of SystemVerilog property files. It produces a per-run <code>status</code> verdict, a counterexample VCD when a property is disproved, and a full <code>sby</code> log under <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;run&gt;/</code>.</p>
 <p>The flow is intentionally compact and config-driven — per-run knobs (mode, depth, engines, properties) live in <code>fpv.yaml</code>, tool-wide defaults live in <code>cfg-fpv-tools</code> in <code>root_config.yaml</code>.</p>
 <h2 id="supported-backend">Supported backend</h2>
-<p>Today only <code>sby</code> is wired up. The <code>tool:</code> field in <code>fpv.yaml</code> selects it; the runner raises a clear error if no matching <code>cfg-fpv-tools</code> entry exists. Adding a second backend (e.g. a commercial formal tool) parallels how <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85"><code>rb cdc</code> is structured</a> — implement a sibling driver under <code>src/rtl_buddy/tools/</code>, then dispatch from <code>FpvRunner</code>.</p>
+<p>Today only <code>sby</code> is wired up. The <code>tool:</code> field in <code>fpv.yaml</code> selects it; the runner raises a clear error if no matching <code>cfg-fpv-tools</code> entry exists. Adding a second backend (e.g. a commercial formal tool) means implementing a sibling driver under <code>src/rtl_buddy/tools/</code>, then dispatching from <code>FpvRunner</code>.</p>
 <h2 id="installing-symbiyosys">Installing SymbiYosys</h2>
-<p><code>sby</code> must be on <code>PATH</code>, or its absolute path must be configured via a <code>cfg-fpv-tools</code> entry in <code>root_config.yaml</code> (see <a href="../../reference/yaml/#root_configyaml">yaml.md</a>). The standalone install is small and runs on top of the Yosys you already have for <code>rb synth</code> / <code>rb cdc</code>:</p>
+<p><code>sby</code> must be on <code>PATH</code>, or its absolute path must be configured via a <code>cfg-fpv-tools</code> entry in <code>root_config.yaml</code> (see <a href="../../reference/yaml/#root_configyaml">yaml.md</a>). The standalone install is small and runs on top of the Yosys you already have for <code>rb synth</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/YosysHQ/sby.git
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>sby
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>make<span class="w"> </span>install<span class="w"> </span><span class="nv">PREFIX</span><span class="o">=</span><span class="nv">$HOME</span>/.local<span class="w">      </span><span class="c1"># no sudo</span>
@@ -2307,7 +2279,7 @@
 </tr>
 <tr>
 <td><code>reglvl</code></td>
-<td>Regression level for filtering (same semantics as <code>rb synth</code> / <code>rb cdc</code>)</td>
+<td>Regression level for filtering (same semantics as <code>rb synth</code>)</td>
 </tr>
 <tr>
 <td><code>tool_overrides</code></td>
@@ -2337,13 +2309,13 @@
 </table>
 <p>The <code>xfail</code> / <code>xfail_strict</code> markers are a cross-cutting feature shared
 with every other verdict-carrying command (<code>tests.yaml</code>, <code>synth.yaml</code>,
-<code>cdc.yaml</code>, <code>pnr.yaml</code>, <code>power.yaml</code>). See
+<code>pnr.yaml</code>, <code>power.yaml</code>). See
 <a href="../expected-failures/">Expected failures (xfail)</a> for the full
 re-interpretation semantics, strict-vs-non-strict guidance, and the
 caveat about infrastructure errors. FPV's most common use is a teaching
 property that is true but not inductive under <code>mode: prove</code>.</p>
 <h3 id="where-inputs-come-from">Where inputs come from</h3>
-<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> and <code>rb cdc</code> use), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. The script reads, in order: design sources → <code>constraints:</code> (if set) → <code>properties:</code>. Putting constraints before properties ensures their <code>assume property</code> statements are in scope when the assertions are elaborated. Property files can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
+<p>The runner reads the model's filelist via <code>VlogFilelist</code> (the same helper <code>rb synth</code> uses), extracts source files and <code>+incdir+</code> entries, and emits them under the sby config's <code>[files]</code> and <code>[script]</code> sections respectively. The script reads, in order: design sources → <code>constraints:</code> (if set) → <code>properties:</code>. Putting constraints before properties ensures their <code>assume property</code> statements are in scope when the assertions are elaborated. Property files can be in-RTL with <code>`ifdef FORMAL</code> guards or standalone bound checker modules.</p>
 <p>Both frontends define <code>FORMAL</code> (and not <code>SYNTHESIS</code>) when reading sources, so <code>`ifdef FORMAL</code> guards behave the same either way: the verilog path uses <code>read -sv -formal</code> (which swaps yosys's implicit <code>SYNTHESIS=1</code> define for <code>FORMAL=1</code>), and the slang path passes <code>--no-synthesis-define -DFORMAL=1</code> to <code>read_slang</code> for the same effect — in the main proof script, the COI script, and the vacuity pass.</p>
 <h2 id="root-config-cfg-fpv-tools">Root config: <code>cfg-fpv-tools</code></h2>
 <p><code>cfg-fpv-tools</code> declares the FPV tools available to all suites in this project:</p>
@@ -2399,7 +2371,7 @@ property that is true but not inductive under <code>mode: prove</code>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>error: encountered unsupported SVA feature
 </code></pre></div>
 <p>Until #317 merges upstream, build from the <strong><a href="https://github.com/rtl-buddy/yosys-slang/tree/rtl-buddy">rtl-buddy/yosys-slang <code>rtl-buddy</code> branch</a></strong> — three commits ahead of povik master (the SVA-rebase work + a stale-test count fix + a <code>disable iff</code> regression fix; ctest 46/46). The rtl-buddy fork tracks <a href="https://github.com/rtl-buddy/yosys-slang/issues/1">rtl-buddy/yosys-slang#1</a> as its vendoring status; this doc switches back to recommending upstream once the fork's <code>master</code> fast-forwards to a povik release that includes the SVA work.</p>
-<p>povik upstream master is still fine for <code>rb synth</code> and <code>rb cdc</code> with <code>frontend: slang</code> — those paths don't need the SVA implication lowering. The <a href="https://github.com/rtl-buddy/rtl-buddy-project-template/blob/main/tools/yosys-slang/SETUP_OSX.md">rtl-buddy-project-template SETUP_OSX.md</a> has the per-use-case build matrix.</p>
+<p>povik upstream master is still fine for <code>rb synth</code> with <code>frontend: slang</code> — that path doesn't need the SVA implication lowering. The <a href="https://github.com/rtl-buddy/rtl-buddy-project-template/blob/main/tools/yosys-slang/SETUP_OSX.md">rtl-buddy-project-template SETUP_OSX.md</a> has the per-use-case build matrix.</p>
 <h3 id="solver-version-pinning">Solver version pinning</h3>
 <p><code>sby</code> happily picks whatever solver binary it finds on PATH. On CI, different runners can resolve to different versions and silently change proof outcomes — a proof that passes at depth 32 on one machine can time out on another. Set <code>opts.solver-versions</code> to lock the resolution: before each run, each pinned solver is probed (<code>yices-smt2 --version</code> etc.) and the run hard-fails with a one-shot summary of every mismatch if any pin doesn't match exactly. Resolved versions are logged as <code>fpv.solver_pins_resolved</code> so the run artefacts capture exactly what was used.</p>
 <h2 id="running-fpv">Running FPV</h2>
@@ -2704,7 +2676,7 @@ walk-through of the same pattern, see <a href="#references">References</a> below
 <p><code>rb wave-fpv</code> reads the same <code>fpv.yaml</code> (<code>-c</code>/<code>--fpv-config</code>, default <code>fpv.yaml</code>) to resolve the verification name, then opens the trace at <code>&lt;dir of fpv.yaml&gt;/artefacts/&lt;verif&gt;/sby_workdir/engine_&lt;N&gt;/trace.vcd</code> (first engine in sorted order wins when more than one produced a trace). It opens the VCD in the <code>cfg-surfer</code> entry named <code>surfer-default</code> unless you pass <code>--surfer &lt;name&gt;</code>. Raises if the verification has not been run yet or the proof passed (no CEX was produced).</p>
 <h2 id="out-of-scope-today">Out of scope (today)</h2>
 <ul>
-<li><strong>SymbiYosys-only.</strong> Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up — adding them parallels the pattern documented for <a href="https://github.com/rtl-buddy/rtl_buddy/issues/85">SpyGlass in <code>rb cdc</code></a>.</li>
+<li><strong>SymbiYosys-only.</strong> Commercial backends (JasperGold, VC Formal, OneSpin) are not yet wired up.</li>
 <li><strong>Per-property granularity.</strong> The summary table reports the overall sby verdict, not per-assertion pass/fail. Sby's own <code>status.json</code> per task is preserved under <code>sby_workdir/</code> for users who need that detail.</li>
 <li><strong>Wide SVA coverage.</strong> Yosys's native frontend supports a limited subset of SystemVerilog Assertions. Broader SVA coverage will land alongside the <a href="https://github.com/rtl-buddy/rtl_buddy/issues/88">slang frontend</a>.</li>
 </ul>

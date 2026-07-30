@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, cdc, pnr, and power runs.">
+        <meta name="description" content="How rtl_buddy's xfail / xfail_strict markers re-interpret PASS / FAIL / SKIP verdicts across fpv, tests, synth, pnr, and power runs.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -921,34 +921,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../cdc/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CDC Lint
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../fpv/" class="md-nav__link">
         
   
@@ -1565,12 +1537,12 @@
 <h1 id="expected-failures-xfail">Expected failures (xfail)</h1>
 <p>Mark a verification that is <strong>known not to hold</strong> — a teaching property
 that is true but not inductive under FPV <code>mode: prove</code>, a test guarding
-an unfixed bug, a CDC lint with intentional violations, a synthesis or
-P&amp;R configuration whose current failure is documented — when you want it
-tracked in the suite rather than deleted.</p>
+an unfixed bug, a synthesis or P&amp;R configuration whose current failure
+is documented — when you want it tracked in the suite rather than
+deleted.</p>
 <p><code>xfail</code> and <code>xfail_strict</code> are one shared mechanism wired across every
 command whose results carry a PASS / FAIL / SKIP verdict: <code>fpv.yaml</code>,
-<code>tests.yaml</code>, <code>synth.yaml</code>, <code>cdc.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code>. A
+<code>tests.yaml</code>, <code>synth.yaml</code>, <code>pnr.yaml</code>, and <code>power.yaml</code>. A
 verification is treated as expected-to-fail when <strong>either</strong> marker is
 set; the verdict is then re-interpreted:</p>
 <table>
@@ -1639,8 +1611,6 @@ Common contexts:</p>
   under <code>mode: prove</code> (see <a href="../fpv/#writing-properties-that-prove-bmc-vs-induction">Writing properties that prove</a>).</li>
 <li><strong><code>tests.yaml</code></strong> — a test that guards a known unfixed bug or an
   environment limitation.</li>
-<li><strong><code>cdc.yaml</code></strong> — a design with known / intentional CDC violations
-  tracked in the suite.</li>
 <li><strong><code>synth.yaml</code> / <code>pnr.yaml</code> / <code>power.yaml</code></strong> — a configuration whose
   current failure is documented and tracked.</li>
 </ul>
