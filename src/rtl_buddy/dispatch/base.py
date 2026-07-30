@@ -1,0 +1,117 @@
+# rtl-buddy
+#
+# Copyright 2024 rtl_buddy contributors
+#
+"""Dispatch backend interface (#351).
+
+A dispatch backend runs the compile AND the SIM+POST phases of tests as
+external jobs — nothing heavy runs on the submit host, which is usually an
+interactive login node. The head submits one **build job** per suite that
+Verilates the shared executable on a compute node, then one ``rb
+_test-job`` per (test, run_id) gated on that build via a scheduler
+dependency; each sim job writes a ``result.json`` the head collects.
+Backends only launch and await jobs — result collection is
+backend-independent (``runner.result_io``).
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ..config.dispatch import JobResources
+from ..seed_mode import SeedMode
+
+
+@dataclass
+class BuildJobSpec:
+    """Everything a backend needs to launch one suite's build job.
+
+    The job runs ``rb _build-job`` on a compute node — PRE+COMPILE for
+    every runnable test in the suite with share-build, so each unique
+    compile key Verilates once. Sim jobs depend on its success.
+    """
+
+    suite_dir: str
+    test_config_path: str
+    resources: JobResources = field(default_factory=JobResources)
+    reg_level: int | None = None
+    start_level: int | None = None
+    builder_mode: str = "reg"
+    builder_override: str | None = None
+    log_path: Path | None = None
+    # Dispatch plan manifest (absolute) written by the head after a single
+    # sweep expansion; the build job compiles exactly its entries instead
+    # of re-running the sweep hook. See ``config.test.TestConfig`` plan
+    # (de)serialization and ``dispatch.plan``.
+    plan_path: Path | None = None
+    # Where the build job records its compile outcome (built/failed test
+    # names); the head loads it at collect for compile-fail parity.
+    result_json: Path | None = None
+
+
+@dataclass
+class TestJobSpec:
+    """Everything a backend needs to launch one (test, run_id) job.
+
+    ``test_name`` is the sweep-expanded name — the one ``rb _test-job``
+    resolves. ``result_json`` is absolute; the job writes its envelope
+    there and the head collects it, so it must live on storage shared
+    between them.
+    """
+
+    test_name: str
+    suite_dir: str
+    test_config_path: str
+    result_json: Path
+    resources: JobResources = field(default_factory=JobResources)
+    run_id: int | None = None
+    seed_mode: SeedMode = SeedMode.DEFAULT
+    replay_run_id: int | None = None
+    builder_mode: str = "reg"
+    builder_override: str | None = None
+    share_build: bool = True
+    log_path: Path | None = None
+    # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
+    # from it instead of re-running the suite's sweep hook. See BuildJobSpec.
+    plan_path: Path | None = None
+
+    def display_name(self) -> str:
+        if self.run_id is None:
+            return self.test_name
+        return f"{self.test_name}:{self.run_id}"
+
+
+@dataclass
+class JobHandle:
+    """An accepted submission: the backend's job id plus its spec."""
+
+    job_id: str
+    spec: object
+
+
+class DispatchBackend(ABC):
+    """One remote-execution flavor (slurm today; LSF/SGE are future).
+
+    Implementations raise ``FatalRtlBuddyError`` on submission failure
+    (the head must not continue half-submitted silently) and make
+    ``cancel_all`` best-effort (used on interrupt/teardown).
+    """
+
+    name: str = "?"
+
+    @abstractmethod
+    def submit_build(self, spec: BuildJobSpec) -> JobHandle:
+        """Submit one suite's build job; return its handle without waiting."""
+
+    @abstractmethod
+    def submit(self, spec: TestJobSpec, *, dependency: str | None = None) -> JobHandle:
+        """Submit one sim job, optionally gated on ``dependency`` (a build
+        job id that must succeed first); return its handle without waiting."""
+
+    @abstractmethod
+    def wait_all(self, handles: list[JobHandle]) -> None:
+        """Block until every submitted job has left the queue."""
+
+    @abstractmethod
+    def cancel_all(self, handles: list[JobHandle]) -> None:
+        """Best-effort cancellation of all outstanding jobs."""

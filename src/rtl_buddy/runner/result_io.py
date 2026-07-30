@@ -23,6 +23,9 @@ from .test_results import TestResults
 RESULT_JSON_FILETYPE = "test_result"
 RESULT_JSON_SCHEMA_VERSION = 1
 
+BUILD_RESULT_FILETYPE = "build_result"
+BUILD_RESULT_SCHEMA_VERSION = 1
+
 
 def write_result_json(path, *, test_name, run_id, results):
     """Atomically write one run's result envelope to ``path``.
@@ -83,3 +86,53 @@ def load_result_json(path):
     except ValueError as e:
         raise FatalRtlBuddyError(f"result JSON malformed: {path}: {e}") from e
     return raw
+
+
+def write_build_result_json(path, *, built, failed):
+    """Atomically write a build job's compile outcome to ``path``.
+
+    ``built``/``failed`` are lists of expanded test names whose shared
+    build succeeded/failed on the compute node. The head loads this at
+    collect time so a compile failure surfaces as a CompileFail (parity
+    with the in-process path) instead of the sim job's downstream
+    DispatchFail. Best-effort on the head — a missing/unreadable file just
+    means no compile-fail annotation.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    envelope = {
+        "rtl-buddy-filetype": BUILD_RESULT_FILETYPE,
+        "schema_version": BUILD_RESULT_SCHEMA_VERSION,
+        "rtl_buddy_version": version("rtl-buddy"),
+        "built": list(built),
+        "failed": list(failed),
+    }
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(envelope, ensure_ascii=True, indent=2) + "\n")
+    os.replace(tmp, path)
+    return path
+
+
+def load_build_result_json(path):
+    """Load a build-result file, or ``None`` if absent/unusable.
+
+    Returns ``{"built": [...], "failed": [...]}``. Unlike
+    :func:`load_result_json` this never raises: the annotation it feeds is
+    advisory, so a build job that died before writing simply yields no
+    compile-fail mapping.
+    """
+    path = Path(path)
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(raw, dict)
+        or raw.get("rtl-buddy-filetype") != BUILD_RESULT_FILETYPE
+        or raw.get("schema_version") != BUILD_RESULT_SCHEMA_VERSION
+    ):
+        return None
+    return {
+        "built": list(raw.get("built") or []),
+        "failed": list(raw.get("failed") or []),
+    }

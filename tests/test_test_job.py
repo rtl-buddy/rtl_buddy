@@ -204,6 +204,48 @@ def test_resolve_job_test_cfg_expansion_paths(
         rb._resolve_job_test_cfg(suite_cfg, "nope", ".")
 
 
+def test_resolve_job_test_cfg_from_plan_skips_hook(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """With --plan, a sim job reads its config from the manifest and never
+    runs the suite's sweep hook."""
+    from rtl_buddy.dispatch.plan import write_plan
+
+    rb = RtlBuddy(name="resolve_test")
+    suite_cfg = SuiteConfig(path="tests.yaml")
+    plan = write_plan(
+        minimal_project / "plan.json", "tests.yaml", suite_cfg.get_tests()
+    )
+
+    def boom(test_cfg, suite_dir):  # would run the hook — must not be called
+        raise AssertionError("sweep hook must not run when --plan resolves the name")
+
+    monkeypatch.setattr(rb, "_expand_tests_with_sweep", boom)
+
+    cfg, err = rb._resolve_job_test_cfg(suite_cfg, "extra", ".", plan_path=str(plan))
+    assert err is None and cfg.get_name() == "extra"
+
+
+def test_resolve_job_test_cfg_plan_miss_falls_back_to_hook(
+    minimal_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A name absent from the plan still resolves via expansion — the plan
+    is an optimization, not a hard dependency."""
+    from rtl_buddy.dispatch.plan import write_plan
+
+    rb = RtlBuddy(name="resolve_test")
+    suite_cfg = SuiteConfig(path="tests.yaml")
+    # Plan holds only "basic"; "extra" must fall through to the hook path.
+    plan = write_plan(
+        minimal_project / "plan.json",
+        "tests.yaml",
+        [t for t in suite_cfg.get_tests() if t.get_name() == "basic"],
+    )
+
+    cfg, err = rb._resolve_job_test_cfg(suite_cfg, "extra", ".", plan_path=str(plan))
+    assert err is None and cfg.get_name() == "extra"
+
+
 def test_resolve_job_test_cfg_sweep_failure_becomes_setup_error(
     minimal_project: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -222,3 +264,93 @@ def test_resolve_job_test_cfg_sweep_failure_becomes_setup_error(
     # name may have come from the failed expansion) instead of raising.
     cfg, err = rb._resolve_job_test_cfg(suite_cfg, "mystery", ".")
     assert cfg is None and "Setup failed in sweep" in err
+
+
+# ------------------------------------------------ rb _build-job (#351)
+
+
+def test_build_job_compiles_runnable_tests(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    # A COMP early-stop means "compiled OK" for the build job.
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+    # run_depth=COMP + share_build on the build TestRunner.
+    assert stub_runner.last_init["run_depth"].value == "comp"
+    assert stub_runner.last_init["share_build"] is True
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert envelope["command"] == "_build-job"
+    # basic + extra both at/under -l 5.
+    assert set(envelope["payload"]["built"]) == {"basic", "extra"}
+    assert envelope["payload"]["failed"] == []
+
+
+def test_build_job_compile_failure_is_best_effort_exit_0(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    # A per-test compile failure must not fail the build job (afterok
+    # dependents still run; the failing test recompiles in its own sim job).
+    stub_runner.canned = CompileFailResults(name="b/results")
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["--machine", "_build-job", "-c", "tests.yaml"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert "basic" in envelope["payload"]["failed"]
+    assert envelope["payload"]["built"] == []
+
+
+def test_build_job_plan_compiles_plan_configs_without_hook(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """--plan makes the build job compile the head's configs and never
+    re-run the suite's sweep expansion."""
+    from rtl_buddy.dispatch.plan import write_plan
+    from rtl_buddy.runner.result_io import load_build_result_json
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    plan = write_plan(
+        minimal_project / "plan.json",
+        "tests.yaml",
+        SuiteConfig(path="tests.yaml").get_tests(),
+    )
+
+    def boom(*a, **k):  # the expansion path must not be taken under --plan
+        raise AssertionError("build job must not expand sweeps when --plan is given")
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    runner, rb = _runner()
+    monkeypatch.setattr(rb, "_iter_suite_runnables", boom)
+
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "--plan",
+            str(plan),
+            "--result-json",
+            "br.json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # The build result file the head reads for compile-fail parity.
+    br = load_build_result_json(minimal_project / "br.json")
+    assert set(br["built"]) == {"basic", "extra"}
+    assert br["failed"] == []

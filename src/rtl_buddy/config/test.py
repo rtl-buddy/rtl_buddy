@@ -1,7 +1,8 @@
 import logging
 from dataclasses import dataclass
 from typing import Literal
-from serde import serde, field
+from serde import serde, field, from_dict, to_dict
+from .dispatch import DispatchResourcesFile
 from .model import ModelConfig, ModelConfigLoader
 from .uvm import UVMConfig
 
@@ -67,6 +68,8 @@ class TestbenchConfig:
       toplevel (str | None): Top-level DUT module name. Required for cocotb and SystemC testbenches.
       cocotb (CocotbTestbenchConfig | None): cocotb config; presence signals cocotb mode.
       systemc (SystemCTestbenchConfig | None): SystemC config; presence signals SystemC cosim mode.
+      resources (DispatchResourcesFile | None): default per-job reservation for
+        dispatched runs of this testbench's tests (#351); tests override per field.
     """
 
     name: str
@@ -74,6 +77,7 @@ class TestbenchConfig:
     toplevel: str | None = None
     cocotb: CocotbTestbenchConfig | None = None
     systemc: SystemCTestbenchConfig | None = None
+    resources: DispatchResourcesFile | None = None
 
     def __post_init__(self):
         if self.cocotb is not None and self.systemc is not None:
@@ -163,6 +167,10 @@ class TestConfig:
     covers: list[str] | None = None
     builder_name: str | None = None
     assertions: bool = False
+    # Per-test reservation override for dispatched runs (#351). Layered
+    # field-wise over the testbench's `resources:` and the cfg-dispatch
+    # defaults by config.dispatch.resolve_resources().
+    resources: "DispatchResourcesFile | None" = None
     # Expected-fail markers (pytest-style xfail). A test is treated as
     # expected-to-fail when *either* `xfail` or `xfail_strict` is True: a
     # FAIL is reported as XFAIL and counts as a pass; SKIP/NA pass through.
@@ -425,6 +433,81 @@ class TestConfig:
 
         return reglvl
 
+    # ---- dispatch plan (de)serialization (#351) -------------------------
+    #
+    # Under ``--dispatch`` the sweep hook must run exactly once, on the
+    # head: re-running it in the build job and again in each sim job both
+    # wastes work and risks a nondeterministic hook expanding differently
+    # per process (so a sim job's compile key never gets built). The head
+    # therefore expands once and writes each resulting TestConfig to a plan
+    # manifest; the build/sim jobs rebuild it from the manifest instead of
+    # re-expanding. Full-fidelity round trip — a hook may mutate any field,
+    # so every field is carried, and ``test_testconfig_plan_roundtrip``
+    # guards the field list against silent drift.
+
+    # to_plan_dict keys, mapped to the dataclass field they carry. The
+    # only rename is the private ``_reglvl`` -> ``reglvl``. Kept as a class
+    # attribute so the completeness guard test can assert coverage.
+    _PLAN_FIELD_RENAMES = {"_reglvl": "reglvl"}
+
+    def to_plan_dict(self) -> dict:
+        """Serialize to a JSON-safe dict for the dispatch plan manifest."""
+        return {
+            "name": self.name,
+            "desc": self.desc,
+            "model": to_dict(self.model),
+            "reglvl": self._reglvl,
+            "pa": self.pa,
+            "pd": self.pd,
+            "uvm": to_dict(self.uvm) if self.uvm is not None else None,
+            "preproc_path": self.preproc_path,
+            "postproc_path": self.postproc_path,
+            "sweep_path": self.sweep_path,
+            "tb": to_dict(self.tb),
+            "timeout": self.timeout,
+            "covers": self.covers,
+            "builder_name": self.builder_name,
+            "assertions": self.assertions,
+            "resources": to_dict(self.resources)
+            if self.resources is not None
+            else None,
+            "xfail": self.xfail,
+            "xfail_strict": self.xfail_strict,
+            "default_timeout": self.default_timeout,
+        }
+
+    @classmethod
+    def from_plan_dict(cls, d: dict) -> "TestConfig":
+        """Rebuild a TestConfig from a :meth:`to_plan_dict` manifest entry.
+
+        Hook paths and ``model.path`` were resolved to absolute on the head
+        at load time and carried verbatim, so the rebuilt config runs the
+        same regardless of the job's cwd — no re-resolution needed.
+        """
+        return cls(
+            d["name"],
+            d["desc"],
+            from_dict(ModelConfig, d["model"]),
+            d["reglvl"],
+            d["pa"],
+            d["pd"],
+            from_dict(UVMConfig, d["uvm"]) if d["uvm"] is not None else None,
+            d["preproc_path"],
+            d["postproc_path"],
+            d["sweep_path"],
+            from_dict(TestbenchConfig, d["tb"]),
+            d["timeout"],
+            covers=d["covers"],
+            builder_name=d["builder_name"],
+            assertions=d["assertions"],
+            resources=from_dict(DispatchResourcesFile, d["resources"])
+            if d["resources"] is not None
+            else None,
+            xfail=d["xfail"],
+            xfail_strict=d["xfail_strict"],
+            default_timeout=d["default_timeout"],
+        )
+
     def __str__(self):
         return pprint.pformat(self)
 
@@ -458,6 +541,7 @@ class TestConfigFile:
     assertions: bool = False
     xfail: bool = False
     xfail_strict: bool = False
+    resources: DispatchResourcesFile | None = None
 
     def initialise(self, config_dir, tbs, suite_builder=None):
         tb = tbs[self.tb]
@@ -490,6 +574,7 @@ class TestConfigFile:
             assertions=self.assertions,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
+            resources=self.resources,
         )
 
 
