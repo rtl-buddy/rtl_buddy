@@ -108,6 +108,25 @@ class DispatchBackend(ABC):
         """Submit one sim job, optionally gated on ``dependency`` (a build
         job id that must succeed first); return its handle without waiting."""
 
+    def submit_array(
+        self,
+        specs: list[TestJobSpec],
+        *,
+        array_dir: Path,
+        max_parallel: int | None = None,
+        dependency: str | None = None,
+    ) -> list[JobHandle]:
+        """Submit a group of jobs with identical resolved resources.
+
+        Backends with native array support (Slurm) override this to
+        submit one array job; the default just loops :meth:`submit`.
+        ``array_dir`` is a scratch directory on the shared filesystem
+        for the array's manifest/script/logs; ``max_parallel`` caps how
+        many elements run concurrently; ``dependency`` (a build-job id)
+        gates every element on that job succeeding.
+        """
+        return [self.submit(spec, dependency=dependency) for spec in specs]
+
     @abstractmethod
     def wait_all(self, handles: list[JobHandle]) -> None:
         """Block until every submitted job has left the queue."""
@@ -115,3 +134,12 @@ class DispatchBackend(ABC):
     @abstractmethod
     def cancel_all(self, handles: list[JobHandle]) -> None:
         """Best-effort cancellation of all outstanding jobs."""
+
+    def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
+        """Per-job reserved-vs-used accounting, keyed by job id.
+
+        Returns an empty mapping when the backend has no accounting
+        source (right-sizing then degrades gracefully). Values are
+        backend-shaped dicts; the Slurm backend documents its fields.
+        """
+        return {}

@@ -136,6 +136,9 @@ Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --test-config  -c      TEXT     test_config.yaml to use [default: tests.yaml]        │
 │ --rnd-rpt      -r      INTEGER  repeat iteration number from previous run            │
+│ --dispatch             TEXT     execution backend for the seed fan-out (local,       │
+│                                 slurm)                                               │
+│                                 [default: (cfg-dispatch backend, else local)]        │
 │ --help                          Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

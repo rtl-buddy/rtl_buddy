@@ -1,9 +1,9 @@
 """Dispatched regression flow tests (#351 P1).
 
 Exercise ``rb regression --dispatch ...`` end-to-end over the
-``minimal_project`` fixture with a fake backend: dispatched build job,
-sim fan-out gated on it, collection, failure mapping, and result
-ordering — no scheduler or simulator involved.
+``minimal_project`` fixture with a fake backend and a stubbed
+``TestRunner``: head-node build pass, fan-out, collection, failure
+mapping, and result ordering — no scheduler or simulator involved.
 """
 
 from __future__ import annotations
@@ -123,10 +123,9 @@ def test_dispatched_regression_passes(
     assert not fake_backend.cancelled
 
     # The compile runs as a dispatched build job (never on the head), and
-    # the sim job is gated on it via afterok.
+    # the sim is gated on it via afterok.
     assert len(fake_backend.build_submitted) == 1
-    build = fake_backend.build_submitted[0]
-    assert build.resources.time is not None  # compile reservation resolved
+    assert fake_backend.build_submitted[0].resources.time is not None
     assert fake_backend.dependencies == ["fake-build"]
 
     # Dispatch implies share_build; sim jobs carry a defined reservation.
@@ -234,15 +233,29 @@ def test_dispatch_cancels_already_submitted_on_midway_submit_failure(
     stub_build_runner: type[_StubBuildRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # Two tests at -l 5; the second submit raises. The first must be
-    # cancelled, not left running after the head exits.
+    # Two tests with distinct resources -> two arrays; the second array
+    # submit raises. The first array's jobs must be cancelled, not left
+    # running after the head exits and releases its lock.
     from rtl_buddy.errors import FatalRtlBuddyError
 
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n",
+            "  - name: extra\n    resources: { mem: 24G }\n",
+        )
+    )
+
     class _FlakyBackend(_FakeBackend):
-        def submit(self, spec, *, dependency=None):
-            if len(self.submitted) >= 1:
+        def __init__(self):
+            super().__init__()
+            self.array_calls = 0
+
+        def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+            self.array_calls += 1
+            if self.array_calls >= 2:
                 raise FatalRtlBuddyError("sbatch: QOS limit reached")
-            return super().submit(spec)
+            return [self.submit(spec) for spec in specs]
 
     backend = _FlakyBackend()
     monkeypatch.setattr(
@@ -319,6 +332,100 @@ def test_dispatch_writes_plan_and_threads_it_to_jobs(
     assert sim.plan_path == build.plan_path
 
 
+# ------------------------------------------------- P2: arrays / cross-suite
+
+
+class _RecordingBackend(_FakeBackend):
+    """FakeBackend that also records array submissions and wait calls."""
+
+    def __init__(self, telemetry=None, **kwargs):
+        super().__init__(**kwargs)
+        self.array_calls = []
+        self.wait_calls = 0
+        self.telemetry = telemetry or {}
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        self.array_calls.append(
+            {"n": len(specs), "max_parallel": max_parallel, "array_dir": array_dir}
+        )
+        return [self.submit(spec) for spec in specs]
+
+    def wait_all(self, handles):
+        self.wait_calls += 1
+        super().wait_all(handles)
+
+    def collect_telemetry(self, handles):
+        return self.telemetry
+
+
+@pytest.fixture
+def recording_backend(monkeypatch: pytest.MonkeyPatch) -> _RecordingBackend:
+    backend = _RecordingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module,
+        "create_dispatch_backend",
+        lambda name, cfg: backend if name not in (None, "local") else None,
+    )
+    return backend
+
+
+def test_regression_waits_once_across_suites(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    # Two suites in the reg config → jobs from both must be in flight
+    # before the single global wait.
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - tests.yaml\n"
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert len(recording_backend.submitted) == 2
+    assert recording_backend.wait_calls == 1
+
+
+def test_same_resources_group_into_one_array(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    # Run both fixture tests (extra is reglvl 5) — identical resources →
+    # one submit_array call with both specs, throttled by max-jobs-per-array.
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  max-jobs-per-array: 7\n"
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [c["n"] for c in recording_backend.array_calls] == [2]
+    assert recording_backend.array_calls[0]["max_parallel"] == 7
+    assert ".dispatch" in str(recording_backend.array_calls[0]["array_dir"])
+
+
+def test_different_resources_split_arrays(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n",
+            "  - name: extra\n    resources: { mem: 24G }\n",
+        )
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # Two resource groups of one spec each.
+    assert sorted(c["n"] for c in recording_backend.array_calls) == [1, 1]
+
+
 def test_early_stop_with_dispatch_rejected(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
@@ -337,3 +444,163 @@ def test_early_stop_with_dispatch_rejected(
     )
     assert result.exit_code != 0
     assert fake_backend.submitted == []
+
+
+def test_collect_attaches_telemetry_to_results_and_envelope(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 5, "timelimit_s": 3600}
+        }
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    envelope = json.loads(backend.submitted[0].result_json.read_text())
+    assert envelope["telemetry"]["state"] == "COMPLETED"
+    assert envelope["telemetry"]["elapsed_s"] == 5
+
+
+def test_dispatch_fail_desc_names_scheduler_state(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        write_results=False,
+        telemetry={"fake-1": {"state": "TIMEOUT", "elapsed_s": 3600}},
+    )
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert "scheduler state TIMEOUT" in rows["basic"]["desc"]
+
+
+# ------------------------------------------------------ P2: randtest fan-out
+
+
+def test_randtest_dispatch_fans_out_seeds(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    result, rb = _invoke(["--machine", "randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.run_id for spec in recording_backend.submitted] == [1, 2, 3]
+    assert all(spec.seed_mode.value == "new" for spec in recording_backend.submitted)
+    assert recording_backend.wait_calls == 1
+    # One array of three seeds (identical resources).
+    assert [c["n"] for c in recording_backend.array_calls] == [3]
+    assert rb.share_build is True
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    assert [r["run_id"] for r in envelope["payload"]["results"]] == [1, 2, 3]
+
+
+def test_randtest_replay_stays_local(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["randtest", "basic", "3", "-r", "2", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert recording_backend.submitted == []
+
+
+# ---------------------------------------------- P2 review: robustness fixes
+
+
+def test_array_dir_is_per_invocation(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    import os
+
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text() + "\ncfg-dispatch:\n  max-jobs-per-array: 4\n"
+    )
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    array_dir = str(recording_backend.array_calls[0]["array_dir"])
+    # Under a .dispatch sibling and tagged with the head pid (not a fixed
+    # array-001), so overlapping runs don't rewrite each other's manifest.
+    assert ".dispatch" in array_dir
+    assert f"{os.getpid()}-" in Path(array_dir).name
+
+
+def test_randtest_replay_with_explicit_dispatch_warns(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(
+        ["--machine", "randtest", "basic", "3", "-r", "2", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # Stayed local (no jobs) but logged the ignored-flag warning.
+    assert recording_backend.submitted == []
+    assert "ignored for replay" in result.output
+
+
+def test_dispatched_collect_reenters_suite_context(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Two suites; a missing envelope for suite 1 must log under suite 1's
+    # own root, not the last-entered suite — assert collect re-enters the
+    # per-suite command context.
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - tests.yaml\n"
+    )
+    backend = _RecordingBackend()
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    entered = []
+    rb = RtlBuddy(name="ctx")
+    orig = rb._enter_command_context
+
+    def spy(*a, **k):
+        if "primary_config" in k:
+            entered.append(str(k["primary_config"]))
+        return orig(*a, **k)
+
+    monkeypatch.setattr(rb, "_enter_command_context", spy)
+    from typer.testing import CliRunner
+
+    result = CliRunner().invoke(
+        rb.app, ["regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # The suite context is entered again during the collect phase (more
+    # entries than the single submit-phase entry per suite).
+    assert entered.count(str(minimal_project / "tests.yaml")) >= 4
