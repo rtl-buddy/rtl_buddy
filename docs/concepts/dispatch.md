@@ -17,24 +17,37 @@ rb randtest my_test 500 --dispatch slurm   # seed fan-out
 
 ## How it works
 
-1. **Head-node build pass.** The head process compiles one shared `simv`
-   per unique compile key — `--dispatch` implies
-   [`--share-build`](tests.md#sharing-compiled-builds-across-tests) — and
-   stops at compile.
-2. **Fan-out.** One job per `(test, run_id)` is submitted via `sbatch`.
-   Jobs with identical resolved resources are grouped into a single Slurm
-   **array**; `cfg-dispatch.max-jobs-per-array` maps to the array's `%N` concurrency
-   throttle. Each job re-invokes `rb _test-job`, whose own compile
-   short-circuits on the shared-build stamp, so it runs simulation + post
-   only.
+**Nothing heavy runs on the submit host** — it is usually an interactive
+login node where a big Verilation is against policy. The head process only
+plans and submits; the compile and the sims both run as scheduler jobs.
+
+1. **Build job.** The head submits one `sbatch` job per suite that runs
+   `rb _build-job` on a compute node: it Verilates one shared `simv` per
+   unique compile key (`--dispatch` implies
+   [`--share-build`](tests.md#sharing-compiled-builds-across-tests)) and
+   writes the shared build to the shared filesystem.
+2. **Fan-out gated on the build.** One job per `(test, run_id)` is
+   submitted, grouped by identical resolved resources into a Slurm
+   **array** (`cfg-dispatch.max-jobs-per-array` maps to the array's `%N`
+   throttle), each with `--dependency=afterok:<build-job>`. Slurm holds
+   the sim elements until the build succeeds; each then re-invokes
+   `rb _test-job`, whose own compile short-circuits on the shared-build
+   stamp, so it runs simulation + post only.
 3. **Collect.** The head waits for the queue to drain (once, across all
    suites), then loads each job's result and feeds the normal summary and
-   exit code. A job that produced no result (scheduler kill, crash) counts
-   as a fail — never silently dropped.
+   exit code. A job that produced no result — a scheduler kill, a crash,
+   or a build-job failure that made `afterok` cancel it — counts as a
+   fail, never silently dropped.
 
-Because the head builds once and stops at compile, `--dispatch` cannot be
-combined with `--early-stop`, and dispatched jobs deliberately skip the
-per-tree lock (see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
+The build job carries its own reservation (`cfg-dispatch.compile`,
+defaulting to `resources`) since a large Verilation is often heavier than
+the sims it precedes; if that reservation is too small the build is
+killed, `afterok` cancels the sims, and they surface as dispatch failures
+pointing at the build log. A single test's compile failure does **not**
+fail the build job — the other sims still run, and the failing test
+recompiles (and fails) in its own sim job. `--dispatch` cannot be combined
+with `--early-stop`, and dispatched jobs deliberately skip the per-tree
+lock (see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
 
 ## How arrays interact with the shared build
 
@@ -56,14 +69,14 @@ reserve very different memory/time, so they land in **different arrays**.
 Conversely, two unrelated blocks that happen to reserve the same slot
 share one array but each build their own `simv`.
 
-The sharing is decided entirely on the head, before any array is
-submitted: the build pass Verilates each unique compile key exactly once
-(later configs with the same key short-circuit on the stamp), and **only
-after all builds finish** does it submit arrays. So the counts are
-independent — distinct `simv`s built = distinct compile keys; arrays
-submitted = distinct resource tuples — and any combination is possible
-(one `simv` shared across a 12-element array; three arrays all pointing at
-one `simv`; a single array whose members each have their own `simv`).
+The sharing happens in the **build job**: it Verilates each unique compile
+key exactly once (later configs with the same key short-circuit on the
+stamp), and the sim arrays are gated on it by `afterok`, so no sim starts
+until its shared build exists. So the counts are independent — distinct
+`simv`s built = distinct compile keys; arrays submitted = distinct
+resource tuples — and any combination is possible (one `simv` shared
+across a 12-element array; three arrays all pointing at one `simv`; a
+single array whose members each have their own `simv`).
 
 Every array element re-runs `compile()`, finds the shared stamp on the
 shared filesystem, short-circuits, and reads the same on-disk `simv`
@@ -94,10 +107,14 @@ All optional, in `root_config.yaml`:
 ```yaml
 cfg-dispatch:
   backend: slurm            # default: local (in-process)
-  resources:                # cluster-wide per-job defaults
+  resources:                # cluster-wide per-SIM-job defaults
     cpus: 2
     mem: 4G
     time: "01:00:00"        # QUOTE time values (see below)
+  compile:                  # reservation for the build job (defaults to resources)
+    cpus: 8
+    mem: 16G
+    time: "02:00:00"
   sbatch-args:              # passed to sbatch verbatim
     - --partition=verif
     - --account=chip
