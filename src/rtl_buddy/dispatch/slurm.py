@@ -120,7 +120,12 @@ class SlurmDispatchBackend(DispatchBackend):
 
     @staticmethod
     def _cwd_of(handles: list[JobHandle]) -> str | None:
-        return handles[0].spec.suite_dir if handles else None
+        # Skip None handles for the same reason _base_ids does: cancel_all
+        # must not be disarmed by a bad caller (#361).
+        for h in handles:
+            if h is not None:
+                return h.spec.suite_dir
+        return None
 
     def _job_argv(self, spec: TestJobSpec) -> list[str]:
         """The ``rb _test-job`` invocation the batch script runs."""
@@ -339,9 +344,17 @@ class SlurmDispatchBackend(DispatchBackend):
 
     @staticmethod
     def _base_ids(handles: list[JobHandle]) -> list[str]:
-        """Unique base job ids — one per array, not per element."""
+        """Unique base job ids — one per array, not per element.
+
+        Skips ``None`` handles: ``cancel_all`` is the last thing standing
+        between a head-side failure and an orphaned fleet, so it must not be
+        disarmed by a caller that let a ``None`` (e.g. a zero-test suite's
+        absent build handle, #361) into the list.
+        """
         seen: dict[str, None] = {}
         for h in handles:
+            if h is None:
+                continue
             seen.setdefault(h.job_id.split("_")[0], None)
         return list(seen)
 

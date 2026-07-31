@@ -174,6 +174,19 @@ def test_cancel_all_scancels_every_job(monkeypatch):
     assert argv == ["scancel", "5", "6"]
 
 
+def test_cancel_all_ignores_none_handles(monkeypatch):
+    # cancel_all is the last line of defence against an orphaned fleet, so a
+    # None handle (e.g. a zero-test suite's absent build handle, #361) must
+    # not disarm it — it still scancels the real jobs.
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.cancel_all([None, JobHandle("7", _spec()), None])
+    (argv,) = calls
+    assert argv == ["scancel", "7"]
+
+
 # ---------------------------------------------------------------- P2: arrays
 
 

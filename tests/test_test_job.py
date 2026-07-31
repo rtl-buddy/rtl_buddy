@@ -214,7 +214,7 @@ def test_resolve_job_test_cfg_from_plan_skips_hook(
     rb = RtlBuddy(name="resolve_test")
     suite_cfg = SuiteConfig(path="tests.yaml")
     plan = write_plan(
-        minimal_project / "plan.json", "tests.yaml", suite_cfg.get_tests()
+        minimal_project / "plan.json", "tests.yaml", suite_cfg.get_tests(), "tok"
     )
 
     def boom(test_cfg, suite_dir):  # would run the hook — must not be called
@@ -240,6 +240,7 @@ def test_resolve_job_test_cfg_plan_miss_falls_back_to_hook(
         minimal_project / "plan.json",
         "tests.yaml",
         [t for t in suite_cfg.get_tests() if t.get_name() == "basic"],
+        "tok",
     )
 
     cfg, err = rb._resolve_job_test_cfg(suite_cfg, "extra", ".", plan_path=str(plan))
@@ -327,6 +328,7 @@ def test_build_job_plan_compiles_plan_configs_without_hook(
         minimal_project / "plan.json",
         "tests.yaml",
         SuiteConfig(path="tests.yaml").get_tests(),
+        "tok",
     )
 
     def boom(*a, **k):  # the expansion path must not be taken under --plan

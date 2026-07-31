@@ -27,7 +27,7 @@ def _suite_configs(minimal_project: Path):
 
 def test_write_then_read_roundtrips_configs(minimal_project: Path):
     configs = _suite_configs(minimal_project)
-    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs)
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs, "tok")
 
     reloaded = read_plan_configs(plan)
     assert [c.get_name() for c in reloaded] == [c.get_name() for c in configs]
@@ -39,7 +39,7 @@ def test_write_then_read_roundtrips_configs(minimal_project: Path):
 
 def test_read_plan_config_by_name_and_miss(minimal_project: Path):
     configs = _suite_configs(minimal_project)
-    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs)
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs, "tok")
 
     assert read_plan_config(plan, "extra").get_name() == "extra"
     # A name absent from the plan is None (caller falls back to expansion),
@@ -49,12 +49,26 @@ def test_read_plan_config_by_name_and_miss(minimal_project: Path):
 
 def test_plan_is_json_and_ordered(minimal_project: Path):
     configs = _suite_configs(minimal_project)
-    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs)
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs, "tok-123")
 
     payload = json.loads(plan.read_text())
     assert payload["schema_version"] == PLAN_SCHEMA_VERSION
     assert payload["suite_config"] == "tests.yaml"
+    assert payload["run_token"] == "tok-123"
     assert [t["name"] for t in payload["tests"]] == ["basic", "extra"]
+
+
+def test_read_plan_token_roundtrips_and_defaults(minimal_project: Path):
+    configs = _suite_configs(minimal_project)
+    plan = write_plan(minimal_project / "plan.json", "tests.yaml", configs, "nonce-9")
+    from rtl_buddy.dispatch.plan import read_plan_token
+
+    assert read_plan_token(plan) == "nonce-9"
+    # A legacy plan without a token reads back None (no crash), so a job
+    # falls back to an unstamped envelope rather than failing.
+    legacy = minimal_project / "legacy.json"
+    legacy.write_text(json.dumps({"schema_version": PLAN_SCHEMA_VERSION, "tests": []}))
+    assert read_plan_token(legacy) is None
 
 
 def test_read_rejects_schema_mismatch(minimal_project: Path):
