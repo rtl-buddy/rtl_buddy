@@ -32,6 +32,7 @@ import shlex
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
@@ -119,7 +120,7 @@ class SlurmDispatchBackend(DispatchBackend):
         self.poll_interval = dispatch_cfg.poll_interval
 
     @staticmethod
-    def _cwd_of(handles: list[JobHandle]) -> str | None:
+    def _cwd_of(handles: Sequence[JobHandle | None]) -> str | None:
         # Skip None handles for the same reason _base_ids does: cancel_all
         # must not be disarmed by a bad caller (#361).
         for h in handles:
@@ -343,7 +344,7 @@ class SlurmDispatchBackend(DispatchBackend):
         ]
 
     @staticmethod
-    def _base_ids(handles: list[JobHandle]) -> list[str]:
+    def _base_ids(handles: Sequence[JobHandle | None]) -> list[str]:
         """Unique base job ids — one per array, not per element.
 
         Skips ``None`` handles: ``cancel_all`` is the last thing standing
@@ -403,7 +404,7 @@ class SlurmDispatchBackend(DispatchBackend):
             )
             time.sleep(self.poll_interval)
 
-    def cancel_all(self, handles: list[JobHandle]) -> None:
+    def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         if not handles:
             return
         # Base ids: cancelling an array id cancels every element.

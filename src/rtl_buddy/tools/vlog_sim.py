@@ -56,7 +56,13 @@ def force_symlink(target, link_name):
     """
     tmp = f"{link_name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     os.symlink(target, tmp)
-    os.replace(tmp, link_name)
+    try:
+        os.replace(tmp, link_name)
+    except OSError:
+        # Don't leak the temp link into the suite dir if the rename fails.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 # Stamp written into a shared build dir after a successful compile; records
@@ -895,9 +901,12 @@ class VlogSim:
                 run_id=run_id,
             )
 
-        force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-        force_symlink(log_path, self._get_suite_symlink_path("test.log"))
-        force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
+        # Latest-run convenience links: a passing test must never fail over
+        # one (a suite dir removed mid-run, ENOSPC, read-only/EXDEV mount).
+        with contextlib.suppress(OSError):
+            force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+            force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+            force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
 
         if returncode != 0:
             log_event(

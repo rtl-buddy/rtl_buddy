@@ -15,6 +15,7 @@ backend-independent (``runner.result_io``).
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -132,8 +133,14 @@ class DispatchBackend(ABC):
         """Block until every submitted job has left the queue."""
 
     @abstractmethod
-    def cancel_all(self, handles: list[JobHandle]) -> None:
-        """Best-effort cancellation of all outstanding jobs."""
+    def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
+        """Best-effort cancellation of all outstanding jobs.
+
+        Tolerates ``None`` entries: it is the last line of defence against
+        an orphaned fleet on a head-side failure, so a caller that let a
+        ``None`` slip into the handle list (e.g. a zero-test suite's absent
+        build handle, #361) must not disarm it.
+        """
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
         """Per-job reserved-vs-used accounting, keyed by job id.

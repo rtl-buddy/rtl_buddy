@@ -1469,6 +1469,21 @@ class RtlBuddy:
         test_cfg, setup_error = self._resolve_job_test_cfg(
             suite_cfg, test_name, suite_dir, plan_path=plan
         )
+        # Resolve the head's run token BEFORE running the sim, and never let a
+        # token-read failure abort: the plan was just read for the config, so
+        # it is readable now; reading it again after the sim would risk the job
+        # doing all the work and then dying before write_result_json if the
+        # plan went unreadable meanwhile — the exact "produced no result" this
+        # fixes, through another door. A None here just means the head rejects
+        # the envelope as stale, which still surfaces after it is written
+        # (#362).
+        run_token = None
+        if plan is not None:
+            try:
+                run_token = read_plan_token(self._abs_invocation_path(plan))
+            except FatalRtlBuddyError:
+                run_token = None
+
         if setup_error is not None:
             res = SetupFailResults(name=test_name + "/results", desc=setup_error)
             reported_name = test_name
@@ -1484,14 +1499,9 @@ class RtlBuddy:
             res = run_results[0]
             reported_name = test_cfg.get_name()
 
-        # Stamp the head's per-invocation run token (carried in the plan)
-        # into the envelope so collection can reject a stale envelope by
-        # identity rather than the head pre-unlinking it (#362).
-        run_token = (
-            read_plan_token(self._abs_invocation_path(plan))
-            if plan is not None
-            else None
-        )
+        # Stamp the head's per-invocation run token (carried in the plan) into
+        # the envelope so collection can reject a stale envelope by identity
+        # rather than the head pre-unlinking it (#362).
         write_result_json(
             result_json_path,
             test_name=reported_name,
@@ -2192,7 +2202,11 @@ class RtlBuddy:
             else None
         )
         compile_failed = set(build_result["failed"]) if build_result else set()
-        run_token = state.get("run_token")
+        # Keyed, not .get(): a state carrying pending jobs always set run_token
+        # in _dispatch_suite_submit, so a missing key is a bug that must fail
+        # loud — .get() would silently disable the staleness check and let a
+        # stale PASS through (a wrong-green, worse than the #362 false-red).
+        run_token = state["run_token"] if state["pending"] else None
         telemetry = backend.collect_telemetry([h for _, h in pending])
         for idx, handle in pending:
             tele = telemetry.get(handle.job_id)

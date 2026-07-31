@@ -81,6 +81,43 @@ def test_test_job_failing_result_still_writes_json_and_exits_1(
     assert envelope["result"].results["result"] == "FAIL"
 
 
+def test_test_job_token_read_failure_still_writes_result(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A run_token read that fails must NOT abort after the sim ran — that
+    would lose a completed (possibly passing) test's result and report it as
+    'produced no result', the exact #362 signature through another door. The
+    read is non-fatal: the envelope is still written (with a null token, so
+    the head rejects it as stale rather than trusting a mismatched result)."""
+    from rtl_buddy.dispatch.plan import write_plan
+
+    suite_cfg = SuiteConfig(path="tests.yaml")
+    plan = write_plan(
+        minimal_project / "plan.json", "tests.yaml", suite_cfg.get_tests(), "tok"
+    )
+
+    # Plan resolves the config fine, but the token read blows up (e.g. the
+    # manifest went unreadable on the shared mount between the two reads).
+    def boom(_path):
+        raise FatalRtlBuddyError("plan vanished mid-run")
+
+    monkeypatch.setattr(rtl_buddy_module, "read_plan_token", boom)
+
+    stub_runner.canned = TestPassResults(name="basic/results")
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["_test-job", "basic", "--result-json", "res.json", "--plan", str(plan)],
+    )
+    assert result.exit_code == 0, result.output
+
+    envelope = load_result_json(minimal_project / "res.json")
+    assert envelope["result"].is_pass()
+    assert envelope["run_token"] is None
+
+
 def test_test_job_unknown_test_exits_nonzero_without_json(
     minimal_project: Path, stub_runner: type[_StubTestRunner]
 ):
