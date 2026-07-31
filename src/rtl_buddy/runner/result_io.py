@@ -27,13 +27,18 @@ BUILD_RESULT_FILETYPE = "build_result"
 BUILD_RESULT_SCHEMA_VERSION = 1
 
 
-def write_result_json(path, *, test_name, run_id, results):
+def write_result_json(path, *, test_name, run_id, results, run_token=None):
     """Atomically write one run's result envelope to ``path``.
 
     The write goes through a sibling ``.tmp`` file and ``os.replace`` so
     a collector polling a shared filesystem never observes a partially
     written envelope. Parent directories are created as needed. Returns
     the resolved path.
+
+    ``run_token`` is the head's per-invocation nonce (from the dispatch
+    plan). Stamping it here lets the head reject a stale envelope from an
+    earlier run by identity, so it need not pre-unlink the path — see
+    :func:`load_result_json` and #362.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,6 +46,7 @@ def write_result_json(path, *, test_name, run_id, results):
         "rtl-buddy-filetype": RESULT_JSON_FILETYPE,
         "schema_version": RESULT_JSON_SCHEMA_VERSION,
         "rtl_buddy_version": version("rtl-buddy"),
+        "run_token": run_token,
         "test": test_name,
         "run_id": run_id,
         "result": results.to_json_dict(),
@@ -69,7 +75,7 @@ def attach_telemetry_json(path, telemetry: dict):
     os.replace(tmp, path)
 
 
-def load_result_json(path):
+def load_result_json(path, *, expected_run_token=None):
     """Load an envelope written by :func:`write_result_json`.
 
     Returns the envelope dict with ``result`` replaced by a
@@ -77,6 +83,12 @@ def load_result_json(path):
     a missing, malformed, or schema-incompatible file — a dispatch
     backend maps that to an infrastructure-failure result rather than
     silently dropping the run.
+
+    When ``expected_run_token`` is given, an envelope whose ``run_token``
+    does not match is treated as *not this run's result*: it is a leftover
+    from an earlier run (the head no longer pre-unlinks stale envelopes, to
+    avoid the NFS negative-dentry blindness of #362), so it raises the same
+    way a missing file does rather than being mistaken for a real result.
     """
     path = Path(path)
     try:
@@ -97,6 +109,12 @@ def load_result_json(path):
         raise FatalRtlBuddyError(
             f"unsupported {RESULT_JSON_FILETYPE} schema_version {schema!r} in "
             f"{path} (expected {RESULT_JSON_SCHEMA_VERSION})"
+        )
+
+    if expected_run_token is not None and raw.get("run_token") != expected_run_token:
+        raise FatalRtlBuddyError(
+            f"result JSON is from a different run (run_token "
+            f"{raw.get('run_token')!r} != {expected_run_token!r}): {path}"
         )
 
     try:

@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import json
+import uuid
 from pathlib import Path
 import typer
 from importlib.metadata import version
@@ -47,7 +48,12 @@ from .runner.mut_results import MutResults
 from .config.dispatch import resolve_compile_resources, resolve_resources
 from .dispatch import create_dispatch_backend
 from .dispatch.base import BuildJobSpec, TestJobSpec
-from .dispatch.plan import read_plan_config, read_plan_configs, write_plan
+from .dispatch.plan import (
+    read_plan_config,
+    read_plan_configs,
+    read_plan_token,
+    write_plan,
+)
 from .dispatch.rightsize import analyze_suite_reservations
 from .runner.result_io import (
     attach_telemetry_json,
@@ -1219,13 +1225,18 @@ class RtlBuddy:
             state = self._dispatch_suite_submit(
                 self.suite_cfg,
                 dispatch_backend,
+                run_token=uuid.uuid4().hex,
                 test_name=test_name,
                 run_ids=list(range(1, rnd_cnt + 1)),
                 seed_mode=SeedMode.NEW,
             )
-            # Wait on the build job too, and cancel it on interrupt.
-            handles = [state["build_handle"]] + [
-                handle for _, handle in state["pending"]
+            # Wait on the build job too, and cancel it on interrupt. Drop a
+            # None build_handle (no test selected) — a None crashes wait_all
+            # and cancel_all (#361).
+            handles = [
+                h
+                for h in [state["build_handle"], *(h for _, h in state["pending"])]
+                if h is not None
             ]
             try:
                 dispatch_backend.wait_all(handles)
@@ -1458,6 +1469,21 @@ class RtlBuddy:
         test_cfg, setup_error = self._resolve_job_test_cfg(
             suite_cfg, test_name, suite_dir, plan_path=plan
         )
+        # Resolve the head's run token BEFORE running the sim, and never let a
+        # token-read failure abort: the plan was just read for the config, so
+        # it is readable now; reading it again after the sim would risk the job
+        # doing all the work and then dying before write_result_json if the
+        # plan went unreadable meanwhile — the exact "produced no result" this
+        # fixes, through another door. A None here just means the head rejects
+        # the envelope as stale, which still surfaces after it is written
+        # (#362).
+        run_token = None
+        if plan is not None:
+            try:
+                run_token = read_plan_token(self._abs_invocation_path(plan))
+            except FatalRtlBuddyError:
+                run_token = None
+
         if setup_error is not None:
             res = SetupFailResults(name=test_name + "/results", desc=setup_error)
             reported_name = test_name
@@ -1473,8 +1499,15 @@ class RtlBuddy:
             res = run_results[0]
             reported_name = test_cfg.get_name()
 
+        # Stamp the head's per-invocation run token (carried in the plan) into
+        # the envelope so collection can reject a stale envelope by identity
+        # rather than the head pre-unlinking it (#362).
         write_result_json(
-            result_json_path, test_name=reported_name, run_id=run_id, results=res
+            result_json_path,
+            test_name=reported_name,
+            run_id=run_id,
+            results=res,
+            run_token=run_token,
         )
         exit_code = 0 if res.is_pass() else 1
         if self.machine:
@@ -1926,6 +1959,7 @@ class RtlBuddy:
         suite_cfg,
         backend,
         *,
+        run_token,
         test_name=None,
         reg_level=None,
         start_level=None,
@@ -1973,10 +2007,16 @@ class RtlBuddy:
             return {"suite_results": suite_results, "pending": [], "build_handle": None}
 
         dispatch_root = Path(suite_dir) / "artefacts" / ".dispatch"
+        # ``run_token`` is the head's per-invocation nonce (one per regression
+        # run, shared across suites). Threaded to every sim job through the
+        # plan; each job stamps it into its result envelope so collection
+        # tells this run's result from a stale one by identity, not absence
+        # (#362).
         plan_path = write_plan(
             dispatch_root / f"plan-{os.getpid()}.json",
             str(suite_cfg.get_path()),
             [e["cfg"] for e in entries],
+            run_token,
         )
 
         build_handle = self._submit_dispatch_build(
@@ -2005,9 +2045,11 @@ class RtlBuddy:
             for idx, run_id in entry["rows"]:
                 run_tag = "single" if run_id is None else f"{run_id:04d}"
                 result_json = dispatch_dir / f"result-{run_tag}.json"
-                # A stale envelope from an earlier run must not satisfy
-                # this run's collection.
-                result_json.unlink(missing_ok=True)
+                # Deliberately do NOT pre-unlink a stale envelope here: on
+                # NFS the head's negative lookup caches a dentry that hides
+                # the job's later write for ~acdirmin, so fast jobs get
+                # falsely reported as producing no result (#362). Staleness
+                # is instead rejected by run_token at collection time.
                 spec = TestJobSpec(
                     test_name=cfg.get_name(),
                     suite_dir=suite_dir,
@@ -2053,6 +2095,7 @@ class RtlBuddy:
             "suite_results": suite_results,
             "pending": pending,
             "build_handle": build_handle,
+            "run_token": run_token,
         }
 
     def _plan_dispatch_suite(
@@ -2159,11 +2202,18 @@ class RtlBuddy:
             else None
         )
         compile_failed = set(build_result["failed"]) if build_result else set()
+        # Keyed, not .get(): a state carrying pending jobs always set run_token
+        # in _dispatch_suite_submit, so a missing key is a bug that must fail
+        # loud — .get() would silently disable the staleness check and let a
+        # stale PASS through (a wrong-green, worse than the #362 false-red).
+        run_token = state["run_token"] if state["pending"] else None
         telemetry = backend.collect_telemetry([h for _, h in pending])
         for idx, handle in pending:
             tele = telemetry.get(handle.job_id)
             try:
-                envelope = load_result_json(handle.spec.result_json)
+                envelope = load_result_json(
+                    handle.spec.result_json, expected_run_token=run_token
+                )
                 results = envelope["result"]
             except FatalRtlBuddyError as e:
                 if handle.spec.test_name in compile_failed:
@@ -2186,16 +2236,33 @@ class RtlBuddy:
                         f"(see {build_handle.spec.log_path})"
                     )
                 else:
+                    sched_state = tele.get("state") if tele else None
                     state_note = (
-                        f" (scheduler state {tele['state']})"
-                        if tele and tele.get("state")
-                        else ""
+                        f" (scheduler state {sched_state})" if sched_state else ""
                     )
                     build_note = (
                         f" and build log {build_handle.spec.log_path}"
                         if build_handle is not None
                         else ""
                     )
+                    # A job the scheduler reports COMPLETED (exit 0) that left
+                    # no envelope is a contradiction — it ran but its result is
+                    # not visible here. On a shared filesystem that usually
+                    # means client attribute-cache staleness rather than a job
+                    # failure; point at that first so it isn't misread as a
+                    # scheduler kill (#362).
+                    if sched_state == "COMPLETED":
+                        cause = (
+                            "job COMPLETED (exit 0) but its result is not "
+                            "visible on the shared filesystem — likely a "
+                            "client attribute-cache delay; check the mount's "
+                            "ac* / lookupcache settings"
+                        )
+                    else:
+                        cause = (
+                            "scheduler kill, crash, or its build job failed so "
+                            "afterok cancelled it"
+                        )
                     log_event(
                         logger,
                         logging.ERROR,
@@ -2203,14 +2270,13 @@ class RtlBuddy:
                         job_id=handle.job_id,
                         test=handle.spec.test_name,
                         run_id=handle.spec.run_id,
-                        scheduler_state=tele.get("state") if tele else None,
+                        scheduler_state=sched_state,
                         error=str(e),
                     )
                     results = DispatchFailResults(
                         name=handle.spec.test_name + "/results",
                         desc=f"dispatch job {handle.job_id} produced no "
-                        f"result{state_note} (scheduler kill, crash, or its "
-                        f"build job failed so afterok cancelled it); see "
+                        f"result{state_note} ({cause}); see "
                         f"{handle.spec.log_path}{build_note}: {e}",
                     )
             if tele is not None:
@@ -2510,6 +2576,9 @@ class RtlBuddy:
             # suites overlap instead of serializing (#351 P2).
             submitted = []
             all_handles = []
+            # One nonce for the whole regression run, shared across suites, so
+            # a collector rejects any envelope not from this run (#362).
+            run_token = uuid.uuid4().hex
             try:
                 for suite_cfg in self.reg_cfg.get_suite_configs():
                     log_event(
@@ -2523,11 +2592,16 @@ class RtlBuddy:
                     state = self._dispatch_suite_submit(
                         suite_cfg,
                         dispatch_backend,
+                        run_token=run_token,
                         reg_level=reg_level,
                         start_level=start_level,
                     )
                     submitted.append((suite_cfg, state))
-                    all_handles.append(state["build_handle"])
+                    # A suite that selected zero tests submits nothing and
+                    # returns build_handle=None; a None in all_handles crashes
+                    # both wait_all and the cancel_all cleanup path (#361).
+                    if state["build_handle"] is not None:
+                        all_handles.append(state["build_handle"])
                     all_handles.extend(handle for _, handle in state["pending"])
                 if all_handles:
                     dispatch_backend.wait_all(all_handles)

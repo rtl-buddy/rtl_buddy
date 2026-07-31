@@ -131,6 +131,45 @@ def test_load_unsupported_schema_version_fails_loud(tmp_path: Path):
         load_result_json(out)
 
 
+def test_run_token_round_trips_and_matches(tmp_path: Path):
+    out = tmp_path / "result.json"
+    write_result_json(
+        out,
+        test_name="t",
+        run_id=1,
+        results=TestPassResults(name="t/results"),
+        run_token="abc123",
+    )
+    assert json.loads(out.read_text())["run_token"] == "abc123"
+    # Matching token loads normally.
+    assert load_result_json(out, expected_run_token="abc123")["result"].is_pass()
+    # No expectation → token ignored (legacy / non-dispatch callers).
+    assert load_result_json(out)["result"].is_pass()
+
+
+def test_stale_run_token_is_rejected_like_a_missing_file(tmp_path: Path):
+    """A leftover envelope from an earlier run (different token) must not be
+    mistaken for this run's result — this replaces the pre-unlink the head
+    used to do, which blinded it on NFS (#362)."""
+    out = tmp_path / "result.json"
+    write_result_json(
+        out,
+        test_name="t",
+        run_id=1,
+        results=TestPassResults(name="t/results"),
+        run_token="OLD-run",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="different run"):
+        load_result_json(out, expected_run_token="NEW-run")
+    # A dispatch job that never stamped a token (None) also fails the check
+    # when the head expects one.
+    write_result_json(
+        out, test_name="t", run_id=1, results=TestPassResults(name="t/results")
+    )
+    with pytest.raises(FatalRtlBuddyError, match="different run"):
+        load_result_json(out, expected_run_token="NEW-run")
+
+
 def test_attach_telemetry_round_trip(tmp_path: Path):
     from rtl_buddy.runner.result_io import attach_telemetry_json
 

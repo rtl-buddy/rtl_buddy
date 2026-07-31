@@ -26,17 +26,30 @@ from ..errors import FatalRtlBuddyError
 PLAN_SCHEMA_VERSION = 1
 
 
-def write_plan(path: Path, suite_config_path: str, configs: list[TestConfig]) -> Path:
+def write_plan(
+    path: Path,
+    suite_config_path: str,
+    configs: list[TestConfig],
+    run_token: str,
+) -> Path:
     """Write the dispatch plan for one suite; return ``path``.
 
     ``configs`` is the head's single, ordered expansion of the suite's
     runnable tests. Names are unique after sweep expansion, so they key the
     manifest for O(1) lookup by a sim job.
+
+    ``run_token`` is a per-invocation nonce the head threads to every sim
+    job through this manifest. Each job stamps it into its result envelope
+    so the head can tell this run's envelope from a stale one *by identity*
+    rather than by absence — the head therefore never pre-unlinks the
+    result path, which on NFS would leave a negative dentry that blinds it
+    to the job's write for ~acdirmin seconds (#362).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "suite_config": suite_config_path,
+        "run_token": run_token,
         # Ordered list (not a dict) so the build job compiles in the head's
         # expansion order; sim-job lookup builds its own index by name.
         "tests": [cfg.to_plan_dict() for cfg in configs],
@@ -65,6 +78,15 @@ def _load(path: Path) -> dict:
 def read_plan_configs(path: Path) -> list[TestConfig]:
     """All runnable configs from the plan, in the head's expansion order."""
     return [TestConfig.from_plan_dict(d) for d in _load(path)["tests"]]
+
+
+def read_plan_token(path: Path) -> str | None:
+    """The head's per-invocation run token, or ``None`` for a legacy plan.
+
+    A sim job stamps this into its result envelope so the head detects a
+    stale envelope by identity instead of by absence (#362).
+    """
+    return _load(path).get("run_token")
 
 
 def read_plan_config(path: Path, test_name: str) -> TestConfig | None:

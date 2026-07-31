@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
 from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
+from rtl_buddy.dispatch.plan import read_plan_token
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.result_io import write_result_json
 from rtl_buddy.runner.test_results import (
@@ -53,11 +54,16 @@ class _FakeBackend(DispatchBackend):
                 if self.job_result == "PASS"
                 else CompileFailResults(name=spec.test_name + "/results")
             )
+            # Mirror the real rb _test-job: stamp the head's run token
+            # (carried in the plan) into the envelope so collection accepts
+            # it (#362).
+            run_token = read_plan_token(spec.plan_path) if spec.plan_path else None
             write_result_json(
                 spec.result_json,
                 test_name=spec.test_name,
                 run_id=spec.run_id,
                 results=results,
+                run_token=run_token,
             )
         return JobHandle(job_id=f"fake-{len(self.submitted)}", spec=spec)
 
@@ -151,6 +157,73 @@ def test_dispatched_regression_missing_result_is_dispatch_fail(
     ][-1]
     envelope = json.loads(payload_line)
     rows = {r["name"]: r for r in envelope["payload"]["results"]}
+    assert rows["basic"]["result"] == "FAIL"
+    assert "produced no result" in rows["basic"]["desc"]
+
+
+def test_zero_test_suite_is_skipped_not_crashed(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A suite that selects no test at the requested level submits nothing
+    (build_handle=None). The head must skip it, not crash on the None in
+    all_handles and orphan the other suites' already-submitted jobs (#361)."""
+    # Second suite: every test is far above -l 0, so it selects nothing.
+    # Reuse the fixture suite but bump every test far above -l 0 so the
+    # suite selects nothing (keeps every schema field valid).
+    empty = (
+        (minimal_project / "tests.yaml")
+        .read_text()
+        .replace("reglvl: 0", "reglvl: 10000")
+        .replace("reglvl: 5", "reglvl: 10000")
+    )
+    (minimal_project / "empty_tests.yaml").write_text(empty)
+    (minimal_project / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\n"
+        "test-configs:\n  - tests.yaml\n  - empty_tests.yaml\n"
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    # Only the non-empty suite's "basic" reached the fleet; the empty suite
+    # queued nothing, and the run drained cleanly rather than cancelling.
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert fake_backend.waited
+    assert not fake_backend.cancelled
+
+
+def test_head_does_not_preunlink_and_rejects_stale_by_token(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The head must NOT pre-unlink the result path (that caches an NFS
+    negative dentry and blinds it, #362). A stale envelope left in place is
+    instead rejected by run_token, so an old PASS never satisfies this run."""
+    fake_backend.write_results = False  # this run's job leaves no fresh envelope
+
+    # Pre-seed a stale PASS envelope with a token from an "earlier run" at the
+    # exact path this run's "basic" job will use.
+    stale = minimal_project / "artefacts" / "basic" / "dispatch" / "result-single.json"
+    write_result_json(
+        stale,
+        test_name="basic",
+        run_id=None,
+        results=TestPassResults(name="basic/results"),
+        run_token="STALE-run",
+    )
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    # The stale file was NOT unlinked by the head at submit (still on disk,
+    # still the old token) — proving the negative-dentry trigger is gone.
+    assert stale.is_file()
+    assert json.loads(stale.read_text())["run_token"] == "STALE-run"
+    # And its stale PASS did not count: the run reports no result for basic.
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    rows = {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
     assert rows["basic"]["result"] == "FAIL"
     assert "produced no result" in rows["basic"]["desc"]
 

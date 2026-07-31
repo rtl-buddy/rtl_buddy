@@ -8,6 +8,7 @@ vlog_sim module handles verilog simulations for rtl-buddy
 
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ import shlex
 import signal
 import logging
 import types
+import uuid
 
 logger = logging.getLogger(__name__)
 from ..hooks import exec_hook_script
@@ -39,10 +41,28 @@ from .vcs_license import VcsLicenseQueueMonitor
 
 
 def force_symlink(target, link_name):
-    if os.path.lexists(link_name):
-        os.remove(link_name)
+    """Atomically repoint ``link_name`` at ``target``.
 
-    os.symlink(target, link_name)
+    Create-a-temp-then-``os.replace`` instead of remove-then-create:
+    ``os.replace`` over a symlink is a single rename, so it cannot lose a
+    race. The check-then-act form (``lexists`` then ``remove`` then
+    ``symlink``) races when concurrent writers share a link — under
+    ``--dispatch`` every element of a suite's Slurm array runs at once
+    against the same suite-level ``test.log``/``test.err``/``test.randseed``,
+    and the interleaving killed passing tests with ``FileNotFoundError`` /
+    ``FileExistsError`` (#363). The temp name carries the pid and a random
+    suffix so no two writers — separate processes (real array elements) or
+    threads — ever collide on the intermediate link.
+    """
+    tmp = f"{link_name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    os.symlink(target, tmp)
+    try:
+        os.replace(tmp, link_name)
+    except OSError:
+        # Don't leak the temp link into the suite dir if the rename fails.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 # Stamp written into a shared build dir after a successful compile; records
@@ -732,8 +752,10 @@ class VlogSim:
                     test_out_fp.write(f"ERR: {err_msg}\n")
                 with open(err_path, "w+") as test_err_fp:
                     test_err_fp.write(err_msg + "\n")
-                force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-                force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+                # Convenience latest-run links: never fail a test over one.
+                with contextlib.suppress(OSError):
+                    force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+                    force_symlink(log_path, self._get_suite_symlink_path("test.log"))
                 return 1
 
         elif seed_mode == SeedMode.NEW:
@@ -879,9 +901,12 @@ class VlogSim:
                 run_id=run_id,
             )
 
-        force_symlink(err_path, self._get_suite_symlink_path("test.err"))
-        force_symlink(log_path, self._get_suite_symlink_path("test.log"))
-        force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
+        # Latest-run convenience links: a passing test must never fail over
+        # one (a suite dir removed mid-run, ENOSPC, read-only/EXDEV mount).
+        with contextlib.suppress(OSError):
+            force_symlink(err_path, self._get_suite_symlink_path("test.err"))
+            force_symlink(log_path, self._get_suite_symlink_path("test.log"))
+            force_symlink(randseed_path, self._get_suite_symlink_path("test.randseed"))
 
         if returncode != 0:
             log_event(

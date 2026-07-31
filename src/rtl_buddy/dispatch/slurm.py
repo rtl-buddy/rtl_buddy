@@ -32,6 +32,7 @@ import shlex
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
@@ -119,8 +120,13 @@ class SlurmDispatchBackend(DispatchBackend):
         self.poll_interval = dispatch_cfg.poll_interval
 
     @staticmethod
-    def _cwd_of(handles: list[JobHandle]) -> str | None:
-        return handles[0].spec.suite_dir if handles else None
+    def _cwd_of(handles: Sequence[JobHandle | None]) -> str | None:
+        # Skip None handles for the same reason _base_ids does: cancel_all
+        # must not be disarmed by a bad caller (#361).
+        for h in handles:
+            if h is not None:
+                return h.spec.suite_dir
+        return None
 
     def _job_argv(self, spec: TestJobSpec) -> list[str]:
         """The ``rb _test-job`` invocation the batch script runs."""
@@ -338,10 +344,18 @@ class SlurmDispatchBackend(DispatchBackend):
         ]
 
     @staticmethod
-    def _base_ids(handles: list[JobHandle]) -> list[str]:
-        """Unique base job ids — one per array, not per element."""
+    def _base_ids(handles: Sequence[JobHandle | None]) -> list[str]:
+        """Unique base job ids — one per array, not per element.
+
+        Skips ``None`` handles: ``cancel_all`` is the last thing standing
+        between a head-side failure and an orphaned fleet, so it must not be
+        disarmed by a caller that let a ``None`` (e.g. a zero-test suite's
+        absent build handle, #361) into the list.
+        """
         seen: dict[str, None] = {}
         for h in handles:
+            if h is None:
+                continue
             seen.setdefault(h.job_id.split("_")[0], None)
         return list(seen)
 
@@ -390,7 +404,7 @@ class SlurmDispatchBackend(DispatchBackend):
             )
             time.sleep(self.poll_interval)
 
-    def cancel_all(self, handles: list[JobHandle]) -> None:
+    def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         if not handles:
             return
         # Base ids: cancelling an array id cancels every element.
