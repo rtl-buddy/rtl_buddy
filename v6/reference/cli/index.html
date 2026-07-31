@@ -503,6 +503,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../concepts/dispatch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Dispatch (Slurm)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../concepts/expected-failures/" class="md-nav__link">
         
   
@@ -3396,8 +3424,11 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>│ --test-config  -c      TEXT     test_config.yaml to use [default: tests.yaml]        │
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>│ --rnd-rpt      -r      INTEGER  repeat iteration number from previous run            │
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>│ --help                          Show this message and exit.                          │
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>│ --dispatch             TEXT     execution backend for the seed fan-out (local,       │
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>│                                 slurm)                                               │
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>│                                 [default: (cfg-dispatch backend, else local)]        │
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>│ --help                          Show this message and exit.                          │
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="regression">regression</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Usage: rtl-buddy regression [OPTIONS]                                                  
@@ -3436,8 +3467,12 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a>│ --share-build                                   reuse one compiled simv across tests │
 <a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a>│                                                 with identical compile inputs        │
 <a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a>│                                                 (Verilator builders only)            │
-<a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a>│ --help                                          Show this message and exit.          │
-<a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a>│ --dispatch                             TEXT     execution backend for test runs      │
+<a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>│                                                 (local, slurm)                       │
+<a id="__codelineno-3-39" name="__codelineno-3-39" href="#__codelineno-3-39"></a>│                                                 [default: (cfg-dispatch backend,     │
+<a id="__codelineno-3-40" name="__codelineno-3-40" href="#__codelineno-3-40"></a>│                                                 else local)]                         │
+<a id="__codelineno-3-41" name="__codelineno-3-41" href="#__codelineno-3-41"></a>│ --help                                          Show this message and exit.          │
+<a id="__codelineno-3-42" name="__codelineno-3-42" href="#__codelineno-3-42"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="filelist">filelist</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Usage: rtl-buddy filelist [OPTIONS] MODEL_NAME [OUTPUT_PATH]                           

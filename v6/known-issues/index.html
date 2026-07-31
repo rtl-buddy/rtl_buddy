@@ -503,6 +503,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../concepts/dispatch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Dispatch (Slurm)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/expected-failures/" class="md-nav__link">
         
   
@@ -1518,6 +1546,61 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#-dispatch-silently-implies-share-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --dispatch silently implies --share-build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        An unquoted time: in cfg-dispatch/resources: is YAML sexagesimal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reservation-right-sizing-has-floors-that-can-silently-suppress-advice" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reservation right-sizing has floors that can silently suppress advice
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#under-dispatch-preproc-runs-in-both-the-build-job-and-each-sim-job" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Under --dispatch, preproc runs in both the build job and each sim job
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A dispatched compile failure surfaces as CompileFail, not DispatchFail
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1766,6 +1849,61 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#-dispatch-silently-implies-share-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --dispatch silently implies --share-build
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        An unquoted time: in cfg-dispatch/resources: is YAML sexagesimal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reservation-right-sizing-has-floors-that-can-silently-suppress-advice" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reservation right-sizing has floors that can silently suppress advice
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#under-dispatch-preproc-runs-in-both-the-build-job-and-each-sim-job" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Under --dispatch, preproc runs in both the build job and each sim job
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A dispatched compile failure surfaces as CompileFail, not DispatchFail
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1945,7 +2083,80 @@ Three consequences that can surprise:</p>
   NFS depends on protocol version, mount options, and the server's lock
   daemon — rtl_buddy assumes it doesn't. Same-host concurrent runs are the
   protected case; cross-host coordination is on you.</li>
+<li><strong>Dispatched jobs deliberately skip the lock.</strong> Under
+  <code>regression --dispatch slurm</code>, the head process holds the lock but the
+  per-test <code>rb _test-job</code> jobs do <strong>not</strong> take it — they are cooperative
+  delegates writing disjoint <code>run-*</code> dirs and reading the shared build
+  read-only. The consequence: while a dispatched regression is running,
+  nothing stops you from starting a second <code>rb test</code> in the same tree,
+  because the head's lock does not cover what the jobs are doing on the
+  compute nodes. Don't launch other commands against a tree that has a
+  dispatch run in flight.</li>
 </ul>
+<h2 id="-dispatch-silently-implies-share-build"><code>--dispatch</code> silently implies <code>--share-build</code></h2>
+<p><code>regression --dispatch slurm</code> (and <code>randtest --dispatch slurm</code>) turn on
+<code>--share-build</code> even if you didn't pass it: a <strong>dispatched build job</strong>
+compiling one shared <code>simv</code> per unique compile key on a compute node is
+exactly what lets each sim job skip compilation and re-enter at simulation.
+This changes compile behaviour versus a plain local run — tests with
+identical compile inputs Verilate once, not once each — and share-build is
+Verilator-only, so non-Verilator builders fall back to compiling inside
+each job. The promotion is logged as <code>dispatch.share_build_implied</code>. Also
+note <code>--dispatch</code> cannot be combined with <code>--early-stop</code>: a build job
+compiles and the sim jobs run sim+post, so no earlier stop point is
+expressible per job (rtl_buddy rejects the combination loudly rather than
+ignoring the flag). And <code>randtest -r &lt;n&gt; --dispatch slurm</code> runs locally — a
+single-seed replay gains nothing from the queue — logging
+<code>randtest.dispatch_ignored_for_replay</code> so the ignored flag isn't silent.</p>
+<h2 id="an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">An unquoted <code>time:</code> in <code>cfg-dispatch</code>/<code>resources:</code> is YAML sexagesimal</h2>
+<p>YAML 1.1 parses an unquoted <code>time: 4:00:00</code> as the <strong>integer 14400</strong>
+(base-60), not the string <code>"4:00:00"</code>. Slurm would read that as 14400
+<em>minutes</em> — a 10-day reservation instead of 4 hours. Leading-zero forms
+like <code>01:00:00</code> happen to survive (the resolver needs a non-zero leading
+digit), which is why the trap is easy to miss. rtl_buddy's <code>_validate_time</code>
+<strong>rejects the integer form loudly</strong> at config load, telling you to quote
+it — so always write <code>time: "4:00:00"</code> (or bare minutes as a string,
+<code>time: "240"</code>). Applies everywhere <code>resources:</code> appears: <code>cfg-dispatch</code>,
+per-testbench, and per-test.</p>
+<h2 id="reservation-right-sizing-has-floors-that-can-silently-suppress-advice">Reservation right-sizing has floors that can silently suppress advice</h2>
+<p>The reservation-advice thresholds (<code>over-threshold</code>, <code>near-limit</code>,
+<code>margin</code>) are configurable under <code>cfg-dispatch.rightsize</code>, but two guards
+are fixed constants: a <strong>5-minute time floor</strong> and a <strong>128M memory floor</strong>
+on suggestions, plus a keep-ratio that only emits a <code>reduce</code> when the
+suggestion actually saves ≥25% of the reservation. Consequence: for any
+time reservation below ~6m40s (<code>5min ÷ 0.75</code>), no <code>reduce</code> time advice is
+possible regardless of utilization — a very over-provisioned but tiny
+reservation can come back with no advice and no explanation. This is
+deliberate (churn suppression) but not currently tunable; if you get empty
+advice on an obviously over-reserved short job, this is why.</p>
+<h2 id="under-dispatch-preproc-runs-in-both-the-build-job-and-each-sim-job">Under <code>--dispatch</code>, <code>preproc</code> runs in both the build job and each sim job</h2>
+<p>Hook scripts (<code>sweep</code>, <code>preproc</code>, <code>postproc</code>) are compatibility-sensitive
+APIs, and dispatch changes <em>how many times</em> they run:</p>
+<ul>
+<li><strong><code>sweep</code> runs exactly once</strong>, on the head. The head expands the suite
+  and writes a plan manifest; the build job and every sim job rebuild their
+  configs from the manifest rather than re-running the hook (so a
+  nondeterministic sweep can't expand differently per process and leave a
+  sim job's compile key unbuilt).</li>
+<li><strong><code>preproc</code> runs twice</strong>: once in the build job before the shared compile,
+  and again in each sim job before its simulation (locally it runs once per
+  test). A non-idempotent <code>preproc</code> — one that generates a stimulus file,
+  bumps a counter, or otherwise has side effects — behaves differently under
+  <code>--dispatch</code>. Make <code>preproc</code> idempotent, or move one-time setup into the
+  sweep/head path.</li>
+</ul>
+<h2 id="a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail">A dispatched compile failure surfaces as CompileFail, not DispatchFail</h2>
+<p>When a test's compile fails, the build job records it and the head maps the
+row to a <strong>CompileFail</strong> — the same clean design-error result the
+in-process path produces — pointing at the build-job log. (A genuine
+infrastructure failure — a job the scheduler killed, or one that vanished
+without writing a result — is still a <code>DispatchFail</code>, and its desc names
+both the sim-job and build-job logs.) The failing test's sim job is still
+submitted and recompiles under its <strong>sim</strong> reservation, not the
+<code>cfg-dispatch.compile</code> one; if that recompile is heavier than the sim
+reservation allows it may be OOM/<code>TIMEOUT</code>-killed — size <code>cfg-dispatch</code>
+reservations so a compile fits, or expect the killed recompile to be folded
+into the CompileFail above.</p>
 <h2 id="rb-nvim-install-requires-git-network-and-pins-the-plugin-by-hand"><code>rb nvim-install</code> requires git + network, and pins the plugin by hand</h2>
 <p>Unlike the old <code>rb wave-install-nvim</code> (which copied a bundled <code>.lua</code> offline),
 <code>rb nvim-install</code> (the new primary name; <code>wave-install-nvim</code> is now an alias)
