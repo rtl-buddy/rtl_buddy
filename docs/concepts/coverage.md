@@ -127,22 +127,23 @@ rtl-buddy --builder-mode cov regression \
 
 The `functional` metric is a single ratio: how many user cover points were hit out of how many exist. Under [`--machine`](../agents.md#machine-mode), runs also report the points individually, so a consumer can tell *which* points a suite exercised — the usual reason being to grade SVA `cover property` labels against verification-plan items.
 
-Each entry is `{name, file, line, hits}`, where `name` is the cover label as written in the RTL or testbench:
+Each entry is `{name, file, line, module, hits}`, where `name` is the cover label as written in the RTL or testbench and `module` is the module it was compiled into:
 
 ```json
 {
   "name": "APB_IF_WRITE",
   "file": "../../tb_top.sv",
   "line": 89,
+  "module": "tb_top",
   "hits": 13
 }
 ```
 
 The list appears in two places: on each result row (that test's own counts) and on the run-level `payload.coverage` (summed across every test). `file` is stored as the simulator recorded it, which is often relative to the run directory rather than the repo root.
 
-A point instantiated in several places collapses to one entry whose `hits` covers every instance, so `hits > 0` means "covered somewhere". Verilator does most of that folding itself — it writes one record per source point with the instance counts already added and the differing hierarchy replaced by a `*` — and `rtl_buddy` folds across tests on top of that, keying on `(file, line, name)`.
+A point instantiated several times within one module collapses to a single entry whose `hits` covers every instance, so `hits > 0` means "covered". Verilator does that folding itself — it writes one record per point per module, with the instance counts already added and the differing hierarchy component replaced by a `*` — and `rtl_buddy` folds across tests on top of that, keying on `(file, line, name, module)`.
 
-That key has one consequence worth knowing: a cover property compiled into more than one module — usually one written in an `include`d file — is recorded by Verilator once per module, but reported here as a single entry with the counts combined. If you need those tracked as separate obligations rather than one label, this list will not distinguish them.
+Keeping `module` in the key matters when the same cover property is compiled into more than one module, which usually means one written in an `include`d file and pulled into several blocks. Those stay separate entries. Combining them would report a single nonzero count, hiding the case where the property is exercised in one module and never in another — a real coverage hole. If you want to grade purely by label, fold the list by `name` yourself; that direction is always available, whereas a pre-combined count cannot be split back apart.
 
 This data comes from the per-test raw databases, not from a merged artifact, so it needs no `--coverage-merge*` flag and reads the same under `--coverage-merge` and `--coverage-merge-raw`.
 

@@ -37,30 +37,41 @@ def _fmt_cov(value):
 
 def aggregate_cover_records(records):
     """
-    Fold per-instance user-coverage records into one entry per source point.
+    Fold user-coverage records into one entry per cover point per module.
 
-    Records are keyed by ``(file, line, name)`` and their ``hits`` summed, so a
-    cover point instantiated many times collapses to a single entry whose count
-    spans every instance. Union semantics — "covered iff any instance hit it" —
-    which is what a plan-item consumer grading `cover property` labels wants,
-    and what simulators default to for merged reporting.
+    Records are keyed by ``(file, line, name, module)`` and their ``hits``
+    summed. The key keeps `module` so a cover property compiled into more than
+    one module — one written in an ``include``d file, say — stays one entry per
+    module rather than collapsing into a combined count. Collapsing loses
+    information a consumer cannot recover: "hit in modA, never in modB" would
+    read as covered. A consumer that wants union-by-label can fold these by
+    ``name`` itself; the reverse is not possible.
 
-    Returns a list sorted by ``(file, line, name)``, or None when there is
-    nothing to aggregate (so "no user points" stays distinguishable from "user
-    points, none hit").
+    What this does combine is the same point seen in several per-test databases,
+    which is the run-level rollup the machine payload reports.
+
+    Returns a list sorted by ``(file, line, name, module)``, or None when there
+    is nothing to aggregate (so "no user points" stays distinguishable from
+    "user points, none hit").
     """
     if not records:
         return None
 
     aggregated = {}
     for record in records:
-        key = (record.get("file"), record.get("line"), record.get("name"))
+        key = (
+            record.get("file"),
+            record.get("line"),
+            record.get("name"),
+            record.get("module"),
+        )
         entry = aggregated.get(key)
         if entry is None:
             aggregated[key] = {
                 "name": record.get("name"),
                 "file": record.get("file"),
                 "line": record.get("line"),
+                "module": record.get("module"),
                 "hits": record.get("hits", 0),
             }
         else:
@@ -72,6 +83,7 @@ def aggregate_cover_records(records):
             e["file"] or "",
             e["line"] if e["line"] is not None else -1,
             e["name"] or "",
+            e["module"] or "",
         ),
     )
 
@@ -1238,21 +1250,28 @@ class VlogCov:
         r"""
         Parse `t=user` counter records out of a raw Verilator coverage database.
 
-        Returns one record per counter instance as
-        ``{name, file, line, hier, hits}``, or None when the database is
-        unreadable or holds no user points. Records are per *instance*: the same
-        source cover point instantiated N times yields N records, which callers
-        aggregate as they see fit.
+        Returns one record per counter as ``{name, file, line, module, hier,
+        hits}``, or None when the database is unreadable or holds no user
+        points.
+
+        Verilator writes **one record per source cover point per containing
+        module**, not one per instance: a point instantiated many times arrives
+        already merged, with the counts summed and the differing hierarchy
+        component replaced by `*` (e.g. `tb_top.u*.SUB_COVER`). It does keep the
+        same source line apart when it is compiled into more than one module —
+        an `include`d cover property, say — which is why `module` is carried
+        here. Verified against Verilator 5.049 output.
 
         A labeled SVA `cover property` lands in `coverage.dat` as a `t=user`
         point whose comment key carries the label verbatim, e.g.::
 
-            C '\x01f\x02../../tb_top.sv\x01l\x0289\x01t\x02user...\x01o\x02APB_IF_WRITE...' 13
+            C '\x01f\x02tb_top.sv\x01l\x0214\x01n\x0217\x01t\x02user\x01page\x02v_user/tb_top\x01o\x02APB_IF_WRITE\x01h\x02tb_top.APB_IF_WRITE' 3
 
-        The keys are `\x01<key>\x02<value>` pairs: `f` file, `l` line, `o` the
-        coverage comment (the SVA label), `h` the hierarchy path. This data
-        survives only in the raw database — `verilator_coverage --write-info`
-        folds user points into anonymous `DA:` records.
+        The keys are `\x01<key>\x02<value>` pairs: `f` file, `l` line, `n`
+        column, `o` the coverage comment (the SVA label), `page` `v_user/<module>`,
+        `h` the hierarchy path. Unknown keys are ignored. This data survives only
+        in the raw database — `verilator_coverage --write-info` folds user points
+        into anonymous `DA:` records and drops the labels entirely.
         """
         try:
             raw_bytes = Path(raw_path).read_bytes()
@@ -1281,11 +1300,25 @@ class VlogCov:
                     "name": name or None,
                     "file": keys.get("f") or None,
                     "line": line,
+                    "module": self._module_from_page(keys.get("page")),
                     "hier": hier or None,
                     "hits": int(count),
                 }
             )
         return records
+
+    @staticmethod
+    def _module_from_page(page):
+        """
+        Extract the containing module from a raw record's `page` key.
+
+        User-coverage pages are written as `v_user/<module>`; anything else is
+        passed through as-is rather than guessed at.
+        """
+        if not page:
+            return None
+        prefix = "v_user/"
+        return page[len(prefix) :] if page.startswith(prefix) else page
 
     @staticmethod
     def _parse_record_keys(key_blob):

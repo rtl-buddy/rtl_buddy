@@ -61,6 +61,7 @@ def test_parses_name_file_line_and_hits(tmp_path):
             "name": "APB_IF_WRITE",
             "file": "../../tb_top.sv",
             "line": 89,
+            "module": "tb_top",
             "hier": "tb_top.APB_IF_WRITE",
             "hits": 13,
         }
@@ -126,12 +127,12 @@ def test_aggregate_sums_hits_for_one_point_across_tests():
     test's counts with another's.
     """
     records = [
-        {"name": "C1", "file": "tb.sv", "line": 10, "hier": "top.*.C1", "hits": 3},
-        {"name": "C1", "file": "tb.sv", "line": 10, "hier": "top.*.C1", "hits": 4},
+        {"name": "C1", "file": "tb.sv", "line": 10, "module": "m", "hits": 3},
+        {"name": "C1", "file": "tb.sv", "line": 10, "module": "m", "hits": 4},
     ]
 
     assert aggregate_cover_records(records) == [
-        {"name": "C1", "file": "tb.sv", "line": 10, "hits": 7}
+        {"name": "C1", "file": "tb.sv", "line": 10, "module": "m", "hits": 7}
     ]
 
 
@@ -209,6 +210,7 @@ def test_real_database_parses_every_point(tmp_path):
             "name": "APB_IF_WRITE",
             "file": "tb_top.sv",
             "line": 14,
+            "module": "tb_top",
             "hier": "tb_top.APB_IF_WRITE",
             "hits": 3,
         },
@@ -216,6 +218,7 @@ def test_real_database_parses_every_point(tmp_path):
             "name": "APB_IF_READ",
             "file": "tb_top.sv",
             "line": 15,
+            "module": "tb_top",
             "hier": "tb_top.APB_IF_READ",
             "hits": 2,
         },
@@ -223,6 +226,7 @@ def test_real_database_parses_every_point(tmp_path):
             "name": "NEVER_HIT",
             "file": "tb_top.sv",
             "line": 16,
+            "module": "tb_top",
             "hier": "tb_top.NEVER_HIT",
             "hits": 0,
         },
@@ -230,6 +234,7 @@ def test_real_database_parses_every_point(tmp_path):
             "name": "SUB_COVER",
             "file": "tb_top.sv",
             "line": 2,
+            "module": "sub",
             "hier": "tb_top.u*.SUB_COVER",
             "hits": 5,
         },
@@ -268,24 +273,90 @@ def test_cross_test_fold_matches_verilator_coverage_merge(tmp_path):
         )
 
     assert aggregate_cover_records(records) == [
-        {"name": "SUB_COVER", "file": "tb_top.sv", "line": 2, "hits": 6},
-        {"name": "APB_IF_WRITE", "file": "tb_top.sv", "line": 14, "hits": 4},
-        {"name": "APB_IF_READ", "file": "tb_top.sv", "line": 15, "hits": 2},
-        {"name": "NEVER_HIT", "file": "tb_top.sv", "line": 16, "hits": 0},
+        {
+            "name": "SUB_COVER",
+            "file": "tb_top.sv",
+            "line": 2,
+            "module": "sub",
+            "hits": 6,
+        },
+        {
+            "name": "APB_IF_WRITE",
+            "file": "tb_top.sv",
+            "line": 14,
+            "module": "tb_top",
+            "hits": 4,
+        },
+        {
+            "name": "APB_IF_READ",
+            "file": "tb_top.sv",
+            "line": 15,
+            "module": "tb_top",
+            "hits": 2,
+        },
+        {
+            "name": "NEVER_HIT",
+            "file": "tb_top.sv",
+            "line": 16,
+            "module": "tb_top",
+            "hits": 0,
+        },
     ]
 
 
-def test_shared_include_folds_into_one_entry(tmp_path):
-    """One label compiled into two modules reports as a single combined entry.
+def test_shared_include_stays_split_per_module(tmp_path):
+    """One label compiled into two modules stays two entries, one per module.
 
-    Verilator keeps these apart by `page`; `covers` keys on (file, line, name)
-    and combines them, so the list is shorter than the `functional`
-    denominator in this case. Documented on the coverage page.
+    Verilator keeps these apart by `page` and so does the fold, because
+    combining them would hide "hit in modA, never in modB" behind a single
+    nonzero count — information a consumer cannot recover. Folding by `name`
+    is something a consumer can do itself.
     """
     cov = _make_cov()
     raw = _write_raw(tmp_path, _REAL_SHARED_INCLUDE_DAT)
 
     covers = aggregate_cover_records(cov.parse_user_cover_records(raw))
 
-    assert covers == [{"name": "SHARED_CHK", "file": "chk.svh", "line": 1, "hits": 5}]
-    assert cov._parse_raw_user_metric(raw) == 1.0  # 2 of 2 records hit
+    assert covers == [
+        {
+            "name": "SHARED_CHK",
+            "file": "chk.svh",
+            "line": 1,
+            "module": "modA",
+            "hits": 3,
+        },
+        {
+            "name": "SHARED_CHK",
+            "file": "chk.svh",
+            "line": 1,
+            "module": "modB",
+            "hits": 2,
+        },
+    ]
+
+
+def test_one_module_covered_and_another_not_stays_visible(tmp_path):
+    """The case the split exists for: a per-module hole must not read as covered."""
+    cov = _make_cov()
+    raw = _write_raw(
+        tmp_path, _REAL_SHARED_INCLUDE_DAT.replace("SHARED_CHK' 2", "SHARED_CHK' 0")
+    )
+
+    covers = aggregate_cover_records(cov.parse_user_cover_records(raw))
+
+    assert [(c["module"], c["hits"]) for c in covers] == [("modA", 3), ("modB", 0)]
+    # And a consumer folding by label to union semantics still can.
+    assert sum(c["hits"] for c in covers if c["name"] == "SHARED_CHK") == 3
+
+
+def test_covers_length_matches_functional_denominator_in_every_case(tmp_path):
+    """With `module` in the key the two views agree — no documented exception."""
+    cov = _make_cov()
+    for text in (_REAL_DAT, _REAL_SHARED_INCLUDE_DAT):
+        raw = _write_raw(tmp_path, text, name=f"{hash(text) & 0xFFFF}.dat")
+        records = cov.parse_user_cover_records(raw)
+        covers = aggregate_cover_records(records)
+        hit = sum(1 for c in covers if c["hits"] > 0)
+
+        assert len(covers) == len(records)
+        assert hit / len(covers) == cov._parse_raw_user_metric(raw)

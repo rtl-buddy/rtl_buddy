@@ -209,8 +209,20 @@ def test_build_metadata_aggregates_cover_points_across_tests(tmp_path):
                     "coverage": {
                         "raw_paths": ["/tmp/a.dat"],
                         "covers": [
-                            {"name": "C1", "file": "tb.sv", "line": 10, "hits": 2},
-                            {"name": "C2", "file": "tb.sv", "line": 20, "hits": 0},
+                            {
+                                "name": "C1",
+                                "file": "tb.sv",
+                                "line": 10,
+                                "module": "dut",
+                                "hits": 2,
+                            },
+                            {
+                                "name": "C2",
+                                "file": "tb.sv",
+                                "line": 20,
+                                "module": "dut",
+                                "hits": 0,
+                            },
                         ],
                     }
                 }
@@ -223,7 +235,13 @@ def test_build_metadata_aggregates_cover_points_across_tests(tmp_path):
                     "coverage": {
                         "raw_paths": ["/tmp/b.dat"],
                         "covers": [
-                            {"name": "C1", "file": "tb.sv", "line": 10, "hits": 5},
+                            {
+                                "name": "C1",
+                                "file": "tb.sv",
+                                "line": 10,
+                                "module": "dut",
+                                "hits": 5,
+                            },
                         ],
                     }
                 }
@@ -236,8 +254,8 @@ def test_build_metadata_aggregates_cover_points_across_tests(tmp_path):
     )
 
     assert coverage["covers"] == [
-        {"name": "C1", "file": "tb.sv", "line": 10, "hits": 7},
-        {"name": "C2", "file": "tb.sv", "line": 20, "hits": 0},
+        {"name": "C1", "file": "tb.sv", "line": 10, "module": "dut", "hits": 7},
+        {"name": "C2", "file": "tb.sv", "line": 20, "module": "dut", "hits": 0},
     ]
 
 
