@@ -138,7 +138,11 @@ Each entry is `{name, file, line, hits}`, where `name` is the cover label as wri
 }
 ```
 
-The list appears in two places: on each result row (that test's own counts) and on the run-level `payload.coverage` (summed across every test). A point instantiated in several places in the hierarchy collapses to one entry whose `hits` covers all instances, so `hits > 0` means "covered somewhere". `file` is stored as the simulator recorded it, which is often relative to the run directory rather than the repo root.
+The list appears in two places: on each result row (that test's own counts) and on the run-level `payload.coverage` (summed across every test). `file` is stored as the simulator recorded it, which is often relative to the run directory rather than the repo root.
+
+A point instantiated in several places collapses to one entry whose `hits` covers every instance, so `hits > 0` means "covered somewhere". Verilator does most of that folding itself — it writes one record per source point with the instance counts already added and the differing hierarchy replaced by a `*` — and `rtl_buddy` folds across tests on top of that, keying on `(file, line, name)`.
+
+That key has one consequence worth knowing: a cover property compiled into more than one module — usually one written in an `include`d file — is recorded by Verilator once per module, but reported here as a single entry with the counts combined. If you need those tracked as separate obligations rather than one label, this list will not distinguish them.
 
 This data comes from the per-test raw databases, not from a merged artifact, so it needs no `--coverage-merge*` flag and reads the same under `--coverage-merge` and `--coverage-merge-raw`.
 

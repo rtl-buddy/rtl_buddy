@@ -18,19 +18,26 @@ def _record(
     *,
     file="../../tb_top.sv",
     line=89,
+    col=17,
     name="APB_IF_WRITE",
+    page="v_user/tb_top",
     hier=None,
     count=13,
     type_="user",
 ):
-    """Build one raw `C '...' <count>` record in Verilator's key encoding."""
+    """Build one raw `C '...' <count>` record in Verilator's key encoding.
+
+    Key set and ordering match what Verilator 5.049 actually writes, `n`
+    (column) included — the shape verified against a real `coverage.dat`.
+    """
     if hier is None:
         hier = f"tb_top.{name}"
     keys = [
         ("f", file),
         ("l", str(line)),
+        ("n", str(col)),
         ("t", type_),
-        ("page", "v_user/tb_top"),
+        ("page", page),
         ("o", name),
         ("h", hier),
     ]
@@ -111,10 +118,16 @@ def test_functional_ratio_still_derives_from_the_same_records(tmp_path):
     assert _make_cov()._parse_raw_user_metric(raw) == 0.5
 
 
-def test_aggregate_sums_hits_across_instances_of_one_source_point():
+def test_aggregate_sums_hits_for_one_point_across_tests():
+    """The cross-test fold: the same point seen in two per-test databases.
+
+    Within a single database Verilator has already merged a point's instances
+    (see the verbatim-database tests below); this fold is what combines one
+    test's counts with another's.
+    """
     records = [
-        {"name": "C1", "file": "tb.sv", "line": 10, "hier": "top.a.C1", "hits": 3},
-        {"name": "C1", "file": "tb.sv", "line": 10, "hier": "top.b.C1", "hits": 4},
+        {"name": "C1", "file": "tb.sv", "line": 10, "hier": "top.*.C1", "hits": 3},
+        {"name": "C1", "file": "tb.sv", "line": 10, "hier": "top.*.C1", "hits": 4},
     ]
 
     assert aggregate_cover_records(records) == [
@@ -148,3 +161,131 @@ def test_aggregate_sorts_deterministically_and_tolerates_missing_fields():
 def test_aggregate_of_nothing_is_none():
     assert aggregate_cover_records([]) is None
     assert aggregate_cover_records(None) is None
+
+
+# --- Verbatim databases -------------------------------------------------
+#
+# The records below are copied byte-for-byte out of `coverage.dat` files
+# written by Verilator 5.049 for a real `cover property` design, rather than
+# reconstructed from the format description. They pin behaviour that only
+# shows up against the real writer.
+
+_REAL_DAT = (
+    "# SystemC::Coverage-3\n"
+    "C '\x01f\x02tb_top.sv\x01l\x0214\x01n\x0217\x01t\x02user\x01page\x02v_user/tb_top"
+    "\x01o\x02APB_IF_WRITE\x01h\x02tb_top.APB_IF_WRITE' 3\n"
+    "C '\x01f\x02tb_top.sv\x01l\x0215\x01n\x0217\x01t\x02user\x01page\x02v_user/tb_top"
+    "\x01o\x02APB_IF_READ\x01h\x02tb_top.APB_IF_READ' 2\n"
+    "C '\x01f\x02tb_top.sv\x01l\x0216\x01n\x0217\x01t\x02user\x01page\x02v_user/tb_top"
+    "\x01o\x02NEVER_HIT\x01h\x02tb_top.NEVER_HIT' 0\n"
+    # Two `sub` instances: Verilator merged them into one record, wildcarding
+    # the differing hierarchy component and summing the counts (3 + 2).
+    "C '\x01f\x02tb_top.sv\x01l\x022\x01n\x0214\x01t\x02user\x01page\x02v_user/sub"
+    "\x01o\x02SUB_COVER\x01h\x02tb_top.u*.SUB_COVER' 5\n"
+)
+
+# Same cover property `include`d into two modules. Verilator keys these apart
+# by `page`, so identical file/line/name arrive as two records.
+_REAL_SHARED_INCLUDE_DAT = (
+    "# SystemC::Coverage-3\n"
+    "C '\x01f\x02chk.svh\x01l\x021\x01n\x0213\x01t\x02user\x01page\x02v_user/modA"
+    "\x01o\x02SHARED_CHK\x01h\x02tb_top.a.SHARED_CHK' 3\n"
+    "C '\x01f\x02chk.svh\x01l\x021\x01n\x0213\x01t\x02user\x01page\x02v_user/modB"
+    "\x01o\x02SHARED_CHK\x01h\x02tb_top.b.SHARED_CHK' 2\n"
+)
+
+
+def _write_raw(tmp_path, text, name="coverage.dat"):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_real_database_parses_every_point(tmp_path):
+    records = _make_cov().parse_user_cover_records(_write_raw(tmp_path, _REAL_DAT))
+
+    assert records == [
+        {
+            "name": "APB_IF_WRITE",
+            "file": "tb_top.sv",
+            "line": 14,
+            "hier": "tb_top.APB_IF_WRITE",
+            "hits": 3,
+        },
+        {
+            "name": "APB_IF_READ",
+            "file": "tb_top.sv",
+            "line": 15,
+            "hier": "tb_top.APB_IF_READ",
+            "hits": 2,
+        },
+        {
+            "name": "NEVER_HIT",
+            "file": "tb_top.sv",
+            "line": 16,
+            "hier": "tb_top.NEVER_HIT",
+            "hits": 0,
+        },
+        {
+            "name": "SUB_COVER",
+            "file": "tb_top.sv",
+            "line": 2,
+            "hier": "tb_top.u*.SUB_COVER",
+            "hits": 5,
+        },
+    ]
+
+
+def test_real_database_list_matches_the_functional_denominator(tmp_path):
+    """Verilator pre-merges instances, so the two views agree point-for-point."""
+    cov = _make_cov()
+    raw = _write_raw(tmp_path, _REAL_DAT)
+
+    covers = aggregate_cover_records(cov.parse_user_cover_records(raw))
+    hit = sum(1 for c in covers if c["hits"] > 0)
+
+    assert len(covers) == 4
+    assert hit / len(covers) == cov._parse_raw_user_metric(raw) == 0.75
+
+
+def test_cross_test_fold_matches_verilator_coverage_merge(tmp_path):
+    """Folding two real per-test databases reproduces `verilator_coverage --write`.
+
+    The expected counts are what the tool itself produced when merging these
+    two databases: 3+1, 2+0, 0+0, 5+1.
+    """
+    run_b = (
+        _REAL_DAT.replace("APB_IF_WRITE' 3", "APB_IF_WRITE' 1")
+        .replace("APB_IF_READ' 2", "APB_IF_READ' 0")
+        .replace("SUB_COVER' 5", "SUB_COVER' 1")
+    )
+
+    cov = _make_cov()
+    records = []
+    for i, text in enumerate((_REAL_DAT, run_b)):
+        records.extend(
+            cov.parse_user_cover_records(_write_raw(tmp_path, text, f"run{i}.dat"))
+        )
+
+    assert aggregate_cover_records(records) == [
+        {"name": "SUB_COVER", "file": "tb_top.sv", "line": 2, "hits": 6},
+        {"name": "APB_IF_WRITE", "file": "tb_top.sv", "line": 14, "hits": 4},
+        {"name": "APB_IF_READ", "file": "tb_top.sv", "line": 15, "hits": 2},
+        {"name": "NEVER_HIT", "file": "tb_top.sv", "line": 16, "hits": 0},
+    ]
+
+
+def test_shared_include_folds_into_one_entry(tmp_path):
+    """One label compiled into two modules reports as a single combined entry.
+
+    Verilator keeps these apart by `page`; `covers` keys on (file, line, name)
+    and combines them, so the list is shorter than the `functional`
+    denominator in this case. Documented on the coverage page.
+    """
+    cov = _make_cov()
+    raw = _write_raw(tmp_path, _REAL_SHARED_INCLUDE_DAT)
+
+    covers = aggregate_cover_records(cov.parse_user_cover_records(raw))
+
+    assert covers == [{"name": "SHARED_CHK", "file": "chk.svh", "line": 1, "hits": 5}]
+    assert cov._parse_raw_user_metric(raw) == 1.0  # 2 of 2 records hit
