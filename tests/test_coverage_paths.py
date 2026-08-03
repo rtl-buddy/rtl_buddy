@@ -168,7 +168,7 @@ def test_vlog_cov_collect_passes_source_roots_to_metric_parsing(monkeypatch, tmp
         cov, "_write_lcov", lambda raw_path, lcov_path, source_roots=None: False
     )
 
-    def _fake_parse(raw_path, metric_name, source_roots=None):
+    def _fake_parse(raw_path, metric_name, source_roots=None, **kwargs):
         captured.append((metric_name, list(source_roots)))
         return None
 

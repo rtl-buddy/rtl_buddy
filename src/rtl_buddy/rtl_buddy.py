@@ -2719,12 +2719,12 @@ class RtlBuddy:
         )
         # The per-suite HTML branch below builds metadata per suite and drops
         # each payload, so seed the run-level cover points here to keep them in
-        # the envelope either way.
-        coverage_payload = {
-            "merged": None,
-            "dir_summary": [],
-            "covers": self.coverage.collect_cover_records(all_suite_results),
-        }
+        # the envelope either way. Key omitted when there are none, so "absent"
+        # keeps meaning "not collected" on every surface.
+        coverage_payload = {"merged": None, "dir_summary": []}
+        seed_covers = self.coverage.collect_cover_records(all_suite_results)
+        if seed_covers:
+            coverage_payload["covers"] = seed_covers
         if (
             coverage_html
             and not coverage_merge

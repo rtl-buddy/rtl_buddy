@@ -35,6 +35,10 @@ def _fmt_cov(value):
     return f"{max(0.0, min(1.0, value)):.2f}"
 
 
+# Distinguishes "caller omitted the argument" from "caller passed None".
+_UNSET = object()
+
+
 def aggregate_cover_records(records):
     """
     Fold user-coverage records into one entry per cover point per module.
@@ -591,12 +595,16 @@ class VlogCov:
         metrics.toggle = self._parse_verilator_metric(
             raw_path, "toggle", source_roots=source_roots
         )
+        # Parse the raw user records once and derive both the scalar ratio and
+        # the per-point list from them.
+        user_records = self.parse_user_cover_records(raw_path)
         metrics.functional = self._parse_verilator_metric(
-            raw_path, "functional", source_roots=source_roots
+            raw_path,
+            "functional",
+            source_roots=source_roots,
+            user_records=user_records,
         )
-        metrics.covers = aggregate_cover_records(
-            self.parse_user_cover_records(raw_path)
-        )
+        metrics.covers = aggregate_cover_records(user_records)
         return metrics
 
     def _write_lcov(self, raw_path, lcov_path, source_roots=None):
@@ -1105,14 +1113,25 @@ class VlogCov:
                 )
                 out.write("end_of_record\n")
 
-    def _parse_verilator_metric(self, raw_path, metric_name, source_roots=None):
+    def _parse_verilator_metric(
+        self, raw_path, metric_name, source_roots=None, user_records=_UNSET
+    ):
         """
         Parse a non-LCOV Verilator metric such as toggle or user coverage from a raw
         coverage database.
+
+        `user_records` lets a caller that has already parsed the `t=user` records
+        (see `parse_user_cover_records`) hand them in, so the database is not read
+        and scanned a second time to derive the functional ratio. Passing None
+        means "already parsed, no user points found" — distinct from omitting the
+        argument, which means "parse it yourself".
         """
         filter_type = self._VERILATOR_TYPES[metric_name]
         if metric_name == "functional":
-            raw_value = self._parse_raw_user_metric(raw_path)
+            if user_records is _UNSET:
+                raw_value = self._parse_raw_user_metric(raw_path)
+            else:
+                raw_value = self._ratio_from_user_records(user_records)
             if raw_value is not None:
                 log_event(
                     logger,
@@ -1290,6 +1309,19 @@ class VlogCov:
             if not name and hier:
                 # Verilator appends the label as the last hierarchy segment.
                 name = hier.rsplit(".", 1)[-1]
+            if not name:
+                # Should not happen for a labeled `cover property`; the record is
+                # still reported (it counts toward the functional ratio) but a
+                # consumer cannot map it to a plan item, so make it diagnosable.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "coverage.cover_point.unnamed",
+                    simulator=self.simulator_name,
+                    raw_path=raw_path,
+                    file=keys.get("f"),
+                    line=keys.get("l"),
+                )
             line = keys.get("l")
             try:
                 line = int(line)
@@ -1345,13 +1377,16 @@ class VlogCov:
         `--filter-type user` despite non-zero user counters in the raw database.
         Parse `t=user` counter records from `coverage.dat` to compute hit/total.
         """
-        records = self.parse_user_cover_records(raw_path)
+        return self._ratio_from_user_records(self.parse_user_cover_records(raw_path))
+
+    @staticmethod
+    def _ratio_from_user_records(records):
+        """
+        Hit/total over already-parsed `t=user` records, or None if there are none.
+        """
         if not records:
             return None
-
-        total = len(records)
-        hit = sum(1 for r in records if r["hits"] > 0)
-        return hit / total
+        return sum(1 for r in records if r["hits"] > 0) / len(records)
 
     def _parse_user_annotated_summary(self, annotate_dir):
         """

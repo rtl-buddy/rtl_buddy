@@ -352,11 +352,70 @@ def test_one_module_covered_and_another_not_stays_visible(tmp_path):
 def test_covers_length_matches_functional_denominator_in_every_case(tmp_path):
     """With `module` in the key the two views agree — no documented exception."""
     cov = _make_cov()
-    for text in (_REAL_DAT, _REAL_SHARED_INCLUDE_DAT):
-        raw = _write_raw(tmp_path, text, name=f"{hash(text) & 0xFFFF}.dat")
+    for i, text in enumerate((_REAL_DAT, _REAL_SHARED_INCLUDE_DAT)):
+        raw = _write_raw(tmp_path, text, name=f"run{i}.dat")
         records = cov.parse_user_cover_records(raw)
         covers = aggregate_cover_records(records)
         hit = sum(1 for c in covers if c["hits"] > 0)
 
         assert len(covers) == len(records)
         assert hit / len(covers) == cov._parse_raw_user_metric(raw)
+
+
+def test_raw_database_is_read_once_per_collect(tmp_path, monkeypatch):
+    """`collect()` must not scan `coverage.dat` twice to get ratio + covers.
+
+    The scalar and the list come from the same parse; `coverage.dat` is the one
+    input here that grows with design size.
+    """
+    raw = _write_raw(tmp_path, _REAL_DAT)
+    cov = _make_cov()
+
+    calls = []
+    real = cov.parse_user_cover_records
+
+    def counting(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(cov, "parse_user_cover_records", counting)
+    monkeypatch.setattr(cov, "_write_lcov", lambda *a, **k: False)
+    monkeypatch.setattr(
+        cov,
+        "_parse_verilator_metric",
+        lambda p, m, source_roots=None, **kw: None if m == "toggle" else real_ratio,
+    )
+    real_ratio = 0.75
+
+    metrics = cov.collect(raw)
+
+    assert len(calls) == 1, f"parsed {len(calls)} times, expected 1"
+    assert [c["name"] for c in metrics.covers] == [
+        "SUB_COVER",
+        "APB_IF_WRITE",
+        "APB_IF_READ",
+        "NEVER_HIT",
+    ]
+
+
+def test_functional_ratio_can_be_derived_from_prepared_records(tmp_path):
+    """The ratio path accepts pre-parsed records instead of re-reading the file."""
+    cov = _make_cov()
+    raw = _write_raw(tmp_path, _REAL_DAT)
+    records = cov.parse_user_cover_records(raw)
+
+    # Passing records avoids touching the file at all; a bogus path proves it.
+    assert (
+        cov._parse_verilator_metric(
+            "/nonexistent/coverage.dat", "functional", user_records=records
+        )
+        == 0.75
+    )
+    # Same ratio as re-reading the database, so threading records through the
+    # call changes nothing about the number.
+    assert cov._parse_raw_user_metric(raw) == 0.75
+    assert cov._ratio_from_user_records(records) == 0.75
+    # An empty parse still yields no ratio, which is what lets the caller fall
+    # back to the annotate path on Verilator versions with a broken summary.
+    assert cov._ratio_from_user_records(None) is None
+    assert cov._ratio_from_user_records([]) is None

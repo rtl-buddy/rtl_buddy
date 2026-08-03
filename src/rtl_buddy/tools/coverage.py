@@ -85,11 +85,17 @@ class CoverageReporter:
         """
         Aggregate per-test user cover points across a suite into one list.
 
-        Folds the per-test ``covers`` lists (each already one entry per source
-        point) into a run-wide list of ``{name, file, line, hits}``. Built from
-        the per-test data rather than a merged database, so it behaves the same
-        under ``--coverage-merge`` and ``--coverage-merge-raw`` — only the
-        latter produces a merged ``.dat`` at all.
+        Folds the per-test ``covers`` lists (each already one entry per cover
+        point per module) into a run-wide list of
+        ``{name, file, line, module, hits}``, keyed on
+        ``(file, line, name, module)``. Built from the per-test data rather than
+        a merged database, so it behaves the same under ``--coverage-merge`` and
+        ``--coverage-merge-raw`` — only the latter produces a merged ``.dat`` at
+        all.
+
+        Returns None when the run recorded no user cover points; callers omit the
+        payload key entirely in that case, so "absent" consistently means "not
+        collected" (see docs/agents.md).
         """
         records = []
         for suite_result in suite_results:
@@ -681,17 +687,18 @@ class CoverageReporter:
         Returns ``(metadata, coverage)`` where ``metadata`` is the list of
         human-display lines and ``coverage`` is the structured payload
         ``{"merged": {line,branch,toggle,functional}|None, "dir_summary": [...],
-        "covers": [{name,file,line,hits}]|None}`` for machine consumers.
-        ``coverage["merged"]`` is populated only when a merge actually happened;
-        ``coverage["covers"]`` whenever the run recorded user cover points,
-        merge or not.
+        "covers": [{name,file,line,module,hits}]}`` for machine consumers.
+        ``coverage["merged"]`` is populated only when a merge actually happened.
+        ``coverage["covers"]`` is folded on ``(file, line, name, module)`` and is
+        present whenever the run recorded user cover points, merge or not — the
+        key is omitted entirely when it recorded none, matching how the per-test
+        rows behave.
         """
         metadata = []
-        coverage = {
-            "merged": None,
-            "dir_summary": [],
-            "covers": self.collect_cover_records(suite_results),
-        }
+        coverage = {"merged": None, "dir_summary": []}
+        covers = self.collect_cover_records(suite_results)
+        if covers:
+            coverage["covers"] = covers
         if coverage_merge_raw:
             merged_cov = self.merge(
                 suite_results,
