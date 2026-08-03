@@ -9,7 +9,7 @@ coverage module handles rtl-buddy coverage result orchestration
 import os
 
 from .coverview import CoverviewPacker
-from .vlog_cov import CoverageMetrics, VlogCov
+from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
 
 
 class CoverageReporter:
@@ -80,6 +80,24 @@ class CoverageReporter:
                 continue
             raw_paths.extend(coverage.get("raw_paths", []))
         return raw_paths
+
+    def collect_cover_records(self, suite_results):
+        """
+        Aggregate per-test user cover points across a suite into one list.
+
+        Folds the per-test ``covers`` lists (each already one entry per source
+        point) into a run-wide list of ``{name, file, line, hits}``. Built from
+        the per-test data rather than a merged database, so it behaves the same
+        under ``--coverage-merge`` and ``--coverage-merge-raw`` — only the
+        latter produces a merged ``.dat`` at all.
+        """
+        records = []
+        for suite_result in suite_results:
+            coverage = suite_result["results"].results.get("coverage")
+            if coverage is None:
+                continue
+            records.extend(coverage.get("covers") or [])
+        return aggregate_cover_records(records)
 
     def _normalize_source_roots(self, outdir, source_roots=None, suite_name=None):
         """
@@ -662,12 +680,18 @@ class CoverageReporter:
 
         Returns ``(metadata, coverage)`` where ``metadata`` is the list of
         human-display lines and ``coverage`` is the structured payload
-        ``{"merged": {line,branch,toggle,functional}|None, "dir_summary": [...]}``
-        for machine consumers. ``coverage["merged"]`` is populated only when a
-        merge actually happened.
+        ``{"merged": {line,branch,toggle,functional}|None, "dir_summary": [...],
+        "covers": [{name,file,line,hits}]|None}`` for machine consumers.
+        ``coverage["merged"]`` is populated only when a merge actually happened;
+        ``coverage["covers"]`` whenever the run recorded user cover points,
+        merge or not.
         """
         metadata = []
-        coverage = {"merged": None, "dir_summary": []}
+        coverage = {
+            "merged": None,
+            "dir_summary": [],
+            "covers": self.collect_cover_records(suite_results),
+        }
         if coverage_merge_raw:
             merged_cov = self.merge(
                 suite_results,

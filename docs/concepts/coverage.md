@@ -123,6 +123,29 @@ rtl-buddy --builder-mode cov regression \
   --coverage-dir-summary-file coverage_dirs.txt
 ```
 
+## Per-cover-point results
+
+The `functional` metric is a single ratio: how many user cover points were hit out of how many exist. Under [`--machine`](../agents.md#machine-mode), runs also report the points individually, so a consumer can tell *which* points a suite exercised — the usual reason being to grade SVA `cover property` labels against verification-plan items.
+
+Each entry is `{name, file, line, hits}`, where `name` is the cover label as written in the RTL or testbench:
+
+```json
+{
+  "name": "APB_IF_WRITE",
+  "file": "../../tb_top.sv",
+  "line": 89,
+  "hits": 13
+}
+```
+
+The list appears in two places: on each result row (that test's own counts) and on the run-level `payload.coverage` (summed across every test). A point instantiated in several places in the hierarchy collapses to one entry whose `hits` covers all instances, so `hits > 0` means "covered somewhere". `file` is stored as the simulator recorded it, which is often relative to the run directory rather than the repo root.
+
+This data comes from the per-test raw databases, not from a merged artifact, so it needs no `--coverage-merge*` flag and reads the same under `--coverage-merge` and `--coverage-merge-raw`.
+
+!!! note "Verilator only"
+
+    Per-cover-point results are parsed out of Verilator's raw `coverage.dat`, the only place the labels survive — `verilator_coverage --write-info` folds user coverage into anonymous LCOV records and erases the names. On other simulator families (for example VCS) the field is simply absent from the payload. Absent means "not collected", not "no points covered"; do not treat a missing list as a coverage hole.
+
 ## Full flag reference
 
 See the [CLI reference](../reference/cli.md) for the complete flag descriptions on `test` and `regression`.

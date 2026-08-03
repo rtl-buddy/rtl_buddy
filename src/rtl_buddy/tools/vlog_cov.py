@@ -35,12 +35,54 @@ def _fmt_cov(value):
     return f"{max(0.0, min(1.0, value)):.2f}"
 
 
+def aggregate_cover_records(records):
+    """
+    Fold per-instance user-coverage records into one entry per source point.
+
+    Records are keyed by ``(file, line, name)`` and their ``hits`` summed, so a
+    cover point instantiated many times collapses to a single entry whose count
+    spans every instance. Union semantics — "covered iff any instance hit it" —
+    which is what a plan-item consumer grading `cover property` labels wants,
+    and what simulators default to for merged reporting.
+
+    Returns a list sorted by ``(file, line, name)``, or None when there is
+    nothing to aggregate (so "no user points" stays distinguishable from "user
+    points, none hit").
+    """
+    if not records:
+        return None
+
+    aggregated = {}
+    for record in records:
+        key = (record.get("file"), record.get("line"), record.get("name"))
+        entry = aggregated.get(key)
+        if entry is None:
+            aggregated[key] = {
+                "name": record.get("name"),
+                "file": record.get("file"),
+                "line": record.get("line"),
+                "hits": record.get("hits", 0),
+            }
+        else:
+            entry["hits"] += record.get("hits", 0)
+
+    return sorted(
+        aggregated.values(),
+        key=lambda e: (
+            e["file"] or "",
+            e["line"] if e["line"] is not None else -1,
+            e["name"] or "",
+        ),
+    )
+
+
 @dataclass
 class CoverageMetrics:
     line: float | None = None
     branch: float | None = None
     toggle: float | None = None
     functional: float | None = None
+    covers: list[dict] | None = None
     raw_paths: list[str] | None = None
     merged_path: str | None = None
     lcov_path: str | None = None
@@ -66,6 +108,7 @@ class CoverageMetrics:
             "branch": self.branch,
             "toggle": self.toggle,
             "functional": self.functional,
+            "covers": None if self.covers is None else list(self.covers),
             "summary": self.summary_str(),
             "raw_paths": [] if self.raw_paths is None else list(self.raw_paths),
             "merged_path": self.merged_path,
@@ -85,6 +128,9 @@ class VlogCov:
         "toggle": "toggle",
         "functional": "user",
     }
+
+    # Raw record shape: C '<... \x01t\x02user ...>' <count>
+    _USER_RECORD_RE = re.compile(rb"C '([^']*?\x01t\x02user[^']*)' ([0-9]+)")
 
     def __init__(self, simulator_name, use_lcov=False, root_cfg=None):
         """
@@ -535,6 +581,9 @@ class VlogCov:
         )
         metrics.functional = self._parse_verilator_metric(
             raw_path, "functional", source_roots=source_roots
+        )
+        metrics.covers = aggregate_cover_records(
+            self.parse_user_cover_records(raw_path)
         )
         return metrics
 
@@ -1185,6 +1234,76 @@ class VlogCov:
             )
             return value
 
+    def parse_user_cover_records(self, raw_path):
+        r"""
+        Parse `t=user` counter records out of a raw Verilator coverage database.
+
+        Returns one record per counter instance as
+        ``{name, file, line, hier, hits}``, or None when the database is
+        unreadable or holds no user points. Records are per *instance*: the same
+        source cover point instantiated N times yields N records, which callers
+        aggregate as they see fit.
+
+        A labeled SVA `cover property` lands in `coverage.dat` as a `t=user`
+        point whose comment key carries the label verbatim, e.g.::
+
+            C '\x01f\x02../../tb_top.sv\x01l\x0289\x01t\x02user...\x01o\x02APB_IF_WRITE...' 13
+
+        The keys are `\x01<key>\x02<value>` pairs: `f` file, `l` line, `o` the
+        coverage comment (the SVA label), `h` the hierarchy path. This data
+        survives only in the raw database — `verilator_coverage --write-info`
+        folds user points into anonymous `DA:` records.
+        """
+        try:
+            raw_bytes = Path(raw_path).read_bytes()
+        except OSError:
+            return None
+
+        matches = self._USER_RECORD_RE.findall(raw_bytes)
+        if len(matches) == 0:
+            return None
+
+        records = []
+        for key_blob, count in matches:
+            keys = self._parse_record_keys(key_blob)
+            hier = keys.get("h")
+            name = keys.get("o")
+            if not name and hier:
+                # Verilator appends the label as the last hierarchy segment.
+                name = hier.rsplit(".", 1)[-1]
+            line = keys.get("l")
+            try:
+                line = int(line)
+            except (TypeError, ValueError):
+                line = None
+            records.append(
+                {
+                    "name": name or None,
+                    "file": keys.get("f") or None,
+                    "line": line,
+                    "hier": hier or None,
+                    "hits": int(count),
+                }
+            )
+        return records
+
+    @staticmethod
+    def _parse_record_keys(key_blob):
+        r"""
+        Split a raw coverage comment key into its `\x01<key>\x02<value>` pairs.
+        """
+        keys = {}
+        for chunk in key_blob.split(b"\x01"):
+            if not chunk:
+                continue
+            key, sep, value = chunk.partition(b"\x02")
+            if not sep:
+                continue
+            keys[key.decode("utf-8", errors="replace")] = value.decode(
+                "utf-8", errors="replace"
+            )
+        return keys
+
     def _parse_raw_user_metric(self, raw_path):
         """
         Derive functional/user coverage directly from raw Verilator coverage entries.
@@ -1193,22 +1312,12 @@ class VlogCov:
         `--filter-type user` despite non-zero user counters in the raw database.
         Parse `t=user` counter records from `coverage.dat` to compute hit/total.
         """
-        try:
-            raw_bytes = Path(raw_path).read_bytes()
-        except OSError:
+        records = self.parse_user_cover_records(raw_path)
+        if not records:
             return None
 
-        # Example raw record shape:
-        # C '<... \x01t\x02user ...>' <count>
-        user_re = re.compile(rb"C '([^']*?\x01t\x02user[^']*)' ([0-9]+)")
-        matches = user_re.findall(raw_bytes)
-        if len(matches) == 0:
-            return None
-
-        total = len(matches)
-        hit = sum(1 for _, count in matches if int(count) > 0)
-        if total == 0:
-            return None
+        total = len(records)
+        hit = sum(1 for r in records if r["hits"] > 0)
         return hit / total
 
     def _parse_user_annotated_summary(self, annotate_dir):
