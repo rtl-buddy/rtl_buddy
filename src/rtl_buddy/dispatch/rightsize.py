@@ -28,6 +28,14 @@ Semantics:
 - Advice is labeled with the run count and regression level it was
   derived from — a smoke-level run must not be used to shrink a
   nightly test's reservation.
+- Advice names the field that actually *governs* the reservation
+  (rtl-buddy/rtl_buddy#358). A job whose builder cannot share a build
+  compiles inside itself, so its single allocation covers both phases and
+  was resolved as the per-field maximum of the sim and compile
+  reservations. Where the compile side won, editing the test's
+  ``resources:`` would change nothing — so the hint points at
+  ``cfg-dispatch.compile`` instead, and the finding is labeled
+  ``compile+sim`` to say the measurement spans both.
 """
 
 import math
@@ -53,6 +61,10 @@ class RightsizeFinding:
     reg_level: int | None
     states: list = field(default_factory=list)
     edit_hint: dict = field(default_factory=dict)
+    # Which phases the job's single allocation had to cover: "sim" normally,
+    # "compile+sim" when the builder could not share a build and the compile
+    # therefore ran inside the job (#358).
+    phase: str = "sim"
 
     def as_event(self) -> dict:
         return {
@@ -69,6 +81,7 @@ class RightsizeFinding:
             "reg_level": self.reg_level,
             "states": list(self.states),
             "edit_hint": dict(self.edit_hint),
+            "phase": self.phase,
         }
 
 
@@ -98,7 +111,15 @@ def _aggregate(rows):
             continue
         agg = per_test.setdefault(
             row["test_name"],
-            {"runs": 0, "states": [], "builder": row.get("builder")},
+            {
+                "runs": 0,
+                "states": [],
+                "builder": row.get("builder"),
+                # Set by the dispatch head for a job that compiles inside
+                # itself; governed_by then says which layer sized each field.
+                "compile_in_job": bool(row.get("compile_in_job")),
+                "governed_by": row.get("governed_by") or {},
+            },
         )
         agg["runs"] += 1
         state = telemetry.get("state")
@@ -137,24 +158,37 @@ def analyze_suite_reservations(
     rightsize_cfg,
     reg_level=None,
     simulator_family_of=None,
+    root_config_path=None,
 ):
     """Produce :class:`RightsizeFinding`s for one suite's dispatched rows.
 
     ``simulator_family_of`` maps a builder name to its simulator family
     (used to suppress time advice off Verilator, see module docstring);
-    ``None`` disables that suppression.
+    ``None`` disables that suppression. ``root_config_path`` is where
+    ``cfg-dispatch`` lives, needed to hint at ``cfg-dispatch.compile`` for a
+    field the compile reservation governs (#358); without it those findings
+    fall back to the per-test hint.
     """
     findings = []
     for test, agg in _aggregate(suite_results).items():
+        governed_by = agg["governed_by"]
         common = {
             "suite": suite_display,
             "test": test,
             "runs": agg["runs"],
             "reg_level": reg_level,
             "states": agg["states"],
+            "phase": "compile+sim" if agg["compile_in_job"] else "sim",
         }
 
-        def hint(resource_field):
+        def hint(resource_field, _governed_by=governed_by):
+            # A field the compile reservation won is masked by the max, so
+            # editing the test's resources: would not move the allocation.
+            if _governed_by.get(resource_field) == "compile" and root_config_path:
+                return {
+                    "file": root_config_path,
+                    "path": f"cfg-dispatch.compile.{resource_field}",
+                }
             return {
                 "file": suite_config_path,
                 "path": f"tests[name={test}].resources.{resource_field}",

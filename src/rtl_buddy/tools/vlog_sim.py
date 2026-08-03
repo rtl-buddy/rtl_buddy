@@ -37,7 +37,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
-from .vcs_license import VcsLicenseQueueMonitor
+from .vcs_license import VcsLicenseQueueMonitor, has_license_queue_marker
 
 
 def force_symlink(target, link_name):
@@ -68,6 +68,26 @@ def force_symlink(target, link_name):
 # Stamp written into a shared build dir after a successful compile; records
 # the exact compile inputs the simv was built from so reuse can be validated.
 SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
+
+# Simulator families whose compile output rtl_buddy can redirect wholesale
+# into a shared build dir, and whose simv still runs from there once other
+# tests point at it. Everything else compiles inside each test's own
+# artefact dir (correct, just unshared).
+SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus"})
+
+
+def share_build_supported(simulator_family) -> bool:
+    """Can this simulator family reuse one compiled simv across tests (#358)?
+
+    The single source of truth for the capability, because two places must
+    agree on it: :meth:`VlogSim.compile` decides whether to build into the
+    shared dir, and the dispatch head sizes a sim job's reservation on
+    whether that job will also compile (an unsupported family recompiles
+    inside every job, under the *sim* reservation — see
+    ``config.dispatch.combine_for_in_job_compile``).
+    """
+    return simulator_family in SHARE_BUILD_FAMILIES
+
 
 # Matches the option prefixes VlogFilelist emits into run.f (see
 # VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
@@ -153,11 +173,16 @@ class VlogSim:
         - Icarus: `<artefact>/simv` — a tiny shell wrapper around `vvp <build>/simv.vvp`
           so the existing execute() path can invoke it as a single executable.
         - Other backends: honor `builder-simv:` from the builder config.
+
+        Under an active shared build the executable is always `simv`
+        directly inside the shared dir, whatever the family: that is the
+        one path every other test with the same compile key looks for, and
+        what `_shared_build_is_valid` validates against the stamp.
         """
+        if self._shared_build_dir is not None:
+            return str(Path(self._shared_build_dir) / "simv")
         rtl_builder_exe = self.rtl_builder_cfg.get_exe()
         if os.path.basename(rtl_builder_exe).startswith("verilator"):
-            if self._shared_build_dir is not None:
-                return str(Path(self._shared_build_dir) / "simv")
             return str(
                 Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv"
             )
@@ -170,6 +195,8 @@ class VlogSim:
 
     def _get_icarus_snapshot_path(self):
         """Path to the .vvp snapshot produced by iverilog."""
+        if self._shared_build_dir is not None:
+            return str(Path(self._shared_build_dir) / "simv.vvp")
         return str(
             Path(self._get_compile_work_dir()) / self._get_build_dir() / "simv.vvp"
         )
@@ -430,6 +457,96 @@ class VlogSim:
         ).hexdigest()
         return digest[:16]
 
+    def _write_compile_transcript(self, run_str, result):
+        """Persist the compile command and its captured output; return the path."""
+        transcript_path = self._get_compile_transcript_path()
+        with open(transcript_path, "w") as transcript_fp:
+            transcript_fp.write(f"Command: {run_str}\n\n")
+            transcript_fp.write("=== stderr ===\n")
+            transcript_fp.write(result.stderr or "")
+            transcript_fp.write("\n=== stdout ===\n")
+            transcript_fp.write(result.stdout or "")
+        return transcript_path
+
+    def _compile_queued_for_license(self, result):
+        """Did a ``vcs`` elaboration wait in the ``-licqueue`` queue (#358)?
+
+        Elapsed compile time is only a measure of compile *work* when no
+        part of it was spent waiting for a seat. Under dispatch that
+        distinction decides whether a build job that hit its ``--time``
+        needs a bigger reservation or a freer license server, so the answer
+        is logged rather than left to be inferred from the wall clock.
+        Non-VCS families never queue, and there is nothing to inspect if the
+        output was not captured.
+        """
+        if self._get_simulator_family() != "vcs":
+            return False
+        return has_license_queue_marker((result.stdout or "") + (result.stderr or ""))
+
+    def _share_build_unsupported_reason(self):
+        """Why this test cannot use a shared build, or ``None`` if it can.
+
+        Two ways out: a family rtl_buddy cannot redirect into the shared dir
+        at all, and an absolute ``builder-simv:`` — that pins the executable
+        to one exact path the user chose, which a per-compile-key shared dir
+        cannot honour without silently ignoring the config.
+        """
+        family = self._get_simulator_family()
+        if not share_build_supported(family):
+            return f"simulator family {family!r} has no shared-build support"
+        if family not in ("verilator", "icarus") and os.path.isabs(
+            self.rtl_builder_cfg.get_simv()
+        ):
+            return (
+                f"builder-simv is an absolute path "
+                f"({self.rtl_builder_cfg.get_simv()}), which pins the "
+                "executable outside the shared build dir"
+            )
+        return None
+
+    def _vcs_shared_output_argv(self, build_dir):
+        """VCS flags that put the whole build inside ``build_dir``.
+
+        VCS has no single ``--Mdir``-style knob like Verilator: the
+        executable location comes from ``-o`` (and it writes its
+        ``simv.daidir`` beside it) while the intermediate C tree comes from
+        ``-Mdir``. Both are pointed into the shared dir so the build is
+        self-contained — a later stale-stamp rebuild driven from a different
+        test's artefact dir then reuses the same incremental tree instead of
+        starting from scratch.
+        """
+        return [
+            "-o",
+            str(Path(build_dir) / "simv"),
+            f"-Mdir={Path(build_dir) / 'csrc'}",
+        ]
+
+    @staticmethod
+    def _strip_vcs_output_opts(opts):
+        """Split configured VCS opts into (kept, dropped ``-o``/``-Mdir``).
+
+        A shared build owns the output location — the simv must land at
+        ``<shared>/simv`` or the tests pointed at it look in the wrong
+        place — so a ``builder-opts`` entry that also sets one is dropped
+        rather than left to fight ours on VCS's duplicate-option
+        precedence. Handles both ``-Mdir=dir`` and ``-Mdir dir``.
+        """
+        kept, dropped = [], []
+        skip_next = False
+        for opt in opts:
+            if skip_next:
+                skip_next = False
+                dropped.append(opt)
+                continue
+            if opt in ("-o", "-Mdir"):
+                skip_next = True
+                dropped.append(opt)
+            elif opt.startswith("-Mdir="):
+                dropped.append(opt)
+            else:
+                kept.append(opt)
+        return kept, dropped
+
     @staticmethod
     def _shared_build_is_valid(build_dir, fingerprint):
         simv_path = Path(build_dir) / "simv"
@@ -573,7 +690,8 @@ class VlogSim:
         build_dir = self._get_build_dir()
         fingerprint = None
         if self.share_build:
-            if is_verilator:
+            unsupported = self._share_build_unsupported_reason()
+            if unsupported is None:
                 key_cmd = (
                     [rtl_builder_cfg.get_exe()]
                     + builder_opts
@@ -581,6 +699,9 @@ class VlogSim:
                     + assertion_flags
                     + plusdefines
                 )
+                # Keyed on the configured compile line, NOT on the output
+                # flags this method appends below: those are derived from the
+                # resulting key, so including them would be circular.
                 fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
                 shared_dir = shared_build_dir(
                     self.suite_work_dir, self._compile_config_key(fingerprint)
@@ -607,21 +728,36 @@ class VlogSim:
                     "compile.share_build_unsupported",
                     test=self.test_name,
                     simulator=self._get_simulator_family(),
+                    reason=unsupported,
                 )
 
+        shared = self._shared_build_dir is not None
         run_cmd = [rtl_builder_cfg.get_exe()]
+        if shared and self._get_simulator_family() == "vcs":
+            builder_opts, dropped_opts = self._strip_vcs_output_opts(builder_opts)
+            if dropped_opts:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.share_build_opts_overridden",
+                    test=self.test_name,
+                    dropped=dropped_opts,
+                    build_dir=build_dir,
+                )
         run_cmd += builder_opts
 
         if is_verilator:
             run_cmd += ["--Mdir", build_dir]
         elif self._get_simulator_family() == "icarus":
             # Icarus has no -Mdir equivalent; output a single .vvp snapshot
-            # into the per-test build dir and let our execute() path wrap it.
-            icarus_build_dir = (
-                Path(self._get_compile_work_dir()) / self._get_build_dir()
+            # into the build dir (shared or per-test) and let our execute()
+            # path wrap it.
+            Path(self._get_icarus_snapshot_path()).parent.mkdir(
+                parents=True, exist_ok=True
             )
-            icarus_build_dir.mkdir(parents=True, exist_ok=True)
             run_cmd += ["-o", self._get_icarus_snapshot_path()]
+        elif shared and self._get_simulator_family() == "vcs":
+            run_cmd += self._vcs_shared_output_argv(build_dir)
 
         run_cmd += extra_compile_flags
 
@@ -671,14 +807,9 @@ class VlogSim:
                 raise FatalRtlBuddyError(f"Builder not found. Run exe: {run_cmd[0]}")
 
         e_time = time.time()
+        licensed_queued = self._compile_queued_for_license(result)
         if result.returncode != 0:
-            transcript_path = self._get_compile_transcript_path()
-            with open(transcript_path, "w") as transcript_fp:
-                transcript_fp.write(f"Command: {run_str}\n\n")
-                transcript_fp.write("=== stderr ===\n")
-                transcript_fp.write(result.stderr or "")
-                transcript_fp.write("\n=== stdout ===\n")
-                transcript_fp.write(result.stdout or "")
+            transcript_path = self._write_compile_transcript(run_str, result)
             log_event(
                 logger,
                 logging.ERROR,
@@ -687,6 +818,7 @@ class VlogSim:
                 returncode=result.returncode,
                 duration_sec=round(e_time - s_time, 2),
                 transcript=transcript_path,
+                license_queued=licensed_queued,
             )
         else:
             log_event(
@@ -696,6 +828,18 @@ class VlogSim:
                 test=self.test_name,
                 duration_sec=round(e_time - s_time, 2),
             )
+            if licensed_queued:
+                # Keep the evidence: on a dispatched build this is the only
+                # record that the wall-clock went to the license server, and
+                # the next run may be the one Slurm kills at --time.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "compile.license_queued",
+                    test=self.test_name,
+                    duration_sec=round(e_time - s_time, 2),
+                    transcript=self._write_compile_transcript(run_str, result),
+                )
             if result.stdout:
                 logger.debug("compile stdout\n%s", result.stdout)
             if self._get_simulator_family() == "icarus":

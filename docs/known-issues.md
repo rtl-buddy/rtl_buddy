@@ -164,9 +164,11 @@ Three consequences that can surprise:
 compiling one shared `simv` per unique compile key on a compute node is
 exactly what lets each sim job skip compilation and re-enter at simulation.
 This changes compile behaviour versus a plain local run — tests with
-identical compile inputs Verilate once, not once each — and share-build is
-Verilator-only, so non-Verilator builders fall back to compiling inside
-each job. The promotion is logged as `dispatch.share_build_implied`. Also
+identical compile inputs compile once, not once each. Builders share-build
+cannot handle fall back to compiling inside each job, which also skips the
+build job and widens that job's reservation to cover the compile; see
+[Parallel dispatch](concepts/dispatch.md#builders-that-compile-inside-the-job).
+The promotion is logged as `dispatch.share_build_implied`. Also
 note `--dispatch` cannot be combined with `--early-stop`: a build job
 compiles and the sim jobs run sim+post, so no earlier stop point is
 expressible per job (rtl_buddy rejects the combination loudly rather than

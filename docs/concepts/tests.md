@@ -211,10 +211,19 @@ compile inputs (including each source file's size and modification time) is
 written next to the `simv`. Reuse only happens when the stamp matches, so
 editing any file listed in the filelist triggers a rebuild in place.
 
+Where the build lands depends on the builder, but the executable is always
+`simv` inside the shared dir: Verilator is pointed there with `--Mdir`, VCS
+with `-o` (plus `-Mdir` so its `csrc` tree stays beside the binary), and
+Icarus with `-o` for the `.vvp` snapshot the wrapper `simv` execs. A `-o` or
+`-Mdir` configured in `builder-opts` is dropped in favour of these — the
+shared build owns the output location.
+
 Caveats:
 
-- Verilator builders only. Other builders log a warning and compile per
-  test as before.
+- Verilator, VCS, and Icarus builders only. Others log a warning
+  (`compile.share_build_unsupported`, with the reason) and compile per test
+  as before, as does any builder whose `builder-simv:` is an absolute path —
+  that pins the executable outside the shared dir.
 - Changes inside `+incdir+` include directories are not tracked by the
   stamp; delete `artefacts/.shared-builds/` (or run without
   `--share-build`) to force a fresh compile after header-only edits.

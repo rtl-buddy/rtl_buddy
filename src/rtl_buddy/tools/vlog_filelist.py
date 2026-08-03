@@ -7,13 +7,16 @@
 vlog_filelist module handles verilog filelist processing for rtl-buddy
 """
 
+import contextlib
 import logging
 
 logger = logging.getLogger(__name__)
 from ..errors import FilelistError
 from ..logging_utils import log_event
+import os
 import os.path
 import re
+import uuid
 
 
 class VlogFilelist:
@@ -276,12 +279,29 @@ class VlogFilelist:
             deduplicate=deduplicate,
         )
 
-        with open(output_filepath, "w") as f:
-            f.write("// rtl-buddy generated model filelist\n")
-            f.writelines(lines)
-            log_event(
-                logger, logging.INFO, "filelist.write_done", output=output_filepath
-            )
+        # Atomic replace, not truncate-in-place: `run.f` lives at
+        # artefacts/<test>/run.f — per TEST, not per run — so every element
+        # of a dispatched array for the same test rewrites the same path
+        # concurrently. `open(..., "w")` truncates immediately, and
+        # share-build reads the file straight back to fingerprint the
+        # compile inputs, so a reader landing inside another writer's window
+        # saw an empty filelist, hashed it to a different compile key, and
+        # recompiled instead of reusing the shared build. Writers all emit
+        # identical content, so a temp-then-os.replace makes every reader
+        # see one complete version or the other. Same reasoning as
+        # `vlog_sim.force_symlink` (#363).
+        tmp_path = f"{output_filepath}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp_path, "w") as f:
+                f.write("// rtl-buddy generated model filelist\n")
+                f.writelines(lines)
+            os.replace(tmp_path, output_filepath)
+        except BaseException:
+            # Never leave a temp filelist behind for the builder to trip on.
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        log_event(logger, logging.INFO, "filelist.write_done", output=output_filepath)
         return
 
     def write_verible_filelist(self, model_cfgs, output_filepath=None):

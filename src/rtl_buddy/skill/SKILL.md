@@ -46,7 +46,7 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 
 ## rb regression --dispatch slurm
 
-- `rb --machine regression --dispatch slurm` fans tests out as parallel Slurm jobs after one shared build (implies `--share-build`; gate with `rb --machine tool-check --explain slurm`). Right-size from the loop: read `payload.reservation_advice`, apply each `edit_hint` (`raise` first — under-reservations cost failed runs — then `reduce`), rerun to confirm it retires. rtl_buddy suggests; you edit. Details: `rtl-buddy docs show concepts/dispatch`.
+- `rb --machine regression --dispatch slurm` fans tests out as parallel Slurm jobs after one shared build (implies `--share-build`; gate with `rb --machine tool-check --explain slurm`). Right-size from the loop: read `payload.reservation_advice`, apply each `edit_hint` **as given** (its `file`/`path` may name `cfg-dispatch.compile` in root_config.yaml, not the test — a `phase: compile+sim` job's allocation covers its own compile; `raise` first — under-reservations cost failed runs — then `reduce`), rerun to confirm it retires. rtl_buddy suggests; you edit. Details: `rtl-buddy docs show concepts/dispatch`.
 
 ## Execution context
 

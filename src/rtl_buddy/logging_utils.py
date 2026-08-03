@@ -394,7 +394,23 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.build_reused":
             return f"{target or 'compile'}: reused shared build {fields.get('build_dir')} (compile skipped)"
         case "compile.share_build_unsupported":
-            return f"{fields.get('test')}: --share-build only supports Verilator builders; {fields.get('simulator')} compiles per test"
+            return (
+                f"{fields.get('test')}: --share-build cannot share this build "
+                f"({fields.get('reason') or fields.get('simulator')}); "
+                "it compiles per test"
+            )
+        case "dispatch.dependency_never_satisfied":
+            return (
+                f"dispatch: cancelling {len(fields.get('jobs') or [])} job(s) whose "
+                "build never succeeded — Slurm would leave them pending forever "
+                f"({fields.get('jobs')})"
+            )
+        case "compile.license_queued":
+            return (
+                f"{fields.get('test')}: compile waited in the VCS license queue — "
+                f"its {_format_duration(fields.get('duration_sec'))} is not all "
+                f"compile work; transcript: {fields.get('transcript')}"
+            )
         case "sim.start":
             return f"{target or 'sim'}: simulation started"
         case "sim.output_paths":

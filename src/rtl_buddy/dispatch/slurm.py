@@ -48,6 +48,14 @@ logger = logging.getLogger(__name__)
 # collector is concerned — the result envelope decides pass/fail.
 _ACTIVE_STATES = "PD,R,S,CG,CF"
 
+# squeue's reason for a job whose `afterok` dependency has already failed.
+# Such a job is PENDING but will NEVER run: Slurm only reaps it when the
+# site sets `kill_invalid_depend` in SchedulerParameters, which is off by
+# default. Left alone it pends forever, and since PD counts as "still in the
+# queue" the head would poll until killed — so `wait_all` cancels these and
+# stops waiting on them (#358).
+_NEVER_SATISFIED = "DependencyNeverSatisfied"
+
 # One element per manifest line, indexed by SLURM_ARRAY_TASK_ID. Lines
 # are shlex-quoted, so eval reconstructs the exact argv. A missing line
 # (short/rewritten manifest) fails the element loudly rather than exiting
@@ -359,6 +367,40 @@ class SlurmDispatchBackend(DispatchBackend):
             seen.setdefault(h.job_id.split("_")[0], None)
         return list(seen)
 
+    def _reap_never_satisfied(self, lines, *, cwd) -> list[str]:
+        """Split queued jobs into those still coming and those already dead.
+
+        A job whose ``afterok`` build failed is reported PENDING with reason
+        ``DependencyNeverSatisfied`` and, absent ``kill_invalid_depend``, sits
+        there forever. Cancel those so they leave the queue instead of being
+        waited on; collection then reports them as producing no result, which
+        is exactly what happened.
+        """
+        remaining, doomed = [], []
+        for line in lines:
+            job_id, _, reason = line.partition("|")
+            job_id = job_id.strip()
+            if not job_id:
+                continue
+            if reason.strip() == _NEVER_SATISFIED:
+                doomed.append(job_id)
+            else:
+                remaining.append(job_id)
+        if doomed:
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.dependency_never_satisfied",
+                backend=self.name,
+                jobs=doomed,
+            )
+            # Cancel by base id: one scancel clears a whole pending array.
+            base_ids = list(dict.fromkeys(j.split("_")[0] for j in doomed))
+            subprocess.run(
+                ["scancel", *base_ids], capture_output=True, text=True, cwd=cwd
+            )
+        return remaining
+
     def wait_all(self, handles: list[JobHandle]) -> None:
         if not handles:
             return
@@ -369,7 +411,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 [
                     "squeue",
                     "--noheader",
-                    "--format=%i",
+                    "--format=%i|%r",
                     f"--states={_ACTIVE_STATES}",
                     "--jobs",
                     ids,
@@ -381,7 +423,7 @@ class SlurmDispatchBackend(DispatchBackend):
             # squeue errors ("Invalid job id specified") once every job
             # has aged out of the queue — that is completion, not failure.
             remaining = (
-                [line for line in proc.stdout.split() if line]
+                self._reap_never_satisfied(proc.stdout.splitlines(), cwd=cwd)
                 if proc.returncode == 0
                 else []
             )

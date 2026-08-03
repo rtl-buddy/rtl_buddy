@@ -12,7 +12,11 @@ from rtl_buddy.config.dispatch import (
     DEFAULT_JOB_TIME,
     DispatchConfigFile,
     DispatchResourcesFile,
+    JobResources,
+    combine_for_in_job_compile,
+    mem_to_bytes,
     resolve_resources,
+    time_to_seconds,
 )
 from rtl_buddy.config.root import RootConfig
 from rtl_buddy.config.suite import SuiteConfig
@@ -191,3 +195,91 @@ def test_slurm_tool_in_manifest():
     assert set(slurm.binaries) == {"sbatch", "squeue", "sacct", "scancel"}
     assert slurm.optional is True
     assert slurm.used_by == ("regression", "randtest")
+
+
+# ------------------------------------- #358: in-job compile reservations
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("8G", 8 * 2**30),
+        ("512M", 512 * 2**20),
+        ("2048K", 2048 * 2**10),
+        ("1T", 2**40),
+        ("4096", 4096 * 2**20),  # Slurm's default unit is MB, not bytes
+        ("1.5G", int(1.5 * 2**30)),
+        ("banana", None),
+        (None, None),
+    ],
+)
+def test_mem_to_bytes(text, expected):
+    assert mem_to_bytes(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("30", 1800),  # bare number is MINUTES
+        ("05:30", 330),  # MM:SS
+        ("02:00:00", 7200),  # HH:MM:SS
+        ("1-00", 86400),  # DD-HH
+        ("1-12:30", 86400 + 12 * 3600 + 1800),
+        ("2-00:00:30", 2 * 86400 + 30),
+        ("banana", None),
+        (None, None),
+    ],
+)
+def test_time_to_seconds(text, expected):
+    assert time_to_seconds(text) == expected
+
+
+def test_combine_takes_the_larger_of_each_field():
+    """One allocation covers compile AND sim, so each field is the max."""
+    sim = JobResources(cpus=1, mem="4G", time="00:30:00")
+    compile_ = JobResources(cpus=8, mem="2G", time="02:00:00")
+    combined, governed_by = combine_for_in_job_compile(sim, compile_)
+    assert (combined.cpus, combined.mem, combined.time) == (8, "4G", "02:00:00")
+    # mem stayed sim-sized because 4G > 2G; the other two came from compile.
+    assert governed_by == {"cpus": "compile", "mem": "test", "time": "compile"}
+
+
+def test_combine_keeps_sim_values_when_they_already_dominate():
+    sim = JobResources(cpus=16, mem="64G", time="1-00:00:00")
+    combined, governed_by = combine_for_in_job_compile(
+        sim, JobResources(cpus=2, mem="8G", time="01:00:00")
+    )
+    assert (combined.cpus, combined.mem, combined.time) == (16, "64G", "1-00:00:00")
+    assert set(governed_by.values()) == {"test"}
+
+
+def test_combine_applies_compile_mem_when_sim_reserves_none():
+    """An absent sim --mem must not swallow a compile-sized reservation."""
+    combined, governed_by = combine_for_in_job_compile(
+        JobResources(cpus=1, mem=None, time="01:00:00"),
+        JobResources(cpus=1, mem="16G", time="01:00:00"),
+    )
+    assert combined.mem == "16G"
+    assert governed_by["mem"] == "compile"
+
+
+def test_combine_compares_across_units():
+    """512M vs 1G must compare by value, not lexically."""
+    combined, _ = combine_for_in_job_compile(
+        JobResources(mem="512M"), JobResources(mem="1G")
+    )
+    assert combined.mem == "1G"
+    combined, _ = combine_for_in_job_compile(
+        JobResources(mem="2048M"), JobResources(mem="1G")
+    )
+    assert combined.mem == "2048M"
+
+
+def test_combine_leaves_an_unparseable_compile_value_alone():
+    """A value neither side can compare must not silently win the max."""
+    combined, governed_by = combine_for_in_job_compile(
+        JobResources(mem="8G", time="01:00:00"),
+        JobResources(mem="lots", time="01:00:00"),
+    )
+    assert combined.mem == "8G"
+    assert governed_by["mem"] == "test"

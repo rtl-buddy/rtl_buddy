@@ -22,10 +22,14 @@ login node where a big Verilation is against policy. The head process only
 plans and submits; the compile and the sims both run as scheduler jobs.
 
 1. **Build job.** The head submits one `sbatch` job per suite that runs
-   `rb _build-job` on a compute node: it Verilates one shared `simv` per
+   `rb _build-job` on a compute node: it compiles one shared `simv` per
    unique compile key (`--dispatch` implies
    [`--share-build`](tests.md#sharing-compiled-builds-across-tests)) and
-   writes the shared build to the shared filesystem.
+   writes the shared build to the shared filesystem. If no test in the
+   suite uses a share-build-capable builder there is nothing for the sim
+   jobs to read, so the build job is skipped entirely rather than burning
+   a compile — see [Builders that compile inside the
+   job](#builders-that-compile-inside-the-job).
 2. **Fan-out gated on the build.** One job per `(test, run_id)` is
    submitted, grouped by identical resolved resources into a Slurm
    **array** (`cfg-dispatch.max-jobs-per-array` maps to the array's `%N`
@@ -39,11 +43,18 @@ plans and submits; the compile and the sims both run as scheduler jobs.
    or a build-job failure that made `afterok` cancel it — counts as a
    fail, never silently dropped.
 
-The build job carries its own reservation (`cfg-dispatch.compile`,
-defaulting to `resources`) since a large Verilation is often heavier than
-the sims it precedes; if that reservation is too small the build is
+The compile carries its own reservation (`cfg-dispatch.compile`,
+defaulting to `resources`) since a large Verilation or VCS elaboration is
+often heavier than the sims it precedes. Normally that reservation belongs
+to the build job; when the builder cannot share a build the compile runs
+inside each sim job instead and the block is folded into *that* job's
+reservation. If the reservation is too small the build is
 killed, `afterok` cancels the sims, and they surface as dispatch failures
-pointing at the build log. A single test's compile failure does **not**
+pointing at the build log. (Slurm reports those cancelled sims as `PENDING`
+with reason `DependencyNeverSatisfied` and — unless the site sets
+`kill_invalid_depend` — leaves them queued forever; rtl_buddy cancels them
+itself, logging `dispatch.dependency_never_satisfied`, rather than waiting
+on jobs that can never run.) A single test's compile failure does **not**
 fail the build job — the other sims still run, and the failing test
 recompiles (and fails) in its own sim job. `--dispatch` cannot be combined
 with `--early-stop`, and dispatched jobs deliberately skip the per-tree
@@ -83,9 +94,49 @@ shared filesystem, short-circuits, and reads the same on-disk `simv`
 **read-only** — which is why elements across different arrays (or suites)
 that share a compile key all point at the same build, and why concurrent
 elements are safe (`_test-job` is a cooperative reader that skips the
-per-tree lock). This all depends on share-build, which is **Verilator
-only**: under a non-Verilator builder there is no shared stamp, so each
-element recompiles inside its own job — correct, just unshared.
+per-tree lock).
+
+## Builders that compile inside the job
+
+Share-build works for the builders whose compile output rtl_buddy can
+redirect wholesale into the shared dir: **Verilator** (`--Mdir`), **VCS**
+(`-o` for the executable plus `-Mdir` for its `csrc` tree, so the build is
+self-contained), and **Icarus** (`-o` for the `.vvp` snapshot). All three
+build once per compile key and short-circuit on the stamp.
+
+Any other builder — and a builder configured with an *absolute*
+`builder-simv:`, which pins the executable somewhere a per-compile-key dir
+cannot honour — has no shared stamp, so **each array element recompiles
+inside its own job**. That is correct, just unshared, and it has two
+consequences dispatch handles for you:
+
+- **No build job is submitted** when nothing in the suite can share a
+  build. The build pass would compile on a compute node and produce
+  something no sim job can read, so it is skipped and the elements run
+  ungated (logged as `dispatch.build_job_skipped`). A suite mixing
+  builders still gets one, and only the groups that actually read it are
+  gated on it with `afterok`.
+- **The job's reservation covers both phases.** A compile is frequently
+  hungrier than the sim it precedes — a VCS elaboration usually is — so a
+  sim-sized reservation would be killed during it. One allocation cannot
+  carry two reservations, so the element-wise maximum of
+  `cfg-dispatch.resources` (as resolved for that test) and
+  `cfg-dispatch.compile` is used, field by field, and logged as
+  `dispatch.compile_in_job`. Tests whose builder *can* share a build are
+  unaffected: they keep the sim-sized reservation, and the compile
+  reservation stays with the build job where it belongs.
+
+!!! note "A VCS compile can wait for a license"
+    `vcs` elaboration honours `-licqueue` exactly as `simv` does, so part
+    of a compile's wall-clock can be time spent queuing for a seat rather
+    than compiling — and Slurm's `--time` clock keeps running through it.
+    rtl_buddy cannot pause the scheduler's clock, but it detects the queue
+    banner and logs `compile.license_queued` with the compile transcript,
+    so a build job killed at its time limit is diagnosable as a busy
+    license server rather than an undersized reservation. Give a VCS
+    `compile.time` headroom for it. Sharing the build helps here too: the
+    build job compiles each key once, serially, taking one seat at a time
+    instead of one per concurrent array element.
 
 ## Requirements
 
@@ -97,8 +148,10 @@ element recompiles inside its own job — correct, just unshared.
   tree, and the Python environment.
 - The project's `rb` runnable on the compute nodes (the job runs
   `sys.executable -m rtl_buddy _test-job`).
-- Verilator is the first-class builder (share-build is Verilator-only);
-  other builders still work but recompile inside each job.
+- A share-build-capable builder (Verilator, VCS, or Icarus) to compile
+  once per compile key; other builders still work but recompile inside
+  each job — see [Builders that compile inside the
+  job](#builders-that-compile-inside-the-job).
 
 ## Configuration: `cfg-dispatch`
 
@@ -111,7 +164,7 @@ cfg-dispatch:
     cpus: 2
     mem: 4G
     time: "01:00:00"        # QUOTE time values (see below)
-  compile:                  # reservation for the build job (defaults to resources)
+  compile:                  # reservation for the COMPILE (defaults to resources)
     cpus: 8
     mem: 16G
     time: "02:00:00"
@@ -181,6 +234,7 @@ finding:
   "reserved": "24G", "peak": "3G", "utilization": 0.13,
   "direction": "reduce", "suggested": "5G",
   "runs": 4, "reg_level": 1000, "states": ["COMPLETED"],
+  "phase": "sim",
   "edit_hint": {"file": "verif/demo_axi/tests.yaml",
                 "path": "tests[name=axi_soak].resources.mem"}
 }
@@ -199,6 +253,18 @@ Semantics:
   and CPU-efficiency advice are unaffected.
 - Advice is labelled with `runs` and `reg_level`, so a `-l 0` smoke run
   is never used to shrink a nightly test's reservation.
+- **`phase` says what the numbers cover.** `"sim"` is the usual case. A
+  job that also compiled (its builder [compiles inside the
+  job](#builders-that-compile-inside-the-job)) is labelled
+  `"compile+sim"`: `MaxRSS` and `Elapsed` are high-water marks over the
+  whole job, so they legitimately span both phases — do not read them as
+  sim-only.
+- **The hint names the field that actually governs.** A `compile+sim`
+  job's allocation is the maximum of the sim and compile reservations, so
+  where the compile side won, editing `tests[...].resources` would change
+  nothing. Those findings point at `cfg-dispatch.compile.<field>` in
+  `root_config.yaml` instead. Always apply the `edit_hint`'s `file` and
+  `path` rather than inferring the field from `test`.
 - Requires `sacct` (slurmdbd accounting). Without it, dispatch still works
   and right-sizing degrades gracefully to no advice. Turn it off with
   `rightsize: { report: false }`.

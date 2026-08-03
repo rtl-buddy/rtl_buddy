@@ -109,10 +109,14 @@ class DispatchConfigFile:
 
     backend: str | None = None
     resources: DispatchResourcesFile | None = None
-    # Reservation for the head-dispatched build job (Verilation runs on a
-    # compute node, never the submit host). Defaults to `resources` when
-    # unset; give it its own cpus/mem/time when the compile is heavier than
-    # the sims (a large Verilation often is).
+    # Reservation for the compile, wherever it runs. Normally that is the
+    # head-dispatched build job (the compile runs on a compute node, never
+    # the submit host); for a builder that cannot share a build the compile
+    # happens inside each sim job instead, and this block is folded into
+    # that job's reservation (see combine_for_in_job_compile). Defaults to
+    # `resources` when unset; give it its own cpus/mem/time when the compile
+    # is heavier than the sims — a large Verilation or a VCS elaboration
+    # usually is.
     compile: DispatchResourcesFile | None = None
     sbatch_args: list[str] = field(rename="sbatch-args", default_factory=list)
     poll_interval: float = field(rename="poll-interval", default=10.0)
@@ -218,6 +222,97 @@ def resolve_resources(dispatch_cfg, test_cfg=None) -> JobResources:
         if layer.time is not None:
             resolved.time = _validate_time(layer.time)
     return resolved
+
+
+def mem_to_bytes(value) -> int | None:
+    """Parse an sbatch ``--mem`` spelling to bytes; ``None`` if unparseable.
+
+    Slurm's default unit is megabytes, so a bare number is MB — not bytes.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    scale = {"K": 2**10, "M": 2**20, "G": 2**30, "T": 2**40}
+    unit = text[-1].upper()
+    if unit in scale:
+        text, factor = text[:-1], scale[unit]
+    else:
+        factor = 2**20
+    try:
+        return int(float(text) * factor)
+    except ValueError:
+        return None
+
+
+def time_to_seconds(value) -> int | None:
+    """Parse an sbatch ``--time`` spelling to seconds; ``None`` if unparseable.
+
+    Handles every form :data:`_TIME_RE` accepts. The ambiguity that matters
+    is colon count: two colons is ``HH:MM:SS`` but one is ``MM:SS``, and a
+    bare number is MINUTES.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not _TIME_RE.match(text):
+        return None
+    days = 0
+    if "-" in text:
+        day_part, _, text = text.partition("-")
+        days = int(day_part)
+        # After DD-, the fields read left-to-right from hours: DD-HH[:MM[:SS]].
+        fields = [int(p) for p in text.split(":")] if text else [0]
+        fields += [0] * (3 - len(fields))
+        hours, minutes, seconds = fields
+    else:
+        parts = [int(p) for p in text.split(":")]
+        if len(parts) == 1:
+            hours, minutes, seconds = 0, parts[0], 0  # bare number = minutes
+        elif len(parts) == 2:
+            hours, minutes, seconds = 0, parts[0], parts[1]  # MM:SS
+        else:
+            hours, minutes, seconds = parts  # HH:MM:SS
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def combine_for_in_job_compile(
+    sim: JobResources, compile_: JobResources
+) -> tuple[JobResources, dict]:
+    """Reservation for a sim job that also compiles, and what governs it (#358).
+
+    Compile and sim run inside the **same** scheduler job when the builder
+    cannot share a build, and one allocation cannot carry two different
+    reservations. The only safe combination is the element-wise maximum: a
+    compile-sized ``mem`` paired with a sim-sized ``time`` still gets killed
+    during a long elaboration, and the reverse OOMs during it.
+
+    The second return value maps each field to the layer that supplied it
+    (``"compile"`` where the compile reservation won, ``"test"`` otherwise),
+    so reservation advice can name the field that actually governs rather
+    than one the max has masked.
+    """
+    combined = JobResources(cpus=sim.cpus, mem=sim.mem, time=sim.time)
+    governed_by = {"cpus": "test", "mem": "test", "time": "test"}
+
+    if compile_.cpus > sim.cpus:
+        combined.cpus = compile_.cpus
+        governed_by["cpus"] = "compile"
+
+    # An absent sim mem means "no --mem reservation"; a compile mem must
+    # still take effect, since the compile is the phase that needs it.
+    sim_mem, compile_mem = mem_to_bytes(sim.mem), mem_to_bytes(compile_.mem)
+    if compile_mem is not None and (sim_mem is None or compile_mem > sim_mem):
+        combined.mem = compile_.mem
+        governed_by["mem"] = "compile"
+
+    sim_time, compile_time = time_to_seconds(sim.time), time_to_seconds(compile_.time)
+    if compile_time is not None and (sim_time is None or compile_time > sim_time):
+        combined.time = compile_.time
+        governed_by["time"] = "compile"
+
+    return combined, governed_by
 
 
 def resolve_compile_resources(dispatch_cfg) -> JobResources:

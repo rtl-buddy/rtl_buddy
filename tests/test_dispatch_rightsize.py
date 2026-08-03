@@ -18,7 +18,16 @@ from rtl_buddy.runner.test_results import TestPassResults, SimTimeoutResults
 _CFG = RightsizeConfigFile()  # 0.5 / 0.9 / 1.5 defaults
 
 
-def _row(test, telemetry, *, run_id=None, builder="verilator", passing=True):
+def _row(
+    test,
+    telemetry,
+    *,
+    run_id=None,
+    builder="verilator",
+    passing=True,
+    compile_in_job=False,
+    governed_by=None,
+):
     results = (
         TestPassResults(name=test + "/results")
         if passing
@@ -31,10 +40,12 @@ def _row(test, telemetry, *, run_id=None, builder="verilator", passing=True):
         "randmode_i": run_id,
         "results": results,
         "builder": builder,
+        "compile_in_job": compile_in_job,
+        "governed_by": governed_by or {},
     }
 
 
-def _analyze(rows, cfg=_CFG, families=None, reg_level=0):
+def _analyze(rows, cfg=_CFG, families=None, reg_level=0, root_config_path=None):
     return analyze_suite_reservations(
         rows,
         suite_display="verif/blk/tests.yaml",
@@ -42,6 +53,7 @@ def _analyze(rows, cfg=_CFG, families=None, reg_level=0):
         rightsize_cfg=cfg,
         reg_level=reg_level,
         simulator_family_of=(families or {"verilator": "verilator"}).get,
+        root_config_path=root_config_path,
     )
 
 
@@ -315,3 +327,96 @@ def test_unknown_family_none_keeps_time_advice():
     assert time_f.direction == "reduce"
     # Absolute config path flows into the edit hint for machine consumers.
     assert time_f.edit_hint["file"] == "/abs/verif/blk/tests.yaml"
+
+
+# ------------------------------- #358: compile-vs-sim attribution
+
+
+def _oom_row(test="t", **kwargs):
+    # elapsed/limit lands between over-threshold and near-limit, so memory is
+    # the only resource with advice and the assertions stay unambiguous.
+    return _row(
+        test,
+        {
+            "state": "OUT_OF_MEMORY",
+            "elapsed_s": 2000,
+            "timelimit_s": 3600,
+            "req_mem_bytes": 16 * 2**30,
+            "alloc_cpus": 1,
+        },
+        **kwargs,
+    )
+
+
+def test_sim_only_advice_is_labeled_sim_and_hints_at_the_test():
+    findings = _analyze([_oom_row()], root_config_path="/p/root_config.yaml")
+    assert [f.phase for f in findings] == ["sim"]
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=t].resources.mem",
+    }
+
+
+def test_compile_governed_field_hints_at_the_dispatch_compile_block():
+    """Editing the test's mem would not move an allocation the compile sized."""
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "compile"})],
+        root_config_path="/p/root_config.yaml",
+    )
+    assert [f.phase for f in findings] == ["compile+sim"]
+    assert findings[0].edit_hint == {
+        "file": "/p/root_config.yaml",
+        "path": "cfg-dispatch.compile.mem",
+    }
+
+
+def test_in_job_compile_still_hints_at_the_test_for_sim_governed_fields():
+    """Only the fields the compile actually won are redirected."""
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "test", "time": "compile"})],
+        root_config_path="/p/root_config.yaml",
+    )
+    assert findings[0].resource == "mem"
+    assert findings[0].phase == "compile+sim"
+    assert findings[0].edit_hint["path"] == "tests[name=t].resources.mem"
+
+
+def test_compile_governed_hint_falls_back_without_a_root_config_path():
+    """No root_config.yaml to name means the per-test hint, not a broken one."""
+    findings = _analyze([_oom_row(compile_in_job=True, governed_by={"mem": "compile"})])
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=t].resources.mem",
+    }
+
+
+def test_phase_travels_into_the_machine_event():
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "compile"})],
+        root_config_path="/p/root_config.yaml",
+    )
+    event = findings[0].as_event()
+    assert event["phase"] == "compile+sim"
+    assert event["edit_hint"]["path"] == "cfg-dispatch.compile.mem"
+
+
+def test_rows_without_the_new_keys_still_analyze():
+    """Pre-#358 rows (no compile_in_job/governed_by) must not KeyError."""
+    row = _oom_row()
+    del row["compile_in_job"]
+    del row["governed_by"]
+    findings = _analyze([row], root_config_path="/p/root_config.yaml")
+    assert [f.phase for f in findings] == ["sim"]
+
+
+def test_governance_is_per_test_not_leaked_across_tests():
+    """One test's compile-governed hint must not retarget another's."""
+    rows = [
+        _oom_row(compile_in_job=True, governed_by={"mem": "compile"}),
+        _oom_row("u"),
+    ]
+    findings = {
+        f.test: f for f in _analyze(rows, root_config_path="/p/root_config.yaml")
+    }
+    assert findings["t"].edit_hint["path"] == "cfg-dispatch.compile.mem"
+    assert findings["u"].edit_hint["path"] == "tests[name=u].resources.mem"
