@@ -382,7 +382,10 @@ class SlurmDispatchBackend(DispatchBackend):
             job_id = job_id.strip()
             if not job_id:
                 continue
-            if reason.strip() == _NEVER_SATISFIED:
+            # Substring, not equality: %r is unpadded today, but a site whose
+            # Slurm renders the reason with surrounding text must not silently
+            # fall back into the infinite poll this method exists to remove.
+            if _NEVER_SATISFIED in reason:
                 doomed.append(job_id)
             else:
                 remaining.append(job_id)
@@ -396,9 +399,22 @@ class SlurmDispatchBackend(DispatchBackend):
             )
             # Cancel by base id: one scancel clears a whole pending array.
             base_ids = list(dict.fromkeys(j.split("_")[0] for j in doomed))
-            subprocess.run(
+            proc = subprocess.run(
                 ["scancel", *base_ids], capture_output=True, text=True, cwd=cwd
             )
+            if proc.returncode != 0:
+                # These jobs are already out of `remaining`, so the run will
+                # finish and leave them queued. Say so — a transient
+                # slurmctld failure here is only recoverable by hand.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.cancel_failed",
+                    backend=self.name,
+                    jobs=base_ids,
+                    returncode=proc.returncode,
+                    error=proc.stderr.strip()[:200],
+                )
         return remaining
 
     def wait_all(self, handles: list[JobHandle]) -> None:

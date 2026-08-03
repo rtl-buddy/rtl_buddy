@@ -2071,6 +2071,13 @@ class RtlBuddy:
                 )
                 for idx, _ in entry["rows"]:
                     suite_results[idx]["governed_by"] = governed_by
+                    # The floor no `reduce` advice can take this allocation
+                    # below, whatever the test's own resources: are trimmed to.
+                    suite_results[idx]["compile_floor"] = {
+                        "cpus": compile_resources.cpus,
+                        "mem": compile_resources.mem,
+                        "time": compile_resources.time,
+                    }
                 log_event(
                     logger,
                     logging.INFO,

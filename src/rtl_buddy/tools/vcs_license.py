@@ -22,7 +22,10 @@ _DOTS_ONLY_RE = re.compile(r"^[.\s]*$")
 
 
 def _is_marker_line(line: str) -> bool:
-    return any(marker in line for marker in _MARKERS)
+    # Delegates so the marker-matching rule has exactly one implementation:
+    # the live monitor and the post-hoc compile check must never drift apart
+    # on what a queue banner looks like.
+    return has_license_queue_marker(line)
 
 
 def has_license_queue_marker(text: str) -> bool:

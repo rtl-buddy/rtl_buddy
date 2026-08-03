@@ -823,22 +823,26 @@ def test_regression_machine_payload_carries_reservation_advice(
     assert mem["runs"] == 1
 
 
-def test_advice_for_an_in_job_compile_points_at_the_compile_block(
+def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """End to end: a builder that compiles in-job gets compile-attributed
-    advice on the fields the compile reservation governs (#358)."""
-    _telemetry_backend(monkeypatch)
+    """End to end: advice for a job that compiled must be reachable (#358).
+
+    The allocation is max(sim, compile), so no reduce can take it below the
+    compile side. A suggestion under that floor is clamped up to it and
+    re-attributed to the field that governs; one the clamp pushes all the way
+    back to the current reservation saves nothing and is dropped.
+    """
+    _telemetry_backend(monkeypatch)  # elapsed 10s of 1h, 1G of 8G reserved
     # No simulator-family override: the fixture's inferred "echo" family has
-    # no shared-build support, so the sim job compiles for itself. The
-    # compile block dominates mem, so it governs the allocation.
+    # no shared-build support, so the sim job compiles for itself.
     _add_dispatch_resources(
         minimal_project,
         "\ncfg-dispatch:\n"
         '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
-        '  compile:\n    cpus: 1\n    mem: 8G\n    time: "01:00:00"\n',
+        '  compile:\n    cpus: 1\n    mem: 8G\n    time: "00:30:00"\n',
     )
     result, _ = _invoke(
         ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
@@ -848,13 +852,20 @@ def test_advice_for_an_in_job_compile_points_at_the_compile_block(
         line for line in result.output.splitlines() if line.startswith("{")
     ][-1]
     advice = json.loads(payload_line)["payload"]["reservation_advice"]
-    (mem,) = [a for a in advice if a["resource"] == "mem"]
-    assert mem["phase"] == "compile+sim"
-    assert mem["edit_hint"]["path"] == "cfg-dispatch.compile.mem"
-    assert mem["edit_hint"]["file"].endswith("root_config.yaml")
-    # Time was a tie, so the test's own field still owns it.
+
+    # time: 10s of 1h would suggest the 5-minute floor, but the compile needs
+    # 30 minutes — so that is the suggestion, and cfg-dispatch.compile.time is
+    # the field that would have to move.
     (time_a,) = [a for a in advice if a["resource"] == "time"]
-    assert time_a["edit_hint"]["path"] == "tests[name=basic].resources.time"
+    assert time_a["phase"] == "compile+sim"
+    assert time_a["direction"] == "reduce"
+    assert time_a["suggested"] == "00:30:00"
+    assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert time_a["edit_hint"]["file"].endswith("root_config.yaml")
+
+    # mem: reserved 8G IS the compile reservation, so every reduce clamps
+    # straight back to it. Silence beats advice that cannot retire.
+    assert [a for a in advice if a["resource"] == "mem"] == []
 
 
 def test_rightsize_report_false_disables_advice(

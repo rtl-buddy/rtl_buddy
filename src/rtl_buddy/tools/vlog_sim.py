@@ -699,6 +699,14 @@ class VlogSim:
                     + assertion_flags
                     + plusdefines
                 )
+                if self._get_simulator_family() == "icarus":
+                    # The Icarus `simv` wrapper lives IN the shared dir, and it
+                    # bakes in these args (CocotbSim adds the VPI module to
+                    # them while contributing no compile flags of its own). Two
+                    # tests that differ only there would otherwise share a key
+                    # and a wrapper, and whichever compiled first would decide
+                    # how vvp is invoked for both.
+                    key_cmd = key_cmd + self._icarus_vvp_extra_args()
                 # Keyed on the configured compile line, NOT on the output
                 # flags this method appends below: those are derived from the
                 # resulting key, so including them would be circular.
@@ -721,6 +729,23 @@ class VlogSim:
                 # A crashed/killed compile must never leave a stamp that
                 # validates a broken simv.
                 (shared_dir / SHARED_BUILD_STAMP_NAME).unlink(missing_ok=True)
+                # A shared build owns the output location, so a *relative*
+                # builder-simv: is discarded rather than honoured (the absolute
+                # case declines sharing outright, above). Say which value went
+                # unused instead of leaving it to be inferred from the path.
+                configured_simv = self.rtl_builder_cfg.get_simv()
+                if (
+                    self._get_simulator_family() not in ("verilator", "icarus")
+                    and configured_simv != "simv"
+                ):
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "compile.share_build_simv_overridden",
+                        test=self.test_name,
+                        configured=configured_simv,
+                        used=self._get_simv_path(),
+                    )
             else:
                 log_event(
                     logger,
@@ -734,7 +759,18 @@ class VlogSim:
         shared = self._shared_build_dir is not None
         run_cmd = [rtl_builder_cfg.get_exe()]
         if shared and self._get_simulator_family() == "vcs":
+            # Strip BOTH sources of compile flags, not just the configured
+            # opts: a `-o` reaching run_cmd from _get_extra_compile_flags()
+            # would be appended after _vcs_shared_output_argv() and so win on
+            # VCS's duplicate-option precedence. The simv would land outside
+            # the shared dir, the stamp check would never find it, and every
+            # job would recompile — silently, and forever. No subclass emits
+            # one today; this keeps that from being load-bearing.
             builder_opts, dropped_opts = self._strip_vcs_output_opts(builder_opts)
+            extra_compile_flags, dropped_extra = self._strip_vcs_output_opts(
+                extra_compile_flags
+            )
+            dropped_opts += dropped_extra
             if dropped_opts:
                 log_event(
                     logger,
@@ -807,7 +843,7 @@ class VlogSim:
                 raise FatalRtlBuddyError(f"Builder not found. Run exe: {run_cmd[0]}")
 
         e_time = time.time()
-        licensed_queued = self._compile_queued_for_license(result)
+        license_queued = self._compile_queued_for_license(result)
         if result.returncode != 0:
             transcript_path = self._write_compile_transcript(run_str, result)
             log_event(
@@ -818,7 +854,7 @@ class VlogSim:
                 returncode=result.returncode,
                 duration_sec=round(e_time - s_time, 2),
                 transcript=transcript_path,
-                license_queued=licensed_queued,
+                license_queued=license_queued,
             )
         else:
             log_event(
@@ -828,7 +864,7 @@ class VlogSim:
                 test=self.test_name,
                 duration_sec=round(e_time - s_time, 2),
             )
-            if licensed_queued:
+            if license_queued:
                 # Keep the evidence: on a dispatched build this is the only
                 # record that the wall-clock went to the license server, and
                 # the next run may be the one Slurm kills at --time.

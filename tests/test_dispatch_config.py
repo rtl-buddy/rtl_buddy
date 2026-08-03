@@ -283,3 +283,24 @@ def test_combine_leaves_an_unparseable_compile_value_alone():
     )
     assert combined.mem == "8G"
     assert governed_by["mem"] == "test"
+
+
+def test_combine_warns_when_the_compile_mem_cannot_be_parsed(caplog):
+    """Silently dropping the compile mem is the one unsafe outcome."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        combined, governed_by = combine_for_in_job_compile(
+            JobResources(mem="8G"), JobResources(mem="16GB")
+        )
+    assert combined.mem == "8G"
+    assert governed_by["mem"] == "test"
+    assert "16GB" in caplog.text
+
+
+def test_combine_does_not_warn_when_no_compile_mem_is_set(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        combine_for_in_job_compile(JobResources(mem="8G"), JobResources(mem=None))
+    assert caplog.text == ""

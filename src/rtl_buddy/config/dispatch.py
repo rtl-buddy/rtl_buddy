@@ -24,12 +24,16 @@ tests.yaml at testbench and test level; :func:`resolve_resources` layers
 them field-by-field (test over testbench over ``cfg-dispatch`` defaults).
 """
 
+import logging
 import re
 from dataclasses import dataclass
 
 from serde import field, serde
 
 from ..errors import FatalRtlBuddyError
+from ..logging_utils import log_event
+
+logger = logging.getLogger(__name__)
 
 # A defined time limit is load-bearing, not cosmetic: reservation
 # right-sizing computes time utilization as Elapsed/Timelimit, which is
@@ -303,6 +307,16 @@ def combine_for_in_job_compile(
     # An absent sim mem means "no --mem reservation"; a compile mem must
     # still take effect, since the compile is the phase that needs it.
     sim_mem, compile_mem = mem_to_bytes(sim.mem), mem_to_bytes(compile_.mem)
+    if compile_.mem is not None and compile_mem is None:
+        # Dropping the compile reservation from the max is the one outcome
+        # this function exists to prevent, so an unparseable spelling must not
+        # do it quietly. sbatch would reject the value at submit anyway.
+        log_event(
+            logger,
+            logging.WARNING,
+            "dispatch.compile_mem_unparseable",
+            mem=compile_.mem,
+        )
     if compile_mem is not None and (sim_mem is None or compile_mem > sim_mem):
         combined.mem = compile_.mem
         governed_by["mem"] = "compile"

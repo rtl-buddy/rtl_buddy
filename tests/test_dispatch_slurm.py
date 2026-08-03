@@ -535,3 +535,50 @@ def test_submit_array_accepts_dependency(monkeypatch, tmp_path):
     )
     (argv,) = calls
     assert "--dependency=afterok:900" in argv
+
+
+def test_wait_all_matches_a_reason_rendered_with_surrounding_text(monkeypatch):
+    """Substring, not equality: an exact match could regress into the poll."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="7|(DependencyNeverSatisfied)\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("7", _spec())]
+    )
+    assert [argv[0] for argv in calls] == ["squeue", "scancel"]
+
+
+def test_wait_all_reports_a_failed_scancel(monkeypatch, caplog):
+    """The jobs are already dropped from `remaining`, so a failed cancel leaves
+    them queued after the run exits — that has to be recoverable by hand."""
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0, stdout="7|DependencyNeverSatisfied\n", stderr=""
+            ),
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="scancel: error: Invalid job id"
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    with caplog.at_level(logging.WARNING):
+        SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+            [JobHandle("7", _spec())]
+        )
+    assert "still" in caplog.text and "queued" in caplog.text
+    assert "Invalid job id" in caplog.text

@@ -458,3 +458,98 @@ def test_test_runner_threads_share_build_to_vlog_sim(tmp_path, monkeypatch):
         share_build=True,
     )
     assert runner._create_vlog_sim().share_build is True
+
+
+def test_share_build_on_vcs_strips_output_opts_from_extra_compile_flags(
+    tmp_path, monkeypatch
+):
+    """A subclass-injected -o must not outrank the shared build's own.
+
+    _get_extra_compile_flags() is appended AFTER the shared-build output argv,
+    so an unfiltered -o there would win on VCS's duplicate-option precedence:
+    the simv lands outside the shared dir, the stamp check never finds it, and
+    every job recompiles silently and forever.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs")
+    monkeypatch.setattr(
+        sim, "_get_extra_compile_flags", lambda: ["-o", "sneaky", "-Mdir=sneakier"]
+    )
+    assert sim.compile() == 0
+
+    cmd = calls[0]["cmd"]
+    shared = Path(sim._get_simv_path()).parent
+    assert "sneaky" not in cmd and "-Mdir=sneakier" not in cmd
+    assert cmd.count("-o") == 1
+    assert cmd[cmd.index("-o") + 1] == str(shared / "simv")
+    # The build really did land where the stamp validates it.
+    assert (shared / "simv").is_file()
+    assert sim._shared_build_is_valid(shared, None) is False  # wrong fingerprint
+    assert Path(sim._get_simv_path()).is_file()
+
+
+def test_icarus_wrapper_args_separate_the_compile_key(tmp_path, monkeypatch):
+    """The shared `simv` wrapper bakes in _icarus_vvp_extra_args() (#358).
+
+    CocotbSim adds the VPI module there while contributing no Icarus compile
+    flags, so two tests differing only in those args would otherwise share one
+    key and one wrapper — whichever compiled first deciding how vvp is invoked
+    for both.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    plain = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="iverilog", family="icarus"
+    )
+    vpi = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="iverilog", family="icarus"
+    )
+    monkeypatch.setattr(
+        vpi, "_icarus_vvp_extra_args", lambda: ["-M", "/libs", "-m", "libcocotbvpi"]
+    )
+
+    assert plain.compile() == 0
+    assert vpi.compile() == 0
+    # Different wrapper contents -> different build, so both compiled.
+    assert len(calls) == 2
+    assert plain._get_simv_path() != vpi._get_simv_path()
+    assert "libcocotbvpi" in Path(vpi._get_simv_path()).read_text()
+    assert "libcocotbvpi" not in Path(plain._get_simv_path()).read_text()
+
+
+def test_relative_builder_simv_override_is_logged(tmp_path, monkeypatch, caplog):
+    """The shared build discards a relative builder-simv; don't do it silently."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe="vcs",
+        family="vcs",
+        simv="bin/mysim",
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert "builder-simv" in caplog.text
+    assert "bin/mysim" in caplog.text
+
+
+def test_default_builder_simv_override_is_not_logged(tmp_path, monkeypatch, caplog):
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs")
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert "builder-simv" not in caplog.text

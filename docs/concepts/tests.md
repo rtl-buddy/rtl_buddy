@@ -214,9 +214,12 @@ editing any file listed in the filelist triggers a rebuild in place.
 Where the build lands depends on the builder, but the executable is always
 `simv` inside the shared dir: Verilator is pointed there with `--Mdir`, VCS
 with `-o` (plus `-Mdir` so its `csrc` tree stays beside the binary), and
-Icarus with `-o` for the `.vvp` snapshot the wrapper `simv` execs. A `-o` or
-`-Mdir` configured in `builder-opts` is dropped in favour of these — the
-shared build owns the output location.
+Icarus with `-o` for the `.vvp` snapshot the wrapper `simv` execs. The shared
+build owns the output location, so a `-o` / `-Mdir` in `builder-opts` and a
+*relative* `builder-simv:` are both dropped in favour of `<shared>/simv`
+(logged at DEBUG as `compile.share_build_opts_overridden` /
+`compile.share_build_simv_overridden`). An **absolute** `builder-simv:`
+instead declines sharing altogether — see the caveats below.
 
 Caveats:
 

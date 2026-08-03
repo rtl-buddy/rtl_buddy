@@ -36,10 +36,19 @@ Semantics:
   ``resources:`` would change nothing — so the hint points at
   ``cfg-dispatch.compile`` instead, and the finding is labeled
   ``compile+sim`` to say the measurement spans both.
+- Every suggestion for such a job is *reachable*: a ``reduce`` is clamped
+  up to the compile reservation, because the ``max`` will not let the
+  allocation go below it however far the test's own ``resources:`` are
+  trimmed. A suggestion the clamp pushes back to the current reservation
+  saves nothing and is dropped — advising a reduction that cannot happen
+  is worse than silence, since the agent loop reruns, sees the advice fail
+  to retire, and cannot tell that from a wrong suggestion.
 """
 
 import math
 from dataclasses import dataclass, field
+
+from ..config.dispatch import mem_to_bytes, time_to_seconds
 
 _TIME_FLOOR_S = 300  # never suggest a limit under 5 minutes
 _MEM_FLOOR_BYTES = 128 * 2**20  # never suggest under 128M
@@ -119,6 +128,7 @@ def _aggregate(rows):
                 # itself; governed_by then says which layer sized each field.
                 "compile_in_job": bool(row.get("compile_in_job")),
                 "governed_by": row.get("governed_by") or {},
+                "compile_floor": row.get("compile_floor") or {},
             },
         )
         agg["runs"] += 1
@@ -172,6 +182,14 @@ def analyze_suite_reservations(
     findings = []
     for test, agg in _aggregate(suite_results).items():
         governed_by = agg["governed_by"]
+        # An in-job compile's allocation is max(sim, compile), so no `reduce`
+        # can take it below the compile side however far the test's own
+        # resources: are trimmed. These are the floors each suggestion is
+        # clamped to; None where there is nothing to clamp against.
+        floor = agg["compile_floor"]
+        floor_cpus = floor.get("cpus")
+        floor_mem_b = mem_to_bytes(floor.get("mem"))
+        floor_time_s = time_to_seconds(floor.get("time"))
         common = {
             "suite": suite_display,
             "test": test,
@@ -181,10 +199,11 @@ def analyze_suite_reservations(
             "phase": "compile+sim" if agg["compile_in_job"] else "sim",
         }
 
-        def hint(resource_field, _governed_by=governed_by):
+        def hint(resource_field, *, from_compile=False, _governed_by=governed_by):
             # A field the compile reservation won is masked by the max, so
             # editing the test's resources: would not move the allocation.
-            if _governed_by.get(resource_field) == "compile" and root_config_path:
+            from_compile = from_compile or _governed_by.get(resource_field) == "compile"
+            if from_compile and root_config_path:
                 return {
                     "file": root_config_path,
                     "path": f"cfg-dispatch.compile.{resource_field}",
@@ -225,6 +244,9 @@ def analyze_suite_reservations(
         elif time_util_ok and limit and elapsed is not None:
             util = elapsed / limit
             suggested_s = max(elapsed * rightsize_cfg.margin, _TIME_FLOOR_S)
+            time_floored = floor_time_s is not None and suggested_s < floor_time_s
+            if time_floored:
+                suggested_s = floor_time_s
             if util > rightsize_cfg.near_limit:
                 findings.append(
                     RightsizeFinding(
@@ -250,7 +272,7 @@ def analyze_suite_reservations(
                         utilization=util,
                         direction="reduce",
                         suggested=format_time(suggested_s),
-                        edit_hint=hint("time"),
+                        edit_hint=hint("time", from_compile=time_floored),
                         **common,
                     )
                 )
@@ -277,6 +299,9 @@ def analyze_suite_reservations(
                 suggested_b = max(
                     int(peak_rss * rightsize_cfg.margin), _MEM_FLOOR_BYTES
                 )
+                mem_floored = floor_mem_b is not None and suggested_b < floor_mem_b
+                if mem_floored:
+                    suggested_b = floor_mem_b
                 if util > rightsize_cfg.near_limit:
                     findings.append(
                         RightsizeFinding(
@@ -302,7 +327,7 @@ def analyze_suite_reservations(
                             utilization=util,
                             direction="reduce",
                             suggested=format_mem(suggested_b),
-                            edit_hint=hint("mem"),
+                            edit_hint=hint("mem", from_compile=mem_floored),
                             **common,
                         )
                     )
@@ -317,6 +342,13 @@ def analyze_suite_reservations(
                 suggested_cpus = max(
                     1, math.ceil(cpus * efficiency * rightsize_cfg.margin)
                 )
+                cpus_floored = floor_cpus is not None and suggested_cpus < floor_cpus
+                if cpus_floored:
+                    suggested_cpus = floor_cpus
+                # `< cpus` also drops the case where the floor pushed the
+                # suggestion back up to the current reservation: advising a
+                # reduction the allocation cannot make is worse than silence,
+                # because the agent loop reruns and sees it fail to retire.
                 if suggested_cpus < cpus:
                     findings.append(
                         RightsizeFinding(
@@ -326,7 +358,7 @@ def analyze_suite_reservations(
                             utilization=efficiency,
                             direction="reduce",
                             suggested=str(suggested_cpus),
-                            edit_hint=hint("cpus"),
+                            edit_hint=hint("cpus", from_compile=cpus_floored),
                             **common,
                         )
                     )
