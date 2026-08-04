@@ -598,10 +598,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#parallel-dispatch-via-slurm" class="md-nav__link">
+  <a href="#parallel-dispatch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Parallel dispatch via Slurm
+        Parallel dispatch
       
     </span>
   </a>
@@ -1621,10 +1621,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#parallel-dispatch-via-slurm" class="md-nav__link">
+  <a href="#parallel-dispatch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Parallel dispatch via Slurm
+        Parallel dispatch
       
     </span>
   </a>
@@ -1705,11 +1705,13 @@ of once per test (Verilator, VCS, and Icarus builders). See
 <h2 id="working-directory-behavior">Working directory behavior</h2>
 <p>Unlike <code>test</code>, the <code>regression</code> subcommand <strong>changes directory</strong> into each suite directory before running its tests. This means relative paths in <code>tests.yaml</code> (such as <code>model_path</code>) are resolved correctly without any extra setup.</p>
 <p>Run <code>regression</code> from the repo root so that the paths in <code>regressions.yaml</code> resolve correctly.</p>
-<h2 id="parallel-dispatch-via-slurm">Parallel dispatch via Slurm</h2>
+<h2 id="parallel-dispatch">Parallel dispatch</h2>
 <p>By default a regression runs every test in-process, one at a time
-(<code>--dispatch local</code>). On a cluster you can instead fan the tests out as
-parallel <a href="https://slurm.schedmd.com/">Slurm</a> jobs after the shared build:</p>
+(<code>--dispatch local</code>). To run tests in parallel after the shared build,
+dispatch them — to a <a href="https://slurm.schedmd.com/">Slurm</a> cluster, or to a
+pool of subprocesses on the machine you are sitting at:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>slurm
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">4</span>
 </code></pre></div>
 <p>What happens: <strong>nothing heavy runs on the submit host</strong> (usually an
 interactive login node). The head expands the suite once, then submits one
@@ -1719,9 +1721,15 @@ one sim job per test, each gated on that build with <code>--dependency=afterok</
 so a sim starts only once its shared build succeeded and re-enters at
 simulation. The head waits for the queue to drain and collects each job's
 result into the normal summary and exit code.</p>
-<p>See <strong><a href="../dispatch/">Parallel Dispatch (Slurm)</a></strong> for the full treatment:
+<p><code>--dispatch local-parallel</code> is the same pipeline without a scheduler: the
+build and the sims are plain subprocesses on this host, capped by
+<code>-j/--jobs</code> (default <code>min(4, cpu count)</code>) — nothing to install, and it
+works on macOS, where Slurm does not run. It cannot enforce <code>resources:</code>
+reservations or report usage, so right-size against a cluster run.</p>
+<p>See <strong><a href="../dispatch/">Parallel dispatch</a></strong> for the full treatment:
 <code>cfg-dispatch</code> configuration, per-test <code>resources:</code> layering, reservation
-right-sizing advice, requirements, and the agent loop.</p>
+right-sizing advice, requirements, the single-machine backend, and the
+agent loop.</p>
 <h2 id="full-schema">Full schema</h2>
 <p>See <a href="../../reference/yaml/#regressionyaml">YAML Formats: regressions.yaml</a> for the complete field reference.</p>
 

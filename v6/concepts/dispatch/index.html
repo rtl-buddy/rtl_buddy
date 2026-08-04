@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Fan regression tests out as parallel Slurm jobs after the shared build, with per-test resource reservations and reservation right-sizing advice.">
+        <meta name="description" content="Fan regression tests out in parallel — as Slurm jobs on a cluster or as capped subprocesses on one machine — after a single shared build, with per-test resource reservations and right-sizing advice.">
       
       
         <meta name="author" content="RTL Buddy contributors">
@@ -70,7 +70,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#parallel-dispatch-slurm" class="md-skip">
+        <a href="#parallel-dispatch" class="md-skip">
           Skip to content
         </a>
       
@@ -598,10 +598,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#requirements" class="md-nav__link">
+  <a href="#on-one-machine-dispatch-local-parallel" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Requirements
+        On one machine: --dispatch local-parallel
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirements-slurm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements (Slurm)
       
     </span>
   </a>
@@ -1598,10 +1609,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#requirements" class="md-nav__link">
+  <a href="#on-one-machine-dispatch-local-parallel" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Requirements
+        On one machine: --dispatch local-parallel
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirements-slurm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements (Slurm)
       
     </span>
   </a>
@@ -1672,14 +1694,63 @@
   
 
 
-<h1 id="parallel-dispatch-slurm">Parallel dispatch (Slurm)</h1>
-<p>By default <code>rb regression</code> runs every test in-process, one at a time. On
-a cluster you can instead <strong>dispatch</strong> the tests as parallel
-<a href="https://slurm.schedmd.com/">Slurm</a> jobs after a single shared build:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>slurm
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rb<span class="w"> </span>randtest<span class="w"> </span>my_test<span class="w"> </span><span class="m">500</span><span class="w"> </span>--dispatch<span class="w"> </span>slurm<span class="w">   </span><span class="c1"># seed fan-out</span>
+<h1 id="parallel-dispatch">Parallel dispatch</h1>
+<p>By default <code>rb regression</code> runs every test in-process, one at a time.
+<strong>Dispatch</strong> instead fans the tests out in parallel after a single shared
+build, with one of two backends:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>slurm<span class="w">             </span><span class="c1"># a cluster</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w">    </span><span class="c1"># this machine, no scheduler</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rb<span class="w"> </span>randtest<span class="w"> </span>my_test<span class="w"> </span><span class="m">500</span><span class="w"> </span>--dispatch<span class="w"> </span>slurm<span class="w">   </span><span class="c1"># seed fan-out</span>
 </code></pre></div>
 <p><code>--dispatch local</code> (the default) is the unchanged in-process path.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>local</code></th>
+<th><code>local-parallel</code></th>
+<th><code>slurm</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Runs where</td>
+<td>this process</td>
+<td>this host, N subprocesses</td>
+<td>cluster nodes</td>
+</tr>
+<tr>
+<td>Needs</td>
+<td>nothing</td>
+<td>nothing</td>
+<td>Slurm client + shared FS</td>
+</tr>
+<tr>
+<td>Concurrency</td>
+<td>1</td>
+<td><code>--jobs</code> / <code>cfg-dispatch.jobs</code></td>
+<td><code>max-jobs-per-array</code> × arrays</td>
+</tr>
+<tr>
+<td><code>resources:</code> reservations</td>
+<td>n/a</td>
+<td>ignored (advisory)</td>
+<td>enforced by the scheduler</td>
+</tr>
+<tr>
+<td>Right-sizing advice</td>
+<td>n/a</td>
+<td>none (no accounting)</td>
+<td>from <code>sacct</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both dispatch backends sit behind one interface and share everything that
+is not the transport: the head expands sweeps <strong>once</strong> into a plan
+manifest, submits one build job per suite, gates the sims on that build,
+and collects a <code>result.json</code> per job. The sections below describe the
+Slurm path first; <a href="#on-one-machine-dispatch-local-parallel">On one machine</a>
+covers what differs on a laptop.</p>
 <h2 id="how-it-works">How it works</h2>
 <p><strong>Nothing heavy runs on the submit host</strong> — it is usually an interactive
 login node where a big Verilation is against policy. The head process only
@@ -1811,7 +1882,58 @@ license server rather than an undersized reservation. Give a VCS
 build job compiles each key once, serially, taking one seat at a time
 instead of one per concurrent array element.</p>
 </div>
-<h2 id="requirements">Requirements</h2>
+<h2 id="on-one-machine-dispatch-local-parallel">On one machine: <code>--dispatch local-parallel</code></h2>
+<p>Slurm needs a cluster, and it has no native macOS build — so on a laptop
+the only options used to be "one test at a time" or "stand up a scheduler".
+<code>local-parallel</code> closes that gap: the same plan → build job → gated
+fan-out, with every job a plain subprocess on this host, throttled by one
+pool of slots.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w">          </span><span class="c1"># min(4, cpu count) jobs</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>regression<span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">8</span><span class="w">     </span><span class="c1"># eight at a time</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>rb<span class="w"> </span>randtest<span class="w"> </span>my_test<span class="w"> </span><span class="m">20</span><span class="w"> </span>--dispatch<span class="w"> </span>local-parallel<span class="w"> </span>-j<span class="w"> </span><span class="m">4</span>
+</code></pre></div>
+<p>Nothing to install: no scheduler client, no shared filesystem (the local
+one is trivially "visible at the same paths"), no accounting database.
+Concurrency comes from <code>-j/--jobs</code>, or <code>cfg-dispatch.jobs</code>, defaulting to
+<code>min(4, cpu count)</code>. It is <strong>one global pool</strong> — across every suite and
+every resource group, not per array — so <code>-j 4</code> means at most four
+<code>rb</code> jobs alive at once, full stop. Build jobs jump the queue ahead of
+waiting sims, since a build unblocks a whole suite and a sim unblocks
+nothing.</p>
+<p>What carries over unchanged: the sweep hook runs once on the head; each
+suite's shared build compiles once and the sims short-circuit on its
+stamp; a sim only starts once its build <strong>exited 0</strong> (this backend's
+version of <code>afterok</code>), and if the build fails its sims never start and are
+reported as producing no result, pointing at the build log.</p>
+<p>Two things are deliberately <strong>not</strong> supported, and they are the reason to
+still prefer Slurm where you have it:</p>
+<ul>
+<li><strong>Reservations are not enforced.</strong> <code>resources:</code> cpus/mem/time are
+  ignored rather than half-honoured — one host has no portable per-process
+  cap (<code>ulimit</code>/<code>nice</code>/<code>taskset</code> are coarse and platform-specific). Any
+  reservation that resolves to something non-default — from <code>cfg-dispatch</code>
+  <em>or</em> from a per-testbench / per-test <code>resources:</code> — <strong>warns</strong> once
+  (<code>dispatch.reservations_ignored</code>) so it cannot read as enforced. <code>-j</code> is
+  the only backpressure, so size it for the <em>memory</em> your heaviest tests
+  need, not just for cores.</li>
+<li><strong>No usage telemetry, so no right-sizing advice.</strong> There is no <code>sacct</code>
+  to ask, so <code>payload.reservation_advice</code> comes back empty instead of
+  guessing. Right-size against a real cluster run.</li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Ctrl-C cleans up; <code>kill -9</code> does not</p>
+<p>Jobs run in their own process session, so an interrupt goes to the
+head, which takes the fleet down itself — the same shape as <code>scancel</code>,
+and it lets a simulator flush on a graceful signal. Teardown signals
+<strong>every</strong> job before waiting on any, so the grace period is one 5 s
+window for the whole fleet rather than 5 s per job, and an impatient
+second <code>Ctrl-C</code> can at worst skip the escalation to <code>SIGKILL</code> — never
+leave a job unsignalled. The trade-off: a <code>SIGKILL</code>ed head runs no
+cleanup at all and, unlike Slurm, there is no scheduler to reap the
+orphans — its children finish their runs. Prefer <code>Ctrl-C</code> over
+<code>kill -9</code> on a dispatched run.</p>
+</div>
+<h2 id="requirements-slurm">Requirements (Slurm)</h2>
 <ul>
 <li>A Slurm client on the submit host (<code>sbatch</code>/<code>squeue</code>/<code>sacct</code>/<code>scancel</code>)
   — see <a href="../../install/">Installation</a>. <code>rb tool-check --explain slurm</code>
@@ -1828,27 +1950,32 @@ instead of one per concurrent array element.</p>
 </ul>
 <h2 id="configuration-cfg-dispatch">Configuration: <code>cfg-dispatch</code></h2>
 <p>All optional, in <code>root_config.yaml</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">cfg-dispatch</span><span class="p">:</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm</span><span class="w">            </span><span class="c1"># default: local (in-process)</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">resources</span><span class="p">:</span><span class="w">                </span><span class="c1"># cluster-wide per-SIM-job defaults</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4G</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;01:00:00&quot;</span><span class="w">        </span><span class="c1"># QUOTE time values (see below)</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">compile</span><span class="p">:</span><span class="w">                  </span><span class="c1"># reservation for the COMPILE (defaults to resources)</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16G</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;02:00:00&quot;</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">sbatch-args</span><span class="p">:</span><span class="w">              </span><span class="c1"># passed to sbatch verbatim</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--partition=verif</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--account=chip</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="nt">max-jobs-per-array</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">   </span><span class="c1"># concurrency throttle, PER submitted array</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">poll-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w">         </span><span class="c1"># seconds between queue polls (&gt; 0)</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">  </span><span class="nt">rightsize</span><span class="p">:</span><span class="w">                </span><span class="c1"># reservation right-sizing (see below)</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="nt">report</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="nt">over-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="nt">near-limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.9</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="nt">margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">cfg-dispatch</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slurm</span><span class="w">            </span><span class="c1"># local (in-process, default) | local-parallel | slurm</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">jobs</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">                   </span><span class="c1"># local-parallel only: concurrent subprocesses</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">resources</span><span class="p">:</span><span class="w">                </span><span class="c1"># cluster-wide per-SIM-job defaults</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4G</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;01:00:00&quot;</span><span class="w">        </span><span class="c1"># QUOTE time values (see below)</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span><span class="nt">compile</span><span class="p">:</span><span class="w">                  </span><span class="c1"># reservation for the COMPILE (defaults to resources)</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16G</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;02:00:00&quot;</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span><span class="nt">sbatch-args</span><span class="p">:</span><span class="w">              </span><span class="c1"># passed to sbatch verbatim</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--partition=verif</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--account=chip</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">  </span><span class="nt">max-jobs-per-array</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">   </span><span class="c1"># concurrency throttle, PER submitted array</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">  </span><span class="nt">poll-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w">         </span><span class="c1"># seconds between queue polls (&gt; 0)</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">  </span><span class="nt">rightsize</span><span class="p">:</span><span class="w">                </span><span class="c1"># reservation right-sizing (see below)</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">    </span><span class="nt">report</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">    </span><span class="nt">over-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span><span class="nt">near-limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.9</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="nt">margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span>
 </code></pre></div>
+<p><code>jobs</code> and <code>max-jobs-per-array</code> belong to different backends and do not
+interact: <code>jobs</code> is <code>local-parallel</code>'s single global pool, while
+<code>max-jobs-per-array</code> is a Slurm <code>%N</code> throttle (and is ignored by
+<code>local-parallel</code>, which has no arrays).</p>
 <p><code>max-jobs-per-array</code> throttles each <em>submitted array</em>
 (<code>--array=1-N%max-jobs-per-array</code>), not the run as a whole — a regression with several reservation shapes across
 several suites submits several arrays, so peak concurrency is roughly
@@ -1866,14 +1993,14 @@ rtl_buddy rejects the unquoted form loudly; always write
 testbench or per test in <code>tests.yaml</code>, using the same fields; the
 effective reservation is layered <strong>test → testbench →
 <code>cfg-dispatch.resources</code> → built-in defaults</strong>, field by field:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">testbenches</span><span class="p">:</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_tb</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpus</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">8G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;00:30:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_smoke</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="c1"># inherits the testbench reservation</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_soak</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">24G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;04:00:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">   </span><span class="c1"># cpus inherited</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">testbenches</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_tb</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpus</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">8G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;00:30:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="nt">tests</span><span class="p">:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_smoke</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="c1"># inherits the testbench reservation</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_soak</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">24G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;04:00:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">   </span><span class="c1"># cpus inherited</span>
 </code></pre></div>
 <p>Tests that resolve to the same reservation share one Slurm array;
 differing reservations split into separate arrays.</p>
@@ -1886,18 +2013,18 @@ apply the change as a reviewable diff.</p>
 <p>In human mode this is a "Reservation Advice" table after the summary. In
 <code>--machine</code> mode, <code>payload.reservation_advice</code> carries one event per
 finding:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reservation-advice&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">&quot;suite&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;axi_soak&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="nt">&quot;resource&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mem&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nt">&quot;reserved&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;24G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;peak&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;utilization&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.13</span><span class="p">,</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reduce&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;suggested&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;5G&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span><span class="nt">&quot;runs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reg_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;states&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;COMPLETED&quot;</span><span class="p">],</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">  </span><span class="nt">&quot;edit_hint&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">                </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tests[name=axi_soak].resources.mem&quot;</span><span class="p">}</span>
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reservation-advice&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">&quot;suite&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;axi_soak&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">&quot;resource&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mem&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">&quot;reserved&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;24G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;peak&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;utilization&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.13</span><span class="p">,</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reduce&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;suggested&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;5G&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">&quot;runs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reg_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;states&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;COMPLETED&quot;</span><span class="p">],</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span><span class="nt">&quot;edit_hint&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">                </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tests[name=axi_soak].resources.mem&quot;</span><span class="p">}</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="p">}</span>
 </code></pre></div>
 <p>Semantics:</p>
 <ul>
