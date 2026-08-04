@@ -2135,10 +2135,21 @@ compile separately.</p>
 compile inputs (including each source file's size and modification time) is
 written next to the <code>simv</code>. Reuse only happens when the stamp matches, so
 editing any file listed in the filelist triggers a rebuild in place.</p>
+<p>Where the build lands depends on the builder, but the executable is always
+<code>simv</code> inside the shared dir: Verilator is pointed there with <code>--Mdir</code>, VCS
+with <code>-o</code> (plus <code>-Mdir</code> so its <code>csrc</code> tree stays beside the binary), and
+Icarus with <code>-o</code> for the <code>.vvp</code> snapshot the wrapper <code>simv</code> execs. The shared
+build owns the output location, so a <code>-o</code> / <code>-Mdir</code> in <code>builder-opts</code> and a
+<em>relative</em> <code>builder-simv:</code> are both dropped in favour of <code>&lt;shared&gt;/simv</code>
+(logged at DEBUG as <code>compile.share_build_opts_overridden</code> /
+<code>compile.share_build_simv_overridden</code>). An <strong>absolute</strong> <code>builder-simv:</code>
+instead declines sharing altogether — see the caveats below.</p>
 <p>Caveats:</p>
 <ul>
-<li>Verilator builders only. Other builders log a warning and compile per
-  test as before.</li>
+<li>Verilator, VCS, and Icarus builders only. Others log a warning
+  (<code>compile.share_build_unsupported</code>, with the reason) and compile per test
+  as before, as does any builder whose <code>builder-simv:</code> is an absolute path —
+  that pins the executable outside the shared dir.</li>
 <li>Changes inside <code>+incdir+</code> include directories are not tracked by the
   stamp; delete <code>artefacts/.shared-builds/</code> (or run without
   <code>--share-build</code>) to force a fresh compile after header-only edits.</li>

@@ -1682,7 +1682,7 @@
 </code></pre></div>
 <p>When many tests in a suite share one testbench and compile configuration,
 add <code>--share-build</code> to compile once per unique set of compile inputs instead
-of once per test (Verilator builders only). See
+of once per test (Verilator, VCS, and Icarus builders). See
 <a href="../tests/#sharing-compiled-builds-across-tests">Sharing compiled builds across tests</a>.</p>
 <h3 id="config-resolution-order">Config resolution order</h3>
 <p>When <code>--reg-config</code> is not given, <code>rtl_buddy</code> resolves the regression config in this order:</p>
@@ -1713,7 +1713,7 @@ parallel <a href="https://slurm.schedmd.com/">Slurm</a> jobs after the shared bu
 </code></pre></div>
 <p>What happens: <strong>nothing heavy runs on the submit host</strong> (usually an
 interactive login node). The head expands the suite once, then submits one
-<strong>build job</strong> per suite that Verilates a shared <code>simv</code> per unique compile
+<strong>build job</strong> per suite that compiles a shared <code>simv</code> per unique compile
 key on a compute node (dispatch implies <code>--share-build</code>); it then submits
 one sim job per test, each gated on that build with <code>--dependency=afterok</code>,
 so a sim starts only once its shared build succeeded and re-enters at
