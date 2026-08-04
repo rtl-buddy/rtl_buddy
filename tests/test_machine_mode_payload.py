@@ -148,6 +148,117 @@ def test_machine_coverage_payload_gates_on_data():
     assert RtlBuddy._machine_coverage_payload(dirs) is dirs
 
 
+def test_machine_coverage_payload_survives_on_cover_points_alone():
+    """Cover points are recorded without any --coverage-merge* flag (#367)."""
+    covers = {
+        "merged": None,
+        "dir_summary": [],
+        "covers": [{"name": "APB_IF_WRITE", "file": "tb.sv", "line": 89, "hits": 13}],
+    }
+    assert RtlBuddy._machine_coverage_payload(covers) is covers
+    assert (
+        RtlBuddy._machine_coverage_payload(
+            {"merged": None, "dir_summary": [], "covers": None}
+        )
+        is None
+    )
+
+
+def test_machine_test_row_carries_per_test_cover_points():
+    covers = [{"name": "APB_IF_WRITE", "file": "tb.sv", "line": 89, "hits": 4}]
+    rb = RtlBuddy(name="rtl_buddy")
+    row = rb._machine_test_row(
+        "basic",
+        _results(
+            result="PASS",
+            desc="",
+            coverage={
+                "line": 0.9,
+                "branch": None,
+                "toggle": None,
+                "functional": 1.0,
+                "covers": covers,
+            },
+        ),
+    )
+    assert row["coverage"]["covers"] == covers
+    assert row["coverage"]["functional"] == 1.0
+
+
+def test_machine_test_row_omits_covers_when_absent():
+    rb = RtlBuddy(name="rtl_buddy")
+    row = rb._machine_test_row(
+        "basic",
+        _results(
+            result="PASS",
+            desc="",
+            coverage={"line": 0.9, "branch": None, "toggle": None, "functional": None},
+        ),
+    )
+    assert "covers" not in row["coverage"]
+
+
+def test_build_metadata_aggregates_cover_points_across_tests(tmp_path):
+    """Per-test lists fold into one run-level list, no merge flag needed."""
+    reporter = CoverageReporter(_DummyRootCfg())
+    suite_results = [
+        {
+            "test_name": "a",
+            "results": SimpleNamespace(
+                results={
+                    "coverage": {
+                        "raw_paths": ["/tmp/a.dat"],
+                        "covers": [
+                            {
+                                "name": "C1",
+                                "file": "tb.sv",
+                                "line": 10,
+                                "module": "dut",
+                                "hits": 2,
+                            },
+                            {
+                                "name": "C2",
+                                "file": "tb.sv",
+                                "line": 20,
+                                "module": "dut",
+                                "hits": 0,
+                            },
+                        ],
+                    }
+                }
+            ),
+        },
+        {
+            "test_name": "b",
+            "results": SimpleNamespace(
+                results={
+                    "coverage": {
+                        "raw_paths": ["/tmp/b.dat"],
+                        "covers": [
+                            {
+                                "name": "C1",
+                                "file": "tb.sv",
+                                "line": 10,
+                                "module": "dut",
+                                "hits": 5,
+                            },
+                        ],
+                    }
+                }
+            ),
+        },
+    ]
+
+    _, coverage = reporter.build_metadata(
+        suite_results, outdir=str(tmp_path), suite_name="suite"
+    )
+
+    assert coverage["covers"] == [
+        {"name": "C1", "file": "tb.sv", "line": 10, "module": "dut", "hits": 7},
+        {"name": "C2", "file": "tb.sv", "line": 20, "module": "dut", "hits": 0},
+    ]
+
+
 def test_build_metadata_returns_structured_merged_coverage(tmp_path, monkeypatch):
     reporter = CoverageReporter(_DummyRootCfg())
 
@@ -194,6 +305,8 @@ def test_build_metadata_without_coverage_returns_empty_payload(tmp_path):
     metadata, coverage = reporter.build_metadata(
         [], outdir=str(tmp_path), suite_name="suite"
     )
+    # `covers` is omitted, not null, when no user points were recorded — so
+    # "absent means not collected" holds on the run level as well as the rows.
     assert coverage == {"merged": None, "dir_summary": []}
     assert metadata == []
 

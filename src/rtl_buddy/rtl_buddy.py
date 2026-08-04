@@ -1794,16 +1794,20 @@ class RtlBuddy:
         """Structured per-test coverage for the machine payload, or None.
 
         Returns the `{line, branch, toggle, functional}` percentages a machine
-        consumer would gate on — the display string and artifact paths carried
-        by the full coverage dict are dropped. None when the test produced no
-        coverage numbers at all.
+        consumer would gate on, plus `covers` (per-cover-point names and hit
+        counts) when the test recorded user coverage — the display string and
+        artifact paths carried by the full coverage dict are dropped. None when
+        the test produced no coverage data at all.
         """
         cov = test_results.results.get("coverage")
         if not cov:
             return None
         metrics = {k: cov.get(k) for k in ("line", "branch", "toggle", "functional")}
-        if all(v is None for v in metrics.values()):
+        covers = cov.get("covers")
+        if all(v is None for v in metrics.values()) and not covers:
             return None
+        if covers:
+            metrics["covers"] = covers
         return metrics
 
     def _machine_test_row(self, test_name, test_results, *, suite=None, run_id=None):
@@ -1821,8 +1825,17 @@ class RtlBuddy:
 
     @staticmethod
     def _machine_coverage_payload(coverage):
-        """Return the merged-coverage payload if it carries data, else None."""
-        if coverage and (coverage.get("merged") or coverage.get("dir_summary")):
+        """Return the run-level coverage payload if it carries data, else None.
+
+        `covers` counts as data on its own: user cover points are recorded
+        without any `--coverage-merge*` flag, so gating only on `merged` would
+        drop them.
+        """
+        if coverage and (
+            coverage.get("merged")
+            or coverage.get("dir_summary")
+            or coverage.get("covers")
+        ):
             return coverage
         return None
 
@@ -2800,7 +2813,14 @@ class RtlBuddy:
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
+        # The per-suite HTML branch below builds metadata per suite and drops
+        # each payload, so seed the run-level cover points here to keep them in
+        # the envelope either way. Key omitted when there are none, so "absent"
+        # keeps meaning "not collected" on every surface.
         coverage_payload = {"merged": None, "dir_summary": []}
+        seed_covers = self.coverage.collect_cover_records(all_suite_results)
+        if seed_covers:
+            coverage_payload["covers"] = seed_covers
         if (
             coverage_html
             and not coverage_merge

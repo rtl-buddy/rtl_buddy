@@ -74,6 +74,8 @@ Cover properties land in the same `coverage.dat` Verilator emits today, so:
 - `rb -M cov test ... ` continues to be the canonical path for full coverage HTML / Coverview packaging.
 - With just `assertions: true` (no `-M cov`), `coverage.dat` still exists per-run because `--coverage-user` was injected — but only the user-coverage type is present. Merge with `--coverage-merge` to roll up.
 
+Under `--machine`, each labeled cover property is reported by name with its hit count, per test and summed across the run — see [Per-cover-point results](coverage.md#per-cover-point-results). That gives the simulation side the same per-cover observability `rb fpv` rows already carry through their vacuity witnesses.
+
 See [Coverage](coverage.md) for the merge pipeline and the
 [Verilator coverage analysis note](https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/tools/verilator_cov_analysis.md)
 for how the raw simulator coverage points relate to LCOV outputs.
