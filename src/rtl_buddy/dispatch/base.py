@@ -100,6 +100,12 @@ class DispatchBackend(ABC):
 
     name: str = "?"
 
+    # Whether jobs are handed to a batch scheduler that can kill or cancel
+    # them on its own. False for a backend that runs jobs itself (the
+    # local-parallel pool, #360), where a missing result cannot be explained
+    # by scheduler action and diagnostics must not blame one.
+    scheduled: bool = True
+
     @abstractmethod
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
         """Submit one suite's build job; return its handle without waiting."""
@@ -127,6 +133,17 @@ class DispatchBackend(ABC):
         gates every element on that job succeeding.
         """
         return [self.submit(spec, dependency=dependency) for spec in specs]
+
+    def advance(self) -> None:
+        """Let a self-executing backend make progress, without blocking.
+
+        No-op for a scheduler-backed backend: the scheduler runs the fleet
+        whether or not the head is paying attention. A backend that executes
+        jobs itself only makes progress when poked, so the head calls this
+        while it is doing its own work between submissions — planning the
+        next suite can take real time (its sweep hook shells out), and a slot
+        freed during that would otherwise sit idle (#360).
+        """
 
     @abstractmethod
     def wait_all(self, handles: list[JobHandle]) -> None:

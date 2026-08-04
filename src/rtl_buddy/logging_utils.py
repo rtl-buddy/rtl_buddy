@@ -335,8 +335,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"to {fields.get('suggested')}"
             )
         case "randtest.dispatch_ignored_for_replay":
+            jobs = fields.get("jobs")
+            also = f" (and --jobs {jobs})" if jobs is not None else ""
             return (
-                f"--dispatch {fields.get('backend')} ignored for replay "
+                f"--dispatch {fields.get('backend')}{also} ignored for replay "
                 f"(-r {fields.get('replay_run_id')}): a single-seed replay "
                 "runs locally"
             )
@@ -410,6 +412,57 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"dispatch: scancel failed for {fields.get('jobs')} "
                 f"(rc {fields.get('returncode')}) — those jobs are still "
                 f"queued and need cancelling by hand: {fields.get('error')}"
+            )
+        case "dispatch.build_submitted":
+            return (
+                f"Submitted shared-build job {fields.get('job_id')} for "
+                f"{fields.get('suite_dir')}"
+            )
+        case "dispatch.submitted":
+            gate = fields.get("dependency")
+            target = fields.get("test")
+            if fields.get("run_id") is not None:
+                target = f"{target}:{fields.get('run_id')}"
+            return f"Submitted job {fields.get('job_id')} for {target}" + (
+                f", gated on build {gate}" if gate else ""
+            )
+        case "dispatch.drained":
+            return (
+                f"All {fields.get('jobs')} dispatched job(s) finished on the "
+                f"{fields.get('backend')} backend"
+            )
+        case "dispatch.job_started":
+            return (
+                f"Started {fields.get('kind')} job {fields.get('job_id')} "
+                f"(pid {fields.get('pid')}), logging to {fields.get('log')}"
+            )
+        case "dispatch.job_exited":
+            return (
+                f"{fields.get('kind')} job {fields.get('job_id')} exited with "
+                f"returncode {fields.get('returncode')}"
+            )
+        case "dispatch.pool_configured":
+            return (
+                f"Dispatching up to {fields.get('jobs')} job(s) concurrently on "
+                f"the {fields.get('backend')} backend "
+                f"({fields.get('cpus')} CPUs detected)"
+            )
+        case "dispatch.reservations_ignored":
+            reserved = ", ".join(
+                f"{key}={fields.get(key)}"
+                for key in ("cpus", "mem", "time")
+                if fields.get(key) is not None
+            )
+            return (
+                f"Resource reservations ({reserved}) are NOT enforced by the "
+                f"{fields.get('backend')} backend — one host has no portable "
+                "per-process cap, so --jobs is the only limit; size it for the "
+                "memory the heaviest tests need"
+            )
+        case "dispatch.dependency_failed":
+            return (
+                f"dispatch: skipping {len(fields.get('jobs') or [])} job(s) whose "
+                f"shared build failed ({fields.get('jobs')}) — see the build log"
             )
         case "dispatch.dependency_never_satisfied":
             return (

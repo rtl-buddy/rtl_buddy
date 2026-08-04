@@ -72,14 +72,16 @@ Unlike `test`, the `regression` subcommand **changes directory** into each suite
 
 Run `regression` from the repo root so that the paths in `regressions.yaml` resolve correctly.
 
-## Parallel dispatch via Slurm
+## Parallel dispatch
 
 By default a regression runs every test in-process, one at a time
-(`--dispatch local`). On a cluster you can instead fan the tests out as
-parallel [Slurm](https://slurm.schedmd.com/) jobs after the shared build:
+(`--dispatch local`). To run tests in parallel after the shared build,
+dispatch them — to a [Slurm](https://slurm.schedmd.com/) cluster, or to a
+pool of subprocesses on the machine you are sitting at:
 
 ```bash
 rtl-buddy regression --dispatch slurm
+rtl-buddy regression --dispatch local-parallel -j 4
 ```
 
 What happens: **nothing heavy runs on the submit host** (usually an
@@ -91,9 +93,16 @@ so a sim starts only once its shared build succeeded and re-enters at
 simulation. The head waits for the queue to drain and collects each job's
 result into the normal summary and exit code.
 
-See **[Parallel Dispatch (Slurm)](dispatch.md)** for the full treatment:
+`--dispatch local-parallel` is the same pipeline without a scheduler: the
+build and the sims are plain subprocesses on this host, capped by
+`-j/--jobs` (default `min(4, cpu count)`) — nothing to install, and it
+works on macOS, where Slurm does not run. It cannot enforce `resources:`
+reservations or report usage, so right-size against a cluster run.
+
+See **[Parallel dispatch](dispatch.md)** for the full treatment:
 `cfg-dispatch` configuration, per-test `resources:` layering, reservation
-right-sizing advice, requirements, and the agent loop.
+right-sizing advice, requirements, the single-machine backend, and the
+agent loop.
 
 ## Full schema
 

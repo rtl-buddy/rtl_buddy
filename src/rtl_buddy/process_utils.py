@@ -14,35 +14,54 @@ class ManagedProcessResult:
     timed_out: bool = False
 
 
-def _terminate_process_group(
+DEFAULT_KILL_TIMEOUT = 5
+
+
+def signal_process_group(proc: subprocess.Popen, sig: int) -> None:
+    """Send ``sig`` to ``proc``'s whole group without waiting for it.
+
+    Signalling and reaping are separable because a caller holding *several*
+    processes must signal them all before waiting on any: waiting in the
+    same loop makes the total grace period scale with the fleet size, and
+    leaves anything not yet reached unsignalled if the wait is interrupted
+    (the local-parallel dispatch pool, #360). Falls back to signalling the
+    single process when the group cannot be signalled, and is a no-op for a
+    process that is already gone.
+    """
+    if os.name == "nt":
+        if sig == signal.SIGKILL:
+            proc.kill()
+        else:
+            proc.terminate()
+        return
+    try:
+        os.killpg(proc.pid, sig)
+    except PermissionError:
+        proc.send_signal(sig)
+    except ProcessLookupError:
+        return
+
+
+def terminate_process_group(
     proc: subprocess.Popen,
     *,
-    terminate_signal: int,
-    kill_timeout: float,
+    terminate_signal: int = signal.SIGTERM,
+    kill_timeout: float = DEFAULT_KILL_TIMEOUT,
 ) -> None:
+    """Stop ``proc`` and its group: graceful signal, then SIGKILL.
+
+    Owns one process for the duration of the call, so it is right for
+    :func:`run_managed_process` and wrong for a caller holding a fleet — see
+    :func:`signal_process_group`.
+    """
     if proc.poll() is not None:
         return
 
-    def _send_signal(sig: int) -> None:
-        if os.name == "nt":
-            if sig == signal.SIGKILL:
-                proc.kill()
-            else:
-                proc.terminate()
-            return
-
-        try:
-            os.killpg(proc.pid, sig)
-        except PermissionError:
-            proc.send_signal(sig)
-
     try:
-        _send_signal(terminate_signal)
+        signal_process_group(proc, terminate_signal)
         proc.wait(timeout=kill_timeout)
-    except ProcessLookupError:
-        return
     except subprocess.TimeoutExpired:
-        _send_signal(signal.SIGKILL)
+        signal_process_group(proc, signal.SIGKILL)
         proc.wait()
 
 
@@ -56,7 +75,7 @@ def _timeout_result(
     terminate_signal: int,
     kill_timeout: float,
 ) -> ManagedProcessResult:
-    _terminate_process_group(
+    terminate_process_group(
         proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
     )
     stdout_data, stderr_data = proc.communicate()
@@ -124,7 +143,7 @@ def run_managed_process(
     previous_handlers = {}
 
     def _signal_handler(signum, frame):
-        _terminate_process_group(
+        terminate_process_group(
             proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
         )
         previous = previous_handlers.get(signum)
@@ -185,7 +204,7 @@ def run_managed_process(
                 kill_timeout=kill_timeout,
             )
     finally:
-        _terminate_process_group(
+        terminate_process_group(
             proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
         )
         if in_main_thread:

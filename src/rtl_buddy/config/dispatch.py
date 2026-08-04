@@ -18,6 +18,7 @@ execution backend for regression test runs:
       sbatch-args:             # passed through to sbatch verbatim
         - --partition=verif
       poll-interval: 10        # seconds between queue polls while collecting
+      jobs: 4                  # local-parallel only: concurrent subprocesses
 
 Per-test reservation overrides use the same ``resources`` shape in
 tests.yaml at testbench and test level; :func:`resolve_resources` layers
@@ -128,6 +129,11 @@ class DispatchConfigFile:
     # (sbatch --array=1-N%cap). Peak concurrency across a run is roughly
     # this times the number of arrays (resource groups x suites).
     max_jobs_per_array: int = field(rename="max-jobs-per-array", default=200)
+    # Concurrent subprocesses for the `local-parallel` backend — one global
+    # pool, not a per-array throttle (there are no arrays off a scheduler).
+    # `None` means the backend's own default, min(4, cpu_count); `--jobs`
+    # overrides this per invocation.
+    jobs: int | None = None
     rightsize: RightsizeConfigFile | None = None
 
     def initialise(self) -> "DispatchConfig":
@@ -157,6 +163,11 @@ class DispatchConfigFile:
                 f"cfg-dispatch max-jobs-per-array must be >= 1 "
                 f"(got {self.max_jobs_per_array})."
             )
+        if self.jobs is not None and self.jobs < 1:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch jobs must be >= 1 (got {self.jobs}); a pool of "
+                "zero would never start a job."
+            )
         return DispatchConfig(
             backend=self.backend,
             resources=_validated(self.resources),
@@ -164,6 +175,7 @@ class DispatchConfigFile:
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
             max_jobs_per_array=self.max_jobs_per_array,
+            jobs=self.jobs,
             rightsize=self.rightsize,
         )
 
@@ -178,6 +190,7 @@ class DispatchConfig:
     sbatch_args: list = None
     poll_interval: float = 10.0
     max_jobs_per_array: int = 200
+    jobs: int | None = None
     rightsize: RightsizeConfigFile | None = None
 
     def __post_init__(self):

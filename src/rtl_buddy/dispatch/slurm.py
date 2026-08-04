@@ -11,10 +11,10 @@ then one ``sbatch --wrap`` sim job per (test, run_id) (``submit`` →
 ``rb _test-job``) gated on that build with ``--dependency=afterok`` — a sim
 only starts once its shared build succeeded, and its own ``compile()`` then
 short-circuits on the shared-build stamp so it effectively runs SIM + POST
-only. Every job re-invokes ``rb`` from the same Python environment
-(``sys.executable``, on the shared filesystem alongside the project), and
-both jobs are handed the head's dispatch plan (``--plan``) so the suite's
-sweep hook is never re-run off the head.
+only. What each job runs is the backend-independent argv from
+:mod:`.argv`: the same Python environment (``sys.executable``, on the
+shared filesystem alongside the project), handed the head's dispatch plan
+(``--plan``) so the suite's sweep hook is never re-run off the head.
 
 Collection waits for the queue to drain via ``squeue`` polling; loading
 the per-job result envelopes is the caller's job (backend-independent).
@@ -30,15 +30,14 @@ head process cwd is re-anchored per suite during a regression.
 import logging
 import shlex
 import subprocess
-import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
-from ..seed_mode import SeedMode
 from ..tool_manifest import require as require_tool
+from .argv import build_job_argv, test_job_argv
 from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
 
 logger = logging.getLogger(__name__)
@@ -140,34 +139,6 @@ class SlurmDispatchBackend(DispatchBackend):
                 return h.spec.suite_dir
         return None
 
-    def _job_argv(self, spec: TestJobSpec) -> list[str]:
-        """The ``rb _test-job`` invocation the batch script runs."""
-        argv = [sys.executable, "-m", "rtl_buddy", "--machine"]
-        if spec.builder_mode is not None:
-            argv += ["-M", spec.builder_mode]
-        if spec.builder_override is not None:
-            argv += ["-B", spec.builder_override]
-        argv += [
-            "_test-job",
-            spec.test_name,
-            "-c",
-            spec.test_config_path,
-            "--result-json",
-            str(spec.result_json),
-        ]
-        if spec.plan_path is not None:
-            # Resolve this test's config from the head's plan — no sweep re-run.
-            argv += ["--plan", str(spec.plan_path)]
-        if spec.share_build:
-            argv += ["--share-build"]
-        if spec.run_id is not None:
-            argv += ["--run-id", str(spec.run_id)]
-        if spec.seed_mode != SeedMode.DEFAULT:
-            argv += ["--seed-mode", spec.seed_mode.value]
-        if spec.replay_run_id is not None:
-            argv += ["--replay-run-id", str(spec.replay_run_id)]
-        return argv
-
     def _reservation_argv(self, resources, *, job_name, chdir, log_path) -> list[str]:
         """Common sbatch reservation flags shared by build and sim jobs."""
         cmd = [
@@ -204,25 +175,6 @@ class SlurmDispatchBackend(DispatchBackend):
             return []
         return [f"--dependency=afterok:{dependency}", "--kill-on-invalid-dep=yes"]
 
-    def _build_argv(self, spec: BuildJobSpec) -> list[str]:
-        """The ``rb _build-job`` invocation the build job runs."""
-        argv = [sys.executable, "-m", "rtl_buddy", "--machine"]
-        if spec.builder_mode is not None:
-            argv += ["-M", spec.builder_mode]
-        if spec.builder_override is not None:
-            argv += ["-B", spec.builder_override]
-        argv += ["_build-job", "-c", spec.test_config_path, "--share-build"]
-        if spec.plan_path is not None:
-            # Compile exactly the head's planned configs — no sweep re-run.
-            argv += ["--plan", str(spec.plan_path)]
-        if spec.result_json is not None:
-            argv += ["--result-json", str(spec.result_json)]
-        if spec.reg_level is not None:
-            argv += ["-l", str(spec.reg_level)]
-        if spec.start_level is not None:
-            argv += ["-s", str(spec.start_level)]
-        return argv
-
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
         cmd = self._reservation_argv(
             spec.resources,
@@ -231,7 +183,7 @@ class SlurmDispatchBackend(DispatchBackend):
             log_path=spec.log_path,
         )
         cmd += self.sbatch_args
-        cmd += ["--wrap", shlex.join(self._build_argv(spec))]
+        cmd += ["--wrap", shlex.join(build_job_argv(spec))]
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=spec.suite_dir)
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
@@ -264,7 +216,7 @@ class SlurmDispatchBackend(DispatchBackend):
         # afterok: the sim only runs if the shared build succeeded.
         cmd += self._dependency_argv(dependency)
         cmd += self.sbatch_args
-        cmd += ["--wrap", shlex.join(self._job_argv(spec))]
+        cmd += ["--wrap", shlex.join(test_job_argv(spec))]
         return cmd
 
     def submit(self, spec: TestJobSpec, *, dependency: str | None = None) -> JobHandle:
@@ -311,7 +263,7 @@ class SlurmDispatchBackend(DispatchBackend):
         array_dir.mkdir(parents=True, exist_ok=True)
         manifest = array_dir / "manifest.txt"
         manifest.write_text(
-            "".join(shlex.join(self._job_argv(spec)) + "\n" for spec in specs)
+            "".join(shlex.join(test_job_argv(spec)) + "\n" for spec in specs)
         )
         script = array_dir / "array.sh"
         script.write_text(_ARRAY_SCRIPT)

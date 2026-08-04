@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 import rtl_buddy.rtl_buddy as rtl_buddy_module
 from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
 from rtl_buddy.dispatch.plan import read_plan_token
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.result_io import write_result_json
 from rtl_buddy.runner.test_results import (
@@ -979,3 +980,127 @@ def test_unresolvable_builder_does_not_abort_finished_run(
     # The run completes and reports (exit 0/1 from results), not exit 2.
     assert result.exit_code in (0, 1), result.output
     assert '"command": "regression"' in result.output
+
+
+def test_jobs_flag_sizes_the_local_parallel_pool(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """``-j`` reaches the backend as its pool size (#360)."""
+    backend, seen = _FakeBackend(), {}
+
+    def _capture(name, cfg):
+        seen["name"], seen["jobs"] = name, cfg.jobs
+        return backend
+
+    monkeypatch.setattr(rtl_buddy_module, "create_dispatch_backend", _capture)
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+            "-j",
+            "3",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == {"name": "local-parallel", "jobs": 3}
+
+
+def test_jobs_flag_is_rejected_against_a_backend_without_a_pool(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A silently ignored concurrency knob is worse than a refusal (#360)."""
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "slurm", "-j", "4"]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "max-jobs-per-array" in str(result.exception)
+    # Rejected before anything was submitted, so there is no fleet to clean up.
+    assert not fake_backend.submitted
+    assert not fake_backend.build_submitted
+
+
+def test_zero_jobs_is_rejected(minimal_project: Path):
+    result, _ = _invoke(
+        [
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+            "-j",
+            "0",
+        ]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--jobs must be >= 1" in str(result.exception)
+
+
+def test_missing_result_does_not_blame_a_scheduler_off_slurm(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An unscheduled backend's failures must not be explained by `afterok`.
+
+    The pool *is* the scheduler (#360), so "the queue killed it" is never
+    the cause; the diagnostic has to name what can actually have happened.
+    """
+
+    class _PoolLikeBackend(_FakeBackend):
+        name = "local-parallel"
+        scheduled = False
+
+    backend = _PoolLikeBackend(write_results=False)
+    monkeypatch.setattr(
+        rtl_buddy_module, "create_dispatch_backend", lambda name, cfg: backend
+    )
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    desc = json.loads(payload_line)["payload"]["results"][0]["desc"]
+    assert "produced no result" in desc
+    assert "afterok" not in desc
+    assert "scheduler" not in desc
+    assert "never ran" in desc
+
+
+def test_jobs_on_a_randtest_replay_is_never_silently_dropped(minimal_project: Path):
+    """`-r` skips dispatch entirely, so `-j` has to be accounted for (#360).
+
+    The replay path never builds a backend, so validation has to run before
+    that branch; when the pool is the configured backend the flag is legal but
+    unused, and the existing ignored-flag warning must name it.
+    """
+    # Legal but unused: warned about, alongside the ignored backend.
+    result, _ = _invoke(
+        ["randtest", "basic", "3", "-r", "1", "--dispatch", "local-parallel", "-j", "4"]
+    )
+    warned = " ".join(result.output.split())
+    assert "--dispatch local-parallel (and --jobs 4) ignored for replay" in warned
+
+
+def test_jobs_on_a_replay_against_a_poolless_backend_is_still_rejected(
+    minimal_project: Path,
+):
+    """Validation runs before the replay short-circuit, so it still fires."""
+    result, _ = _invoke(
+        ["randtest", "basic", "3", "-r", "1", "--dispatch", "slurm", "-j", "4"]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "max-jobs-per-array" in str(result.exception)

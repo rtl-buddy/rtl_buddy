@@ -1,19 +1,35 @@
 ---
-description: Fan regression tests out as parallel Slurm jobs after the shared build, with per-test resource reservations and reservation right-sizing advice.
+description: Fan regression tests out in parallel — as Slurm jobs on a cluster or as capped subprocesses on one machine — after a single shared build, with per-test resource reservations and right-sizing advice.
 ---
 
-# Parallel dispatch (Slurm)
+# Parallel dispatch
 
-By default `rb regression` runs every test in-process, one at a time. On
-a cluster you can instead **dispatch** the tests as parallel
-[Slurm](https://slurm.schedmd.com/) jobs after a single shared build:
+By default `rb regression` runs every test in-process, one at a time.
+**Dispatch** instead fans the tests out in parallel after a single shared
+build, with one of two backends:
 
 ```bash
-rb regression --dispatch slurm
+rb regression --dispatch slurm             # a cluster
+rb regression --dispatch local-parallel    # this machine, no scheduler
 rb randtest my_test 500 --dispatch slurm   # seed fan-out
 ```
 
 `--dispatch local` (the default) is the unchanged in-process path.
+
+| | `local` | `local-parallel` | `slurm` |
+|---|---|---|---|
+| Runs where | this process | this host, N subprocesses | cluster nodes |
+| Needs | nothing | nothing | Slurm client + shared FS |
+| Concurrency | 1 | `--jobs` / `cfg-dispatch.jobs` | `max-jobs-per-array` × arrays |
+| `resources:` reservations | n/a | ignored (advisory) | enforced by the scheduler |
+| Right-sizing advice | n/a | none (no accounting) | from `sacct` |
+
+Both dispatch backends sit behind one interface and share everything that
+is not the transport: the head expands sweeps **once** into a plan
+manifest, submits one build job per suite, gates the sims on that build,
+and collects a `result.json` per job. The sections below describe the
+Slurm path first; [On one machine](#on-one-machine-dispatch-local-parallel)
+covers what differs on a laptop.
 
 ## How it works
 
@@ -153,7 +169,63 @@ consequences dispatch handles for you:
     build job compiles each key once, serially, taking one seat at a time
     instead of one per concurrent array element.
 
-## Requirements
+## On one machine: `--dispatch local-parallel`
+
+Slurm needs a cluster, and it has no native macOS build — so on a laptop
+the only options used to be "one test at a time" or "stand up a scheduler".
+`local-parallel` closes that gap: the same plan → build job → gated
+fan-out, with every job a plain subprocess on this host, throttled by one
+pool of slots.
+
+```bash
+rb regression --dispatch local-parallel          # min(4, cpu count) jobs
+rb regression --dispatch local-parallel -j 8     # eight at a time
+rb randtest my_test 20 --dispatch local-parallel -j 4
+```
+
+Nothing to install: no scheduler client, no shared filesystem (the local
+one is trivially "visible at the same paths"), no accounting database.
+Concurrency comes from `-j/--jobs`, or `cfg-dispatch.jobs`, defaulting to
+`min(4, cpu count)`. It is **one global pool** — across every suite and
+every resource group, not per array — so `-j 4` means at most four
+`rb` jobs alive at once, full stop. Build jobs jump the queue ahead of
+waiting sims, since a build unblocks a whole suite and a sim unblocks
+nothing.
+
+What carries over unchanged: the sweep hook runs once on the head; each
+suite's shared build compiles once and the sims short-circuit on its
+stamp; a sim only starts once its build **exited 0** (this backend's
+version of `afterok`), and if the build fails its sims never start and are
+reported as producing no result, pointing at the build log.
+
+Two things are deliberately **not** supported, and they are the reason to
+still prefer Slurm where you have it:
+
+- **Reservations are not enforced.** `resources:` cpus/mem/time are
+  ignored rather than half-honoured — one host has no portable per-process
+  cap (`ulimit`/`nice`/`taskset` are coarse and platform-specific). Any
+  reservation that resolves to something non-default — from `cfg-dispatch`
+  *or* from a per-testbench / per-test `resources:` — **warns** once
+  (`dispatch.reservations_ignored`) so it cannot read as enforced. `-j` is
+  the only backpressure, so size it for the *memory* your heaviest tests
+  need, not just for cores.
+- **No usage telemetry, so no right-sizing advice.** There is no `sacct`
+  to ask, so `payload.reservation_advice` comes back empty instead of
+  guessing. Right-size against a real cluster run.
+
+!!! note "Ctrl-C cleans up; `kill -9` does not"
+    Jobs run in their own process session, so an interrupt goes to the
+    head, which takes the fleet down itself — the same shape as `scancel`,
+    and it lets a simulator flush on a graceful signal. Teardown signals
+    **every** job before waiting on any, so the grace period is one 5 s
+    window for the whole fleet rather than 5 s per job, and an impatient
+    second `Ctrl-C` can at worst skip the escalation to `SIGKILL` — never
+    leave a job unsignalled. The trade-off: a `SIGKILL`ed head runs no
+    cleanup at all and, unlike Slurm, there is no scheduler to reap the
+    orphans — its children finish their runs. Prefer `Ctrl-C` over
+    `kill -9` on a dispatched run.
+
+## Requirements (Slurm)
 
 - A Slurm client on the submit host (`sbatch`/`squeue`/`sacct`/`scancel`)
   — see [Installation](../install.md). `rb tool-check --explain slurm`
@@ -174,7 +246,8 @@ All optional, in `root_config.yaml`:
 
 ```yaml
 cfg-dispatch:
-  backend: slurm            # default: local (in-process)
+  backend: slurm            # local (in-process, default) | local-parallel | slurm
+  jobs: 4                   # local-parallel only: concurrent subprocesses
   resources:                # cluster-wide per-SIM-job defaults
     cpus: 2
     mem: 4G
@@ -194,6 +267,11 @@ cfg-dispatch:
     near-limit: 0.9
     margin: 1.5
 ```
+
+`jobs` and `max-jobs-per-array` belong to different backends and do not
+interact: `jobs` is `local-parallel`'s single global pool, while
+`max-jobs-per-array` is a Slurm `%N` throttle (and is ignored by
+`local-parallel`, which has no arrays).
 
 `max-jobs-per-array` throttles each *submitted array*
 (`--array=1-N%max-jobs-per-array`), not the run as a whole — a regression with several reservation shapes across
