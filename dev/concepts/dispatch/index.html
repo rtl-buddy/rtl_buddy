@@ -587,6 +587,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#builders-that-compile-inside-the-job" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builders that compile inside the job
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1576,6 +1587,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#builders-that-compile-inside-the-job" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Builders that compile inside the job
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#requirements" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1664,10 +1686,14 @@ login node where a big Verilation is against policy. The head process only
 plans and submits; the compile and the sims both run as scheduler jobs.</p>
 <ol>
 <li><strong>Build job.</strong> The head submits one <code>sbatch</code> job per suite that runs
-   <code>rb _build-job</code> on a compute node: it Verilates one shared <code>simv</code> per
+   <code>rb _build-job</code> on a compute node: it compiles one shared <code>simv</code> per
    unique compile key (<code>--dispatch</code> implies
    <a href="../tests/#sharing-compiled-builds-across-tests"><code>--share-build</code></a>) and
-   writes the shared build to the shared filesystem.</li>
+   writes the shared build to the shared filesystem. If no test in the
+   suite uses a share-build-capable builder there is nothing for the sim
+   jobs to read, so the build job is skipped entirely rather than burning
+   a compile — see <a href="#builders-that-compile-inside-the-job">Builders that compile inside the
+   job</a>.</li>
 <li><strong>Fan-out gated on the build.</strong> One job per <code>(test, run_id)</code> is
    submitted, grouped by identical resolved resources into a Slurm
    <strong>array</strong> (<code>cfg-dispatch.max-jobs-per-array</code> maps to the array's <code>%N</code>
@@ -1681,11 +1707,18 @@ plans and submits; the compile and the sims both run as scheduler jobs.</p>
    or a build-job failure that made <code>afterok</code> cancel it — counts as a
    fail, never silently dropped.</li>
 </ol>
-<p>The build job carries its own reservation (<code>cfg-dispatch.compile</code>,
-defaulting to <code>resources</code>) since a large Verilation is often heavier than
-the sims it precedes; if that reservation is too small the build is
+<p>The compile carries its own reservation (<code>cfg-dispatch.compile</code>,
+defaulting to <code>resources</code>) since a large Verilation or VCS elaboration is
+often heavier than the sims it precedes. Normally that reservation belongs
+to the build job; when the builder cannot share a build the compile runs
+inside each sim job instead and the block is folded into <em>that</em> job's
+reservation. If the reservation is too small the build is
 killed, <code>afterok</code> cancels the sims, and they surface as dispatch failures
-pointing at the build log. A single test's compile failure does <strong>not</strong>
+pointing at the build log. (Slurm reports those cancelled sims as <code>PENDING</code>
+with reason <code>DependencyNeverSatisfied</code> and — unless the site sets
+<code>kill_invalid_depend</code> — leaves them queued forever; rtl_buddy cancels them
+itself, logging <code>dispatch.dependency_never_satisfied</code>, rather than waiting
+on jobs that can never run.) A single test's compile failure does <strong>not</strong>
 fail the build job — the other sims still run, and the failing test
 recompiles (and fails) in its own sim job. <code>--dispatch</code> cannot be combined
 with <code>--early-stop</code>, and dispatched jobs deliberately skip the per-tree
@@ -1721,9 +1754,46 @@ shared filesystem, short-circuits, and reads the same on-disk <code>simv</code>
 <strong>read-only</strong> — which is why elements across different arrays (or suites)
 that share a compile key all point at the same build, and why concurrent
 elements are safe (<code>_test-job</code> is a cooperative reader that skips the
-per-tree lock). This all depends on share-build, which is <strong>Verilator
-only</strong>: under a non-Verilator builder there is no shared stamp, so each
-element recompiles inside its own job — correct, just unshared.</p>
+per-tree lock).</p>
+<h2 id="builders-that-compile-inside-the-job">Builders that compile inside the job</h2>
+<p>Share-build works for the builders whose compile output rtl_buddy can
+redirect wholesale into the shared dir: <strong>Verilator</strong> (<code>--Mdir</code>), <strong>VCS</strong>
+(<code>-o</code> for the executable plus <code>-Mdir</code> for its <code>csrc</code> tree, so the build is
+self-contained), and <strong>Icarus</strong> (<code>-o</code> for the <code>.vvp</code> snapshot). All three
+build once per compile key and short-circuit on the stamp.</p>
+<p>Any other builder — and a builder configured with an <em>absolute</em>
+<code>builder-simv:</code>, which pins the executable somewhere a per-compile-key dir
+cannot honour — has no shared stamp, so <strong>each array element recompiles
+inside its own job</strong>. That is correct, just unshared, and it has two
+consequences dispatch handles for you:</p>
+<ul>
+<li><strong>No build job is submitted</strong> when nothing in the suite can share a
+  build. The build pass would compile on a compute node and produce
+  something no sim job can read, so it is skipped and the elements run
+  ungated (logged as <code>dispatch.build_job_skipped</code>). A suite mixing
+  builders still gets one, and only the groups that actually read it are
+  gated on it with <code>afterok</code>.</li>
+<li><strong>The job's reservation covers both phases.</strong> A compile is frequently
+  hungrier than the sim it precedes — a VCS elaboration usually is — so a
+  sim-sized reservation would be killed during it. One allocation cannot
+  carry two reservations, so the element-wise maximum of
+  <code>cfg-dispatch.resources</code> (as resolved for that test) and
+  <code>cfg-dispatch.compile</code> is used, field by field, and logged as
+  <code>dispatch.compile_in_job</code>. Tests whose builder <em>can</em> share a build are
+  unaffected: they keep the sim-sized reservation, and the compile
+  reservation stays with the build job where it belongs.</li>
+</ul>
+<p>!!! note "A VCS compile can wait for a license"
+    <code>vcs</code> elaboration honours <code>-licqueue</code> exactly as <code>simv</code> does, so part
+    of a compile's wall-clock can be time spent queuing for a seat rather
+    than compiling — and Slurm's <code>--time</code> clock keeps running through it.
+    rtl_buddy cannot pause the scheduler's clock, but it detects the queue
+    banner and logs <code>compile.license_queued</code> with the compile transcript,
+    so a build job killed at its time limit is diagnosable as a busy
+    license server rather than an undersized reservation. Give a VCS
+    <code>compile.time</code> headroom for it. Sharing the build helps here too: the
+    build job compiles each key once, serially, taking one seat at a time
+    instead of one per concurrent array element.</p>
 <h2 id="requirements">Requirements</h2>
 <ul>
 <li>A Slurm client on the submit host (<code>sbatch</code>/<code>squeue</code>/<code>sacct</code>/<code>scancel</code>)
@@ -1734,8 +1804,10 @@ element recompiles inside its own job — correct, just unshared.</p>
   tree, and the Python environment.</li>
 <li>The project's <code>rb</code> runnable on the compute nodes (the job runs
   <code>sys.executable -m rtl_buddy _test-job</code>).</li>
-<li>Verilator is the first-class builder (share-build is Verilator-only);
-  other builders still work but recompile inside each job.</li>
+<li>A share-build-capable builder (Verilator, VCS, or Icarus) to compile
+  once per compile key; other builders still work but recompile inside
+  each job — see <a href="#builders-that-compile-inside-the-job">Builders that compile inside the
+  job</a>.</li>
 </ul>
 <h2 id="configuration-cfg-dispatch">Configuration: <code>cfg-dispatch</code></h2>
 <p>All optional, in <code>root_config.yaml</code>:</p>
@@ -1745,7 +1817,7 @@ element recompiles inside its own job — correct, just unshared.</p>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4G</span>
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;01:00:00&quot;</span><span class="w">        </span><span class="c1"># QUOTE time values (see below)</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">compile</span><span class="p">:</span><span class="w">                  </span><span class="c1"># reservation for the build job (defaults to resources)</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">compile</span><span class="p">:</span><span class="w">                  </span><span class="c1"># reservation for the COMPILE (defaults to resources)</span>
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">cpus</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span>
 <a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">mem</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16G</span>
 <a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;02:00:00&quot;</span>
@@ -1803,9 +1875,10 @@ finding:</p>
 <a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nt">&quot;reserved&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;24G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;peak&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;utilization&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.13</span><span class="p">,</span>
 <a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reduce&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;suggested&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;5G&quot;</span><span class="p">,</span>
 <a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span><span class="nt">&quot;runs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reg_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;states&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;COMPLETED&quot;</span><span class="p">],</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span><span class="nt">&quot;edit_hint&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">                </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tests[name=axi_soak].resources.mem&quot;</span><span class="p">}</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="p">}</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">  </span><span class="nt">&quot;edit_hint&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">                </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tests[name=axi_soak].resources.mem&quot;</span><span class="p">}</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="p">}</span>
 </code></pre></div>
 <p>Semantics:</p>
 <ul>
@@ -1820,6 +1893,18 @@ finding:</p>
   and CPU-efficiency advice are unaffected.</li>
 <li>Advice is labelled with <code>runs</code> and <code>reg_level</code>, so a <code>-l 0</code> smoke run
   is never used to shrink a nightly test's reservation.</li>
+<li><strong><code>phase</code> says what the numbers cover.</strong> <code>"sim"</code> is the usual case. A
+  job that also compiled (its builder <a href="#builders-that-compile-inside-the-job">compiles inside the
+  job</a>) is labelled
+  <code>"compile+sim"</code>: <code>MaxRSS</code> and <code>Elapsed</code> are high-water marks over the
+  whole job, so they legitimately span both phases — do not read them as
+  sim-only.</li>
+<li><strong>The hint names the field that actually governs.</strong> A <code>compile+sim</code>
+  job's allocation is the maximum of the sim and compile reservations, so
+  where the compile side won, editing <code>tests[...].resources</code> would change
+  nothing. Those findings point at <code>cfg-dispatch.compile.&lt;field&gt;</code> in
+  <code>root_config.yaml</code> instead. Always apply the <code>edit_hint</code>'s <code>file</code> and
+  <code>path</code> rather than inferring the field from <code>test</code>.</li>
 <li>Requires <code>sacct</code> (slurmdbd accounting). Without it, dispatch still works
   and right-sizing degrades gracefully to no advice. Turn it off with
   <code>rightsize: { report: false }</code>.</li>
