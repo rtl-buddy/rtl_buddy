@@ -1557,6 +1557,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#-dispatch-local-parallel-ignores-resources-j-is-the-only-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --dispatch local-parallel ignores resources: — -j is the only limit
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-sigkilled-head-orphans-a-local-parallel-fleet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A SIGKILLed head orphans a local-parallel fleet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1860,6 +1882,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#-dispatch-local-parallel-ignores-resources-j-is-the-only-limit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --dispatch local-parallel ignores resources: — -j is the only limit
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-sigkilled-head-orphans-a-local-parallel-fleet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A SIGKILLed head orphans a local-parallel fleet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2094,7 +2138,8 @@ Three consequences that can surprise:</p>
   dispatch run in flight.</li>
 </ul>
 <h2 id="-dispatch-silently-implies-share-build"><code>--dispatch</code> silently implies <code>--share-build</code></h2>
-<p><code>regression --dispatch slurm</code> (and <code>randtest --dispatch slurm</code>) turn on
+<p><code>regression --dispatch &lt;backend&gt;</code> (and <code>randtest --dispatch &lt;backend&gt;</code>, for
+<code>slurm</code> and <code>local-parallel</code> alike) turn on
 <code>--share-build</code> even if you didn't pass it: a <strong>dispatched build job</strong>
 compiling one shared <code>simv</code> per unique compile key on a compute node is
 exactly what lets each sim job skip compilation and re-enter at simulation.
@@ -2110,6 +2155,34 @@ expressible per job (rtl_buddy rejects the combination loudly rather than
 ignoring the flag). And <code>randtest -r &lt;n&gt; --dispatch slurm</code> runs locally — a
 single-seed replay gains nothing from the queue — logging
 <code>randtest.dispatch_ignored_for_replay</code> so the ignored flag isn't silent.</p>
+<h2 id="-dispatch-local-parallel-ignores-resources-j-is-the-only-limit"><code>--dispatch local-parallel</code> ignores <code>resources:</code> — <code>-j</code> is the only limit</h2>
+<p>The native-process backend runs jobs as plain subprocesses on one host, and
+a host has no portable per-process cap (<code>ulimit</code>/<code>nice</code>/<code>taskset</code> are
+coarse and platform-specific). So a <code>resources:</code> block that a cluster would
+enforce is <strong>inert</strong> here: cpus/mem/time are ignored rather than
+half-applied, <code>cfg-dispatch.max-jobs-per-array</code> (a Slurm <code>%N</code> throttle) is
+ignored too, and there is no accounting source, so reservation right-sizing
+returns no advice instead of guessing at utilization. A run whose resolved
+reservations are non-default — set under <code>cfg-dispatch</code> <em>or</em> per
+testbench/test in <code>tests.yaml</code> — <strong>warns</strong> once
+(<code>dispatch.reservations_ignored</code>) so the config cannot read as enforced.
+Practical consequence: <code>-j</code>/<code>cfg-dispatch.jobs</code>
+is your only backpressure, so size it against the <strong>memory</strong> your heaviest
+tests need, not just against core count — four unreserved simulators can
+swap a laptop even though four cores are free. Right-size reservations from
+a Slurm run, not this one. See
+<a href="../concepts/dispatch/#on-one-machine-dispatch-local-parallel">Parallel dispatch</a>.</p>
+<h2 id="a-sigkilled-head-orphans-a-local-parallel-fleet">A <code>SIGKILL</code>ed head orphans a <code>local-parallel</code> fleet</h2>
+<p>Dispatched subprocesses are started in their own session so the head owns
+their teardown: <code>Ctrl-C</code> (or any fatal head error) triggers <code>cancel_all</code>,
+which signals the whole fleet with <code>SIGTERM</code> and then escalates stragglers
+to <code>SIGKILL</code> against a single 5-second deadline, letting a simulator flush
+on the graceful signal. If the head is itself <code>SIGKILL</code>ed — a CI timeout,
+<code>kill -9</code> — that cleanup never runs, and unlike Slurm (where
+<code>--kill-on-invalid-dep</code> and the controller reap the fleet) <strong>nothing else
+will</strong>: the children run their tests to completion and write envelopes no
+one reads. Prefer <code>Ctrl-C</code>; after a hard kill, check for stray
+<code>rb _test-job</code> processes.</p>
 <h2 id="an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">An unquoted <code>time:</code> in <code>cfg-dispatch</code>/<code>resources:</code> is YAML sexagesimal</h2>
 <p>YAML 1.1 parses an unquoted <code>time: 4:00:00</code> as the <strong>integer 14400</strong>
 (base-60), not the string <code>"4:00:00"</code>. Slurm would read that as 14400

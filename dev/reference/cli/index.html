@@ -3425,10 +3425,13 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>│ --test-config  -c      TEXT     test_config.yaml to use [default: tests.yaml]        │
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>│ --rnd-rpt      -r      INTEGER  repeat iteration number from previous run            │
 <a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>│ --dispatch             TEXT     execution backend for the seed fan-out (local,       │
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>│                                 slurm)                                               │
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>│                                 local-parallel, slurm)                               │
 <a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>│                                 [default: (cfg-dispatch backend, else local)]        │
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>│ --help                          Show this message and exit.                          │
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>│ --jobs         -j      INTEGER  concurrent jobs for --dispatch local-parallel        │
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>│                                 [default: (cfg-dispatch jobs, else min(4, cpu        │
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>│                                 count))]                                             │
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>│ --help                          Show this message and exit.                          │
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="regression">regression</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Usage: rtl-buddy regression [OPTIONS]                                                  
@@ -3468,11 +3471,15 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a>│                                                 with identical compile inputs        │
 <a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a>│                                                 (Verilator builders only)            │
 <a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a>│ --dispatch                             TEXT     execution backend for test runs      │
-<a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>│                                                 (local, slurm)                       │
+<a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>│                                                 (local, local-parallel, slurm)       │
 <a id="__codelineno-3-39" name="__codelineno-3-39" href="#__codelineno-3-39"></a>│                                                 [default: (cfg-dispatch backend,     │
 <a id="__codelineno-3-40" name="__codelineno-3-40" href="#__codelineno-3-40"></a>│                                                 else local)]                         │
-<a id="__codelineno-3-41" name="__codelineno-3-41" href="#__codelineno-3-41"></a>│ --help                                          Show this message and exit.          │
-<a id="__codelineno-3-42" name="__codelineno-3-42" href="#__codelineno-3-42"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-3-41" name="__codelineno-3-41" href="#__codelineno-3-41"></a>│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
+<a id="__codelineno-3-42" name="__codelineno-3-42" href="#__codelineno-3-42"></a>│                                                 local-parallel                       │
+<a id="__codelineno-3-43" name="__codelineno-3-43" href="#__codelineno-3-43"></a>│                                                 [default: (cfg-dispatch jobs, else   │
+<a id="__codelineno-3-44" name="__codelineno-3-44" href="#__codelineno-3-44"></a>│                                                 min(4, cpu count))]                  │
+<a id="__codelineno-3-45" name="__codelineno-3-45" href="#__codelineno-3-45"></a>│ --help                                          Show this message and exit.          │
+<a id="__codelineno-3-46" name="__codelineno-3-46" href="#__codelineno-3-46"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="filelist">filelist</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Usage: rtl-buddy filelist [OPTIONS] MODEL_NAME [OUTPUT_PATH]                           
