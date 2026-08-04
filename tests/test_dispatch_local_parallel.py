@@ -576,3 +576,24 @@ def test_failed_launch_is_fatal(monkeypatch, tmp_path):
     with pytest.raises(FatalRtlBuddyError) as excinfo:
         backend.submit(_sim_spec(tmp_path, "t0"))
     assert "could not start" in str(excinfo.value)
+
+
+def test_cancel_all_survives_a_repeated_handle(monkeypatch, tmp_path):
+    """Teardown must not abort partway through on a duplicated handle.
+
+    `cancel_all` is the last line of defence against an orphaned fleet, so a
+    caller that lists one job twice (the shape that produced #361) must not
+    make it raise and leave the rest of the fleet running.
+    """
+    _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
+    backend = _backend(jobs=1)
+    running = backend.submit(_sim_spec(tmp_path, "t0"))
+    queued = backend.submit(_sim_spec(tmp_path, "t1"))
+    proc = backend._jobs[running.job_id].proc
+
+    backend.cancel_all([running, running, queued, queued, None])
+
+    assert proc.poll() is not None
+    assert backend._jobs[queued.job_id].skipped
+    assert backend._queued == []
+    backend.wait_all([running, queued])

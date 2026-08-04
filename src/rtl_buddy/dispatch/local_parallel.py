@@ -256,10 +256,9 @@ class LocalProcessBackend(DispatchBackend):
     def _reap(self) -> None:
         """Collect exited processes, then skip jobs whose gate can never open."""
         for job in list(self._running.values()):
+            # Every entry here was launched, so it has a process; cancel_all
+            # takes its victims out of `_running` itself.
             proc = job.proc
-            if proc is None:  # cancel_all already reaped it
-                del self._running[job.job_id]
-                continue
             returncode = proc.poll()
             if returncode is None:
                 continue
@@ -279,13 +278,17 @@ class LocalProcessBackend(DispatchBackend):
                 returncode=returncode,
             )
 
-        skipped = []
-        for job in list(self._queued):
+        skipped, still_queued = [], []
+        for job in self._queued:
             if self._gate(job) == "failed":
                 job.skipped = True
-                self._queued.remove(job)
                 skipped.append(job.job_id)
+            else:
+                still_queued.append(job)
         if skipped:
+            # Rebuild rather than remove() per entry: a failed build can doom
+            # its whole fan-out at once, and that should cost one pass.
+            self._queued = still_queued
             # The counterpart of Slurm cancelling an afterok dependent: the
             # shared build failed, so its sims have nothing to run against.
             log_event(
@@ -412,21 +415,24 @@ class LocalProcessBackend(DispatchBackend):
         """
         if not handles:
             return
-        victims = []
+        # Keyed by job id, so a caller that repeats a handle cannot make the
+        # teardown act on one job twice and abort partway through on the
+        # second pass. Same reasoning as tolerating ``None`` below: this is
+        # the last line of defence against an orphaned fleet, so a malformed
+        # handle list must not disarm it (#361).
+        victims: dict[str, _PoolJob] = {}
         for handle in handles:
-            # Tolerate None: this is the last line of defence against an
-            # orphaned fleet and must not be disarmed by one bad entry (#361).
             if handle is None:
                 continue
             job = self._jobs.get(handle.job_id)
             if job is not None and not job.finished:
-                victims.append(job)
+                victims[job.job_id] = job
 
         # Phase 1 — signal every running job; disarm every queued one. A
         # queued job is cancelled by marking it skipped: a later sweep must
         # not start work the head has given up on.
         signalled = []
-        for job in victims:
+        for job in victims.values():
             if job.proc is None:
                 job.skipped = True
                 self._queued.remove(job)
