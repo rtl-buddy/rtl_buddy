@@ -1714,11 +1714,26 @@ to the build job; when the builder cannot share a build the compile runs
 inside each sim job instead and the block is folded into <em>that</em> job's
 reservation. If the reservation is too small the build is
 killed, <code>afterok</code> cancels the sims, and they surface as dispatch failures
-pointing at the build log. (Slurm reports those cancelled sims as <code>PENDING</code>
-with reason <code>DependencyNeverSatisfied</code> and — unless the site sets
-<code>kill_invalid_depend</code> — leaves them queued forever; rtl_buddy cancels them
-itself, logging <code>dispatch.dependency_never_satisfied</code>, rather than waiting
-on jobs that can never run.) A single test's compile failure does <strong>not</strong>
+pointing at the build log.</p>
+<div class="admonition note">
+<p class="admonition-title">Dependents are reaped, not left queued</p>
+<p>Slurm reports a sim whose build failed as <code>PENDING</code> with reason
+<code>DependencyNeverSatisfied</code>, and by default leaves it queued <strong>forever</strong> —
+it is only reaped if the site sets <code>kill_invalid_depend</code> in
+<code>SchedulerParameters</code>. Two things prevent that stray:</p>
+<ul>
+<li>every dependent submit carries <strong><code>--kill-on-invalid-dep=yes</code></strong>, so
+  Slurm itself removes the job the moment the dependency fails. This is
+  the one that matters, because it holds even when the head process is
+  <code>SIGKILL</code>ed (a CI abort or timeout) and never gets to clean up;</li>
+<li>failing that, collection notices such jobs, cancels them, and logs
+  <code>dispatch.dependency_never_satisfied</code> instead of polling jobs that can
+  never run.</li>
+</ul>
+<p>Pass <code>--kill-on-invalid-dep=no</code> in <code>sbatch-args</code> to opt out — user
+<code>sbatch-args</code> are appended last and win.</p>
+</div>
+<p>A single test's compile failure does <strong>not</strong>
 fail the build job — the other sims still run, and the failing test
 recompiles (and fails) in its own sim job. <code>--dispatch</code> cannot be combined
 with <code>--early-stop</code>, and dispatched jobs deliberately skip the per-tree
@@ -1783,17 +1798,19 @@ consequences dispatch handles for you:</p>
   unaffected: they keep the sim-sized reservation, and the compile
   reservation stays with the build job where it belongs.</li>
 </ul>
-<p>!!! note "A VCS compile can wait for a license"
-    <code>vcs</code> elaboration honours <code>-licqueue</code> exactly as <code>simv</code> does, so part
-    of a compile's wall-clock can be time spent queuing for a seat rather
-    than compiling — and Slurm's <code>--time</code> clock keeps running through it.
-    rtl_buddy cannot pause the scheduler's clock, but it detects the queue
-    banner and logs <code>compile.license_queued</code> with the compile transcript,
-    so a build job killed at its time limit is diagnosable as a busy
-    license server rather than an undersized reservation. Give a VCS
-    <code>compile.time</code> headroom for it. Sharing the build helps here too: the
-    build job compiles each key once, serially, taking one seat at a time
-    instead of one per concurrent array element.</p>
+<div class="admonition note">
+<p class="admonition-title">A VCS compile can wait for a license</p>
+<p><code>vcs</code> elaboration honours <code>-licqueue</code> exactly as <code>simv</code> does, so part
+of a compile's wall-clock can be time spent queuing for a seat rather
+than compiling — and Slurm's <code>--time</code> clock keeps running through it.
+rtl_buddy cannot pause the scheduler's clock, but it detects the queue
+banner and logs <code>compile.license_queued</code> with the compile transcript,
+so a build job killed at its time limit is diagnosable as a busy
+license server rather than an undersized reservation. Give a VCS
+<code>compile.time</code> headroom for it. Sharing the build helps here too: the
+build job compiles each key once, serially, taking one seat at a time
+instead of one per concurrent array element.</p>
+</div>
 <h2 id="requirements">Requirements</h2>
 <ul>
 <li>A Slurm client on the submit host (<code>sbatch</code>/<code>squeue</code>/<code>sacct</code>/<code>scancel</code>)
@@ -1836,12 +1853,14 @@ consequences dispatch handles for you:</p>
 (<code>--array=1-N%max-jobs-per-array</code>), not the run as a whole — a regression with several reservation shapes across
 several suites submits several arrays, so peak concurrency is roughly
 <code>max-jobs-per-array × arrays</code>. Size it per array, not per cluster.</p>
-<p>!!! warning "Quote <code>time</code> values"
-    YAML 1.1 reads an unquoted <code>time: 4:00:00</code> as the <strong>integer 14400</strong>
-    (sexagesimal), which Slurm would take as 14400 <em>minutes</em> — 10 days.
-    rtl_buddy rejects the unquoted form loudly; always write
-    <code>time: "4:00:00"</code>. See
-    <a href="../../known-issues/#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">Known Issues</a>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Quote <code>time</code> values</p>
+<p>YAML 1.1 reads an unquoted <code>time: 4:00:00</code> as the <strong>integer 14400</strong>
+(sexagesimal), which Slurm would take as 14400 <em>minutes</em> — 10 days.
+rtl_buddy rejects the unquoted form loudly; always write
+<code>time: "4:00:00"</code>. See
+<a href="../../known-issues/#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">Known Issues</a>.</p>
+</div>
 <h2 id="per-test-reservations">Per-test reservations</h2>
 <p>Not every test deserves the same slot. Override the reservation per
 testbench or per test in <code>tests.yaml</code>, using the same fields; the
