@@ -18,6 +18,10 @@ theme:
 use_directory_urls: true
 
 markdown_extensions:
+  # Without this, `!!! note` blocks render as a literal "!!! note" paragraph
+  # followed by their indented body as a code block. The material theme styles
+  # admonitions natively once it is enabled.
+  - admonition
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences

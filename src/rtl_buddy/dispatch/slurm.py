@@ -49,11 +49,15 @@ logger = logging.getLogger(__name__)
 _ACTIVE_STATES = "PD,R,S,CG,CF"
 
 # squeue's reason for a job whose `afterok` dependency has already failed.
-# Such a job is PENDING but will NEVER run: Slurm only reaps it when the
-# site sets `kill_invalid_depend` in SchedulerParameters, which is off by
-# default. Left alone it pends forever, and since PD counts as "still in the
-# queue" the head would poll until killed — so `wait_all` cancels these and
-# stops waiting on them (#358).
+# Such a job is PENDING but will NEVER run, and since PD counts as "still in
+# the queue" a head that waited on it would poll until killed.
+#
+# Jobs THIS backend submits are reaped by Slurm itself — see
+# `_dependency_argv`, which passes --kill-on-invalid-dep=yes — so `wait_all`'s
+# sweep over this reason is the fallback, not the primary mechanism: it covers
+# a site that turns the flag back off via sbatch-args, and a Slurm that
+# ignores it. Absent both, the job pends until the site's
+# `kill_invalid_depend` reaps it, which is off by default (#358, #372).
 _NEVER_SATISFIED = "DependencyNeverSatisfied"
 
 # One element per manifest line, indexed by SLURM_ARRAY_TASK_ID. Lines
@@ -386,10 +390,13 @@ class SlurmDispatchBackend(DispatchBackend):
         """Split queued jobs into those still coming and those already dead.
 
         A job whose ``afterok`` build failed is reported PENDING with reason
-        ``DependencyNeverSatisfied`` and, absent ``kill_invalid_depend``, sits
-        there forever. Cancel those so they leave the queue instead of being
-        waited on; collection then reports them as producing no result, which
-        is exactly what happened.
+        ``DependencyNeverSatisfied``. :meth:`_dependency_argv` asks Slurm to
+        reap those itself, so normally none are seen here; this is the fallback
+        for a site that disabled that flag through ``sbatch-args`` or a Slurm
+        that ignores it, where the job would otherwise sit until the site's
+        ``kill_invalid_depend`` (off by default) removed it. Cancel them so
+        they leave the queue instead of being waited on; collection then
+        reports them as producing no result, which is exactly what happened.
         """
         remaining, doomed = [], []
         for line in lines:

@@ -641,6 +641,8 @@ def test_undependent_array_submit_does_not_pass_the_flag(tmp_path, monkeypatch):
     )
 
     (argv,) = calls
+    # Both halves, so a bare `--dependency=afterok:None` cannot slip through.
+    assert not [a for a in argv if a.startswith("--dependency")]
     assert "--kill-on-invalid-dep=yes" not in argv
 
 

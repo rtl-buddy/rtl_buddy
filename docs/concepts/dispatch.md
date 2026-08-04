@@ -67,7 +67,9 @@ pointing at the build log.
       never run.
 
     Pass `--kill-on-invalid-dep=no` in `sbatch-args` to opt out — user
-    `sbatch-args` are appended last and win. A single test's compile failure does **not**
+    `sbatch-args` are appended last and win.
+
+A single test's compile failure does **not**
 fail the build job — the other sims still run, and the failing test
 recompiles (and fails) in its own sim job. `--dispatch` cannot be combined
 with `--early-stop`, and dispatched jobs deliberately skip the per-tree
