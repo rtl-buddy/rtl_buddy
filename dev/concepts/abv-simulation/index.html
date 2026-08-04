@@ -1680,6 +1680,7 @@
 <li><code>rb -M cov test ...</code> continues to be the canonical path for full coverage HTML / Coverview packaging.</li>
 <li>With just <code>assertions: true</code> (no <code>-M cov</code>), <code>coverage.dat</code> still exists per-run because <code>--coverage-user</code> was injected — but only the user-coverage type is present. Merge with <code>--coverage-merge</code> to roll up.</li>
 </ul>
+<p>Under <code>--machine</code>, each labeled cover property is reported by name with its hit count, per test and summed across the run — see <a href="../coverage/#per-cover-point-results">Per-cover-point results</a>. That gives the simulation side the same per-cover observability <code>rb fpv</code> rows already carry through their vacuity witnesses.</p>
 <p>See <a href="../coverage/">Coverage</a> for the merge pipeline and the
 <a href="https://github.com/rtl-buddy/rtl_buddy/blob/main/src/rtl_buddy/tools/verilator_cov_analysis.md">Verilator coverage analysis note</a>
 for how the raw simulator coverage points relate to LCOV outputs.</p>
