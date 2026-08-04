@@ -159,7 +159,8 @@ Three consequences that can surprise:
 
 ## `--dispatch` silently implies `--share-build`
 
-`regression --dispatch slurm` (and `randtest --dispatch slurm`) turn on
+`regression --dispatch <backend>` (and `randtest --dispatch <backend>`, for
+`slurm` and `local-parallel` alike) turn on
 `--share-build` even if you didn't pass it: a **dispatched build job**
 compiling one shared `simv` per unique compile key on a compute node is
 exactly what lets each sim job skip compilation and re-enter at simulation.
@@ -175,6 +176,35 @@ expressible per job (rtl_buddy rejects the combination loudly rather than
 ignoring the flag). And `randtest -r <n> --dispatch slurm` runs locally — a
 single-seed replay gains nothing from the queue — logging
 `randtest.dispatch_ignored_for_replay` so the ignored flag isn't silent.
+
+## `--dispatch local-parallel` ignores `resources:` — `-j` is the only limit
+
+The native-process backend runs jobs as plain subprocesses on one host, and
+a host has no portable per-process cap (`ulimit`/`nice`/`taskset` are
+coarse and platform-specific). So a `resources:` block that a cluster would
+enforce is **inert** here: cpus/mem/time are ignored rather than
+half-applied, `cfg-dispatch.max-jobs-per-array` (a Slurm `%N` throttle) is
+ignored too, and there is no accounting source, so reservation right-sizing
+returns no advice instead of guessing at utilization. A run with
+reservations configured logs `dispatch.reservations_ignored` once so the
+config cannot read as enforced. Practical consequence: `-j`/`cfg-dispatch.jobs`
+is your only backpressure, so size it against the **memory** your heaviest
+tests need, not just against core count — four unreserved simulators can
+swap a laptop even though four cores are free. Right-size reservations from
+a Slurm run, not this one. See
+[Parallel dispatch](concepts/dispatch.md#on-one-machine-dispatch-local-parallel).
+
+## A `SIGKILL`ed head orphans a `local-parallel` fleet
+
+Dispatched subprocesses are started in their own session so the head owns
+their teardown: `Ctrl-C` (or any fatal head error) triggers `cancel_all`,
+which sends `SIGTERM` and escalates to `SIGKILL`, letting a simulator flush
+on the graceful signal. If the head is itself `SIGKILL`ed — a CI timeout,
+`kill -9` — that cleanup never runs, and unlike Slurm (where
+`--kill-on-invalid-dep` and the controller reap the fleet) **nothing else
+will**: the children run their tests to completion and write envelopes no
+one reads. Prefer `Ctrl-C`; after a hard kill, check for stray
+`rb _test-job` processes.
 
 ## An unquoted `time:` in `cfg-dispatch`/`resources:` is YAML sexagesimal
 

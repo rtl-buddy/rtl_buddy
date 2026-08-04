@@ -2,14 +2,17 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-"""Dispatch backend registry (#351).
+"""Dispatch backend registry (#351, #360).
 
 ``local`` is not a backend class: it means "no dispatch" and keeps the
 in-process execution path byte-identical to pre-dispatch behavior.
+``local-parallel`` and ``slurm`` are both real backends behind the same
+ABC — one host's process pool, or a cluster.
 """
 
 from ..errors import FatalRtlBuddyError
 from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
+from .local_parallel import LocalProcessBackend
 from .slurm import SlurmDispatchBackend
 
 __all__ = [
@@ -17,11 +20,13 @@ __all__ = [
     "DispatchBackend",
     "JobHandle",
     "TestJobSpec",
+    "LocalProcessBackend",
     "SlurmDispatchBackend",
     "create_dispatch_backend",
 ]
 
 _BACKENDS: dict[str, type[DispatchBackend]] = {
+    LocalProcessBackend.name: LocalProcessBackend,
     "slurm": SlurmDispatchBackend,
 }
 

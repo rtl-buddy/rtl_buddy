@@ -100,6 +100,12 @@ class DispatchBackend(ABC):
 
     name: str = "?"
 
+    # Whether jobs are handed to a batch scheduler that can kill or cancel
+    # them on its own. False for a backend that runs jobs itself (the
+    # local-parallel pool, #360), where a missing result cannot be explained
+    # by scheduler action and diagnostics must not blame one.
+    scheduled: bool = True
+
     @abstractmethod
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
         """Submit one suite's build job; return its handle without waiting."""

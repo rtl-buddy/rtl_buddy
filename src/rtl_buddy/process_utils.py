@@ -14,12 +14,19 @@ class ManagedProcessResult:
     timed_out: bool = False
 
 
-def _terminate_process_group(
+def terminate_process_group(
     proc: subprocess.Popen,
     *,
-    terminate_signal: int,
-    kill_timeout: float,
+    terminate_signal: int = signal.SIGTERM,
+    kill_timeout: float = 5,
 ) -> None:
+    """Stop ``proc`` and its group: graceful signal, then SIGKILL.
+
+    Shared by :func:`run_managed_process` (which owns a single process for
+    the duration of a call) and by callers that own several processes at
+    once and therefore cannot use it — the local-parallel dispatch pool
+    (#360) terminates its fleet through this.
+    """
     if proc.poll() is not None:
         return
 
@@ -56,7 +63,7 @@ def _timeout_result(
     terminate_signal: int,
     kill_timeout: float,
 ) -> ManagedProcessResult:
-    _terminate_process_group(
+    terminate_process_group(
         proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
     )
     stdout_data, stderr_data = proc.communicate()
@@ -124,7 +131,7 @@ def run_managed_process(
     previous_handlers = {}
 
     def _signal_handler(signum, frame):
-        _terminate_process_group(
+        terminate_process_group(
             proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
         )
         previous = previous_handlers.get(signum)
@@ -185,7 +192,7 @@ def run_managed_process(
                 kill_timeout=kill_timeout,
             )
     finally:
-        _terminate_process_group(
+        terminate_process_group(
             proc, terminate_signal=terminate_signal, kill_timeout=kill_timeout
         )
         if in_main_thread:
