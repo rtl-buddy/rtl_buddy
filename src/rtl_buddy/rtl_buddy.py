@@ -45,7 +45,11 @@ from .runner.fpv_runner import FpvRunner
 from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
 from .runner.mut_results import MutResults
-from .config.dispatch import resolve_compile_resources, resolve_resources
+from .config.dispatch import (
+    combine_for_in_job_compile,
+    resolve_compile_resources,
+    resolve_resources,
+)
 from .dispatch import create_dispatch_backend
 from .dispatch.base import BuildJobSpec, TestJobSpec
 from .dispatch.plan import (
@@ -101,6 +105,7 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
+from .tools.vlog_sim import share_build_supported
 from .config.xplr import load_xplr_config
 from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
@@ -1972,14 +1977,18 @@ class RtlBuddy:
         Nothing heavy runs on the submit host (usually an interactive login
         node). Phases: (1) **plan** — expand the suite's sweep hooks *once*
         on the head and write the resulting configs to a plan manifest.
-        (2) submit a **build job** that Verilates the shared executable on a
-        compute node (``rb _build-job --plan``, share-build). (3) Fan-out —
-        group the sim jobs by resolved resources into ``sbatch`` arrays
-        (``rb _test-job --plan``), each gated on the build via
-        ``--dependency=afterok`` (a sim only starts once its shared build
-        succeeded; its own ``compile()`` then short-circuits on the stamp
-        and it runs SIM+POST). Neither the build job nor the sim jobs re-run
-        the sweep hook — they read the plan. Returns collect state for
+        (2) submit a **build job** that compiles the shared executable on a
+        compute node (``rb _build-job --plan``, share-build) — skipped when
+        no planned test's builder can share a build, since its output would
+        be unreadable to every sim job (#358). (3) Fan-out — group the sim
+        jobs by resolved resources into ``sbatch`` arrays (``rb _test-job
+        --plan``), each gated on the build via ``--dependency=afterok`` (a
+        sim only starts once its shared build succeeded; its own
+        ``compile()`` then short-circuits on the stamp and it runs SIM+POST).
+        A group whose builder compiles inside the job instead is left
+        ungated and carries a reservation covering both phases. Neither the
+        build job nor the sim jobs re-run the sweep hook — they read the
+        plan. Returns collect state for
         :meth:`_dispatch_collect` including the build handle; the caller
         owns the (cross-suite) wait. Partial submissions are cancelled here
         on a mid-fan-out failure; the caller additionally cancels the whole
@@ -2019,22 +2028,66 @@ class RtlBuddy:
             run_token,
         )
 
-        build_handle = self._submit_dispatch_build(
-            suite_cfg,
-            backend,
-            suite_dir=suite_dir,
-            dispatch_cfg=dispatch_cfg,
-            reg_level=reg_level,
-            start_level=start_level,
-            plan_path=plan_path,
-        )
+        # (2) Build job — unless nothing in this suite could use its output.
+        # For a builder with no shared-build support the build pass compiles
+        # on a compute node and produces no stamp any sim job can reuse, so
+        # submitting it burns a compile and adds queue latency for nothing
+        # (#358). A mixed-builder suite still gets one: the sharable configs
+        # benefit.
+        if any(not entry["compile_in_job"] for entry in entries):
+            build_handle = self._submit_dispatch_build(
+                suite_cfg,
+                backend,
+                suite_dir=suite_dir,
+                dispatch_cfg=dispatch_cfg,
+                reg_level=reg_level,
+                start_level=start_level,
+                plan_path=plan_path,
+            )
+        else:
+            build_handle = None
+            log_event(
+                logger,
+                logging.INFO,
+                "dispatch.build_job_skipped",
+                suite_dir=suite_dir,
+                reason="no planned test can share a build; each sim job compiles",
+                tests=len(entries),
+            )
 
         # (3) Group by resolved resources: elements of one sbatch array must
         # share a reservation shape. Consumes the single expansion; no hook.
         groups = {}  # (cpus, mem, time) -> list[(row index, TestJobSpec)]
+        compile_resources = resolve_compile_resources(dispatch_cfg)
         for entry in entries:
             cfg = entry["cfg"]
             resources = resolve_resources(dispatch_cfg, cfg)
+            if entry["compile_in_job"]:
+                # One allocation has to cover compile AND sim, so it is sized
+                # for the larger of the two per field; record which layer won
+                # so reservation advice names the governing field.
+                resources, governed_by = combine_for_in_job_compile(
+                    resources, compile_resources
+                )
+                for idx, _ in entry["rows"]:
+                    suite_results[idx]["governed_by"] = governed_by
+                    # The floor no `reduce` advice can take this allocation
+                    # below, whatever the test's own resources: are trimmed to.
+                    suite_results[idx]["compile_floor"] = {
+                        "cpus": compile_resources.cpus,
+                        "mem": compile_resources.mem,
+                        "time": compile_resources.time,
+                    }
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.compile_in_job",
+                    test=cfg.get_name(),
+                    cpus=resources.cpus,
+                    mem=resources.mem,
+                    time=resources.time,
+                    governed_by=governed_by,
+                )
             dispatch_dir = (
                 Path(test_artifact_dir(suite_dir, cfg.get_name())) / "dispatch"
             )
@@ -2065,8 +2118,17 @@ class RtlBuddy:
                     log_path=dispatch_dir / f"slurm-{run_tag}.log",
                     plan_path=plan_path,
                 )
+                # compile_in_job joins the key so a suite mixing builders does
+                # not make its self-compiling elements queue behind a shared
+                # build they will never read (dependency is per group below).
                 groups.setdefault(
-                    (resources.cpus, resources.mem, resources.time), []
+                    (
+                        resources.cpus,
+                        resources.mem,
+                        resources.time,
+                        entry["compile_in_job"],
+                    ),
+                    [],
                 ).append((idx, spec))
 
         pending = []  # (row index, JobHandle)
@@ -2075,14 +2137,24 @@ class RtlBuddy:
             # overlapping run in the same suite tree never rewrites a
             # manifest under another run's still-queued array elements, which
             # sed the manifest at exec time. Sibling of .shared-builds.
-            for array_seq, group_entries in enumerate(groups.values(), start=1):
+            for array_seq, (group_key, group_entries) in enumerate(
+                groups.items(), start=1
+            ):
                 specs = [spec for _, spec in group_entries]
                 array_dir = dispatch_root / f"{os.getpid()}-{array_seq:03d}"
+                compiles_in_job = group_key[-1]
                 handles = backend.submit_array(
                     specs,
                     array_dir=array_dir,
                     max_parallel=dispatch_cfg.max_jobs_per_array,
-                    dependency=build_handle.job_id,
+                    # Gate on the shared build only if this group actually
+                    # reads it. Elements that compile for themselves — or a
+                    # suite with no build job at all — run unblocked.
+                    dependency=(
+                        build_handle.job_id
+                        if build_handle is not None and not compiles_in_job
+                        else None
+                    ),
                 )
                 for (idx, _), handle in zip(group_entries, handles):
                     pending.append((idx, handle))
@@ -2128,9 +2200,15 @@ class RtlBuddy:
             run_ids=run_ids,
             suite_results=suite_results,
         ):
-            exp_builder = self.root_cfg.resolve_rtl_builder_cfg(
-                cfg.get_builder_name()
-            ).get_name()
+            builder_cfg = self.root_cfg.resolve_rtl_builder_cfg(cfg.get_builder_name())
+            exp_builder = builder_cfg.get_name()
+            # A builder that cannot share a build recompiles inside every sim
+            # job, so that job's reservation has to cover the compile too
+            # (#358). Decided here, once, from the same capability the job
+            # itself will consult.
+            compile_in_job = not share_build_supported(
+                builder_cfg.get_simulator_family()
+            )
             rows = []
             for run_id in run_ids:
                 suite_results.append(
@@ -2139,10 +2217,11 @@ class RtlBuddy:
                         "randmode_i": run_id,
                         "results": None,
                         "builder": exp_builder,
+                        "compile_in_job": compile_in_job,
                     }
                 )
                 rows.append((len(suite_results) - 1, run_id))
-            entries.append({"cfg": cfg, "rows": rows})
+            entries.append({"cfg": cfg, "rows": rows, "compile_in_job": compile_in_job})
         return entries
 
     def _submit_dispatch_build(
@@ -2319,6 +2398,12 @@ class RtlBuddy:
             rightsize_cfg=rightsize_cfg,
             reg_level=reg_level,
             simulator_family_of=self._simulator_family_of,
+            # cfg-dispatch lives in root_config.yaml, so advice about a
+            # reservation the compile block governs has to point there
+            # rather than at the suite's tests.yaml (#358). getattr, not the
+            # attribute: analysis is advisory and runs after every job has
+            # finished — it must never turn a completed run into an abort.
+            root_config_path=getattr(self.root_cfg, "root_cfg_path", None),
         )
         for finding in findings:
             fields = {k: v for k, v in finding.as_event().items() if k != "event"}
@@ -2331,30 +2416,41 @@ class RtlBuddy:
                 "suite": f.suite,
                 "test": f.test,
                 "resource": f.resource,
+                "phase": f.phase,
                 "reserved": f.reserved,
                 "peak": f.peak,
                 "utilization": f"{f.utilization:.0%}",
                 "advice": f"{f.direction} → {f.suggested}",
+                "field": f.edit_hint.get("path", ""),
             }
             for f in findings
         ]
+        metadata = [
+            "rtl-buddy suggests; apply by editing the named Field",
+        ]
+        if any(f.phase != "sim" for f in findings):
+            # Without this the numbers read as sim-only and a compile-sized
+            # reservation looks wildly over-reserved.
+            metadata.append(
+                "compile+sim rows measure a job that also compiled (its "
+                "builder cannot share a build), so the peak spans both phases"
+            )
         render_summary(
             title="Reservation Advice (reserved vs used)",
             columns=[
                 ("suite", "Suite"),
                 ("test", "Test"),
                 ("resource", "Resource"),
+                ("phase", "Phase"),
                 ("reserved", "Reserved"),
                 ("peak", "Peak used"),
                 ("utilization", "Util"),
                 ("advice", "Advice"),
+                ("field", "Field"),
             ],
             rows=rows,
             logger=logger,
-            metadata=[
-                "rtl-buddy suggests; apply by editing the named "
-                "resources: field in tests.yaml"
-            ],
+            metadata=metadata,
         )
 
     def do_rtl_regression(

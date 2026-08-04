@@ -127,8 +127,8 @@ def test_submit_failure_fails_loud(monkeypatch):
 def test_wait_all_polls_until_queue_drains(monkeypatch):
     calls = []
     results = [
-        SimpleNamespace(returncode=0, stdout="1\n2\n", stderr=""),
-        SimpleNamespace(returncode=0, stdout="2\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout="1|Resources\n2|Priority\n", stderr=""),
+        SimpleNamespace(returncode=0, stdout="2|None\n", stderr=""),
         SimpleNamespace(returncode=0, stdout="", stderr=""),
     ]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
@@ -141,6 +141,67 @@ def test_wait_all_polls_until_queue_drains(monkeypatch):
     assert len(calls) == 3
     assert calls[0][0] == "squeue"
     assert "--jobs" in calls[0] and "1,2" in calls[0]
+
+
+def test_wait_all_cancels_jobs_whose_dependency_can_never_be_satisfied(monkeypatch):
+    """A failed build leaves its afterok dependents PENDING forever (#358).
+
+    Slurm only reaps them when the site sets `kill_invalid_depend`, which is
+    off by default — so PD would keep the head polling until it is killed.
+    Cancel them and stop waiting; collection reports them as no-result.
+    """
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="7_[1-3]|DependencyNeverSatisfied\n9|Resources\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # queue drained
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.wait_all([JobHandle("7_1", _spec()), JobHandle("9", _spec(run_id=1))])
+
+    # The doomed array was cancelled by BASE id (one scancel clears it all),
+    # and the still-queued job 9 kept the wait going for one more poll.
+    scancels = [argv for argv in calls if argv[0] == "scancel"]
+    assert scancels == [["scancel", "7"]]
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
+
+
+def test_wait_all_returns_when_only_doomed_jobs_remain(monkeypatch):
+    """Nothing else queued: the head must not poll a second time."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0, stdout="7|DependencyNeverSatisfied\n", stderr=""
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.wait_all([JobHandle("7", _spec())])
+
+    assert [argv[0] for argv in calls] == ["squeue", "scancel"]
+
+
+def test_wait_all_asks_squeue_for_the_reason_field(monkeypatch):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("1", _spec())]
+    )
+    assert "--format=%i|%r" in calls[0]
 
 
 def test_wait_all_treats_squeue_error_as_drained(monkeypatch):
@@ -474,3 +535,50 @@ def test_submit_array_accepts_dependency(monkeypatch, tmp_path):
     )
     (argv,) = calls
     assert "--dependency=afterok:900" in argv
+
+
+def test_wait_all_matches_a_reason_rendered_with_surrounding_text(monkeypatch):
+    """Substring, not equality: an exact match could regress into the poll."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="7|(DependencyNeverSatisfied)\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("7", _spec())]
+    )
+    assert [argv[0] for argv in calls] == ["squeue", "scancel"]
+
+
+def test_wait_all_reports_a_failed_scancel(monkeypatch, caplog):
+    """The jobs are already dropped from `remaining`, so a failed cancel leaves
+    them queued after the run exits — that has to be recoverable by hand."""
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0, stdout="7|DependencyNeverSatisfied\n", stderr=""
+            ),
+            SimpleNamespace(
+                returncode=1, stdout="", stderr="scancel: error: Invalid job id"
+            ),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    with caplog.at_level(logging.WARNING):
+        SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+            [JobHandle("7", _spec())]
+        )
+    assert "still" in caplog.text and "queued" in caplog.text
+    assert "Invalid job id" in caplog.text

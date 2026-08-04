@@ -116,10 +116,32 @@ def _invoke(args):
     return runner.invoke(rb.app, args), rb
 
 
+def _set_stub_builder_family(project: Path, family: str):
+    """Declare a simulator family on the fixture's stub builder.
+
+    The fixture's `builder: "echo"` infers the family `"echo"`, which is
+    neither share-build capable (so no build job is submitted, #358) nor
+    eligible for time advice (gated to verilator, #329). Tests that exercise
+    either path have to say which family they mean.
+    """
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            '    builder: "echo"\n',
+            f'    builder: "echo"\n    simulator-family: "{family}"\n',
+        )
+    )
+
+
+def _mark_stub_builder_verilator(project: Path):
+    _set_stub_builder_family(project, "verilator")
+
+
 def test_dispatched_regression_passes(
     minimal_project: Path,
     fake_backend: _FakeBackend,
 ):
+    _mark_stub_builder_verilator(minimal_project)
     result, rb = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert result.exit_code == 0, result.output
 
@@ -232,9 +254,11 @@ def test_dispatched_regression_submits_build_before_sims(
     minimal_project: Path,
     fake_backend: _FakeBackend,
 ):
-    # A build job is always submitted (the compile no longer runs on the
-    # head), and every sim depends on it. Compile failures now surface via
-    # the sim job's own envelope, not by the head refusing to submit.
+    # With a share-build-capable builder a build job is submitted (the
+    # compile no longer runs on the head), and every sim depends on it.
+    # Compile failures now surface via the sim job's own envelope, not by
+    # the head refusing to submit.
+    _mark_stub_builder_verilator(minimal_project)
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert result.exit_code == 0, result.output
     assert len(fake_backend.build_submitted) == 1
@@ -351,6 +375,8 @@ def test_build_compile_failure_surfaces_as_compile_fail(
     # produces — not an infrastructure DispatchFail.
     from rtl_buddy.runner.result_io import write_build_result_json
 
+    _mark_stub_builder_verilator(minimal_project)
+
     class _CompileFailBuild(_FakeBackend):
         def __init__(self):
             super().__init__(write_results=False)  # sim envelope never appears
@@ -396,6 +422,7 @@ def test_dispatch_writes_plan_and_threads_it_to_jobs(
 ):
     # The head writes one plan manifest and hands it to both the build job
     # and every sim job (so neither re-runs the sweep hook).
+    _mark_stub_builder_verilator(minimal_project)
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert result.exit_code == 0, result.output
 
@@ -679,19 +706,75 @@ def test_dispatched_collect_reenters_suite_context(
     assert entered.count(str(minimal_project / "tests.yaml")) >= 4
 
 
-# --------------------------------------------------- P3: reservation advice
+# ------------------------------------ #358: builders that compile in-job
 
 
-def _mark_stub_builder_verilator(project: Path):
-    # Time advice is gated to verilator-family builders (licqueue, #329);
-    # the fixture's stub builder ("echo") must opt in for advice tests.
+def _add_dispatch_resources(project: Path, block: str):
     root_cfg = project / "root_config.yaml"
-    root_cfg.write_text(
-        root_cfg.read_text().replace(
-            '    builder: "echo"\n',
-            '    builder: "echo"\n    simulator-family: "verilator"\n',
-        )
+    root_cfg.write_text(root_cfg.read_text() + block)
+
+
+def test_no_build_job_when_no_test_can_share_a_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A build job whose output no sim job can read is pure waste (#358).
+
+    The fixture's inferred "echo" family has no shared-build support, so the
+    head must skip the build pass entirely rather than burn a compile on a
+    compute node and make every element queue behind it.
+    """
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    # Nothing to gate on: the element compiles for itself and runs unblocked.
+    assert fake_backend.dependencies == [None]
+
+
+def test_in_job_compile_reservation_covers_both_phases(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The one allocation is sized max(sim, compile) field by field (#358)."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n',
     )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    resources = fake_backend.submitted[0].resources
+    assert resources.cpus == 8  # compile needs more
+    assert resources.mem == "16G"  # compile needs more
+    assert resources.time == "00:20:00"  # sim needs more; compile's is smaller
+
+
+def test_share_build_capable_builder_keeps_the_sim_sized_reservation(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The compile block must NOT inflate sim jobs that only simulate."""
+    _mark_stub_builder_verilator(minimal_project)
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "02:00:00"\n',
+    )
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    sim = fake_backend.submitted[0].resources
+    assert (sim.cpus, sim.mem, sim.time) == (1, "2G", "00:20:00")
+    # ...while the build job it depends on carries the compile reservation.
+    build = fake_backend.build_submitted[0].resources
+    assert (build.cpus, build.mem, build.time) == (8, "16G", "02:00:00")
+
+
+# --------------------------------------------------- P3: reservation advice
 
 
 def _telemetry_backend(monkeypatch):
@@ -738,6 +821,51 @@ def test_regression_machine_payload_carries_reservation_advice(
     assert mem["suggested"] == "1536M"
     assert mem["edit_hint"]["path"] == "tests[name=basic].resources.mem"
     assert mem["runs"] == 1
+
+
+def test_advice_for_an_in_job_compile_is_clamped_to_the_compile_floor(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """End to end: advice for a job that compiled must be reachable (#358).
+
+    The allocation is max(sim, compile), so no reduce can take it below the
+    compile side. A suggestion under that floor is clamped up to it and
+    re-attributed to the field that governs; one the clamp pushes all the way
+    back to the current reservation saves nothing and is dropped.
+    """
+    _telemetry_backend(monkeypatch)  # elapsed 10s of 1h, 1G of 8G reserved
+    # No simulator-family override: the fixture's inferred "echo" family has
+    # no shared-build support, so the sim job compiles for itself.
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "01:00:00"\n'
+        '  compile:\n    cpus: 1\n    mem: 8G\n    time: "00:30:00"\n',
+    )
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+
+    # time: 10s of 1h would suggest the 5-minute floor, but the compile needs
+    # 30 minutes — so that is the suggestion, and cfg-dispatch.compile.time is
+    # the field that would have to move.
+    (time_a,) = [a for a in advice if a["resource"] == "time"]
+    assert time_a["phase"] == "compile+sim"
+    assert time_a["direction"] == "reduce"
+    assert time_a["suggested"] == "00:30:00"
+    assert time_a["edit_hint"]["path"] == "cfg-dispatch.compile.time"
+    assert time_a["edit_hint"]["file"].endswith("root_config.yaml")
+
+    # mem: reserved 8G IS the compile reservation, so every reduce clamps
+    # straight back to it. Silence beats advice that cannot retire.
+    assert [a for a in advice if a["resource"] == "mem"] == []
 
 
 def test_rightsize_report_false_disables_advice(

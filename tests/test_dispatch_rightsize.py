@@ -18,7 +18,17 @@ from rtl_buddy.runner.test_results import TestPassResults, SimTimeoutResults
 _CFG = RightsizeConfigFile()  # 0.5 / 0.9 / 1.5 defaults
 
 
-def _row(test, telemetry, *, run_id=None, builder="verilator", passing=True):
+def _row(
+    test,
+    telemetry,
+    *,
+    run_id=None,
+    builder="verilator",
+    passing=True,
+    compile_in_job=False,
+    governed_by=None,
+    compile_floor=None,
+):
     results = (
         TestPassResults(name=test + "/results")
         if passing
@@ -31,10 +41,13 @@ def _row(test, telemetry, *, run_id=None, builder="verilator", passing=True):
         "randmode_i": run_id,
         "results": results,
         "builder": builder,
+        "compile_in_job": compile_in_job,
+        "governed_by": governed_by or {},
+        "compile_floor": compile_floor or {},
     }
 
 
-def _analyze(rows, cfg=_CFG, families=None, reg_level=0):
+def _analyze(rows, cfg=_CFG, families=None, reg_level=0, root_config_path=None):
     return analyze_suite_reservations(
         rows,
         suite_display="verif/blk/tests.yaml",
@@ -42,6 +55,7 @@ def _analyze(rows, cfg=_CFG, families=None, reg_level=0):
         rightsize_cfg=cfg,
         reg_level=reg_level,
         simulator_family_of=(families or {"verilator": "verilator"}).get,
+        root_config_path=root_config_path,
     )
 
 
@@ -315,3 +329,228 @@ def test_unknown_family_none_keeps_time_advice():
     assert time_f.direction == "reduce"
     # Absolute config path flows into the edit hint for machine consumers.
     assert time_f.edit_hint["file"] == "/abs/verif/blk/tests.yaml"
+
+
+# ------------------------------- #358: compile-vs-sim attribution
+
+
+def _oom_row(test="t", **kwargs):
+    # elapsed/limit lands between over-threshold and near-limit, so memory is
+    # the only resource with advice and the assertions stay unambiguous.
+    return _row(
+        test,
+        {
+            "state": "OUT_OF_MEMORY",
+            "elapsed_s": 2000,
+            "timelimit_s": 3600,
+            "req_mem_bytes": 16 * 2**30,
+            "alloc_cpus": 1,
+        },
+        **kwargs,
+    )
+
+
+def test_sim_only_advice_is_labeled_sim_and_hints_at_the_test():
+    findings = _analyze([_oom_row()], root_config_path="/p/root_config.yaml")
+    assert [f.phase for f in findings] == ["sim"]
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=t].resources.mem",
+    }
+
+
+def test_compile_governed_field_hints_at_the_dispatch_compile_block():
+    """Editing the test's mem would not move an allocation the compile sized."""
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "compile"})],
+        root_config_path="/p/root_config.yaml",
+    )
+    assert [f.phase for f in findings] == ["compile+sim"]
+    assert findings[0].edit_hint == {
+        "file": "/p/root_config.yaml",
+        "path": "cfg-dispatch.compile.mem",
+    }
+
+
+def test_in_job_compile_still_hints_at_the_test_for_sim_governed_fields():
+    """Only the fields the compile actually won are redirected."""
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "test", "time": "compile"})],
+        root_config_path="/p/root_config.yaml",
+    )
+    assert findings[0].resource == "mem"
+    assert findings[0].phase == "compile+sim"
+    assert findings[0].edit_hint["path"] == "tests[name=t].resources.mem"
+
+
+def test_compile_governed_hint_falls_back_without_a_root_config_path():
+    """No root_config.yaml to name means the per-test hint, not a broken one."""
+    findings = _analyze([_oom_row(compile_in_job=True, governed_by={"mem": "compile"})])
+    assert findings[0].edit_hint == {
+        "file": "verif/blk/tests.yaml",
+        "path": "tests[name=t].resources.mem",
+    }
+
+
+def test_phase_travels_into_the_machine_event():
+    findings = _analyze(
+        [_oom_row(compile_in_job=True, governed_by={"mem": "compile"})],
+        root_config_path="/p/root_config.yaml",
+    )
+    event = findings[0].as_event()
+    assert event["phase"] == "compile+sim"
+    assert event["edit_hint"]["path"] == "cfg-dispatch.compile.mem"
+
+
+def test_rows_without_the_new_keys_still_analyze():
+    """Pre-#358 rows (no compile_in_job/governed_by) must not KeyError."""
+    row = _oom_row()
+    del row["compile_in_job"]
+    del row["governed_by"]
+    findings = _analyze([row], root_config_path="/p/root_config.yaml")
+    assert [f.phase for f in findings] == ["sim"]
+
+
+def test_governance_is_per_test_not_leaked_across_tests():
+    """One test's compile-governed hint must not retarget another's."""
+    rows = [
+        _oom_row(compile_in_job=True, governed_by={"mem": "compile"}),
+        _oom_row("u"),
+    ]
+    findings = {
+        f.test: f for f in _analyze(rows, root_config_path="/p/root_config.yaml")
+    }
+    assert findings["t"].edit_hint["path"] == "cfg-dispatch.compile.mem"
+    assert findings["u"].edit_hint["path"] == "tests[name=u].resources.mem"
+
+
+# ------------- #358: reduce advice must be reachable under the compile floor
+
+
+def _over_reserved_row(**kwargs):
+    """10s of 1h, 1G of 8G — both resources look comfortably over-reserved."""
+    return _row(
+        "t",
+        {
+            "state": "COMPLETED",
+            "elapsed_s": 10,
+            "timelimit_s": 3600,
+            "req_mem_bytes": 8 * 2**30,
+            "max_rss_bytes": 2**30,
+        },
+        **kwargs,
+    )
+
+
+def test_reduce_is_clamped_up_to_the_compile_floor_and_reattributed():
+    findings = {
+        f.resource: f
+        for f in _analyze(
+            [
+                _over_reserved_row(
+                    compile_in_job=True,
+                    compile_floor={"mem": "4G", "time": "00:30:00"},
+                )
+            ],
+            root_config_path="/p/root_config.yaml",
+        )
+    }
+    # Unclamped these would be the 5-minute / 128M floors; the compile needs
+    # more, so that is what the allocation can actually be reduced to.
+    assert findings["time"].suggested == "00:30:00"
+    assert findings["time"].edit_hint["path"] == "cfg-dispatch.compile.time"
+    assert findings["mem"].suggested == "4G"
+    assert findings["mem"].edit_hint["path"] == "cfg-dispatch.compile.mem"
+    assert findings["mem"].direction == "reduce"
+
+
+def test_reduce_is_dropped_when_the_floor_equals_the_reservation():
+    """A suggestion the clamp returns to the current value saves nothing.
+
+    Emitting it would make the agent loop rerun, see the advice fail to
+    retire, and have no way to tell that from a wrong suggestion.
+    """
+    findings = _analyze(
+        [
+            _over_reserved_row(
+                compile_in_job=True,
+                # Exactly the reserved values from the telemetry above.
+                compile_floor={"mem": "8G", "time": "01:00:00"},
+            )
+        ],
+        root_config_path="/p/root_config.yaml",
+    )
+    assert findings == []
+
+
+def test_floor_does_not_apply_without_an_in_job_compile():
+    """A shared-build job's allocation never covered a compile."""
+    findings = {f.resource: f for f in _analyze([_over_reserved_row()])}
+    assert findings["time"].suggested == "00:05:00"  # 10s x 1.5 -> 5-min floor
+    assert findings["mem"].suggested == "1536M"  # 1G x 1.5, above the 128M floor
+    assert findings["time"].phase == "sim"
+
+
+def test_floor_leaves_a_suggestion_above_it_untouched():
+    findings = {
+        f.resource: f
+        for f in _analyze(
+            [
+                _over_reserved_row(
+                    compile_in_job=True,
+                    compile_floor={"mem": "64M", "time": "00:01:00"},
+                )
+            ],
+            root_config_path="/p/root_config.yaml",
+        )
+    }
+    assert findings["time"].suggested == "00:05:00"
+    assert findings["mem"].suggested == "1536M"
+    # The floor never bound, so the test's own fields still own these.
+    assert findings["mem"].edit_hint["path"] == "tests[name=t].resources.mem"
+
+
+def test_cpus_reduce_is_dropped_when_the_compile_needs_them():
+    rows = [
+        _row(
+            "t",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 2000,
+                "timelimit_s": 3600,
+                "alloc_cpus": 8,
+                "total_cpu_s": 400.0,  # 2.5% efficiency over 8 cpus
+            },
+            compile_in_job=True,
+            compile_floor={"cpus": 8},
+        )
+    ]
+    # The compile wants all 8, so there is no reduction to make.
+    assert [
+        f for f in _analyze(rows, root_config_path="/p/x.yaml") if f.resource == "cpus"
+    ] == []
+
+
+def test_oom_raise_still_fires_on_a_compile_governed_field():
+    """The floor only clamps reductions; a kill must still raise."""
+    findings = _analyze(
+        [
+            _row(
+                "t",
+                {
+                    "state": "OUT_OF_MEMORY",
+                    "elapsed_s": 2000,
+                    "timelimit_s": 3600,
+                    "req_mem_bytes": 8 * 2**30,
+                },
+                compile_in_job=True,
+                governed_by={"mem": "compile"},
+                compile_floor={"mem": "8G"},
+            )
+        ],
+        root_config_path="/p/root_config.yaml",
+    )
+    (mem,) = [f for f in findings if f.resource == "mem"]
+    assert mem.direction == "raise"
+    assert mem.suggested == "12G"
+    assert mem.edit_hint["path"] == "cfg-dispatch.compile.mem"

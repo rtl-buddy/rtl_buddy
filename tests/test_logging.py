@@ -265,6 +265,62 @@ def test_vlog_filelist_entries_are_relative_to_output_dir(tmp_path):
     assert "../../design/rtl.sv" in file_text
 
 
+def test_vlog_filelist_write_is_atomic_for_concurrent_writers(tmp_path):
+    """Concurrent writers of one run.f must never expose a truncated file.
+
+    `artefacts/<test>/run.f` is per TEST, so every element of a dispatched
+    array for the same test rewrites it at once — and share-build reads it
+    straight back to fingerprint the compile. A reader that lands inside a
+    truncate window hashes an empty filelist to a different compile key and
+    recompiles instead of reusing the shared build (#358).
+    """
+    import threading
+
+    model_dir = tmp_path / "design"
+    model_dir.mkdir()
+    model_path = model_dir / "models.yaml"
+    (model_dir / "rtl.sv").write_text("module rtl;\nendmodule\n")
+    model_path.write_text("models: []\n")
+    model_cfg = DummyModelCfg(model_path, ["rtl.sv\n"])
+
+    output_path = tmp_path / "artefacts" / "basic" / "run.f"
+    output_path.parent.mkdir(parents=True)
+
+    def write_once():
+        VlogFilelist(
+            name="rtl_buddy/vlog_filelist",
+            model_cfg=model_cfg,
+            output_path=output_path,
+        ).write_output()
+
+    seen = []
+    stop = threading.Event()
+
+    def read_until_stopped():
+        while not stop.is_set():
+            try:
+                seen.append(output_path.read_text())
+            except FileNotFoundError:
+                pass
+
+    write_once()  # a complete file exists before any reader looks
+    reader = threading.Thread(target=read_until_stopped)
+    reader.start()
+    try:
+        for _ in range(60):
+            write_once()
+    finally:
+        stop.set()
+        reader.join()
+
+    # Every observation is a whole file, never a truncated one.
+    assert seen, "reader never observed the filelist"
+    assert all("../../design/rtl.sv" in text for text in seen)
+    assert not any(text == "" for text in seen)
+    # No temp files left behind for the builder to trip on.
+    assert [p.name for p in output_path.parent.iterdir()] == ["run.f"]
+
+
 def test_vlog_filelist_nested_model_includes_resolve_from_models_yaml(tmp_path):
     model_dir = tmp_path / "design"
     nested_dir = model_dir / "rtl"

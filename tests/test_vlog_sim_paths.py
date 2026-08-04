@@ -454,3 +454,19 @@ def test_vlog_sim_cli_builder_override_wins_over_per_test_builder(
         builder_override="verilator",
     )
     assert sim.rtl_builder_cfg is forced
+
+
+def test_license_marker_helpers_share_one_implementation():
+    """The live monitor and the post-hoc compile check must agree (#358)."""
+    from rtl_buddy.tools import vcs_license
+
+    for text in (
+        "Queuing for License",
+        "Licensed number of users already reached",
+        "  Queuing for License...",
+    ):
+        assert vcs_license.has_license_queue_marker(text)
+        assert vcs_license._is_marker_line(text)
+    for text in ("Parsing design file", "", "...."):
+        assert not vcs_license.has_license_queue_marker(text)
+        assert not vcs_license._is_marker_line(text)

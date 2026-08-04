@@ -36,7 +36,7 @@ rtl-buddy regression --reg-config path/to/regressions.yaml
 
 When many tests in a suite share one testbench and compile configuration,
 add `--share-build` to compile once per unique set of compile inputs instead
-of once per test (Verilator builders only). See
+of once per test (Verilator, VCS, and Icarus builders). See
 [Sharing compiled builds across tests](tests.md#sharing-compiled-builds-across-tests).
 
 ### Config resolution order
@@ -84,7 +84,7 @@ rtl-buddy regression --dispatch slurm
 
 What happens: **nothing heavy runs on the submit host** (usually an
 interactive login node). The head expands the suite once, then submits one
-**build job** per suite that Verilates a shared `simv` per unique compile
+**build job** per suite that compiles a shared `simv` per unique compile
 key on a compute node (dispatch implies `--share-build`); it then submits
 one sim job per test, each gated on that build with `--dependency=afterok`,
 so a sim starts only once its shared build succeeded and re-enters at

@@ -22,7 +22,24 @@ _DOTS_ONLY_RE = re.compile(r"^[.\s]*$")
 
 
 def _is_marker_line(line: str) -> bool:
-    return any(marker in line for marker in _MARKERS)
+    # Delegates so the marker-matching rule has exactly one implementation:
+    # the live monitor and the post-hoc compile check must never drift apart
+    # on what a queue banner looks like.
+    return has_license_queue_marker(line)
+
+
+def has_license_queue_marker(text: str) -> bool:
+    """Did this captured output ever sit in the VCS license queue?
+
+    A one-shot check over text already in hand, for the compile phase:
+    ``vcs`` elaboration honours ``-licqueue`` exactly as ``simv`` does, but
+    ``compile()`` captures its output through pipes, which rules out the
+    live :class:`VcsLicenseQueueMonitor` (see ``run_managed_process``'s
+    ``timeout_pauser`` restriction). Used to attribute a slow compile — and
+    a build job that hit its ``--time`` — to a busy license server rather
+    than to an undersized reservation (rtl-buddy/rtl_buddy#329, #358).
+    """
+    return any(marker in text for marker in _MARKERS)
 
 
 class _FileTail:

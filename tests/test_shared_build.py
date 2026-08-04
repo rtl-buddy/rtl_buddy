@@ -134,9 +134,13 @@ def _make_sim(
     pd=None,
     exe="verilator",
     family="verilator",
+    simv="simv",
+    compile_opts=None,
 ):
     monkeypatch.chdir(tmp_path)
-    builder_cfg = DummyBuilderCfg(exe=exe, simulator_family=family)
+    builder_cfg = DummyBuilderCfg(
+        exe=exe, simulator_family=family, simv=simv, compile_opts=compile_opts
+    )
     model_cfg = DummyModelCfg(tmp_path / "models.yaml", filelist=["src/top.sv"])
     test_cfg = DummyTestCfg(test_name, model_cfg, pd=pd)
     return vlog_sim_module.VlogSim(
@@ -149,18 +153,30 @@ def _make_sim(
     )
 
 
-def _install_fake_builder(monkeypatch, calls):
-    """run_managed_process stand-in that drops a simv into --Mdir."""
+def _install_fake_builder(monkeypatch, calls, *, stdout="", returncode=0):
+    """run_managed_process stand-in that drops a simv where the flags say.
+
+    Mirrors each supported family's output convention: Verilator's
+    ``--Mdir <dir>`` (simv inside it), and the ``-o <path>`` that VCS and
+    Icarus take (simv/snapshot at exactly that path).
+    """
 
     def _fake_run(cmd, capture_output, text, cwd, env=None):
         calls.append({"cmd": list(cmd), "cwd": cwd})
+
+        def _resolve(raw):
+            path = Path(raw)
+            return path if path.is_absolute() else Path(cwd) / path
+
         if "--Mdir" in cmd:
-            mdir = Path(cmd[cmd.index("--Mdir") + 1])
-            if not mdir.is_absolute():
-                mdir = Path(cwd) / mdir
+            mdir = _resolve(cmd[cmd.index("--Mdir") + 1])
             mdir.mkdir(parents=True, exist_ok=True)
             (mdir / "simv").write_text("binary\n")
-        return ManagedProcessResult(returncode=0, stdout="", stderr="")
+        elif "-o" in cmd:
+            out = _resolve(cmd[cmd.index("-o") + 1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("binary\n")
+        return ManagedProcessResult(returncode=returncode, stdout=stdout, stderr="")
 
     monkeypatch.setattr(
         vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
@@ -246,7 +262,8 @@ def test_share_build_ignores_missing_stamp_simv_pair(tmp_path, monkeypatch):
     assert len(calls) == 2  # simv without a stamp is never trusted
 
 
-def test_share_build_falls_back_for_non_verilator_builders(tmp_path, monkeypatch):
+def test_share_build_reuses_simv_across_tests_on_vcs(tmp_path, monkeypatch):
+    """VCS shares one build like Verilator does (#358)."""
     _write_source(tmp_path)
     calls = []
     _install_fake_builder(monkeypatch, calls)
@@ -260,9 +277,146 @@ def test_share_build_falls_back_for_non_verilator_builders(tmp_path, monkeypatch
 
     assert sim_a.compile() == 0
     assert sim_b.compile() == 0
+    # Second test short-circuits on the stamp: one elaboration, not two.
+    assert len(calls) == 1
+    assert sim_a._get_simv_path() == sim_b._get_simv_path()
+    shared = Path(sim_a._get_simv_path()).parent
+    assert shared.parent == tmp_path / "artefacts" / ".shared-builds"
+    # The executable AND its intermediate C tree land in the shared dir, so
+    # the build is self-contained and a later rebuild reuses it.
+    assert "-o" in calls[0]["cmd"]
+    assert calls[0]["cmd"][calls[0]["cmd"].index("-o") + 1] == str(shared / "simv")
+    assert f"-Mdir={shared / 'csrc'}" in calls[0]["cmd"]
+
+
+def test_share_build_on_vcs_overrides_configured_output_opts(tmp_path, monkeypatch):
+    """A configured -o / -Mdir must not fight the shared build's own."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe="vcs",
+        family="vcs",
+        compile_opts=["-sverilog", "-o", "mysimv", "-Mdir=mycsrc", "-full64"],
+    )
+    assert sim.compile() == 0
+    cmd = calls[0]["cmd"]
+    shared = Path(sim._get_simv_path()).parent
+    assert "mysimv" not in cmd
+    assert "-Mdir=mycsrc" not in cmd
+    assert cmd.count("-o") == 1
+    assert cmd[cmd.index("-o") + 1] == str(shared / "simv")
+    # Non-output opts survive untouched.
+    assert "-sverilog" in cmd and "-full64" in cmd
+
+
+def test_share_build_reuses_snapshot_across_tests_on_icarus(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="iverilog", family="icarus"
+    )
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="iverilog", family="icarus"
+    )
+
+    assert sim_a.compile() == 0
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+    shared = Path(sim_a._get_simv_path()).parent
+    assert sim_a._get_icarus_snapshot_path() == str(shared / "simv.vvp")
+    # The wrapper the execute() path invokes is the stamp-validated `simv`.
+    assert Path(sim_a._get_simv_path()).is_file()
+    assert sim_b._get_simv_path() == sim_a._get_simv_path()
+
+
+def test_share_build_falls_back_for_unsupported_builders(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="qrun", family="questa"
+    )
+
+    assert sim_a.compile() == 0
+    assert sim_b.compile() == 0
     assert len(calls) == 2
     assert "--Mdir" not in calls[0]["cmd"]
     assert sim_a._get_simv_path() == str(tmp_path / "artefacts" / "test_a" / "simv")
+
+
+def test_share_build_declines_absolute_builder_simv(tmp_path, monkeypatch):
+    """An absolute builder-simv pins the executable; sharing would ignore it."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    pinned = str(tmp_path / "pinned" / "simv")
+
+    sim_a = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe="vcs",
+        family="vcs",
+        simv=pinned,
+    )
+    sim_b = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_b",
+        exe="vcs",
+        family="vcs",
+        simv=pinned,
+    )
+
+    assert sim_a.compile() == 0
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+    assert sim_a._get_simv_path() == pinned
+
+
+def test_share_build_supported_is_the_single_capability_source():
+    assert vlog_sim_module.share_build_supported("verilator")
+    assert vlog_sim_module.share_build_supported("vcs")
+    assert vlog_sim_module.share_build_supported("icarus")
+    assert not vlog_sim_module.share_build_supported("questa")
+    assert not vlog_sim_module.share_build_supported(None)
+
+
+def test_vcs_compile_license_queue_is_reported(tmp_path, monkeypatch):
+    """A licqueue wait makes compile elapsed untrustworthy — say so (#329)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, stdout="Queuing for License...\nParsing design\n"
+    )
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs")
+    assert sim.compile() == 0
+    # The evidence is kept even though the compile succeeded.
+    transcript = Path(sim._get_compile_transcript_path())
+    assert transcript.is_file()
+    assert "Queuing for License" in transcript.read_text()
+
+
+def test_verilator_compile_never_reports_license_queue(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, stdout="Queuing for License...\n")
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+    assert not Path(sim._get_compile_transcript_path()).exists()
 
 
 def test_share_build_disabled_keeps_per_test_build_dirs(tmp_path, monkeypatch):
@@ -304,3 +458,98 @@ def test_test_runner_threads_share_build_to_vlog_sim(tmp_path, monkeypatch):
         share_build=True,
     )
     assert runner._create_vlog_sim().share_build is True
+
+
+def test_share_build_on_vcs_strips_output_opts_from_extra_compile_flags(
+    tmp_path, monkeypatch
+):
+    """A subclass-injected -o must not outrank the shared build's own.
+
+    _get_extra_compile_flags() is appended AFTER the shared-build output argv,
+    so an unfiltered -o there would win on VCS's duplicate-option precedence:
+    the simv lands outside the shared dir, the stamp check never finds it, and
+    every job recompiles silently and forever.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs")
+    monkeypatch.setattr(
+        sim, "_get_extra_compile_flags", lambda: ["-o", "sneaky", "-Mdir=sneakier"]
+    )
+    assert sim.compile() == 0
+
+    cmd = calls[0]["cmd"]
+    shared = Path(sim._get_simv_path()).parent
+    assert "sneaky" not in cmd and "-Mdir=sneakier" not in cmd
+    assert cmd.count("-o") == 1
+    assert cmd[cmd.index("-o") + 1] == str(shared / "simv")
+    # The build really did land where the stamp validates it.
+    assert (shared / "simv").is_file()
+    assert sim._shared_build_is_valid(shared, None) is False  # wrong fingerprint
+    assert Path(sim._get_simv_path()).is_file()
+
+
+def test_icarus_wrapper_args_separate_the_compile_key(tmp_path, monkeypatch):
+    """The shared `simv` wrapper bakes in _icarus_vvp_extra_args() (#358).
+
+    CocotbSim adds the VPI module there while contributing no Icarus compile
+    flags, so two tests differing only in those args would otherwise share one
+    key and one wrapper — whichever compiled first deciding how vvp is invoked
+    for both.
+    """
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    plain = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="iverilog", family="icarus"
+    )
+    vpi = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="iverilog", family="icarus"
+    )
+    monkeypatch.setattr(
+        vpi, "_icarus_vvp_extra_args", lambda: ["-M", "/libs", "-m", "libcocotbvpi"]
+    )
+
+    assert plain.compile() == 0
+    assert vpi.compile() == 0
+    # Different wrapper contents -> different build, so both compiled.
+    assert len(calls) == 2
+    assert plain._get_simv_path() != vpi._get_simv_path()
+    assert "libcocotbvpi" in Path(vpi._get_simv_path()).read_text()
+    assert "libcocotbvpi" not in Path(plain._get_simv_path()).read_text()
+
+
+def test_relative_builder_simv_override_is_logged(tmp_path, monkeypatch, caplog):
+    """The shared build discards a relative builder-simv; don't do it silently."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe="vcs",
+        family="vcs",
+        simv="bin/mysim",
+    )
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert "builder-simv" in caplog.text
+    assert "bin/mysim" in caplog.text
+
+
+def test_default_builder_simv_override_is_not_logged(tmp_path, monkeypatch, caplog):
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs")
+    with caplog.at_level(_logging.DEBUG):
+        assert sim.compile() == 0
+    assert "builder-simv" not in caplog.text

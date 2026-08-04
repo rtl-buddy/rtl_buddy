@@ -394,7 +394,47 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.build_reused":
             return f"{target or 'compile'}: reused shared build {fields.get('build_dir')} (compile skipped)"
         case "compile.share_build_unsupported":
-            return f"{fields.get('test')}: --share-build only supports Verilator builders; {fields.get('simulator')} compiles per test"
+            return (
+                f"{fields.get('test')}: --share-build cannot share this build "
+                f"({fields.get('reason') or fields.get('simulator')}); "
+                "it compiles per test"
+            )
+        case "dispatch.compile_mem_unparseable":
+            return (
+                f"cfg-dispatch compile mem {fields.get('mem')!r} is not a "
+                "value Slurm understands (expected e.g. 512M / 16G), so it "
+                "cannot be folded into an in-job compile's reservation"
+            )
+        case "dispatch.cancel_failed":
+            return (
+                f"dispatch: scancel failed for {fields.get('jobs')} "
+                f"(rc {fields.get('returncode')}) — those jobs are still "
+                f"queued and need cancelling by hand: {fields.get('error')}"
+            )
+        case "dispatch.dependency_never_satisfied":
+            return (
+                f"dispatch: cancelling {len(fields.get('jobs') or [])} job(s) whose "
+                "build never succeeded — Slurm would leave them pending forever "
+                f"({fields.get('jobs')})"
+            )
+        case "compile.share_build_opts_overridden":
+            return (
+                f"{fields.get('test')}: shared build owns the output location, "
+                f"so {fields.get('dropped')} from builder-opts was dropped in "
+                f"favour of {fields.get('build_dir')}"
+            )
+        case "compile.share_build_simv_overridden":
+            return (
+                f"{fields.get('test')}: shared build owns the output location, "
+                f"so builder-simv {fields.get('configured')!r} was not used — "
+                f"the executable is {fields.get('used')}"
+            )
+        case "compile.license_queued":
+            return (
+                f"{fields.get('test')}: compile waited in the VCS license queue — "
+                f"its {_format_duration(fields.get('duration_sec'))} is not all "
+                f"compile work; transcript: {fields.get('transcript')}"
+            )
         case "sim.start":
             return f"{target or 'sim'}: simulation started"
         case "sim.output_paths":
