@@ -49,6 +49,7 @@ rtl_buddy subprocess.
 
 import logging
 import os
+import signal
 import subprocess
 import time
 from collections.abc import Sequence
@@ -56,9 +57,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from ..config.dispatch import JobResources
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
-from ..process_utils import terminate_process_group
+from ..process_utils import DEFAULT_KILL_TIMEOUT, signal_process_group
 from .argv import build_job_argv, test_job_argv
 from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
 
@@ -130,8 +132,17 @@ class LocalProcessBackend(DispatchBackend):
         self.max_jobs = (
             dispatch_cfg.jobs if dispatch_cfg.jobs is not None else default_jobs()
         )
+        # Every job ever submitted, by id: the dependency graph and the
+        # handles the head collects with both index into this.
         self._jobs: dict[str, _PoolJob] = {}
+        # The non-terminal subsets a sweep actually has to look at. Walking
+        # `_jobs` instead would make every 50 ms sweep O(all jobs ever) —
+        # steady background CPU on the head for no new information once a
+        # few thousand jobs have finished.
+        self._queued: list[_PoolJob] = []  # submit order; launch order sorts it
+        self._running: dict[str, _PoolJob] = {}
         self._seq = 0
+        self._warned_reservations = False
         # Records how many slots this run actually has — the one number that
         # explains its wall-clock, and it is often a default nobody chose.
         log_event(
@@ -142,17 +153,34 @@ class LocalProcessBackend(DispatchBackend):
             jobs=self.max_jobs,
             cpus=os.cpu_count(),
         )
-        if dispatch_cfg.resources is not None or dispatch_cfg.compile is not None:
-            # A `resources:` block written for a cluster is silently inert
-            # here. Say so once rather than let it read as enforced.
-            log_event(
-                logger,
-                logging.INFO,
-                "dispatch.reservations_ignored",
-                backend=self.name,
-            )
 
     # ---- submission -------------------------------------------------
+
+    def _warn_if_reserved(self, spec) -> None:
+        """Warn once when a reservation this backend cannot honour is set.
+
+        Checked against the **resolved** ``JobResources`` on each spec rather
+        than against ``cfg-dispatch``, so a project that reserves only per
+        test or per testbench in tests.yaml — where the heavy tests are — is
+        told too. WARNING, not INFO: the console shows INFO only under
+        ``-v``, and a reservation silently doing nothing is precisely the
+        misreading this exists to prevent.
+        """
+        if self._warned_reservations:
+            return
+        resources = getattr(spec, "resources", None)
+        if resources is None or resources == JobResources():
+            return
+        self._warned_reservations = True
+        log_event(
+            logger,
+            logging.WARNING,
+            "dispatch.reservations_ignored",
+            backend=self.name,
+            cpus=resources.cpus,
+            mem=resources.mem,
+            time=resources.time,
+        )
 
     def _enqueue(self, spec, argv, *, kind, dependency) -> JobHandle:
         if dependency is not None and dependency not in self._jobs:
@@ -160,6 +188,7 @@ class LocalProcessBackend(DispatchBackend):
                 f"{self.name}: unknown dependency job id {dependency!r} — a job "
                 "can only be gated on one this backend submitted"
             )
+        self._warn_if_reserved(spec)
         self._seq += 1
         job = _PoolJob(
             job_id=f"lp-{self._seq}",
@@ -170,6 +199,7 @@ class LocalProcessBackend(DispatchBackend):
             dependency=dependency,
         )
         self._jobs[job.job_id] = job
+        self._queued.append(job)
         return JobHandle(job_id=job.job_id, spec=spec)
 
     def submit_build(self, spec: BuildJobSpec) -> JobHandle:
@@ -225,14 +255,16 @@ class LocalProcessBackend(DispatchBackend):
 
     def _reap(self) -> None:
         """Collect exited processes, then skip jobs whose gate can never open."""
-        for job in self._jobs.values():
+        for job in list(self._running.values()):
             proc = job.proc
-            if proc is None or job.returncode is not None:
+            if proc is None:  # cancel_all already reaped it
+                del self._running[job.job_id]
                 continue
             returncode = proc.poll()
             if returncode is None:
                 continue
             job.returncode = returncode
+            del self._running[job.job_id]
             self._close_log(job)
             log_event(
                 logger,
@@ -248,9 +280,10 @@ class LocalProcessBackend(DispatchBackend):
             )
 
         skipped = []
-        for job in self._jobs.values():
-            if job.proc is None and not job.skipped and self._gate(job) == "failed":
+        for job in list(self._queued):
+            if self._gate(job) == "failed":
                 job.skipped = True
+                self._queued.remove(job)
                 skipped.append(job.job_id)
         if skipped:
             # The counterpart of Slurm cancelling an afterok dependent: the
@@ -270,11 +303,7 @@ class LocalProcessBackend(DispatchBackend):
         sim unblocks nothing, so a second suite's build must not queue
         behind the first suite's sims.
         """
-        ready = [
-            job
-            for job in self._jobs.values()
-            if job.proc is None and not job.skipped and self._gate(job) == "open"
-        ]
+        ready = [job for job in self._queued if self._gate(job) == "open"]
         ready.sort(key=lambda job: (0 if job.kind == "build" else 1, job.seq))
         return ready
 
@@ -311,6 +340,8 @@ class LocalProcessBackend(DispatchBackend):
             raise FatalRtlBuddyError(
                 f"{self.name}: could not start {job.label()}: {e}"
             ) from e
+        self._queued.remove(job)
+        self._running[job.job_id] = job
         log_event(
             logger,
             logging.INFO,
@@ -325,12 +356,15 @@ class LocalProcessBackend(DispatchBackend):
     def _pump(self) -> None:
         """One sweep: reap what finished, fill free slots with what is ready."""
         self._reap()
-        running = sum(1 for job in self._jobs.values() if job.running)
-        for job in self._launchable():
-            if running >= self.max_jobs:
-                break
+        free = self.max_jobs - len(self._running)
+        if free <= 0:
+            return
+        for job in self._launchable()[:free]:
             self._launch(job)
-            running += 1
+
+    def advance(self) -> None:
+        """Refill the pool without waiting — see :meth:`DispatchBackend.advance`."""
+        self._pump()
 
     # ---- waiting and teardown ---------------------------------------
 
@@ -366,32 +400,63 @@ class LocalProcessBackend(DispatchBackend):
             time.sleep(_POLL_INTERVAL_SEC)
 
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
+        """Take the fleet down: signal everything, then reap on one deadline.
+
+        Two phases on purpose. Signalling and waiting in the same loop would
+        make the grace period scale with the fleet (``jobs`` × 5 s, so a head
+        that looks hung for 20 s at ``-j 4`` after the user's Ctrl-C), and
+        would leave every job past the interruption point unsignalled if an
+        impatient second Ctrl-C landed mid-teardown — the orphaned fleet this
+        method exists to prevent. Signalling first means the worst a second
+        interrupt costs is the escalation to SIGKILL, never the SIGTERM.
+        """
         if not handles:
             return
-        cancelled = 0
+        victims = []
         for handle in handles:
             # Tolerate None: this is the last line of defence against an
             # orphaned fleet and must not be disarmed by one bad entry (#361).
             if handle is None:
                 continue
             job = self._jobs.get(handle.job_id)
-            if job is None or job.finished:
-                continue
-            if job.proc is not None:
-                terminate_process_group(job.proc)
-                job.returncode = job.proc.returncode
-            else:
-                # Queued: marking it skipped is the cancellation — a later
-                # sweep must not start a job the head has given up on.
+            if job is not None and not job.finished:
+                victims.append(job)
+
+        # Phase 1 — signal every running job; disarm every queued one. A
+        # queued job is cancelled by marking it skipped: a later sweep must
+        # not start work the head has given up on.
+        signalled = []
+        for job in victims:
+            if job.proc is None:
                 job.skipped = True
+                self._queued.remove(job)
+                continue
+            signal_process_group(job.proc, signal.SIGTERM)
+            signalled.append(job)
+
+        # Phase 2 — one grace period for the whole fleet, then SIGKILL the
+        # stragglers.
+        deadline = time.monotonic() + DEFAULT_KILL_TIMEOUT
+        for job in signalled:
+            proc = job.proc
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                signal_process_group(proc, signal.SIGKILL)
+                proc.wait()
+            # Read the code back rather than assuming the signal set it: a
+            # process that had already exited leaves `finished` False
+            # otherwise, and `wait_all` would spin on a job that is gone.
+            job.returncode = proc.returncode
+            self._running.pop(job.job_id, None)
             self._close_log(job)
-            cancelled += 1
+
         log_event(
             logger,
             logging.WARNING,
             "dispatch.cancelled",
             backend=self.name,
-            jobs=cancelled,
+            jobs=len(victims),
         )
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:

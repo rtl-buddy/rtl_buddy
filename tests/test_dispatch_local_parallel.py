@@ -14,12 +14,18 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 import rtl_buddy.dispatch.local_parallel as lp_module
-from rtl_buddy.config.dispatch import DispatchConfigFile, DispatchResourcesFile
+from rtl_buddy.config.dispatch import (
+    DispatchConfigFile,
+    DispatchResourcesFile,
+    JobResources,
+    resolve_resources,
+)
 from rtl_buddy.dispatch import create_dispatch_backend
 from rtl_buddy.dispatch.base import BuildJobSpec, TestJobSpec
 from rtl_buddy.dispatch.local_parallel import LocalProcessBackend, default_jobs
@@ -115,17 +121,74 @@ def test_zero_jobs_in_config_is_rejected():
     assert "jobs must be >= 1" in str(excinfo.value)
 
 
-def test_configured_reservations_are_reported_as_ignored(caplog):
-    with caplog.at_level(logging.INFO):
-        _backend(resources=DispatchResourcesFile(cpus=8, mem="16G"))
-    events = [r.__dict__.get("rtl_event") for r in caplog.records]
-    assert "dispatch.reservations_ignored" in events
+def _events(caplog) -> list[str]:
+    return [r.__dict__.get("rtl_event") for r in caplog.records]
 
 
-def test_no_reservation_no_ignored_notice(caplog):
-    with caplog.at_level(logging.INFO):
-        _backend()
-    events = [r.__dict__.get("rtl_event") for r in caplog.records]
+def test_reservations_are_warned_about_at_warning_level(monkeypatch, tmp_path, caplog):
+    """A reservation nothing enforces must reach the terminal, not just the log.
+
+    The console handler shows INFO only under ``-v``, so an INFO notice would
+    be invisible on the very run it exists to explain.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=1, resources=DispatchResourcesFile(cpus=8, mem="16G"))
+    spec = _sim_spec(tmp_path, "t0")
+    spec.resources = resolve_resources(
+        DispatchConfigFile(
+            resources=DispatchResourcesFile(cpus=8, mem="16G")
+        ).initialise()
+    )
+    with caplog.at_level(logging.DEBUG):
+        backend.submit(spec)
+    warnings = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.reservations_ignored"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert "not enforced" in warnings[0].message.lower()
+    backend.cancel_all([])
+
+
+def test_per_test_reservations_are_warned_about_too(monkeypatch, tmp_path, caplog):
+    """The notice keys off the RESOLVED reservation, not ``cfg-dispatch``.
+
+    A project that reserves only per test or per testbench in tests.yaml —
+    where the heavy tests are — would otherwise never be told.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=1)  # nothing configured under cfg-dispatch
+    spec = _sim_spec(tmp_path, "t0")
+    spec.resources = JobResources(cpus=16, mem="64G", time="08:00:00")
+    with caplog.at_level(logging.WARNING):
+        handle = backend.submit(spec)
+        backend.wait_all([handle])
+    assert "dispatch.reservations_ignored" in _events(caplog)
+
+
+def test_reservation_notice_fires_once_per_run(monkeypatch, tmp_path, caplog):
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=2)
+    specs = []
+    for i in range(4):
+        spec = _sim_spec(tmp_path, f"t{i}")
+        spec.resources = JobResources(cpus=4)
+        specs.append(spec)
+    with caplog.at_level(logging.WARNING):
+        handles = [backend.submit(spec) for spec in specs]
+        backend.wait_all(handles)
+    assert _events(caplog).count("dispatch.reservations_ignored") == 1
+
+
+def test_no_reservation_no_ignored_notice(monkeypatch, tmp_path, caplog):
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    with caplog.at_level(logging.DEBUG):
+        backend = _backend()
+        handle = backend.submit(_sim_spec(tmp_path, "t0"))
+        backend.wait_all([handle])
+    events = _events(caplog)
     assert "dispatch.reservations_ignored" not in events
     # The pool size is always recorded — it explains the run's wall-clock.
     assert "dispatch.pool_configured" in events
@@ -374,6 +437,90 @@ def test_cancel_all_kills_running_and_disarms_queued(monkeypatch, tmp_path):
     backend.wait_all(handles)
     assert _states(backend)["queued"] == 0
     assert list(tmp_path.glob("*.ran")) == []
+
+
+def test_cancel_all_signals_every_job_before_waiting_on_any(monkeypatch, tmp_path):
+    """Teardown is bounded by ONE grace period, not one per job.
+
+    Three jobs that ignore SIGTERM must all be signalled first and then
+    escalated against a shared deadline; signalling and waiting in the same
+    loop would cost `jobs × kill_timeout` and would leave the jobs past an
+    interrupted wait unsignalled.
+    """
+    _stub_argv(
+        monkeypatch,
+        sim=_python(
+            "import signal,time;"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+            "time.sleep(30)"
+        ),
+    )
+    backend = _backend(jobs=3)
+    handles = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(3)]
+    procs = [backend._jobs[h.job_id].proc for h in handles]
+    assert all(p.poll() is None for p in procs)
+
+    monkeypatch.setattr(lp_module, "DEFAULT_KILL_TIMEOUT", 0.3)
+    started = time.monotonic()
+    backend.cancel_all(handles)
+    elapsed = time.monotonic() - started
+
+    # One shared 0.3s grace, not 3 x 0.3s — allow generous slack for process
+    # teardown while still failing a per-job serial wait.
+    assert elapsed < 0.9, elapsed
+    assert all(p.poll() is not None for p in procs)
+    # Every job ends terminal, so a later wait_all cannot spin on one.
+    assert all(backend._jobs[h.job_id].finished for h in handles)
+    backend.wait_all(handles)
+
+
+def test_cancel_all_marks_an_already_exited_job_terminal(monkeypatch, tmp_path):
+    """`returncode` is read back, not assumed from the signal.
+
+    A job that exited on its own between the last sweep and cancellation is
+    never signalled successfully; if its returncode stayed None it would look
+    forever-running and `wait_all` would spin.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=1)
+    handle = backend.submit(_sim_spec(tmp_path, "t0"))
+    backend._jobs[handle.job_id].proc.wait()  # exits on its own, unreaped
+
+    backend.cancel_all([handle])
+    job = backend._jobs[handle.job_id]
+    assert job.returncode is not None
+    assert job.finished
+    backend.wait_all([handle])
+
+
+def test_advance_refills_the_pool_without_waiting(monkeypatch, tmp_path):
+    """The head pokes the pool while it plans the next suite.
+
+    Nothing else pumps between submissions, so a slot freed while the head is
+    expanding another suite's sweep would sit idle to the end of planning.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=1)
+    handles = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(2)]
+    # t0 took the only slot; wait for it to exit with nothing pumping.
+    backend._jobs[handles[0].job_id].proc.wait()
+    assert not backend._jobs[handles[1].job_id].running
+
+    backend.advance()
+    assert backend._jobs[handles[1].job_id].running
+    backend.wait_all(handles)
+    assert all(backend._jobs[h.job_id].returncode == 0 for h in handles)
+
+
+def test_finished_jobs_leave_the_sweep_sets(monkeypatch, tmp_path):
+    """A sweep is O(outstanding), not O(every job ever submitted)."""
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=2)
+    handles = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(5)]
+    backend.wait_all(handles)
+    assert backend._queued == []
+    assert backend._running == {}
+    assert len(backend._jobs) == 5  # still addressable by id for collection
 
 
 def test_cancel_all_tolerates_none_handles(monkeypatch, tmp_path):

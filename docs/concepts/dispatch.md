@@ -203,21 +203,27 @@ still prefer Slurm where you have it:
 
 - **Reservations are not enforced.** `resources:` cpus/mem/time are
   ignored rather than half-honoured — one host has no portable per-process
-  cap (`ulimit`/`nice`/`taskset` are coarse and platform-specific). A
-  configured `resources:` block logs `dispatch.reservations_ignored` once
-  so it cannot read as enforced. `-j` is the only backpressure, so size it
-  for the *memory* your heaviest tests need, not just for cores.
+  cap (`ulimit`/`nice`/`taskset` are coarse and platform-specific). Any
+  reservation that resolves to something non-default — from `cfg-dispatch`
+  *or* from a per-testbench / per-test `resources:` — **warns** once
+  (`dispatch.reservations_ignored`) so it cannot read as enforced. `-j` is
+  the only backpressure, so size it for the *memory* your heaviest tests
+  need, not just for cores.
 - **No usage telemetry, so no right-sizing advice.** There is no `sacct`
   to ask, so `payload.reservation_advice` comes back empty instead of
   guessing. Right-size against a real cluster run.
 
 !!! note "Ctrl-C cleans up; `kill -9` does not"
     Jobs run in their own process session, so an interrupt goes to the
-    head, which takes the fleet down itself (`SIGTERM`, then `SIGKILL`) —
-    the same shape as `scancel`, and it lets a simulator flush on a
-    graceful signal. The trade-off: a `SIGKILL`ed head runs no cleanup and,
-    unlike Slurm, there is no scheduler to reap the orphans — its children
-    finish their runs. Prefer `Ctrl-C` over `kill -9` on a dispatched run.
+    head, which takes the fleet down itself — the same shape as `scancel`,
+    and it lets a simulator flush on a graceful signal. Teardown signals
+    **every** job before waiting on any, so the grace period is one 5 s
+    window for the whole fleet rather than 5 s per job, and an impatient
+    second `Ctrl-C` can at worst skip the escalation to `SIGKILL` — never
+    leave a job unsignalled. The trade-off: a `SIGKILL`ed head runs no
+    cleanup at all and, unlike Slurm, there is no scheduler to reap the
+    orphans — its children finish their runs. Prefer `Ctrl-C` over
+    `kill -9` on a dispatched run.
 
 ## Requirements (Slurm)
 

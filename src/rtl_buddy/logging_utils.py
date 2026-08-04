@@ -335,8 +335,10 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"to {fields.get('suggested')}"
             )
         case "randtest.dispatch_ignored_for_replay":
+            jobs = fields.get("jobs")
+            also = f" (and --jobs {jobs})" if jobs is not None else ""
             return (
-                f"--dispatch {fields.get('backend')} ignored for replay "
+                f"--dispatch {fields.get('backend')}{also} ignored for replay "
                 f"(-r {fields.get('replay_run_id')}): a single-seed replay "
                 "runs locally"
             )
@@ -446,10 +448,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('cpus')} CPUs detected)"
             )
         case "dispatch.reservations_ignored":
+            reserved = ", ".join(
+                f"{key}={fields.get(key)}"
+                for key in ("cpus", "mem", "time")
+                if fields.get(key) is not None
+            )
             return (
-                f"cfg-dispatch resources (cpus/mem/time) are not enforced by the "
+                f"Resource reservations ({reserved}) are NOT enforced by the "
                 f"{fields.get('backend')} backend — one host has no portable "
-                "per-process cap, so --jobs is the only limit"
+                "per-process cap, so --jobs is the only limit; size it for the "
+                "memory the heaviest tests need"
             )
         case "dispatch.dependency_failed":
             return (

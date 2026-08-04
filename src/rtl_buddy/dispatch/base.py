@@ -134,6 +134,17 @@ class DispatchBackend(ABC):
         """
         return [self.submit(spec, dependency=dependency) for spec in specs]
 
+    def advance(self) -> None:
+        """Let a self-executing backend make progress, without blocking.
+
+        No-op for a scheduler-backed backend: the scheduler runs the fleet
+        whether or not the head is paying attention. A backend that executes
+        jobs itself only makes progress when poked, so the head calls this
+        while it is doing its own work between submissions — planning the
+        next suite can take real time (its sweep hook shells out), and a slot
+        freed during that would otherwise sit idle (#360).
+        """
+
     @abstractmethod
     def wait_all(self, handles: list[JobHandle]) -> None:
         """Block until every submitted job has left the queue."""

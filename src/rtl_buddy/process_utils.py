@@ -14,42 +14,54 @@ class ManagedProcessResult:
     timed_out: bool = False
 
 
+DEFAULT_KILL_TIMEOUT = 5
+
+
+def signal_process_group(proc: subprocess.Popen, sig: int) -> None:
+    """Send ``sig`` to ``proc``'s whole group without waiting for it.
+
+    Signalling and reaping are separable because a caller holding *several*
+    processes must signal them all before waiting on any: waiting in the
+    same loop makes the total grace period scale with the fleet size, and
+    leaves anything not yet reached unsignalled if the wait is interrupted
+    (the local-parallel dispatch pool, #360). Falls back to signalling the
+    single process when the group cannot be signalled, and is a no-op for a
+    process that is already gone.
+    """
+    if os.name == "nt":
+        if sig == signal.SIGKILL:
+            proc.kill()
+        else:
+            proc.terminate()
+        return
+    try:
+        os.killpg(proc.pid, sig)
+    except PermissionError:
+        proc.send_signal(sig)
+    except ProcessLookupError:
+        return
+
+
 def terminate_process_group(
     proc: subprocess.Popen,
     *,
     terminate_signal: int = signal.SIGTERM,
-    kill_timeout: float = 5,
+    kill_timeout: float = DEFAULT_KILL_TIMEOUT,
 ) -> None:
     """Stop ``proc`` and its group: graceful signal, then SIGKILL.
 
-    Shared by :func:`run_managed_process` (which owns a single process for
-    the duration of a call) and by callers that own several processes at
-    once and therefore cannot use it — the local-parallel dispatch pool
-    (#360) terminates its fleet through this.
+    Owns one process for the duration of the call, so it is right for
+    :func:`run_managed_process` and wrong for a caller holding a fleet — see
+    :func:`signal_process_group`.
     """
     if proc.poll() is not None:
         return
 
-    def _send_signal(sig: int) -> None:
-        if os.name == "nt":
-            if sig == signal.SIGKILL:
-                proc.kill()
-            else:
-                proc.terminate()
-            return
-
-        try:
-            os.killpg(proc.pid, sig)
-        except PermissionError:
-            proc.send_signal(sig)
-
     try:
-        _send_signal(terminate_signal)
+        signal_process_group(proc, terminate_signal)
         proc.wait(timeout=kill_timeout)
-    except ProcessLookupError:
-        return
     except subprocess.TimeoutExpired:
-        _send_signal(signal.SIGKILL)
+        signal_process_group(proc, signal.SIGKILL)
         proc.wait()
 
 

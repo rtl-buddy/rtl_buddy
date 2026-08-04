@@ -1078,3 +1078,29 @@ def test_missing_result_does_not_blame_a_scheduler_off_slurm(
     assert "afterok" not in desc
     assert "scheduler" not in desc
     assert "never ran" in desc
+
+
+def test_jobs_on_a_randtest_replay_is_never_silently_dropped(minimal_project: Path):
+    """`-r` skips dispatch entirely, so `-j` has to be accounted for (#360).
+
+    The replay path never builds a backend, so validation has to run before
+    that branch; when the pool is the configured backend the flag is legal but
+    unused, and the existing ignored-flag warning must name it.
+    """
+    # Legal but unused: warned about, alongside the ignored backend.
+    result, _ = _invoke(
+        ["randtest", "basic", "3", "-r", "1", "--dispatch", "local-parallel", "-j", "4"]
+    )
+    warned = " ".join(result.output.split())
+    assert "--dispatch local-parallel (and --jobs 4) ignored for replay" in warned
+
+
+def test_jobs_on_a_replay_against_a_poolless_backend_is_still_rejected(
+    minimal_project: Path,
+):
+    """Validation runs before the replay short-circuit, so it still fires."""
+    result, _ = _invoke(
+        ["randtest", "basic", "3", "-r", "1", "--dispatch", "slurm", "-j", "4"]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "max-jobs-per-array" in str(result.exception)

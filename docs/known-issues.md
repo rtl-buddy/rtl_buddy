@@ -185,9 +185,11 @@ coarse and platform-specific). So a `resources:` block that a cluster would
 enforce is **inert** here: cpus/mem/time are ignored rather than
 half-applied, `cfg-dispatch.max-jobs-per-array` (a Slurm `%N` throttle) is
 ignored too, and there is no accounting source, so reservation right-sizing
-returns no advice instead of guessing at utilization. A run with
-reservations configured logs `dispatch.reservations_ignored` once so the
-config cannot read as enforced. Practical consequence: `-j`/`cfg-dispatch.jobs`
+returns no advice instead of guessing at utilization. A run whose resolved
+reservations are non-default — set under `cfg-dispatch` *or* per
+testbench/test in `tests.yaml` — **warns** once
+(`dispatch.reservations_ignored`) so the config cannot read as enforced.
+Practical consequence: `-j`/`cfg-dispatch.jobs`
 is your only backpressure, so size it against the **memory** your heaviest
 tests need, not just against core count — four unreserved simulators can
 swap a laptop even though four cores are free. Right-size reservations from
@@ -198,7 +200,8 @@ a Slurm run, not this one. See
 
 Dispatched subprocesses are started in their own session so the head owns
 their teardown: `Ctrl-C` (or any fatal head error) triggers `cancel_all`,
-which sends `SIGTERM` and escalates to `SIGKILL`, letting a simulator flush
+which signals the whole fleet with `SIGTERM` and then escalates stragglers
+to `SIGKILL` against a single 5-second deadline, letting a simulator flush
 on the graceful signal. If the head is itself `SIGKILL`ed — a CI timeout,
 `kill -9` — that cleanup never runs, and unlike Slurm (where
 `--kill-on-invalid-dep` and the controller reap the fleet) **nothing else

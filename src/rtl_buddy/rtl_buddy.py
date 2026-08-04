@@ -1215,15 +1215,22 @@ class RtlBuddy:
         # Seed fan-out is the dispatch sweet spot: one shared build, N
         # independent sims. Replay (-r) stays local — a single re-run
         # gains nothing from the queue.
-        if rpt_i is not None and dispatch is not None and dispatch != "local":
+        backend_name = self._dispatch_backend_name(dispatch)
+        # Validate --jobs even on the replay path, which never builds a
+        # backend: an unusable flag must be rejected, not dropped (#360).
+        self._validate_jobs_flag(backend_name, jobs)
+        if rpt_i is not None and (
+            jobs is not None or (dispatch is not None and dispatch != "local")
+        ):
             # A single-seed replay gains nothing from the queue, so it stays
-            # local — but make that audible when the flag was explicit.
+            # local — but make that audible when a dispatch flag was explicit.
             log_event(
                 logger,
                 logging.WARNING,
                 "randtest.dispatch_ignored_for_replay",
-                backend=dispatch,
+                backend=backend_name or "local",
                 replay_run_id=rpt_i,
+                jobs=jobs,
             )
         dispatch_backend = (
             self._resolve_dispatch_backend(dispatch, jobs=jobs)
@@ -1978,34 +1985,45 @@ class RtlBuddy:
 
             yield from expanded_tests
 
+    def _dispatch_backend_name(self, dispatch):
+        """The selected backend name: CLI ``--dispatch`` over ``cfg-dispatch``."""
+        if dispatch is not None:
+            return dispatch
+        return self.root_cfg.get_dispatch_cfg().backend
+
+    def _validate_jobs_flag(self, backend_name, jobs):
+        """Reject ``--jobs`` where it cannot mean anything (#360).
+
+        Called on every path that accepts the flag — including ones that then
+        skip dispatch entirely (a randtest replay) — so the flag is never
+        silently dropped.
+        """
+        if jobs is None:
+            return
+        if backend_name != LocalProcessBackend.name:
+            raise FatalRtlBuddyError(
+                f"--jobs sizes the --dispatch {LocalProcessBackend.name} pool, "
+                f"but the backend is {backend_name or 'local'}: 'local' runs "
+                "one test at a time in-process, and Slurm concurrency is "
+                "cfg-dispatch.max-jobs-per-array."
+            )
+        if jobs < 1:
+            raise FatalRtlBuddyError(
+                f"--jobs must be >= 1 (got {jobs}); a pool of zero would "
+                "never start a job."
+            )
+
     def _resolve_dispatch_backend(self, dispatch, *, jobs=None):
         """Instantiate the dispatch backend named by ``--dispatch`` (or config).
 
         CLI ``--dispatch`` wins over ``cfg-dispatch.backend``; both default
         to ``local`` (in-process, the unchanged pre-#351 path, returned as
-        ``None``). ``--jobs`` is the ``local-parallel`` pool size and is
-        rejected — rather than silently dropped — against a backend that has
-        no such knob (#360).
+        ``None``). ``--jobs`` overrides ``cfg-dispatch.jobs`` for this run.
         """
-        backend_name = (
-            dispatch
-            if dispatch is not None
-            else (self.root_cfg.get_dispatch_cfg().backend)
-        )
+        backend_name = self._dispatch_backend_name(dispatch)
+        self._validate_jobs_flag(backend_name, jobs)
         dispatch_cfg = self.root_cfg.get_dispatch_cfg()
         if jobs is not None:
-            if backend_name != LocalProcessBackend.name:
-                raise FatalRtlBuddyError(
-                    f"--jobs sizes the --dispatch {LocalProcessBackend.name} pool, "
-                    f"but the backend is {backend_name or 'local'}: 'local' runs "
-                    "one test at a time in-process, and Slurm concurrency is "
-                    "cfg-dispatch.max-jobs-per-array."
-                )
-            if jobs < 1:
-                raise FatalRtlBuddyError(
-                    f"--jobs must be >= 1 (got {jobs}); a pool of zero would "
-                    "never start a job."
-                )
             dispatch_cfg = replace(dispatch_cfg, jobs=jobs)
         return create_dispatch_backend(backend_name, dispatch_cfg)
 
@@ -2760,6 +2778,12 @@ class RtlBuddy:
                     if state["build_handle"] is not None:
                         all_handles.append(state["build_handle"])
                     all_handles.extend(handle for _, handle in state["pending"])
+                    # Planning the next suite is real head-side work (its
+                    # sweep hook shells out). A backend that runs jobs itself
+                    # would leave a slot freed during that window idle, so
+                    # give it a chance to refill before moving on; a
+                    # scheduler-backed backend no-ops here.
+                    dispatch_backend.advance()
                 if all_handles:
                     dispatch_backend.wait_all(all_handles)
             except BaseException:
