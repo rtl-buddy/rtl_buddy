@@ -582,3 +582,78 @@ def test_wait_all_reports_a_failed_scancel(monkeypatch, caplog):
         )
     assert "still" in caplog.text and "queued" in caplog.text
     assert "Invalid job id" in caplog.text
+
+
+# ------------- reaping afterok dependents when the build fails
+
+
+def test_dependent_submit_asks_slurm_to_reap_on_invalid_dependency(monkeypatch):
+    """cancel_all cannot run if the head is SIGKILLed, so Slurm must own it."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), dependency="42")
+
+    (argv,) = calls
+    assert "--dependency=afterok:42" in argv
+    assert "--kill-on-invalid-dep=yes" in argv
+
+
+def test_undependent_submit_does_not_pass_the_flag(monkeypatch):
+    """It only means anything alongside a dependency."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), dependency=None)
+
+    (argv,) = calls
+    assert not [a for a in argv if a.startswith("--dependency")]
+    assert "--kill-on-invalid-dep=yes" not in argv
+
+
+def test_dependent_array_submit_asks_slurm_to_reap_too(tmp_path, monkeypatch):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="9", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)],
+        array_dir=tmp_path / "arr",
+        dependency="42",
+    )
+
+    (argv,) = calls
+    assert "--dependency=afterok:42" in argv
+    assert "--kill-on-invalid-dep=yes" in argv
+
+
+def test_undependent_array_submit_does_not_pass_the_flag(tmp_path, monkeypatch):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="9", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array(
+        [_spec(run_id=1), _spec(run_id=2)],
+        array_dir=tmp_path / "arr",
+        dependency=None,
+    )
+
+    (argv,) = calls
+    assert "--kill-on-invalid-dep=yes" not in argv
+
+
+def test_the_flag_precedes_user_sbatch_args(monkeypatch):
+    """User sbatch-args come last so a site can still override the behaviour."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--kill-on-invalid-dep=no"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    backend.submit(_spec(), dependency="42")
+
+    (argv,) = calls
+    assert argv.index("--kill-on-invalid-dep=yes") < argv.index(
+        "--kill-on-invalid-dep=no"
+    )

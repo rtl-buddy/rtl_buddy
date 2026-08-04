@@ -183,6 +183,23 @@ class SlurmDispatchBackend(DispatchBackend):
             cmd.append(f"--output={log_path}")
         return cmd
 
+    @staticmethod
+    def _dependency_argv(dependency: str | None) -> list[str]:
+        """The ``afterok`` gate, plus self-reaping if it can never be met.
+
+        ``--kill-on-invalid-dep=yes`` makes **Slurm** remove the job the moment
+        the dependency becomes unsatisfiable. Without it such a job sits
+        ``PENDING`` with reason ``DependencyNeverSatisfied`` indefinitely unless
+        the site sets ``kill_invalid_depend`` in ``SchedulerParameters`` (off by
+        default), and the head is then the only thing that would clean it up —
+        which is exactly what fails when the head is killed rather than
+        interrupted, since ``cancel_all`` never runs. Asking Slurm to own the
+        cleanup is the only form that survives a ``SIGKILL``ed head.
+        """
+        if dependency is None:
+            return []
+        return [f"--dependency=afterok:{dependency}", "--kill-on-invalid-dep=yes"]
+
     def _build_argv(self, spec: BuildJobSpec) -> list[str]:
         """The ``rb _build-job`` invocation the build job runs."""
         argv = [sys.executable, "-m", "rtl_buddy", "--machine"]
@@ -240,9 +257,8 @@ class SlurmDispatchBackend(DispatchBackend):
             chdir=spec.suite_dir,
             log_path=spec.log_path,
         )
-        if dependency is not None:
-            # afterok: the sim only runs if the shared build succeeded.
-            cmd.append(f"--dependency=afterok:{dependency}")
+        # afterok: the sim only runs if the shared build succeeded.
+        cmd += self._dependency_argv(dependency)
         cmd += self.sbatch_args
         cmd += ["--wrap", shlex.join(self._job_argv(spec))]
         return cmd
@@ -317,9 +333,8 @@ class SlurmDispatchBackend(DispatchBackend):
         if resources.mem is not None:
             cmd.append(f"--mem={resources.mem}")
         cmd.append(f"--output={array_dir}/slurm-%a.log")
-        if dependency is not None:
-            # afterok: array elements only run if the shared build succeeded.
-            cmd.append(f"--dependency=afterok:{dependency}")
+        # afterok: array elements only run if the shared build succeeded.
+        cmd += self._dependency_argv(dependency)
         cmd += self.sbatch_args
         cmd += [str(script), str(manifest)]
 

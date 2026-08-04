@@ -50,11 +50,24 @@ to the build job; when the builder cannot share a build the compile runs
 inside each sim job instead and the block is folded into *that* job's
 reservation. If the reservation is too small the build is
 killed, `afterok` cancels the sims, and they surface as dispatch failures
-pointing at the build log. (Slurm reports those cancelled sims as `PENDING`
-with reason `DependencyNeverSatisfied` and — unless the site sets
-`kill_invalid_depend` — leaves them queued forever; rtl_buddy cancels them
-itself, logging `dispatch.dependency_never_satisfied`, rather than waiting
-on jobs that can never run.) A single test's compile failure does **not**
+pointing at the build log.
+
+!!! note "Dependents are reaped, not left queued"
+    Slurm reports a sim whose build failed as `PENDING` with reason
+    `DependencyNeverSatisfied`, and by default leaves it queued **forever** —
+    it is only reaped if the site sets `kill_invalid_depend` in
+    `SchedulerParameters`. Two things prevent that stray:
+
+    - every dependent submit carries **`--kill-on-invalid-dep=yes`**, so
+      Slurm itself removes the job the moment the dependency fails. This is
+      the one that matters, because it holds even when the head process is
+      `SIGKILL`ed (a CI abort or timeout) and never gets to clean up;
+    - failing that, collection notices such jobs, cancels them, and logs
+      `dispatch.dependency_never_satisfied` instead of polling jobs that can
+      never run.
+
+    Pass `--kill-on-invalid-dep=no` in `sbatch-args` to opt out — user
+    `sbatch-args` are appended last and win. A single test's compile failure does **not**
 fail the build job — the other sims still run, and the failing test
 recompiles (and fails) in its own sim job. `--dispatch` cannot be combined
 with `--early-stop`, and dispatched jobs deliberately skip the per-tree
