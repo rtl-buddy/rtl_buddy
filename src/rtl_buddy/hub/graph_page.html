@@ -167,11 +167,11 @@
     <div class="legend" id="legend"></div>
     <span class="grow"></span>
     <input type="search" id="search" placeholder="filter by id, label or file…" spellcheck="false">
-    <label class="chk" title="Broadcast selection_changed when a node resolves to a design-view instance path.">
-      <input type="checkbox" id="opt-select" checked> select
+    <label class="chk" title="Clicking a node also highlights it in the schematic design view — open the viewer at / in another tab to see it. Does nothing when no viewer is connected.">
+      <input type="checkbox" id="opt-select" checked> sync design view
     </label>
-    <label class="chk" title="Request open_source from the src peer (nvim) when the node knows its file.">
-      <input type="checkbox" id="opt-open" checked> open source
+    <label class="chk" title="Clicking a node also jumps your editor to its source file and line — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
+      <input type="checkbox" id="opt-open" checked> open in editor
     </label>
     <button id="reload" title="Re-fetch /graph.json (after rb graph build / rb graph results)">reload</button>
   </header>
@@ -907,7 +907,9 @@
       var payload = { file: String(n.file), line: n.line ? Number(n.line) : 1, col: 1 };
       if (request('open_source', payload, function (reply) {
         if (reply.kind === 'error') {
-          note('open_source: ' + reply.payload.code + ': ' + reply.payload.message);
+          note(reply.payload.code === 'not_connected'
+            ? 'no editor connected — start nvim with the rtl-buddy plugin (rb nvim-install), or untick "open in editor"'
+            : 'open_source: ' + reply.payload.code + ': ' + reply.payload.message);
         }
       })) {
         did.push('open ' + payload.file + ':' + payload.line);
