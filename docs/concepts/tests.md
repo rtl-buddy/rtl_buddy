@@ -57,6 +57,20 @@ tests:
 
 When a VCS `simv` run is invoked with `-licqueue` and no seat is free, it prints a `Queuing for License` banner and blocks until one opens up. `rtl_buddy` detects that banner (and the `Licensed number of users already reached` variant) in the sim's output and pauses the `sim_timeout` clock for as long as the sim is queuing, so a busy license server doesn't cause a false timeout. There is a 1-hour safety cap on total queued time — if the sim is still queuing after that, `sim_timeout` resumes counting and the sim can time out normally.
 
+The pause ends on the first line that is not part of the banner. The banner's vocabulary is the two markers, blank lines, the queue-polling dots, and the `HIT CTRL-C to exit` hint; anything else counts as simulation output. A banner line VCS adds in a future release would therefore end the pause early until it is recognised, and the safety cap is what bounds that.
+
+### Extra simulation timeout per builder
+
+Detecting the banner cannot cover every case: the text is a vendor string, other license managers queue silently, and compilation has no `sim_timeout` to pause at all, so a queue wait during elaboration is bounded only by the dispatch job's time limit. `extra-sim-timeout` on a builder in `root_config.yaml` adds seconds to every test's `sim_timeout` under that builder:
+
+```yaml
+cfg-rtl-builder:
+  - name: "vcs"
+    extra-sim-timeout: 900
+```
+
+It is added to the test's own `sim_timeout` rather than replacing it, so per-test values keep their meaning. Keeping it per-builder is the point: a licensed simulator can wait, while a builder that never blocks keeps a tight timeout so a genuinely hung test still fails fast. `--extra-sim-timeout N` overrides every builder for one run, and `--extra-sim-timeout 0` turns a configured allowance off. When either applies, the resolved value is logged as `sim.timeout_extended`.
+
 ### Regression levels
 
 `reglvl` controls which tests run during a regression:

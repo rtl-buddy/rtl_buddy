@@ -556,6 +556,14 @@ class RtlBuddy:
                 help="Override platform default builder",
             ),
         ] = None,
+        extra_sim_timeout: Annotated[
+            int,
+            typer.Option(
+                "--extra-sim-timeout",
+                help="Seconds to add to every test's sim_timeout, "
+                "overriding the builder's extra-sim-timeout",
+            ),
+        ] = None,
         run_depth: Annotated[
             RunDepth,
             typer.Option(
@@ -607,6 +615,7 @@ class RtlBuddy:
         # walking up from the command root, not the invocation cwd.
         self.rtl_builder_mode = rtl_builder_mode
         self._builder_override = builder_override
+        self._extra_sim_timeout_override = extra_sim_timeout
         self.run_depth = run_depth
         self._pending_invoked_subcommand = ctx.invoked_subcommand
 
@@ -697,6 +706,7 @@ class RtlBuddy:
                 name=self.name + "/root_config",
                 builder_override=self._builder_override,
                 start_dir=ctx.command_root,
+                extra_sim_timeout_override=self._extra_sim_timeout_override,
             )
             # Project-local env defaults (.rtl-buddy/.env): applied as
             # soon as the project root is known, before any tool config

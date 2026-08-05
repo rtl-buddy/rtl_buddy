@@ -45,6 +45,46 @@ def _verilator_builder() -> RtlBuilderConfig:
     return from_yaml(RtlBuilderConfig, _VERILATOR_BUILDER_YAML)
 
 
+def test_rtl_builder_extra_sim_timeout_defaults_to_zero():
+    assert _verilator_builder().get_extra_sim_timeout() == 0
+
+
+def test_rtl_builder_extra_sim_timeout_from_config():
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML + "extra-sim-timeout: 900\n",
+    )
+    assert cfg.get_extra_sim_timeout() == 900
+
+
+def test_resolve_extra_sim_timeout_prefers_cli_override():
+    """``--extra-sim-timeout`` wins over the builder's own value, and 0 is honoured.
+
+    0 must not be mistaken for "unset", or a caller could not turn a
+    configured allowance back off for one run.
+    """
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML + "extra-sim-timeout: 900\n",
+    )
+    root = RootConfig.__new__(RootConfig)
+
+    root.extra_sim_timeout_override = None
+    assert root.resolve_extra_sim_timeout(cfg) == 900
+
+    root.extra_sim_timeout_override = 120
+    assert root.resolve_extra_sim_timeout(cfg) == 120
+
+    root.extra_sim_timeout_override = 0
+    assert root.resolve_extra_sim_timeout(cfg) == 0
+
+
+def test_resolve_extra_sim_timeout_zero_when_neither_set():
+    root = RootConfig.__new__(RootConfig)
+    root.extra_sim_timeout_override = None
+    assert root.resolve_extra_sim_timeout(_verilator_builder()) == 0
+
+
 def test_rtl_builder_simulator_family_from_explicit_field():
     cfg = from_yaml(
         RtlBuilderConfig,

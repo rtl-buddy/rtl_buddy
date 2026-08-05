@@ -988,6 +988,21 @@ class VlogSim:
                 run_id=run_id,
                 timeout_sec=timeout,
             )
+        # Added rather than substituted, so per-test sim_timeout values keep
+        # their meaning and only the builder-specific allowance moves.
+        extra_timeout = self.root_cfg.resolve_extra_sim_timeout(self.rtl_builder_cfg)
+        if extra_timeout and timeout is not None:
+            timeout += extra_timeout
+            log_event(
+                logger,
+                logging.INFO,
+                "sim.timeout_extended",
+                test=self.test_name,
+                run_id=run_id,
+                timeout_sec=timeout,
+                extra_sec=extra_timeout,
+                builder=self.rtl_builder_cfg.get_name(),
+            )
         artifact_paths = {
             "log": log_path,
             "err": err_path,

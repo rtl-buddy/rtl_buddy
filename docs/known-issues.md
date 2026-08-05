@@ -71,6 +71,8 @@ The footgun: a *narrower* configured flag counts as "covered". If your `builder-
 
 On a `vcs` builder, when `simv` prints the `-licqueue` banner (`Queuing for License` or `Licensed number of users already reached`), rtl_buddy pauses the per-sim `sim_timeout` clock until real simulator output resumes — a sim stuck behind a busy license server can therefore run far longer than its configured timeout without failing. The pause is announced with a `sim.license_queue` warning and the resume with `sim.license_granted` (both include the queued seconds in the log). Total queued time is capped at 1 hour; past the cap the normal timeout resumes counting and the eventual `sim.timeout` error reports the queue wait. Applies only to the `vcs` simulator family. See [Tests](concepts/tests.md#vcs-license-queue-waits-and-sim_timeout).
 
+What "real simulator output" means matters, because the pause ends on the first line outside the banner's vocabulary. If a VCS release adds a line to the banner that rtl_buddy does not recognise, the clock restarts while the sim is still queuing and every queued sim fails with `Sim hit timeout`, which reads as a design or testbench failure rather than a license one. The tell is `Licensed number of users already reached` in `test.err` alongside a timeout verdict. `extra-sim-timeout` on the builder is the backstop; see [Extra simulation timeout per builder](concepts/tests.md#extra-simulation-timeout-per-builder).
+
 ## VCS hierarchical seed file
 
 When using VCS with hierarchical instance seeding (`-xlrm hier_inst_seed`), VCS writes a `HierInstanceSeed.txt` file in the simulation directory after the run. `rtl_buddy` looks for this file to record the seed for reproducibility.

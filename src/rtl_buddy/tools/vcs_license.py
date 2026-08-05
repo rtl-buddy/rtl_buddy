@@ -20,12 +20,26 @@ _MARKERS = ("Queuing for License", "Licensed number of users already reached")
 
 _DOTS_ONLY_RE = re.compile(r"^[.\s]*$")
 
+# The rest of the queue banner's vocabulary. These carry no marker substring but
+# are still not simulation output, so they must not end the pause (#383): simv
+# prints the CTRL-C hint immediately after the banner, which resumed the timeout
+# clock about a second into every queue wait and put #329's symptom straight
+# back. Leaving the queued state needs a line outside this vocabulary, so a new
+# banner line in a future VCS release costs a false resume until it is added
+# here; ``max_queue_wait_sec`` is the backstop for that.
+_BANNER_NOISE_RES = (re.compile(r"^\s*HIT\s+CTRL-C\s+to\s+exit\s*$", re.IGNORECASE),)
+
 
 def _is_marker_line(line: str) -> bool:
     # Delegates so the marker-matching rule has exactly one implementation:
     # the live monitor and the post-hoc compile check must never drift apart
     # on what a queue banner looks like.
     return has_license_queue_marker(line)
+
+
+def _is_banner_noise(line: str) -> bool:
+    """Is this a queue-banner line that is not a marker and not simulation output?"""
+    return any(pattern.match(line) for pattern in _BANNER_NOISE_RES)
 
 
 def has_license_queue_marker(text: str) -> bool:
@@ -151,6 +165,8 @@ class VcsLicenseQueueMonitor:
             return  # still queuing
         if _DOTS_ONLY_RE.match(line):
             return  # VCS's queue-polling dots: still queuing
+        if _is_banner_noise(line):
+            return  # rest of the queue banner, e.g. the CTRL-C hint: still queuing
 
         # Real simulator output resumed: license was granted.
         queued_sec = time.time() - self._queue_started_at

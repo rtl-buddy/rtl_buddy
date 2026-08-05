@@ -259,6 +259,9 @@ class DummyRootCfg:
     def resolve_rtl_builder_cfg(self, _test_builder_name=None):
         return DummyBuilderCfg()
 
+    def resolve_extra_sim_timeout(self, _rtl_builder_cfg):
+        return 0  # this test asserts on the hier-seed warning, not the timeout
+
 
 class DummyTestbench:
     def get_filelist(self):

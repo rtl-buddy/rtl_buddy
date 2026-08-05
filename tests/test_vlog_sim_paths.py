@@ -72,6 +72,9 @@ class DummyRootCfg:
             return self.get_rtl_builder_cfg_by_name(test_builder_name)
         return self.get_rtl_builder_cfg()
 
+    def resolve_extra_sim_timeout(self, _rtl_builder_cfg):
+        return 0  # these tests assert on paths, not on the timeout allowance
+
     def get_use_lcov(self, _simulator_name):
         return False
 
