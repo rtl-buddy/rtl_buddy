@@ -37,12 +37,12 @@ Four kinds of edge come out of it:
 
 Two properties are load-bearing:
 
-* **It works without Graphify.** When Graphify is installed its Python
+* **It works without the extractor.** When one is installed its Python
   nodes are reused (matched on the node's repo-relative ``file``), so
   the two never emit competing ids for one file. When it is absent this
   module synthesizes minimal ``py:<repo-rel path>`` nodes, which is what
   keeps ``rb graph build`` useful on a machine that has never heard of
-  Graphify.
+  the extractor.
 * **Reach is transitive but honest.** ``test_alu_random.py`` never says
   ``dut.a``; ``_alu_common.py`` does, and the test imports it. The
   ``drives`` edge is emitted from *both* Python modules, but the
@@ -64,12 +64,12 @@ from ..logging_utils import log_event
 logger = logging.getLogger(__name__)
 
 #: ``generator.tier`` / node ``tier`` stamped on everything this stage
-#: emits. It is the same tier Graphify contributes to — the binding tier
+#: emits. It is the same tier the extractor contributes to — the binding tier
 #: has two producers, an optional external one and this one.
 BINDING_TIER = "binding"
 
 #: Node type and id prefix for a synthesized Python module node. Used
-#: only when no existing node (Graphify's, typically) already claims the
+#: only when no existing node (the extractor's, typically) already claims the
 #: file; see :func:`_existing_python_nodes`.
 PYTHON_MODULE_TYPE = "python_module"
 PY_NODE_PREFIX = "py:"
@@ -276,16 +276,16 @@ class _Index:
     runs_on: dict[str, str] = dc_field(default_factory=dict)
     #: ``golden model stem -> node id``.
     golden: dict[str, str] = dc_field(default_factory=dict)
-    #: ``repo-relative .py path -> existing node id`` (Graphify's, when present).
+    #: ``repo-relative .py path -> existing node id`` (the extractor's, when present).
     python_nodes: dict[str, str] = dc_field(default_factory=dict)
 
 
 def _existing_python_nodes(nodes: list[dict]) -> dict[str, str]:
     """Node ids already claiming a ``.py`` file, keyed by that file.
 
-    This is the Graphify hand-off. Graphify names its Python nodes
-    however it likes; what both tools agree on is the repo-relative path
-    in ``file``, so that is the key. ``golden_model`` and ``spec_doc``
+    This is the extractor hand-off. The extractor names its Python
+    nodes however it likes; what both tools agree on is the
+    repo-relative path in ``file``, so that is the key. ``golden_model`` and ``spec_doc``
     nodes are excluded — they are config-tier nodes about a file, not a
     node *of* the Python module.
     """
@@ -407,7 +407,7 @@ class BindingStage:
       tests (int): cocotb tests that got a ``binds_to`` edge.
       modules (int): Python module nodes touched.
       reused_ids (int): Of those, how many reused an id another tier
-        (Graphify) had already given the file.
+        (the extractor) had already given the file.
       drives (int): ``drives`` edges emitted.
       extracted (int): Of those, how many matched a port exactly.
       inferred (int): The rest.
@@ -648,7 +648,7 @@ def _python_node(
 ) -> tuple[str, bool]:
     """Node id for a Python file, reusing another tier's id when it has one.
 
-    Returns ``(node id, reused)``. ``reused`` is the Graphify hand-off
+    Returns ``(node id, reused)``. ``reused`` is the extractor hand-off
     having fired: some other tier already emitted a node for this file,
     so its id is adopted instead of a second ``py:`` node being invented
     for the same thing.

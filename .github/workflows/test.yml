@@ -32,7 +32,11 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Install test dependencies
-        run: uv sync --group test
+        # --extra graph-extract installs the bundled binding-tier
+        # extractor (git-pinned until its first PyPI release), so the
+        # extractor subprocess path and the merge-graphs cross-check
+        # run for real here instead of being skip-if-missing everywhere.
+        run: uv sync --group test --extra graph-extract
 
       - name: Run pytest with coverage
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml

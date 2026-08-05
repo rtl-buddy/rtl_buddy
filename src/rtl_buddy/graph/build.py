@@ -12,9 +12,9 @@ Three tiers, one file. This module owns the orchestration:
    reusing ``rb hier --view tb``'s DUT+TB filelist merge;
 2. **config** — :func:`rtl_buddy.graph.extract_config_tier` over the
    ``specs.yaml`` / ``models.yaml`` / ``tests.yaml`` trees;
-3. **binding** — Graphify's deterministic pass over verif Python and
-   spec markdown, only when Graphify is installed and never with its
-   LLM pass unless explicitly asked for.
+3. **binding** — the extractor's (``rb-graph-extract``) deterministic
+   pass over verif Python and spec markdown, only when the tool is
+   installed.
 
 The tiers are unioned by :func:`rtl_buddy.graph.merge.merge_graphs` and
 written to ``artefacts/graph/graph.json`` with provenance beside it in
@@ -29,7 +29,7 @@ second pass.
 
 Two properties are load-bearing:
 
-* **Optional tiers stay optional.** A missing Graphify, an
+* **Optional tiers stay optional.** A missing extractor, an
   unexportable model, an unloadable suite — each is recorded in the
   meta sidecar and the envelope, and the graph is still written. Only
   ``--strict`` turns those into a non-zero exit.
@@ -56,7 +56,7 @@ from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tools.hier_rtl_buddy_view import RtlBuddyViewGraph
-from . import graphify as graphify_mod
+from . import extract as extract_mod
 from .binding import BINDING_TIER, bind_python, collect_sources
 from .config_tier import (
     CONFIG_TIER,
@@ -104,7 +104,7 @@ VIEW_GRAPH_MIN_VERSION = "0.4.0"
 
 #: Where each tier's own export lands under ``artefacts/graph/``. Kept
 #: on disk (not just in memory) so a failed merge is debuggable and so
-#: ``graphify merge-graphs`` has real files to cross-check against.
+#: the extractor's ``merge-graphs`` has real files to cross-check against.
 DESIGN_SUBDIR = "design"
 #: TB-rooted exports nest under their DUT: ``design/<model>/tb/<tb>``.
 #: Mirrors ``rb hier --view tb``'s ``artefacts/hier/<model>/tb/<tb>``
@@ -113,7 +113,7 @@ TB_SUBDIR = "tb"
 BINDING_FILE = "binding/graph.json"
 
 #: The in-process binding stage's own export (#378). Kept apart from
-#: ``binding/graph.json`` because that file is Graphify's — the binding
+#: ``binding/graph.json`` because that file is the extractor's — the binding
 #: *tier* has two producers and a merge surprise has to be traceable to
 #: exactly one of them.
 BIND_FILE = "bind/graph.json"
@@ -815,11 +815,10 @@ def build_graph(
     design: bool = True,
     tb: bool = True,
     bind: bool = True,
-    graphify_enabled: bool = True,
-    graphify_llm: bool = False,
-    graphify_executable: str = graphify_mod.GRAPHIFY_TOOL,
-    graphify_cross_check: bool = True,
-    graphify_version: str | None = None,
+    extract_enabled: bool = True,
+    extract_executable: str = extract_mod.GRAPH_EXTRACT_BINARY,
+    extract_cross_check: bool = True,
+    extract_version: str | None = None,
     force: bool = False,
 ) -> GraphBuild:
     """Build (or refresh) the merged graph under ``artefacts/graph``.
@@ -841,10 +840,10 @@ def build_graph(
         elaboration work for the design it sits on top of.
       bind: False skips the post-merge binding stage (#378) — no
         ``binds_to`` / ``drives`` / ``checks_against`` edges.
-      graphify_enabled: False skips Graphify's binding tier without probing.
-      graphify_llm: Opt into Graphify's LLM pass. Off by default.
-      graphify_cross_check: Run ``graphify merge-graphs`` and compare
-        against the internal union.
+      extract_enabled: False skips the extractor's binding tier without
+        probing for the tool.
+      extract_cross_check: Run the extractor's ``merge-graphs`` and
+        compare against the internal union.
       force: Rebuild even when the fingerprint is unchanged.
 
     Returns:
@@ -954,32 +953,29 @@ def build_graph(
     )
     reports[CONFIG_TIER] = config_report
 
-    # --- binding tier (Graphify, optional) ------------------------------
+    # --- binding tier (extractor, optional) -----------------------------
     binding_report = TierReport(tier=BINDING_TIER)
-    graphify_inputs: list[str] = []
-    if not graphify_enabled:
+    extract_inputs: list[str] = []
+    if not extract_enabled:
         binding_report.status = SKIPPED
-        binding_report.detail = "disabled (--no-graphify)"
-    elif graphify_version is None:
+        binding_report.detail = "disabled (--no-extract)"
+    elif extract_version is None:
         binding_report.status = SKIPPED
         binding_report.detail = (
-            "graphify not installed — design + config tiers only "
-            "(run `rb tool-check --explain graphify`)"
+            "no binding-tier extractor installed — design + config tiers "
+            "only (run `rb tool-check --explain rtl-buddy-graph-extract`)"
         )
     else:
-        tools[graphify_mod.GRAPHIFY_TOOL] = graphify_version
-        graphify_inputs = graphify_mod.collect_inputs(search_verif, search_spec)
-        binding_report.extra["llm_pass"] = graphify_llm
-        if not graphify_inputs:
+        tools[extract_mod.GRAPH_EXTRACT_TOOL] = extract_version
+        extract_inputs = extract_mod.collect_inputs(search_verif, search_spec)
+        if not extract_inputs:
             binding_report.status = SKIPPED
             binding_report.detail = "no verif Python or spec markdown found"
     # The in-process binding stage reads verif/spec Python whether or not
-    # Graphify is installed, so its inputs belong in the tier's hash list
+    # an extractor is installed, so its inputs belong in the tier's hash list
     # unconditionally: editing a cocotb test must invalidate the cache.
     bind_inputs = collect_sources(search_verif, search_spec) if bind else []
-    binding_report.inputs = hash_inputs(
-        root, sorted(set(graphify_inputs + bind_inputs))
-    )
+    binding_report.inputs = hash_inputs(root, sorted(set(extract_inputs + bind_inputs)))
     reports[BINDING_TIER] = binding_report
 
     # --- no-op check ----------------------------------------------------
@@ -1082,12 +1078,11 @@ def build_graph(
     if binding_report.status == PENDING:
         binding_file = out / BINDING_FILE
         binding_file.parent.mkdir(parents=True, exist_ok=True)
-        result = graphify_mod.run_extract(
-            graphify_inputs,
+        result = extract_mod.run_extract(
+            extract_inputs,
             binding_file,
-            executable=graphify_executable,
-            llm=graphify_llm,
-            log_path=out / "graphify.log",
+            executable=extract_executable,
+            log_path=out / "extract.log",
             cwd=str(root),
         )
         if result.ok and result.graph is not None:
@@ -1105,7 +1100,7 @@ def build_graph(
             log_event(
                 logger,
                 logging.WARNING,
-                "graph_build.graphify_failed",
+                "graph_build.extract_failed",
                 detail=result.detail,
             )
 
@@ -1155,27 +1150,27 @@ def build_graph(
 
     merge_info: dict = {
         "strategy": "node-id-union",
-        # De-duplicated: the binding tier has two producers (Graphify and
+        # De-duplicated: the binding tier has two producers (the extractor and
         # the post-merge stage) and contributes two graphs, but it is
         # still one tier.
         "tiers": list(dict.fromkeys(tier for tier, _ in tier_graphs)),
         "stitch_points": len(stitch_points(tier_graphs)),
         "dangling": dangling_targets(merged),
     }
-    if graphify_version is not None and graphify_cross_check:
-        merge_info["graphify_cross_check"] = graphify_mod.run_merge_cross_check(
+    if extract_version is not None and extract_cross_check:
+        merge_info["extract_cross_check"] = extract_mod.run_merge_cross_check(
             tier_files,
-            out / "graphify-merged.json",
+            out / "extract-merged.json",
             internal=merged,
-            executable=graphify_executable,
-            log_path=out / "graphify.log",
+            executable=extract_executable,
+            log_path=out / "extract.log",
             cwd=str(root),
         )
     else:
-        merge_info["graphify_cross_check"] = {
+        merge_info["extract_cross_check"] = {
             "status": "skipped",
-            "detail": "graphify not installed"
-            if graphify_version is None
+            "detail": "extractor not installed"
+            if extract_version is None
             else "disabled",
         }
 

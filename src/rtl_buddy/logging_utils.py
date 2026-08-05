@@ -820,19 +820,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "merged graph keeps them apart; rename the duplicated module "
                 "to make the qualification unnecessary"
             )
-        case "graph_build.graphify_failed":
+        case "graph_build.extract_failed":
             return (
-                f"graph build: the graphify binding tier failed "
+                f"graph build: the extractor's binding tier failed "
                 f"({fields.get('detail')}) — the design + config tiers were "
                 "still merged and written"
             )
-        case "graph_build.graphify_merge_mismatch":
+        case "graph_build.extract_merge_mismatch":
             return (
-                f"graph build: `graphify merge-graphs` disagrees with the "
-                f"internal merge ({fields.get('only_internal')} nodes only "
-                f"ours, {fields.get('only_graphify')} only theirs) — the "
+                f"graph build: the extractor's `merge-graphs` disagrees with "
+                f"the internal merge ({fields.get('only_internal')} nodes only "
+                f"ours, {fields.get('only_extract')} only theirs) — the "
                 "internal merge is what was written; see graph-meta.json "
-                "merge.graphify_cross_check"
+                "merge.extract_cross_check"
             )
         case "graph_bind.cocotb_module_not_found":
             return (

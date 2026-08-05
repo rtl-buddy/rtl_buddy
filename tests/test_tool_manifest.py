@@ -780,20 +780,29 @@ def test_cli_tool_check_default_exit_is_0(tmp_path: Path):
     assert result.returncode == 0
 
 
-def test_graphify_is_optional_and_never_gates_graph_readiness():
-    """graphify is optional=True with used_by graph — its absence must
-    not fail `rb tool-check --required-for graph` (the design promise:
-    the binding tier is skipped and the build still succeeds)."""
+def test_graph_extract_spec_is_optional_with_anchored_regex():
+    """The bundled binding-tier extractor (rtl_buddy#391): optional=True
+    with used_by graph — its absence must not fail `rb tool-check
+    --required-for graph` (the design promise: the binding tier is
+    skipped and the build still succeeds). Version-regex discipline:
+    odd formats yield NO version, never a wrong one."""
     by_name = {s.name: s for s in tm.get_manifest()}
-    spec = by_name["graphify"]
+    spec = by_name["rtl-buddy-graph-extract"]
     assert spec.optional
     assert "graph" in spec.used_by
-    # The version must directly follow the tool name; a surprising
-    # format yields NO version, never a wrong one (the interpreter
-    # version below must not be mistaken for graphify's).
-    m = re.search(spec.version_regex, "graphify 1.4.0")
-    assert m is not None and m.group(1) == "1.4.0"
-    assert re.search(spec.version_regex, "graphify (python 3.12) 0.2.0") is None
+    assert spec.binaries == ("rb-graph-extract",)
+    assert any(
+        isinstance(d, tm.PythonPackageDetector)
+        and d.package == "rtl-buddy-graph-extract"
+        for d in spec.detection
+    )
+    m = re.search(spec.version_regex, "rb-graph-extract 0.1.0")
+    assert m is not None and m.group(1) == "0.1.0"
+    # Editable/git installs report PEP 440 dev+local versions; the full
+    # string must land in the fingerprint, not a truncated prefix.
+    m = re.search(spec.version_regex, "rb-graph-extract 0.1.dev1+g0d74f48e0")
+    assert m is not None and m.group(1) == "0.1.dev1+g0d74f48e0"
+    assert re.search(spec.version_regex, "rb-graph-extract (python 3.12) 0.2.0") is None
 
 
 def test_rtl_buddy_view_is_required_for_graph():

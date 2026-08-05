@@ -4,7 +4,7 @@
 
   design   ``rtl-buddy-view graph`` per model (subprocess)
   config   :func:`rtl_buddy.graph.extract_config_tier` (in-process)
-  binding  ``graphify`` (subprocess, optional)
+  binding  ``rb-graph-extract`` (subprocess, optional)
 
 Neither external tool is on PATH in CI, so both are stubbed with tiny
 scripts that record their argv and write a canned node-link graph. That
@@ -30,11 +30,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import pytest
 from typer.testing import CliRunner
 
 from rtl_buddy.graph import build as graph_build
-from rtl_buddy.graph import graphify as graphify_mod
+from rtl_buddy.graph import extract as extract_mod
 from rtl_buddy.graph import (
     BINDING_TIER,
     CONFIG_TIER,
@@ -321,27 +323,27 @@ sys.exit(code)
     return script, record
 
 
-def _fake_graphify(
+def _fake_extractor(
     tmp_path: Path, *, exit_code: int = 0, merge_phantom: bool = False
 ) -> tuple[Path, Path]:
-    """Stub ``graphify`` handling ``extract`` and ``merge-graphs``.
+    """Stub extractor handling ``extract`` and ``merge-graphs``.
 
     ``extract`` emits one binding-tier node bound to the fixture's cocotb
     test; ``merge-graphs`` unions the tier files it is handed, which is
     what the cross-check compares against. ``merge_phantom`` makes its
     union invent a node the tier files never had, i.e. a disagreement.
     """
-    record = tmp_path / "graphify-argv.jsonl"
+    record = tmp_path / "extract-argv.jsonl"
     node = "pymod:verif/blk_a/cocotb_blk_a.py"
     script = _write_script(
-        tmp_path / "graphify",
+        tmp_path / "extractor",
         f"""
 import json, os, sys
 argv = sys.argv[1:]
 with open({json.dumps(str(record))}, "a") as fh:
     fh.write(json.dumps(argv) + "\\n")
 if argv and argv[0] == "--version":
-    print("graphify 1.2.3")
+    print("rb-graph-extract 1.2.3")
     sys.exit(0)
 verb = argv[0]
 out = argv[argv.index("--output") + 1]
@@ -351,7 +353,7 @@ if verb == "extract":
         "directed": True,
         "multigraph": True,
         "graph": {{"schema_version": 1, "generator": {{
-            "tool": "graphify", "version": "1.2.3", "tier": "binding"}}}},
+            "tool": "rb-graph-extract", "version": "1.2.3", "tier": "binding"}}}},
         "nodes": [{{"id": {json.dumps(node)}, "type": "python_module",
                    "label": "cocotb_blk_a", "tier": "binding"}}],
         "links": [{{"source": "test:verif/blk_a#t_cocotb",
@@ -571,7 +573,7 @@ def test_build_merges_design_and_config_and_writes_both_files(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
 
     assert build.graph_path == graph_project / "artefacts" / "graph" / "graph.json"
@@ -615,7 +617,7 @@ def test_meta_records_tool_versions_input_hashes_and_per_tier_provenance(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     meta = json.loads(build.meta_path.read_text())
 
@@ -642,7 +644,7 @@ def test_rebuild_with_no_change_is_a_no_op(graph_project: Path, tmp_path: Path):
     kwargs = {
         "view_executable": str(view),
         "view_version": "0.4.0",
-        "graphify_enabled": False,
+        "extract_enabled": False,
     }
     first = build_graph(graph_project, **kwargs)
     assert first.unchanged is False
@@ -669,7 +671,7 @@ def test_changed_rtl_invalidates_the_cached_graph(graph_project: Path, tmp_path:
     kwargs = {
         "view_executable": str(view),
         "view_version": "0.4.0",
-        "graphify_enabled": False,
+        "extract_enabled": False,
     }
     first = build_graph(graph_project, **kwargs)
     record.unlink()
@@ -687,7 +689,7 @@ def test_changed_yaml_invalidates_the_cached_graph(graph_project: Path, tmp_path
     kwargs = {
         "view_executable": str(view),
         "view_version": "0.4.0",
-        "graphify_enabled": False,
+        "extract_enabled": False,
     }
     first = build_graph(graph_project, **kwargs)
     tests_yaml = graph_project / "verif" / "blk_a" / "tests.yaml"
@@ -702,7 +704,7 @@ def test_force_rebuilds_an_unchanged_project(graph_project: Path, tmp_path: Path
     kwargs = {
         "view_executable": str(view),
         "view_version": "0.4.0",
-        "graphify_enabled": False,
+        "extract_enabled": False,
     }
     build_graph(graph_project, **kwargs)
     record.unlink()
@@ -719,7 +721,7 @@ def test_a_failed_model_export_does_not_sink_the_build(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
     assert design.status == "failed"
@@ -744,7 +746,7 @@ def test_a_still_failing_tier_is_not_reported_as_cached(
     kwargs = {
         "view_executable": str(view),
         "view_version": "0.4.0",
-        "graphify_enabled": False,
+        "extract_enabled": False,
     }
     build_graph(graph_project, **kwargs)
     second = build_graph(graph_project, **kwargs)
@@ -760,7 +762,7 @@ def test_an_outdated_viewer_fails_the_design_tier_with_an_upgrade_hint(
         graph_project,
         view_executable=str(view),
         view_version="0.3.1",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
     assert design.status == "failed"
@@ -775,7 +777,7 @@ def test_no_design_writes_a_config_only_graph(graph_project: Path, tmp_path: Pat
         graph_project,
         view_executable=str(view),
         design=False,
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     assert _argv_lines(record) == []
     design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
@@ -801,7 +803,7 @@ def test_explicit_model_selection_limits_the_design_tier(
         models=models,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     assert [argv[argv.index("--top") + 1] for argv in _dut_calls(record)] == ["blk_a"]
     graph = json.loads(build.graph_path.read_text())
@@ -869,7 +871,7 @@ def test_two_tests_sharing_a_testbench_export_it_once(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     assert len(_tb_calls(record)) == 1
 
@@ -882,7 +884,7 @@ def test_tb_export_is_rooted_at_the_tb_top_and_welds_to_the_dut(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     (tb_call,) = _tb_calls(record)
     assert tb_call[tb_call.index("--tb-top") + 1] == "tb_hdl"
@@ -925,7 +927,7 @@ def test_tb_node_elaborates_as_the_top_the_viewer_elaborated(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     graph = json.loads(build.graph_path.read_text())
     stitches = {
@@ -957,7 +959,7 @@ def test_declared_toplevel_stitches_without_an_export(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     graph = json.loads(build.graph_path.read_text())
     assert {
@@ -985,7 +987,7 @@ def test_colliding_testbench_ids_are_qualified_by_suite(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     graph = json.loads(build.graph_path.read_text())
     nodes = _nodes(graph)
@@ -1022,7 +1024,7 @@ def test_a_failed_tb_export_is_reported_per_testbench(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
     )
     design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
     # The tier is still built — the DUT exports were fine.
@@ -1042,7 +1044,7 @@ def test_no_tb_leaves_a_dut_only_design_tier(graph_project: Path, tmp_path: Path
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
         tb=False,
     )
     assert _tb_calls(record) == []
@@ -1060,7 +1062,7 @@ def test_a_changed_tb_source_invalidates_the_cached_graph(
     kwargs = {
         "view_executable": str(view),
         "view_version": "0.4.0",
-        "graphify_enabled": False,
+        "extract_enabled": False,
     }
     first = build_graph(graph_project, **kwargs)
     assert build_graph(graph_project, **kwargs).unchanged is True
@@ -1080,7 +1082,7 @@ def test_no_tb_and_tb_do_not_share_a_fingerprint(graph_project: Path, tmp_path: 
     kwargs = {
         "view_executable": str(view),
         "view_version": "0.4.0",
-        "graphify_enabled": False,
+        "extract_enabled": False,
     }
     with_tb = build_graph(graph_project, **kwargs)
     without_tb = build_graph(graph_project, tb=False, **kwargs)
@@ -1089,11 +1091,11 @@ def test_no_tb_and_tb_do_not_share_a_fingerprint(graph_project: Path, tmp_path: 
 
 
 # ---------------------------------------------------------------------------
-# Graphify (optional binding tier)
+# Extractor (optional binding tier)
 # ---------------------------------------------------------------------------
 
 
-def test_graphify_absent_still_succeeds_and_says_so(
+def test_extractor_absent_still_succeeds_and_says_so(
     graph_project: Path, tmp_path: Path
 ):
     view, _ = _fake_view(tmp_path)
@@ -1101,28 +1103,29 @@ def test_graphify_absent_still_succeeds_and_says_so(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_version=None,
+        extract_version=None,
     )
     binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
     assert binding.status == "skipped"
-    assert "graphify" in binding.detail
+    assert "no binding-tier extractor" in binding.detail
+    assert "rtl-buddy-graph-extract" in binding.detail
     assert not build.failed_tiers()
     assert build.graph_path.is_file()
     meta = json.loads(build.meta_path.read_text())
-    assert meta["merge"]["graphify_cross_check"]["status"] == "skipped"
+    assert meta["merge"]["extract_cross_check"]["status"] == "skipped"
 
 
-def test_graphify_binding_tier_merges_and_cross_checks(
+def test_extractor_binding_tier_merges_and_cross_checks(
     graph_project: Path, tmp_path: Path
 ):
     view, _ = _fake_view(tmp_path)
-    gfy, gfy_record = _fake_graphify(tmp_path)
+    gfy, gfy_record = _fake_extractor(tmp_path)
     build = build_graph(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_executable=str(gfy),
-        graphify_version="1.2.3",
+        extract_executable=str(gfy),
+        extract_version="1.2.3",
     )
     binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
     assert binding.status == "built"
@@ -1137,42 +1140,25 @@ def test_graphify_binding_tier_merges_and_cross_checks(
     verbs = [argv[0] for argv in _argv_lines(gfy_record)]
     assert verbs == ["extract", "merge-graphs"]
     extract_argv = _argv_lines(gfy_record)[0]
-    # The LLM pass is opt-in — it ships project source to a model.
-    assert graphify_mod.LLM_FLAG not in extract_argv
     assert any(a.endswith("cocotb_blk_a.py") for a in extract_argv)
     assert any(a.endswith("README.md") for a in extract_argv)
 
-    cross = json.loads(build.meta_path.read_text())["merge"]["graphify_cross_check"]
+    cross = json.loads(build.meta_path.read_text())["merge"]["extract_cross_check"]
     assert cross["status"] == "ok"
-    assert cross["internal_nodes"] == cross["graphify_nodes"] == build.nodes
+    assert cross["internal_nodes"] == cross["extract_nodes"] == build.nodes
 
 
-def test_graphify_llm_pass_is_opt_in(graph_project: Path, tmp_path: Path):
-    view, _ = _fake_view(tmp_path)
-    gfy, gfy_record = _fake_graphify(tmp_path)
-    build_graph(
-        graph_project,
-        view_executable=str(view),
-        view_version="0.4.0",
-        graphify_executable=str(gfy),
-        graphify_version="1.2.3",
-        graphify_llm=True,
-        graphify_cross_check=False,
-    )
-    assert graphify_mod.LLM_FLAG in _argv_lines(gfy_record)[0]
-
-
-def test_graphify_failure_leaves_the_other_tiers_intact(
+def test_extractor_failure_leaves_the_other_tiers_intact(
     graph_project: Path, tmp_path: Path
 ):
     view, _ = _fake_view(tmp_path)
-    gfy, _ = _fake_graphify(tmp_path, exit_code=4)
+    gfy, _ = _fake_extractor(tmp_path, exit_code=4)
     build = build_graph(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_executable=str(gfy),
-        graphify_version="1.2.3",
+        extract_executable=str(gfy),
+        extract_version="1.2.3",
     )
     binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
     assert binding.status == "failed"
@@ -1181,21 +1167,21 @@ def test_graphify_failure_leaves_the_other_tiers_intact(
     assert "module:blk_a" in _nodes(graph)
 
 
-def test_graphify_merge_disagreement_is_reported_not_adopted(
+def test_extractor_merge_disagreement_is_reported_not_adopted(
     graph_project: Path, tmp_path: Path
 ):
     view, _ = _fake_view(tmp_path)
-    gfy, _ = _fake_graphify(tmp_path, merge_phantom=True)
+    gfy, _ = _fake_extractor(tmp_path, merge_phantom=True)
     build = build_graph(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_executable=str(gfy),
-        graphify_version="1.2.3",
+        extract_executable=str(gfy),
+        extract_version="1.2.3",
     )
-    cross = json.loads(build.meta_path.read_text())["merge"]["graphify_cross_check"]
+    cross = json.loads(build.meta_path.read_text())["merge"]["extract_cross_check"]
     assert cross["status"] == "mismatch"
-    assert cross["only_graphify"] == ["phantom:1"]
+    assert cross["only_extract"] == ["phantom:1"]
     # The internal union is always what ships — the cross-check is a
     # report, never a substitute.
     assert build.merge["strategy"] == "node-id-union"
@@ -1203,20 +1189,76 @@ def test_graphify_merge_disagreement_is_reported_not_adopted(
     assert "phantom:1" not in _nodes(graph)
 
 
-def test_graphify_argv_shapes():
-    extract = graphify_mod.build_extract_cmd("graphify", ["a.py"], "out.json")
-    assert extract[:2] == ["graphify", graphify_mod.EXTRACT_VERB]
+def test_extractor_argv_shapes():
+    extract = extract_mod.build_extract_cmd("rb-graph-extract", ["a.py"], "out.json")
+    assert extract[:2] == ["rb-graph-extract", extract_mod.EXTRACT_VERB]
     assert extract[extract.index("--output") + 1] == "out.json"
     assert extract[-1] == "a.py"
-    merge = graphify_mod.build_merge_cmd("graphify", ["a.json", "b.json"], "m.json")
-    assert merge[:2] == ["graphify", graphify_mod.MERGE_VERB]
+    merge = extract_mod.build_merge_cmd(
+        "rb-graph-extract", ["a.json", "b.json"], "m.json"
+    )
+    assert merge[:2] == ["rb-graph-extract", extract_mod.MERGE_VERB]
     assert merge[-2:] == ["a.json", "b.json"]
 
 
-def test_graphify_collect_inputs_is_verif_python_and_spec_markdown(
+# ---------------------------------------------------------------------------
+# Extractor resolution (#391)
+# ---------------------------------------------------------------------------
+
+
+def _fake_status(status: str, version: str | None = None):
+    return SimpleNamespace(status=status, version=version)
+
+
+def test_resolve_extractor_finds_the_bundled_tool(monkeypatch):
+    def fake_check(spec):
+        assert spec.name == extract_mod.GRAPH_EXTRACT_TOOL
+        return _fake_status("ok", "0.1.0")
+
+    monkeypatch.setattr(extract_mod, "check_tool", fake_check)
+    choice = extract_mod.resolve_extractor()
+    assert choice is not None
+    assert choice.executable == extract_mod.GRAPH_EXTRACT_BINARY
+    # A found-but-unprobeable tool would carry "unknown" instead of
+    # None — either way the string lands in the build fingerprint.
+    assert choice.version == "0.1.0"
+
+
+def test_resolve_extractor_none_when_not_installed(monkeypatch):
+    monkeypatch.setattr(extract_mod, "check_tool", lambda spec: _fake_status("missing"))
+    assert extract_mod.resolve_extractor() is None
+
+
+@pytest.mark.skipif(
+    shutil.which(extract_mod.GRAPH_EXTRACT_BINARY) is None,
+    reason="rb-graph-extract not installed (uv sync --extra graph-extract)",
+)
+def test_bundled_extractor_end_to_end(graph_project: Path, tmp_path: Path):
+    """The real rb-graph-extract binary, not a stub: binding tier builds,
+    its nodes stitch into the merge, the cross-check agrees, and the
+    fingerprint is keyed by the bundled tool's manifest name."""
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_executable=extract_mod.GRAPH_EXTRACT_BINARY,
+        extract_version="0.1.0",
+    )
+    binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
+    assert binding.status == "built"
+    assert binding.generator["tool"] == "rb-graph-extract"
+    graph = json.loads(build.graph_path.read_text())
+    assert "py:verif/blk_a/cocotb_blk_a.py" in _nodes(graph)
+    meta = json.loads(build.meta_path.read_text())
+    assert meta["tools"][extract_mod.GRAPH_EXTRACT_TOOL] == "0.1.0"
+    assert meta["merge"]["extract_cross_check"]["status"] == "ok"
+
+
+def test_collect_inputs_is_verif_python_and_spec_markdown(
     graph_project: Path,
 ):
-    found = graphify_mod.collect_inputs(graph_project / "verif", graph_project / "spec")
+    found = extract_mod.collect_inputs(graph_project / "verif", graph_project / "spec")
     names = {os.path.basename(p) for p in found}
     assert "cocotb_blk_a.py" in names
     assert "README.md" in names
@@ -1233,7 +1275,7 @@ def test_cli_machine_envelope_reports_every_tier(graph_project: Path, tmp_path: 
     view, _ = _fake_view(tmp_path)
     runner, rb = _runner()
     result = runner.invoke(
-        rb.app, ["--machine", "graph", "build", "--tool", str(view), "--no-graphify"]
+        rb.app, ["--machine", "graph", "build", "--tool", str(view), "--no-extract"]
     )
     assert result.exit_code == 0, result.output
     envelope = json.loads(result.output.strip().splitlines()[-1])
@@ -1258,7 +1300,7 @@ def test_cli_model_selection_and_unknown_model(graph_project: Path, tmp_path: Pa
     runner, rb = _runner()
     ok = runner.invoke(
         rb.app,
-        ["graph", "build", "--model", "blk_a", "--tool", str(view), "--no-graphify"],
+        ["graph", "build", "--model", "blk_a", "--tool", str(view), "--no-extract"],
     )
     assert ok.exit_code == 0, ok.output
     assert [a[a.index("--top") + 1] for a in _dut_calls(record)] == ["blk_a"]
@@ -1274,7 +1316,7 @@ def test_cli_no_tb_and_the_envelope_testbench_list(graph_project: Path, tmp_path
     runner, rb = _runner()
     result = runner.invoke(
         rb.app,
-        ["--machine", "graph", "build", "--tool", str(view), "--no-graphify"],
+        ["--machine", "graph", "build", "--tool", str(view), "--no-extract"],
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output.strip().splitlines()[-1])["payload"]
@@ -1291,7 +1333,7 @@ def test_cli_no_tb_and_the_envelope_testbench_list(graph_project: Path, tmp_path
             "--no-tb",
             "--tool",
             str(view),
-            "--no-graphify",
+            "--no-extract",
         ],
     )
     assert off.exit_code == 0, off.output
@@ -1323,7 +1365,7 @@ def test_cli_regression_selects_the_models_its_suites_run(
             "regression.yaml",
             "--tool",
             str(view),
-            "--no-graphify",
+            "--no-extract",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -1335,7 +1377,7 @@ def test_cli_exits_nonzero_when_a_tier_fails(graph_project: Path, tmp_path: Path
     runner, rb = _runner()
     result = runner.invoke(
         rb.app,
-        ["--machine", "graph", "build", "--tool", str(view), "--no-graphify"],
+        ["--machine", "graph", "build", "--tool", str(view), "--no-extract"],
     )
     assert result.exit_code == 1
     envelope = json.loads(result.output.strip().splitlines()[-1])
@@ -1355,12 +1397,12 @@ def test_cli_strict_promotes_a_per_item_failure_to_a_nonzero_exit(
     (graph_project / "design" / "blk_b" / "blk_b.sv").unlink()
     runner, rb = _runner()
     lenient = runner.invoke(
-        rb.app, ["graph", "build", "--tool", str(view), "--no-graphify"]
+        rb.app, ["graph", "build", "--tool", str(view), "--no-extract"]
     )
     assert lenient.exit_code == 0, lenient.output
     strict = runner.invoke(
         rb.app,
-        ["graph", "build", "--tool", str(view), "--no-graphify", "--strict", "--force"],
+        ["graph", "build", "--tool", str(view), "--no-extract", "--strict", "--force"],
     )
     assert strict.exit_code == 1
 
@@ -1368,7 +1410,7 @@ def test_cli_strict_promotes_a_per_item_failure_to_a_nonzero_exit(
 def test_cli_second_run_reports_unchanged(graph_project: Path, tmp_path: Path):
     view, _ = _fake_view(tmp_path)
     runner, rb = _runner()
-    args = ["--machine", "graph", "build", "--tool", str(view), "--no-graphify"]
+    args = ["--machine", "graph", "build", "--tool", str(view), "--no-extract"]
     assert runner.invoke(rb.app, args).exit_code == 0
     second = runner.invoke(rb.app, args)
     assert second.exit_code == 0, second.output
@@ -1396,7 +1438,7 @@ def _real_view_supports_graph() -> bool:
     reason="rtl-buddy-view with the `graph` verb is not installed",
 )
 def test_end_to_end_with_the_installed_viewer(graph_project: Path):
-    build = build_graph(graph_project, graphify_enabled=False)
+    build = build_graph(graph_project, extract_enabled=False)
     assert not build.failed_tiers(), build.tiers
     graph = json.loads(build.graph_path.read_text())
     nodes = _nodes(graph)

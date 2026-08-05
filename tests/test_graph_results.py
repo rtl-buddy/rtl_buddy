@@ -426,7 +426,7 @@ def test_overlay_refresh_leaves_graph_json_hash_stable(results_project: Path):
     """The acceptance criterion: results never churn the graph."""
     runner, rb = _runner()
     built = runner.invoke(
-        rb.app, ["graph", "build", "--no-design", "--no-graphify", "--no-bind"]
+        rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
     )
     assert built.exit_code == 0, built.output
     graph_json = results_project / "artefacts" / "graph" / "graph.json"
@@ -445,7 +445,7 @@ def test_overlay_refresh_leaves_graph_json_hash_stable(results_project: Path):
     # fingerprint's input set, so a regression run cannot invalidate it.
     again = runner.invoke(
         rb.app,
-        ["--machine", "graph", "build", "--no-design", "--no-graphify", "--no-bind"],
+        ["--machine", "graph", "build", "--no-design", "--no-extract", "--no-bind"],
     )
     assert json.loads(again.output.strip().splitlines()[-1])["payload"]["unchanged"]
     assert _sha256(graph_json) == before
@@ -459,7 +459,7 @@ def test_overlay_refresh_leaves_graph_json_hash_stable(results_project: Path):
 def test_cli_machine_envelope(results_project: Path):
     _seed_run(results_project, "t_basic", status="PASS")
     runner, rb = _runner()
-    runner.invoke(rb.app, ["graph", "build", "--no-design", "--no-graphify"])
+    runner.invoke(rb.app, ["graph", "build", "--no-design", "--no-extract"])
 
     result = runner.invoke(rb.app, ["--machine", "graph", "results"])
 
@@ -480,7 +480,7 @@ def test_cli_strict_exits_non_zero_when_a_test_node_has_no_result(
 ):
     _seed_run(results_project, "t_basic")
     runner, rb = _runner()
-    runner.invoke(rb.app, ["graph", "build", "--no-design", "--no-graphify"])
+    runner.invoke(rb.app, ["graph", "build", "--no-design", "--no-extract"])
 
     lenient = runner.invoke(rb.app, ["graph", "results"])
     strict = runner.invoke(rb.app, ["graph", "results", "--strict"])

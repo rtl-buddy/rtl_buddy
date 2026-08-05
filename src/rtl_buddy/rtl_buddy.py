@@ -29,7 +29,7 @@ from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .graph import build as graph_build_mod
-from .graph import graphify as graphify_mod
+from .graph import extract as extract_mod
 from .graph import query as graph_query_mod
 from .graph import results as graph_results_mod
 from .mcp import server as mcp_server_mod
@@ -263,8 +263,8 @@ class RtlBuddy:
             help=(
                 "design knowledge graph: one queryable graph.json stitching "
                 "the design tier (rtl-buddy-view), the config tier "
-                "(tests/models/specs) and, when installed, Graphify's "
-                "binding tier"
+                "(tests/models/specs) and, when installed, the extractor's "
+                "binding tier (rtl-buddy-graph-extract)"
             ),
             no_args_is_help=True,
         )
@@ -3501,30 +3501,23 @@ class RtlBuddy:
                 ),
             ),
         ] = True,
-        graphify: Annotated[
+        extract: Annotated[
             bool,
             typer.Option(
-                "--graphify/--no-graphify",
-                help="run Graphify's binding tier when it is installed",
-            ),
-        ] = True,
-        graphify_llm: Annotated[
-            bool,
-            typer.Option(
-                "--graphify-llm",
+                "--extract/--no-extract",
                 help=(
-                    "opt into Graphify's LLM pass — sends verif Python and "
-                    "spec markdown to its configured model. Off by default"
+                    "run the binding tier when the extractor "
+                    "(rtl-buddy-graph-extract) is installed"
                 ),
             ),
-        ] = False,
-        graphify_cross_check: Annotated[
+        ] = True,
+        extract_cross_check: Annotated[
             bool,
             typer.Option(
-                "--graphify-cross-check/--no-graphify-cross-check",
+                "--extract-cross-check/--no-extract-cross-check",
                 help=(
-                    "cross-check the internal merge against "
-                    "`graphify merge-graphs` when Graphify is installed"
+                    "cross-check the internal merge against the extractor's "
+                    "`merge-graphs` when it is installed"
                 ),
             ),
         ] = True,
@@ -3564,13 +3557,10 @@ class RtlBuddy:
         # build_graph so the same string lands in the fingerprint (a
         # viewer upgrade must invalidate the cached design tier).
         view_version = probe_view_version(tool) if design else None
-        gfy_status = graphify_mod.graphify_status(self.root_cfg) if graphify else None
-        graphify_version = None
-        if gfy_status is not None and gfy_status.status != "missing":
-            # A found-but-unprobeable Graphify still runs; "unknown" keeps
-            # it in the fingerprint so a later probe-able upgrade
-            # invalidates the cache instead of silently reusing it.
-            graphify_version = gfy_status.version or "unknown"
+        # A found-but-unprobeable extractor still runs — its "unknown"
+        # version stays in the fingerprint so a later probe-able upgrade
+        # invalidates the cache instead of silently reusing it.
+        extractor = extract_mod.resolve_extractor(self.root_cfg) if extract else None
 
         log_event(
             logger,
@@ -3580,7 +3570,7 @@ class RtlBuddy:
             models=len(models) if models is not None else None,
             design=design,
             tb=tb,
-            graphify=graphify_version is not None,
+            extractor=extractor is not None,
             force=force,
         )
 
@@ -3597,10 +3587,12 @@ class RtlBuddy:
             design=design,
             tb=tb,
             bind=bind,
-            graphify_enabled=graphify,
-            graphify_llm=graphify_llm,
-            graphify_cross_check=graphify_cross_check,
-            graphify_version=graphify_version,
+            extract_enabled=extract,
+            extract_cross_check=extract_cross_check,
+            extract_version=extractor.version if extractor else None,
+            extract_executable=(
+                extractor.executable if extractor else extract_mod.GRAPH_EXTRACT_BINARY
+            ),
             force=force,
         )
 

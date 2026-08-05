@@ -627,24 +627,31 @@ def _builtin_manifest() -> list[ToolSpec]:
             description="Hierarchy viewer + JSON exporter for rtl_buddy",
         ),
         ToolSpec(
-            name="graphify",
-            binaries=("graphify",),
-            version_cmd=("graphify", "--version"),
-            # Version must directly follow the tool name ("graphify
-            # 1.4.0"). Anything fancier ("graphify (python 3.12) 0.2.0")
-            # yields NO version rather than the wrong one — unknown is
-            # recoverable, a wrong number in the fingerprint is not.
-            version_regex=r"graphify\s+v?([\d.]+)",
+            name="rtl-buddy-graph-extract",
+            binaries=("rb-graph-extract",),
+            version_cmd=("rb-graph-extract", "--version"),
+            # Anchored on the tool name; a surprising format yields NO
+            # version rather than a wrong one (unknown is recoverable, a
+            # wrong number in the fingerprint is not). The tail accepts
+            # PEP 440 dev/local segments ("0.1.dev1+gcc59b55") so
+            # editable installs keep a full fingerprint.
+            version_regex=r"rb-graph-extract\s+v?(\d[\w.+]*)",
             minimum_version=None,
-            detection=(PathDetector(), PythonPackageDetector("graphify")),
+            detection=(
+                PathDetector(),
+                PythonPackageDetector("rtl-buddy-graph-extract"),
+            ),
             install_hint={
-                "any": "install the Graphify CLI (optional — rb graph build "
-                "writes the design + config tiers without it)",
+                "any": "uv pip install "
+                "git+https://github.com/rtl-buddy/rtl-buddy-graph-extract "
+                "(optional — the bundled binding-tier extractor; rb graph "
+                "build writes the design + config tiers without it)",
             },
             used_by=("graph",),
             optional=True,
-            description="Graphify — binding-tier extraction over verif Python "
-            "and spec markdown for rb graph build",
+            description="rtl-buddy-graph-extract — bundled clean-room "
+            "implementation of the binding-tier extract contract "
+            "(verif Python + spec markdown) for rb graph build",
         ),
         ToolSpec(
             name="rtl-buddy-cdc",

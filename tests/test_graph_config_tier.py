@@ -611,9 +611,9 @@ def test_write_helpers_round_trip_through_the_contracted_paths(tmp_path):
 # ---------------------------------------------------------------------------
 # Downstream consumers
 #
-# networkx and Graphify are optional: nothing in rtl_buddy imports them,
-# and the merge step (#377) may run elsewhere. These guard the envelope
-# against the real readers when they happen to be installed.
+# networkx is optional: nothing in rtl_buddy imports it, and the merge
+# step (#377) may run elsewhere. This guards the envelope against the
+# real reader when it happens to be installed.
 # ---------------------------------------------------------------------------
 
 
@@ -626,11 +626,3 @@ def test_graph_loads_as_a_networkx_multidigraph(graph):
     assert set(loaded.nodes) >= {n["id"] for n in graph["nodes"]}
     assert "module:blk_a" in loaded.nodes
     assert loaded.number_of_edges() == len(graph["links"])
-
-
-def test_graphify_accepts_the_envelope_when_installed(graph, tmp_path):
-    pytest.importorskip("graphify")
-    nx = pytest.importorskip("networkx")
-    path = write_graph_json(graph, tmp_path / GRAPH_JSON_NAME)
-    reloaded = nx.node_link_graph(json.loads(path.read_text()), edges="links")
-    assert reloaded.number_of_nodes() >= len(graph["nodes"])
