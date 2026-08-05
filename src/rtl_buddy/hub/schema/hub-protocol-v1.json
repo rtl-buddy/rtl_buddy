@@ -116,7 +116,7 @@
             "type": "object",
             "required": ["node"],
             "additionalProperties": false,
-            "description": "Focus the design-knowledge-graph pane (`GET /graph`) on one node of `artefacts/graph/graph.json`. `node` is a graph node id — `module:<name>`, `inst:<top>/<dot.path>`, `test:<suite>#<name>`, and the rest of the vocabulary in docs/concepts/graph.md. A node id the pane's loaded graph does not contain is a soft miss (the pane reports it and keeps its current focus), matching the unknown-overlay-name semantics of `view_overlay_set`.",
+            "description": "Focus the design-knowledge-graph pane (`GET /graph`) on one node of `artefacts/graph/graph.json`. `node` is a graph node id — `module:<name>`, `inst:<top>/<dot.path>`, `test:<suite>#<name>`, and the rest of the vocabulary: design-tier ids in docs/graph-json-v1.md of this repo, config- and binding-tier ids in rtl_buddy's docs/concepts/graph.md. A node id the pane's loaded graph does not contain is a soft miss (the pane reports it and keeps its current focus), matching the unknown-overlay-name semantics of `view_overlay_set`.",
             "properties": {
               "node": { "type": "string", "minLength": 1 }
             }
