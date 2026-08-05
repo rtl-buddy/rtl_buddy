@@ -40,6 +40,9 @@ src/rtl_buddy/
 │   ├── synth.py           # SynthConfig, SynthSuiteConfig, SynthRegConfig, SynthToolConfig (synth.yaml)
 │   ├── spec.py            # SpecConfig / SpecBlock / SpecCoverageItem (specs.yaml)
 │   └── ...                # platform, rtl, verible, coverage, coverview, reg
+├── graph/
+│   └── config_tier.py     # design knowledge graph, config tier (#376): suites/tests/
+│                          # testbenches/models/specs/coverage -> node-link JSON
 ├── runner/test_runner.py  # PRE -> COMP -> SIM -> POST execution
 ├── runner/synth_runner.py # synthesis dispatch; resolves tool config and invokes backend
 ├── runner/synth_results.py # SynthResults / SynthPassResults / SynthFailResults / SynthSkipResults
@@ -63,6 +66,7 @@ src/rtl_buddy/
 - `SynthRunner` resolves a `SynthToolConfig` from `root_cfg.get_synth_tool_cfg(tool_name)`, merges any `tool_overrides` from the `SynthConfig`, then dispatches to `YosysSynth`. Opts resolution: root-config `opts` are the baseline; per-run `tool_overrides.<tool>` keys overwrite matching fields.
 - `YosysSynth` writes `synth.f` via `VlogFilelist` (with `unroll=True, strip=True, deduplicate=True`), then generates `synth.ys`. Source files are emitted as individual `read_verilog -sv -defer` commands (not `-f filelist`) so Yosys only elaborates the top hierarchy. Pass/fail is determined by exit code then `ERROR:` line scan.
 - `rb hier <model>` (`tools/hier_rtl_buddy_view.py`) writes a stripped+deduplicated filelist to `artefacts/hier/<model>/hier.f`, then shells out to `rtl-buddy-view` with `--top <model> --filelist hier.f --format <fmt>` plus optional `--output`, `--frontend`, `--cdc-annotations`, `--clock-legend`. The renderer's stdout passes through to the terminal when `-o` is not given (so `rb hier x --format dot | dot -Tsvg ...` works); stderr is captured to `hier.log`. The integration is at subprocess granularity — rtl_buddy is not coupled to the viewer's Python API. The viewer's JSON contract (`schema_version`, `tool.*`, `design.top`, `nodes`, `edges`) is guarded by `test_json_contract_keys_present_and_typed` in rtl-buddy-view.
+- `rtl_buddy.graph.config_tier` extracts the **config tier** of the design knowledge graph (#375/#376) by reading the existing loaders and `tools/spec_trace.py` — never a second YAML parser, so the graph cannot disagree with `rb spec check-coverage` / `check-design`. It emits NetworkX node-link JSON; the node/edge vocabulary, the id conventions, and the `module:<name>` stitch to rtl-buddy-view's design tier are documented in `docs/concepts/graph.md`. No CLI yet (that is #377); the entry points are `build_config_tier()` / `extract_config_tier()`.
 - `rb hier-query <model> <verb> <arg>` (same wrapper module, `RtlBuddyViewQuery`) shells out to `rtl-buddy-view query {find-module,subtree,instances-of,port-connections,source-snippet}` (rtl-buddy-view ≥ 0.3.0) and prints the JSON / snippet answer on stdout. It shares `rb hier`'s `artefacts/hier/<model>/hier.f` filelist; unlike `rb hier` it streams the viewer's **stderr through to the terminal** (a lookup miss is the answer, not a diagnostic) and logs the invocation to `query.log`.
 
 ## Validation

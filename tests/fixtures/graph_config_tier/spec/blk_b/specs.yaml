@@ -1,0 +1,9 @@
+# Fixture for tests/test_graph_config_tier.py — do not add unrelated entries.
+rtl-buddy-filetype: spec_config
+
+blocks:
+  - name: "blk_b"
+    desc: "Block B — no golden model, no docs; shares a coverage id with blk_a"
+    coverage-items:
+      - id: "SHARED-COV"
+        desc: "Id also declared by blk_a"

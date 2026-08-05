@@ -1,0 +1,7 @@
+# Fixture for tests/test_graph_config_tier.py
+rtl-buddy-filetype: model_config
+
+models:
+  - name: "blk_b"
+    desc: "Block B DUT — no spec: back-pointer"
+    filelist: ["blk_b.sv"]

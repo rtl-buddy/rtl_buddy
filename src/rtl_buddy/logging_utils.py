@@ -780,6 +780,17 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "translate to the Vivado backend — waivers ignored; findings still "
                 "carry full detail for downstream filtering"
             )
+        case "graph_config.suite_load_failed":
+            return (
+                f"graph: could not load {fields.get('path')} — its tests, "
+                "testbenches and coverage links are missing from the graph"
+            )
+        case "graph_config.node_id_conflict":
+            return (
+                f"graph: node id {fields.get('node')!r} claimed by both "
+                f"{fields.get('first_type')} and {fields.get('second_type')} — "
+                "keeping the first; rename one so the id is unique"
+            )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
             # This is fine for DEBUG/INFO events. Events logged at WARNING or above

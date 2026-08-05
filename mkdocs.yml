@@ -51,6 +51,7 @@ nav:
       - Plugins: concepts/plugins.md
       - cocotb: concepts/cocotb.md
       - Spec Traceability: concepts/spec-traceability.md
+      - Design Knowledge Graph: concepts/graph.md
       - Waveform Viewer: concepts/wave.md
       - Hierarchy Rendering: concepts/hier.md
       - Hub: concepts/hub.md

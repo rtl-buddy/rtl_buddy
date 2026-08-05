@@ -124,3 +124,7 @@ Each design model still points to the same `specs.yaml`; the model `name` select
 | `rb spec check-coverage` | For every coverage item, shows which tests cover it and flags uncovered items |
 
 All three commands accept `--spec-dir` to target a subdirectory. `check-design` also accepts `--design-dir`; `check-coverage` accepts `--verif-dir`. `check-design` and `check-coverage` also accept a repeatable `--block NAME` (see [Filtering by block](#filtering-by-block)).
+
+## Graph export
+
+The same relationships are also emitted as a queryable graph. `rtl_buddy.graph.build_config_tier()` turns these loaders into the config tier of the [design knowledge graph](graph.md), where a path query walks test to testbench to model to spec block in one hop each. It reads through the loaders behind the commands above, so the two views never disagree.
