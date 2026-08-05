@@ -18,6 +18,13 @@ The tiers are unioned by :func:`rtl_buddy.graph.merge.merge_graphs` and
 written to ``artefacts/graph/graph.json`` with provenance beside it in
 ``graph-meta.json``.
 
+One stage runs *after* that union: :func:`rtl_buddy.graph.binding.bind_python`
+(#378), which ties each cocotb test to its Python module, that module to
+the DUT ``module:`` node, and its ``dut.<name>`` accesses to ``port:``
+nodes. It has to come last because it reads both halves of the merged
+graph at once, so its output is a fourth graph that is merged in on a
+second pass.
+
 Two properties are load-bearing:
 
 * **Optional tiers stay optional.** A missing Graphify, an
@@ -47,6 +54,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tools.hier_rtl_buddy_view import RtlBuddyViewGraph
 from . import graphify as graphify_mod
+from .binding import BINDING_TIER, bind_python, collect_sources
 from .config_tier import (
     CONFIG_TIER,
     GRAPH_JSON_NAME,
@@ -69,7 +77,6 @@ from .merge import (
 logger = logging.getLogger(__name__)
 
 DESIGN_TIER = "design"
-BINDING_TIER = "binding"
 
 #: Tier statuses. ``pending`` is internal — a tier that got as far as
 #: hashing its inputs but has not run yet. It resolves to ``built`` /
@@ -93,6 +100,12 @@ VIEW_GRAPH_MIN_VERSION = "0.4.0"
 #: ``graphify merge-graphs`` has real files to cross-check against.
 DESIGN_SUBDIR = "design"
 BINDING_FILE = "binding/graph.json"
+
+#: The in-process binding stage's own export (#378). Kept apart from
+#: ``binding/graph.json`` because that file is Graphify's — the binding
+#: *tier* has two producers and a merge surprise has to be traceable to
+#: exactly one of them.
+BIND_FILE = "bind/graph.json"
 
 
 def _rtl_buddy_version() -> str:
@@ -211,6 +224,7 @@ class GraphBuild:
       links (int): Links in the merged graph.
       fingerprint (str): Combined input + tool-version hash.
       merge (dict): Merge bookkeeping (strategy, stitch points, cross-check).
+      binding (dict): Post-merge binding-stage summary (#378).
       graph (dict | None): The merged payload (None when ``unchanged``).
     """
 
@@ -222,6 +236,7 @@ class GraphBuild:
     links: int = 0
     fingerprint: str = ""
     merge: dict = dc_field(default_factory=dict)
+    binding: dict = dc_field(default_factory=dict)
     graph: dict | None = None
 
     def failed_tiers(self) -> list[TierReport]:
@@ -240,6 +255,7 @@ class GraphBuild:
             "fingerprint": self.fingerprint,
             "tiers": [t.as_payload() for t in self.tiers],
             "merge": self.merge,
+            "binding": self.binding,
         }
 
 
@@ -372,6 +388,7 @@ def build_graph(
     view_version: str | None = None,
     frontend: str | None = None,
     design: bool = True,
+    bind: bool = True,
     graphify_enabled: bool = True,
     graphify_llm: bool = False,
     graphify_executable: str = graphify_mod.GRAPHIFY_TOOL,
@@ -392,7 +409,9 @@ def build_graph(
       view_executable / view_version: The ``rtl-buddy-view`` binary and
         its probed version (used for the feature gate and fingerprint).
       design: False skips the design tier entirely (config-only graph).
-      graphify_enabled: False skips the binding tier without probing.
+      bind: False skips the post-merge binding stage (#378) — no
+        ``binds_to`` / ``drives`` / ``checks_against`` edges.
+      graphify_enabled: False skips Graphify's binding tier without probing.
       graphify_llm: Opt into Graphify's LLM pass. Off by default.
       graphify_cross_check: Run ``graphify merge-graphs`` and compare
         against the internal union.
@@ -498,11 +517,17 @@ def build_graph(
     else:
         tools[graphify_mod.GRAPHIFY_TOOL] = graphify_version
         graphify_inputs = graphify_mod.collect_inputs(search_verif, search_spec)
-        binding_report.inputs = hash_inputs(root, graphify_inputs)
         binding_report.extra["llm_pass"] = graphify_llm
         if not graphify_inputs:
             binding_report.status = SKIPPED
             binding_report.detail = "no verif Python or spec markdown found"
+    # The in-process binding stage reads verif/spec Python whether or not
+    # Graphify is installed, so its inputs belong in the tier's hash list
+    # unconditionally: editing a cocotb test must invalidate the cache.
+    bind_inputs = collect_sources(search_verif, search_spec) if bind else []
+    binding_report.inputs = hash_inputs(
+        root, sorted(set(graphify_inputs + bind_inputs))
+    )
     reports[BINDING_TIER] = binding_report
 
     # --- no-op check ----------------------------------------------------
@@ -530,6 +555,7 @@ def build_graph(
             links=len(existing.get("links") or []),
             fingerprint=fp,
             merge=stored_meta.get("merge", {}),
+            binding=stored_meta.get("binding", {}),
         )
 
     # --- run the exporters ----------------------------------------------
@@ -598,16 +624,56 @@ def build_graph(
                 detail=result.detail,
             )
 
-    # --- merge + write ---------------------------------------------------
-    merged = merge_graphs(
-        tier_graphs,
-        generator={"tool": "rtl_buddy", "version": _rtl_buddy_version()},
-        schema_version=SCHEMA_VERSION,
-        project_root_rel=_project_root_rel(root, graph_path),
-    )
+    # --- merge -----------------------------------------------------------
+    merge_kwargs = {
+        "generator": {"tool": "rtl_buddy", "version": _rtl_buddy_version()},
+        "schema_version": SCHEMA_VERSION,
+        "project_root_rel": _project_root_rel(root, graph_path),
+    }
+    merged = merge_graphs(tier_graphs, **merge_kwargs)
+
+    # --- binding stage (post-merge, #378) --------------------------------
+    #
+    # It runs *after* the union because it needs both halves at once: the
+    # config tier says which cocotb module belongs to which toplevel, the
+    # design tier owns the `port:` nodes a `dut.<name>` access resolves
+    # against. Its output is a fourth graph, re-merged in below, so the
+    # stage itself stays a pure function of the graph it was handed.
+    binding_info: dict = {"status": SKIPPED, "detail": "disabled (--no-bind)"}
+    if bind:
+        stage = bind_python(
+            merged,
+            root,
+            generator={
+                "tool": "rtl_buddy",
+                "version": _rtl_buddy_version(),
+                "tier": BINDING_TIER,
+                "stage": "bind",
+            },
+        )
+        binding_info = stage.summary()
+        if stage.links:
+            bind_file = out / BIND_FILE
+            write_graph_json(stage.graph, bind_file)
+            tier_files.append(str(bind_file))
+            tier_graphs.append((BINDING_TIER, stage.graph))
+            merged = merge_graphs(tier_graphs, **merge_kwargs)
+            log_event(
+                logger,
+                logging.INFO,
+                "graph_build.bound",
+                tests=stage.tests,
+                drives=stage.drives,
+                inferred=stage.inferred,
+                checks=stage.checks,
+            )
+
     merge_info: dict = {
         "strategy": "node-id-union",
-        "tiers": [tier for tier, _ in tier_graphs],
+        # De-duplicated: the binding tier has two producers (Graphify and
+        # the post-merge stage) and contributes two graphs, but it is
+        # still one tier.
+        "tiers": list(dict.fromkeys(tier for tier, _ in tier_graphs)),
         "stitch_points": len(stitch_points(tier_graphs)),
         "dangling": dangling_targets(merged),
     }
@@ -638,6 +704,7 @@ def build_graph(
         "fingerprint": fp,
         "tools": tools,
         "merge": merge_info,
+        "binding": binding_info,
         "tiers": {name: report.as_meta() for name, report in reports.items()},
     }
 
@@ -662,6 +729,7 @@ def build_graph(
         links=len(merged["links"]),
         fingerprint=fp,
         merge=merge_info,
+        binding=binding_info,
         graph=merged,
     )
 

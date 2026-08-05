@@ -153,7 +153,11 @@ def merge_graphs(
 
     merged_generator = dict(generator)
     merged_generator["tier"] = MERGED_TIER
-    merged_generator["tiers"] = [tier for tier, _ in ordered]
+    # One tier may contribute more than one graph (the binding tier has
+    # two producers: Graphify, and rtl_buddy's post-merge binding stage),
+    # so name each tier once. `graph.tiers` below keeps both provenance
+    # entries — that is where "who produced what" belongs.
+    merged_generator["tiers"] = list(dict.fromkeys(tier for tier, _ in ordered))
 
     return {
         "directed": True,

@@ -12,7 +12,7 @@ It is assembled from three independent tiers that share one node-id namespace:
 | --- | --- | --- |
 | design | `rtl-buddy-view` | modules, instances, ports, parameters, interfaces |
 | config | `rtl_buddy` (this page) | suites, tests, testbenches, models, spec blocks, coverage items, spec docs, golden models |
-| binding | Graphify | Python-level structure of cocotb tests and golden models |
+| binding | `rtl_buddy`, plus Graphify when installed | cocotb test to Python module to DUT, `dut.<signal>` to port, test to golden model |
 
 Merging is a node-id union. Identical ids emitted by different tiers are the stitch points, so each tier can be produced, cached and re-exported on its own.
 
@@ -61,6 +61,7 @@ artefacts/graph/
 ├── design/<model>/graph.json    # one design-tier export per model
 ├── config/graph.json            # the config tier on its own
 ├── binding/graph.json           # Graphify's tier, when it ran
+├── bind/graph.json              # the post-merge binding stage's own edges
 └── graphify.log                 # Graphify's stdout/stderr, when it ran
 ```
 
@@ -78,7 +79,8 @@ Volatile data never enters `graph.json`: no pass/fail status, no seeds, no artef
 | `-o, --out-dir` | Output directory (default `artefacts/graph`) |
 | `--frontend` | Viewer parser frontend (`verible`, `slang`) |
 | `--no-design` | Skip the design tier — config-only graph, no viewer needed |
-| `--no-graphify` | Skip the binding tier without probing for Graphify |
+| `--no-bind` | Skip the post-merge binding stage (no `binds_to` / `drives` / `checks_against` edges) |
+| `--no-graphify` | Skip Graphify's binding tier without probing for Graphify |
 | `--graphify-llm` | Opt into Graphify's LLM pass (off by default) |
 | `--no-graphify-cross-check` | Don't run `graphify merge-graphs` as a second opinion |
 | `--force` | Rebuild even when nothing changed |
@@ -101,13 +103,43 @@ When Graphify *is* installed, `graphify merge-graphs` runs over the same per-tie
 
 `merge.dangling` lists link endpoints with no node of their own. On a merged graph it should be empty; a `module:<name>` in that list means the config tier names a model whose design tier never exported.
 
+### Binding cocotb to the DUT
+
+The design tier has never heard of Python; the config tier has never heard of `dut.a`. A stage that runs **after** the merge closes that gap, because it is the only point where both halves are readable at once. It needs no external tool and runs on every build unless `--no-bind` is passed.
+
+For every test whose testbench has a `cocotb: {module: M}` entry it emits:
+
+- `binds_to` from the test node to `M`'s Python-module node, and from that module to the testbench's `toplevel:` as a `module:` node. Both come straight out of `tests.yaml`, so both are `EXTRACTED`. That is the two-hop path from any cocotb test to its DUT.
+- `imports` between Python-module nodes, from a real `ast` parse. This is what makes a shared helper such as `verif/demo_tiny_alu_cocotb/_alu_common.py` reachable from the tests that use it.
+- `drives` from a Python module to a `port:` node, one per `dut.<name>` attribute access.
+- `checks_against` from the test to a `golden_model` node, when the cocotb module imports one — directly, or through a helper.
+
+`dut.<name>` is found with `ast`, so the string `"dut.a"` and `self.dut.a` are not mistaken for accesses and the reported `line` is the real one. The handle is `dut` plus the first parameter of every `@cocotb.test()` function, so a suite that calls it `alu` still binds. A file that does not parse falls back to a regex sweep rather than contributing nothing.
+
+Confidence on a `drives` edge is decided by the port table and nothing else:
+
+| Case | Confidence | Target |
+| --- | --- | --- |
+| `<name>` is a port of the toplevel | `EXTRACTED` | that port |
+| differs only in case | `INFERRED` | the real port |
+| no port matches (a bus wrapper, an internal signal) | `INFERRED` + `resolved: false` | `port:<top>.<name>`, which will dangle |
+| no design tier was exported, so no port is known | `INFERRED` | `port:<top>.<name>` |
+
+Reach is transitive but honest. `test_alu_random.py` never says `dut.a` — `_alu_common.py` does, and the test imports it. The `drives` edge is emitted from *both* Python modules, and the inherited one carries `via` naming the file the access really came from, so first-hand evidence stays distinguishable from inherited. `file` and `line` on the edge always point at the file that contains the access.
+
+A golden model is the one import not resolved as a file. It lives under `spec/` and cocotb suites reach it through a runtime `sys.path` insert, which no static resolver should emulate; instead an import whose name matches a config-tier `golden_model` node's stem binds to that node.
+
+When Graphify is installed, its Python nodes are reused rather than duplicated: the two tools are matched on the node's repo-relative `file`, so one file never ends up with two ids. Without Graphify the stage synthesizes minimal `py:<path>` nodes, which is what keeps the binding useful on a machine that has never installed it.
+
+Counts land in `graph-meta.json` under `binding` (and in the machine envelope's `payload.binding`), including `drives_extracted` / `drives_inferred` and a bounded `unresolved` list naming cocotb modules whose file was not found and accesses that matched no port.
+
 ### Caching
 
 Every input is hashed before any exporter runs, and the combined fingerprint — input hashes plus tool versions plus schema version — is stored in `graph-meta.json`. A re-run whose fingerprint still matches skips the build entirely and reports `unchanged`, with each tier marked `cached`. Tool versions are part of the fingerprint because upgrading `rtl-buddy-view` can change the design tier without a single source file moving. A tier that failed in the cached build stays `failed` — a matching fingerprint proves the inputs held still, not that a broken viewer got fixed.
 
 ### Machine mode
 
-`rb --machine graph build` emits the standard [envelope](../agents.md#machine-mode). `payload` carries `graph` and `meta` (repo-relative paths), `unchanged`, `nodes`, `links`, `fingerprint`, a `tiers` list of `{tier, status, nodes, links}` (plus `detail` / `failures` / `models` where they apply), and `merge` with `strategy`, `stitch_points` and `dangling`. Exit code 0 means the graph was written; 1 means a tier failed; 2 is the usual fatal-configuration exit.
+`rb --machine graph build` emits the standard [envelope](../agents.md#machine-mode). `payload` carries `graph` and `meta` (repo-relative paths), `unchanged`, `nodes`, `links`, `fingerprint`, a `tiers` list of `{tier, status, nodes, links}` (plus `detail` / `failures` / `models` where they apply), `merge` with `strategy`, `stitch_points` and `dangling`, and `binding` with the stage's per-edge-class counts. Exit code 0 means the graph was written; 1 means a tier failed; 2 is the usual fatal-configuration exit.
 
 ## Node Types
 
@@ -135,6 +167,14 @@ Config tier (`rtl_buddy`):
 | `spec_doc` | `doc:<path>` | `exists` |
 | `golden_model` | `golden:<path>` | `referenced_by` |
 
+Binding tier (`rtl_buddy`'s stage, or Graphify):
+
+| Type | Id | Notable attributes |
+| --- | --- | --- |
+| `python_module` | `py:<repo-rel path>` | `cocotb_module`, `exists` (only when `false`) |
+
+`py:` ids are only synthesized when nothing else already claims the file. Graphify names its Python nodes however it likes; the two are reconciled on the node's repo-relative `file`, so a project with Graphify installed gets Graphify's ids and everything binds to those.
+
 `reglvl` is kept exactly as written, including the per-builder dict form. Resolving it needs a builder, which is a run-time choice with no place in a static graph.
 
 ## Edge Types
@@ -155,7 +195,17 @@ Config tier:
 | `implements` | golden model | spec block |
 | `maps_to` | model | **design-tier** module |
 
-Binding tier: `binds_to` (test to Python module), `drives` (Python module to port), `checks_against` (test to golden model).
+Binding tier:
+
+| Edge | From | To | Notable attributes |
+| --- | --- | --- | --- |
+| `binds_to` | test | Python module | |
+| `binds_to` | Python module | **design-tier** module | `toplevel` |
+| `imports` | Python module | Python module | |
+| `drives` | Python module | **design-tier** port | `signal`, `file`, `line`, `via`, `resolved` |
+| `checks_against` | test | golden model | `via` |
+
+`drives` is the only edge class in the whole graph that is allowed to be `INFERRED`; everything else, in every tier, is `EXTRACTED`. `via` on a `drives` or `checks_against` edge names the helper module the fact was inherited through — absent means the module says it itself.
 
 `maps_to` is the config-to-design stitch. Its target `module:<name>` is a design-tier id that the config tier never creates — exporting the config tier alone leaves those targets dangling, which node-link readers resolve by auto-creating an attribute-less node. Merging with a design-tier export fills them in.
 
@@ -200,6 +250,21 @@ write_graph_meta(result.meta, "artefacts/graph/graph-meta.json")
 `build_config_tier(project_root)` is the shorthand when only the graph dict is wanted. `spec_dir`, `verif_dir` and `design_dir` override the search roots; each defaults to the same directory the `rb spec` commands use. Node and link lists are sorted, so re-exporting an unchanged project produces a byte-identical file.
 
 `merge_graphs([(tier, graph), ...])`, `stitch_points()` and `dangling_targets()` are the merge primitives; `models_from_regression()` and `models_from_design_tree()` are the two model-selection paths behind the CLI flags.
+
+The binding stage is a pure function of an already-merged graph, so it can be re-run over a `graph.json` on disk without rebuilding anything:
+
+```python
+import json
+from rtl_buddy.graph import bind_python, scan_python_source
+
+merged = json.load(open("artefacts/graph/graph.json"))
+stage = bind_python(merged, "/path/to/project")
+print(stage.summary())          # counts, and any unresolved accesses
+print(stage.graph["links"][0])  # the contribution, ready to merge back in
+
+scan_python_source("verif/demo_tiny_alu_cocotb/_alu_common.py").accesses
+# {'a': 24, 'b': 25, 'clk': 18, ...} — signal name to first line
+```
 
 ## Loading the Graph
 

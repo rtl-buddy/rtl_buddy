@@ -562,6 +562,11 @@ Usage: rtl-buddy graph build [OPTIONS]
 │                                                              design tier (default    │
 │                                                              on)                     │
 │                                                              [default: design]       │
+│ --bind                      --no-bind                        run the post-merge      │
+│                                                              binding stage that ties │
+│                                                              cocotb tests to the DUT │
+│                                                              hierarchy (default on)  │
+│                                                              [default: bind]         │
 │ --graphify                  --no-graphify                    run Graphify's binding  │
 │                                                              tier when it is         │
 │                                                              installed               │

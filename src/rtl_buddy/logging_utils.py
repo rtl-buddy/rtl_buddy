@@ -812,6 +812,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "internal merge is what was written; see graph-meta.json "
                 "merge.graphify_cross_check"
             )
+        case "graph_bind.cocotb_module_not_found":
+            return (
+                f"graph build: test {fields.get('test')} names cocotb module "
+                f"{fields.get('module')!r} but no {fields.get('expected')} "
+                "exists — the test still binds to the DUT, but nothing was "
+                "scanned for dut.<signal> accesses or golden-model imports"
+            )
         case "graph_merge.node_type_conflict":
             return (
                 f"graph: node id {fields.get('node')!r} is a "

@@ -3376,6 +3376,16 @@ class RtlBuddy:
                 help="run the rtl-buddy-view design tier (default on)",
             ),
         ] = True,
+        bind: Annotated[
+            bool,
+            typer.Option(
+                "--bind/--no-bind",
+                help=(
+                    "run the post-merge binding stage that ties cocotb "
+                    "tests to the DUT hierarchy (default on)"
+                ),
+            ),
+        ] = True,
         graphify: Annotated[
             bool,
             typer.Option(
@@ -3469,6 +3479,7 @@ class RtlBuddy:
             view_version=view_version,
             frontend=frontend,
             design=design,
+            bind=bind,
             graphify_enabled=graphify,
             graphify_llm=graphify_llm,
             graphify_cross_check=graphify_cross_check,
@@ -3515,6 +3526,16 @@ class RtlBuddy:
             f"({build.merge.get('stitch_points', 0)} stitch points)",
             stream="stdout",
         )
+        binding = build.binding or {}
+        if binding.get("status") == "built":
+            emit_console_text(
+                f"binding: {binding.get('tests', 0)} cocotb test(s) bound to "
+                f"{binding.get('python_modules', 0)} Python module(s), "
+                f"{binding.get('drives', 0)} drives edges "
+                f"({binding.get('drives_inferred', 0)} inferred), "
+                f"{binding.get('checks_against', 0)} golden-model checks",
+                stream="stdout",
+            )
         dangling = build.merge.get("dangling") or []
         if dangling:
             emit_console_text(

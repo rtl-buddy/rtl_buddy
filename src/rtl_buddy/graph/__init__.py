@@ -9,7 +9,10 @@ are merged by node-id union. This package owns the **config tier**: the
 tests / testbenches / models / specs / coverage relationships that the
 YAML configs already encode explicitly. The design tier (modules,
 instances, ports) is produced by ``rtl-buddy-view``; the binding tier
-(Python-level call graph) by Graphify.
+(Python-level call graph) by Graphify, topped up by
+:mod:`rtl_buddy.graph.binding` — the post-merge stage that ties cocotb
+tests to their Python modules, those modules to the DUT, and their
+``dut.<name>`` accesses to design-tier ports.
 
 :mod:`rtl_buddy.graph.build` is the orchestrator behind ``rb graph
 build``: it runs each tier, unions them with
@@ -19,8 +22,15 @@ build``: it runs each tier, unions them with
 The shared JSON envelope is documented in ``docs/concepts/graph.md``.
 """
 
-from .build import (
+from .binding import (
     BINDING_TIER,
+    PY_NODE_PREFIX,
+    PYTHON_MODULE_TYPE,
+    BindingStage,
+    bind_python,
+    scan_python_source,
+)
+from .build import (
     DESIGN_TIER,
     VIEW_GRAPH_MIN_VERSION,
     GraphBuild,
@@ -57,12 +67,16 @@ __all__ = [
     "GRAPH_JSON_NAME",
     "GRAPH_META_NAME",
     "MERGED_TIER",
+    "PY_NODE_PREFIX",
+    "PYTHON_MODULE_TYPE",
     "SCHEMA_VERSION",
     "TIER_ORDER",
     "VIEW_GRAPH_MIN_VERSION",
+    "BindingStage",
     "ConfigTier",
     "GraphBuild",
     "TierReport",
+    "bind_python",
     "build_graph",
     "build_config_tier",
     "dangling_targets",
@@ -71,6 +85,7 @@ __all__ = [
     "merge_graphs",
     "models_from_design_tree",
     "models_from_regression",
+    "scan_python_source",
     "serialize_graph",
     "stitch_points",
     "write_graph_json",
