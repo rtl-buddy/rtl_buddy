@@ -57,6 +57,7 @@
         --col-test-cocotb:   #557c0b;
         --col-other:         #6b7688;
         --fail:              #c62828;
+        --warn:              #8a6a00;
       }
     }
     * { box-sizing: border-box; }
@@ -147,6 +148,7 @@
     .edges a:hover { text-decoration: underline; }
     .muted { color: var(--fg-dim); }
     .msg-error { color: var(--fail); font-weight: 600; }
+    .msg-warn { color: var(--warn); font-weight: 600; }
     hr { border: 0; border-top: 1px solid var(--line); margin: .75rem 0; }
     footer {
       border-top: 1px solid var(--line); background: var(--panel);
@@ -312,7 +314,8 @@
   }
   function note(text, level) {
     els.msg.textContent = text || '';
-    els.msg.className = level === 'error' ? 'msg-error' : 'muted';
+    els.msg.className =
+      level === 'error' ? 'msg-error' : level === 'warn' ? 'msg-warn' : 'muted';
   }
 
   function uuid() {
@@ -332,6 +335,13 @@
   // ---------------------------------------------------------------
 
   var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
+  var activeModel = null;
+
+  function refreshActiveModel() {
+    request('state_snapshot', {}, function (reply) {
+      if (reply.kind === 'response') { activeModel = reply.payload.active_model; }
+    });
+  }
 
   function connect() {
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -396,6 +406,7 @@
     switch (env.type) {
       case 'welcome':
         wsReady = true; retryMs = 500;
+        refreshActiveModel();
         els.wsDot.className = 'dot up';
         els.wsStatus.textContent = 'hub ' + (env.payload && env.payload.server_version || '');
         setPeers(env.payload && env.payload.registered_clients);
@@ -903,6 +914,23 @@
     return null;
   }
 
+  // A selection whose root is not the design view's active model
+  // highlights nothing there — which reads as "the view is stuck".
+  // The cached model can be stale (the SPA picker switches without
+  // telling us), so reconfirm before accusing the click.
+  function maybeWarnCrossModel(ip) {
+    var root = ip.split('.')[0];
+    if (!activeModel || root === activeModel) { return; }
+    request('state_snapshot', {}, function (reply) {
+      if (reply.kind !== 'response') { return; }
+      activeModel = reply.payload.active_model;
+      if (activeModel && root !== activeModel) {
+        note('selected ' + ip + ' — not in the active design-view model (' + activeModel +
+             '); switch the model picker in the design view to see it', 'warn');
+      }
+    });
+  }
+
   function activate(n, opts) {
     opts = opts || {};
     state.selected = n.id;
@@ -914,6 +942,7 @@
       var ip = instancePathFor(n);
       if (ip && emit('selection_changed', { instance_path: ip })) {
         did.push('select ' + ip);
+        maybeWarnCrossModel(ip);
       }
     }
     if (els.optOpen.checked && n.file) {
