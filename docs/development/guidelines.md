@@ -58,6 +58,8 @@ Use these roots unless a command documents a narrower exception:
 | `axi-profile notebook` | `dirname(tests.yaml)` | `<suite>/artefacts/axi/<test>` | `<artifact>` |
 | `axi-profile discover` | `dirname(models.yaml)` | `<model_root>/artefacts/axi/<model>` | `<artifact>` |
 | `axi-profile gen-monitor` | `dirname(models.yaml)` | configured or explicit output; fallback artifact dir | `<artifact>` |
+| `graph build` | project root | `<root>/artefacts/graph/` | `rtl-buddy-view` per model in `<model_root>/artefacts/hier/<model>` — deliberately `rb hier`'s artefact dir, not the graph's, so the two flows share one filelist + CST cache |
+| `graph results` / `graph query` / `graph path` / `graph explain` / `mcp` | project root | `<root>/artefacts/graph/` (read-only; `graph results` writes the overlay) | none, except `mcp`'s hierarchy tools which invoke `rtl-buddy-view` as `graph build` does |
 | `filelist` | `dirname(models.yaml)` for config reads | explicit output path | no hidden tool CWD |
 | `saif` | invocation CWD for explicit paths | explicit output path | no hidden tool CWD |
 | `hub` | project root | `.rtl-buddy/...` | project root or `.rtl-buddy`, depending subcommand |
@@ -84,6 +86,11 @@ Convenience symlinks may point at the latest run, but they must not be the only 
 
 Compile-side generated files such as `run.f`, `compile.log`, builder outputs, and relative `builder-simv` paths belong in the per-test artifact root.
 Simulation outputs for `randtest` belong in the per-run artifact directory to avoid side-file clobbering across iterations.
+
+Every run writes its result envelope (`runner/result_io.py`) as `result.json` in the run's artifact directory — the per-test root for a single run, `run-NNNN/` for a `randtest` iteration.
+This is the durable, machine-readable record of what a test did; `rb graph results` reads it, and a consumer must never have to parse `test.log` to learn a verdict.
+Writing it is best-effort: a run that passed is never reported as failed because its envelope could not be written.
+Dispatched runs additionally write the head's collection copy under `<test>/dispatch/result-<tag>.json`; that one is the dispatch protocol's, not the artifact layout's.
 
 ## Subprocesses
 

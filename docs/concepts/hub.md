@@ -59,7 +59,7 @@ uv run rb hub stop                    # graceful shutdown via SIGTERM
 
 `--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/ws`) used by the browser SPA. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
 
-When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing, `/view.json` returns 404 and the SPA falls back to the empty state.
+When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, `/view.json` returns `409 no_active_model` (see [View errors](#view-errors)) and the SPA shows its "pick a model" placeholder.
 
 ### Picking a model at start time (`--model NAME`)
 
@@ -90,13 +90,26 @@ Once the hub is up, the SPA can change models without restarting:
   ```json
   {
     "models": [
-      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml"},
-      {"name": "ip_dtnpu_dma",     "models_file": "/abs/path/to/models.yaml"}
+      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml",
+       "has_cdc": false, "view_status": "ok"},
+      {"name": "apb_intf", "models_file": "/abs/path/to/models.yaml",
+       "has_cdc": false, "view_status": "failed",
+       "error": "rb hub --model apb_intf: rtl-buddy-view exited with code 1; see …/hier.log for details."}
     ],
     "active": "ip_demo_tiny_npu"
   }
   ```
   The endpoint walks for `models.yaml` per request, so newly-edited files appear without a restart. When `--models-file PATH` was passed at start time, only that file is enumerated.
+
+  `view_status` is the model's **health**, so the picker can badge a model that can never elaborate instead of letting the user find out via an empty canvas (rtl-buddy-view#130):
+
+  | value | meaning |
+  | --- | --- |
+  | `ok` | a cached `.rtl-buddy/cache/view-<NAME>.json` exists, or this hub session generated one successfully |
+  | `failed` | this hub session tried to generate a view for the model and the generation failed; `error` carries the one-line summary |
+  | `never_built` | neither — nobody has asked for this model yet |
+
+  A `failed` entry that still has a cache file from an earlier build also carries `"stale_cache": true` — the cached tree is servable but no longer reflects the sources. Health is remembered **in memory** for the hub session; a restart resets every model to what the cache on disk says.
 - `GET /view.json?model=NAME` — build (or reuse) the per-model view.json at `.rtl-buddy/cache/view-<NAME>.json`, serve it, and promote `NAME` to the active model. `--models-file` constraints apply: `?model=` only honours entries in the pinned file. Per-model `asyncio.Lock` serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.
 - `GET /tests` — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as `/models`; entries carry the resolved `(model, tb)` pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
   ```json
@@ -118,6 +131,36 @@ Once the hub is up, the SPA can change models without restarting:
   In TB-view mode (`?test=` switch) the payload carries `view_mode: "tb"` plus `test` + `tb` + `tests_file` fields (the `view_url` points at `/view.json?test=<NAME>`). v1.0 SPAs that don't know about `view_mode` ignore it and fall through to the legacy `model`-driven `switchModel` path — that's why the DUT-side envelope still carries the full set of legacy fields. Sent to every connected client (SPA tabs, nvim, `rb wave` bridge) so they can refresh view-scoped state.
 
 The active model is also recorded in `.rtl-buddy/hub.json` under `active_model` (optional field) and surfaced in `rb hub status` output.
+
+### View errors
+
+Every `GET /view.json` failure answers with `Content-Type: application/json` and one shape, so the SPA can render a "no view available" placeholder that says *why* instead of an empty canvas (rtl-buddy-view#130):
+
+```json
+{"error": {"kind": "…", "message": "…"}}
+```
+
+Branch on `kind`, never on the status code or the prose:
+
+| `kind` | status | extra keys | when |
+| --- | --- | --- | --- |
+| `view_generation_failed` | 500 | `model`, `log_path`, `log_tail` | rtl-buddy-view (or the filelist that feeds it) refused the model |
+| `unknown_model` | 404 | `model` | `?model=NAME` resolves to zero models, or to more than one `models.yaml` |
+| `no_active_model` | 409 | `models_url` | bare `GET /view.json` with nothing selected and no pre-staged `view.json` |
+| `no_project_root` | 400 | `model` | `?model=` on a hub started without a project root |
+
+`log_tail` is the last 40 lines of `log_path` (`artefacts/hier/<model>/hier.log`) as a list of strings, or `[]` when the log is unreadable. It is the actionable half: the recurring causes name themselves there — an interface-port top that needs `frontend: slang`, a vendor submodule nobody ran `git submodule update --init` on, a `-v` library entry the parser does not accept.
+
+```json
+{"error": {"kind": "view_generation_failed",
+           "model": "apb_intf",
+           "message": "rb hub --model apb_intf: rtl-buddy-view exited with code 1; see /abs/artefacts/hier/apb_intf/hier.log for details.",
+           "log_path": "/abs/artefacts/hier/apb_intf/hier.log",
+           "log_tail": ["$ rtl-buddy-view --top apb_intf …",
+                        "hierarchy: top module 'apb_intf' not found. Known modules: []"]}}
+```
+
+A failure is remembered for the hub session, so the bare `GET /view.json` replays the same body for the active model rather than answering `409` — the named-model and active-model request paths never disagree about what the hub can show.
 
 ## Discovery (`.rtl-buddy/hub.json`)
 
@@ -171,8 +214,9 @@ Unknown top-level sections fail validation (typo guard). Unknown keys *inside* k
 | **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Loaded from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
 | **`rb wave` bridge** (`tools/wave_hub_bridge.py`) | Line-delimited JSON over TCP on `listen_port` | Started by `rb wave`; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff. |
 | **nvim plugin** ([`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim), installed by `rb nvim-install`) | Line-delimited JSON over TCP on `listen_port` | Auto-connects on startup (the managed setup calls `setup({ auto_connect = true })`). |
+| **graph pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /graph` — see [Design knowledge graph pane](#design-knowledge-graph-pane). Needs no viewer bundle. |
 
-Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), and `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one.
+Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker), and `graph` (the design-knowledge-graph pane). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph pane has its own origin rather than sharing `view` precisely because of that rule: it is meant to be open *alongside* the schematic, since clicking a module in the graph selects it in the design view.
 
 ## Protocol
 
@@ -200,7 +244,24 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 - **SPA:** `view-pan INSTANCE_PATH`, `overlay NAME --on/--off` (`clock` / `reset` / `axi-perf` / `wave`), `capture --out PATH [--format png|svg] [--scale …]`.
 - **Source:** `open-source FILE:LINE[:COL]`.
 - **Diagnostics:** `diagnose SOURCE ITEM…` (each `ITEM` is `file:line:severity:code:message`; `--clear`, `--instance`).
+- **Graph pane:** `graph-focus NODE` — focus the [design knowledge graph pane](#design-knowledge-graph-pane) on one `graph.json` node id (`module:fifo`, `test:verif/dma#smoke`, `covitem:dma#DMA-COV-1`, …). Broadcast, and cached by the hub, so sending it before the browser tab is open still lands: the focus is replayed to the pane when it registers.
 - **State / resolve:** `state` (snapshot of active model / selection / cursor / scope / peers), and `resolve {view-to-wave|wave-to-view|signal-to-view}`.
+
+## Design knowledge graph pane
+
+`rb hub start --serve-viewer` also serves the [design knowledge graph](graph.md) as an interactive page at `GET /graph`, next to the schematic rather than instead of it. Two routes:
+
+- `GET /graph.json` — `artefacts/graph/graph.json` joined with `artefacts/graph/results-overlay.json` **in memory**, using the same `annotate_graph()` join the query verbs use. `graph.json` on disk is never written: hash stability across regressions is why the overlay is a separate file to begin with. The body is the node-link envelope with each test node carrying its `results` entry, each node carrying the `category` column it renders in, plus a `graph.hub` block (where the two files were read from, node/link counts, per-tier and per-column counts, the column order, the overlay's status summary) so the page can render a header and a legend without a second round-trip. Read per request, so `rb graph build` / `rb graph results` in another terminal shows up on **reload**. Returns 404 with a JSON `error` naming `rb graph build` when there is no graph yet.
+- `GET /graph` — the page. One self-contained HTML document: no CDN, no external stylesheet, no web font, no build step, because the hub is routinely run on machines with no route off localhost. Nodes are laid out in [flow columns](graph.md#looking-at-the-graph) (`spec` → `design` → one per verification flow) with a small force relaxation inside each, one colour per column, and test nodes get a pass/fail ring from the overlay. It is served even with no graph built — its empty state names `rb graph build`, which is more useful than a blank tab.
+
+Clicking a node sends the same envelopes the SPA sends, over the same `/ws`:
+
+- **`selection_changed`** for anything that resolves to a design-view instance path. An `instance` node's id already *is* the coordinate (`inst:<top>/<dot.path>` — the resolver's identity); a `module` node has no instance path of its own, so the pane picks the shallowest instance of it, which is what a person means by "show me this module".
+- **`open_source`** (routed to the `src` peer, i.e. nvim) for any node that knows its `file`, at its `line`.
+
+Both are individually toggleable in the pane's toolbar. The reverse direction works too: `rb hub send graph-focus NODE` centres and selects a node, and a `selection_changed` from the SPA or the editor highlights the matching instance node in the graph.
+
+When a graph exists, the index page also gets a `window.__RTL_BUDDY_GRAPH_URL__ = "/graph.json"` injection alongside `__RTL_BUDDY_VIEW_URL__`, so an SPA overlay can advertise the pane on presence of the global instead of probing the endpoint and handling a 404.
 
 ## Auto-start on macOS (LaunchAgent)
 

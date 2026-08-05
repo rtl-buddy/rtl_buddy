@@ -1,0 +1,10 @@
+# Fixture for tests/test_graph_config_tier.py
+rtl-buddy-filetype: synth_config
+
+syntheses:
+  - name: "blk_a_generic"
+    desc: "Tech-independent synthesis of blk_a"
+    model: "blk_a"
+    model_path: "../../design/blk_a/models.yaml"
+    tool: "yosys"
+    reglvl: 0

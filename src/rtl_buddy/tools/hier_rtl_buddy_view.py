@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,6 +31,63 @@ from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
 
 logger = logging.getLogger(__name__)
+
+#: ``rtl-buddy-view --version`` prints ``rtl-buddy-view <version>``.
+#: Unlike ``tool_manifest``'s probe this keeps the **whole** version
+#: token, dev suffix included: the manifest only needs to compare
+#: ``X.Y.Z`` against a floor, but a per-feature gate has to tell an
+#: editable ``0.3.1.dev1+g<sha>`` build (which may well carry the
+#: feature) apart from a released ``0.3.1`` (which cannot).
+_VIEW_VERSION_RE = re.compile(r"rtl-buddy-view\s+(\S+)")
+
+#: Seconds to wait for the version probe. A viewer that cannot answer
+#: ``--version`` promptly is treated as unprobeable, not as a failure.
+_VERSION_PROBE_TIMEOUT = 30
+
+
+def resolve_view_executable(executable: str = "rtl-buddy-view") -> str:
+    """The path the viewer will actually be invoked as.
+
+    Bare names (no path separator) prefer the binary sitting next to
+    ``sys.executable`` — rb is routinely invoked by absolute venv path
+    with no activation, where PATH knows nothing about the venv but the
+    viewer installed beside this interpreter is exactly the one that
+    belongs to it. Falls back to the name unchanged (PATH semantics).
+    Explicit paths pass through untouched. Every caller that talks to
+    the viewer must resolve through here, or the version that lands in
+    the build fingerprint can describe a different binary than the one
+    that ran.
+    """
+    if os.sep in executable or (os.altsep and os.altsep in executable):
+        return executable
+    sibling = Path(sys.executable).parent / executable
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return executable
+
+
+def probe_view_version(executable: str = "rtl-buddy-view") -> str | None:
+    """Full version string reported by ``<executable> --version``.
+
+    ``None`` when the binary is missing, too old to know the flag, or
+    prints something unrecognizable. Callers must treat ``None`` as
+    "unknown", never as "too old" — a pre-0.2.1 viewer has no
+    ``--version`` at all, and refusing to run on that basis would be a
+    guess where the subsequent invocation's exit code is the real answer.
+    """
+    try:
+        proc = subprocess.run(
+            [resolve_view_executable(executable), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_VERSION_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    match = _VIEW_VERSION_RE.search((proc.stdout or "") + (proc.stderr or ""))
+    return match.group(1) if match else None
 
 
 def _is_non_source_filelist_line(line: str) -> bool:
@@ -124,6 +183,13 @@ class RtlBuddyView:
         # exist``. ``None`` falls back to cwd, the legacy behaviour for
         # callers that run from the suite dir.
         self.test_suite_dir = test_suite_dir
+
+        # Set by callers that need the viewer's answer as a value rather
+        # than on the terminal (``RtlBuddyViewQuery(capture=True)``, used
+        # by ``rb mcp``). ``run()`` fills :attr:`stdout` / :attr:`stderr`.
+        self.capture = False
+        self.stdout: str | None = None
+        self.stderr: str | None = None
 
         artefact_root = Path(suite_dir) / "artefacts" / "hier" / model_cfg.name
         if test_cfg is not None:
@@ -251,11 +317,14 @@ class RtlBuddyView:
                     f"hier: rtl-buddy-view not found or not executable: "
                     f"{self.executable}"
                 )
-        elif shutil.which(self.executable) is None:
-            raise FatalRtlBuddyError(
-                f"hier: '{self.executable}' not found on PATH; install rtl-buddy-view "
-                f"into the active venv or pass --tool to point at the binary"
-            )
+        else:
+            self.executable = resolve_view_executable(self.executable)
+            if os.sep not in self.executable and shutil.which(self.executable) is None:
+                raise FatalRtlBuddyError(
+                    f"hier: '{self.executable}' not found on PATH or next to "
+                    f"{sys.executable}; install rtl-buddy-view into the active "
+                    f"venv or pass --tool to point at the binary"
+                )
 
         if self.cdc_annotations is not None and not os.path.isfile(
             self.cdc_annotations
@@ -300,13 +369,29 @@ class RtlBuddyView:
                 # instead — a lookup miss ("instance path ... not
                 # found") is an interactive answer, not a diagnostic to
                 # bury in a log file.
-                stdout = subprocess.DEVNULL if self.output is not None else None
-                proc = run_managed_process(
-                    cmd,
-                    stdout=stdout,
-                    stderr=None if self._stream_stderr else logf,
-                    cwd=self.artefact_dir,
-                )
+                #
+                # ``capture`` overrides both: an in-process caller (the
+                # MCP server) needs the answer as a string, and under a
+                # stdio transport a passed-through stdout would be
+                # written straight into the JSON-RPC stream.
+                if self.capture:
+                    proc = run_managed_process(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        cwd=self.artefact_dir,
+                    )
+                    self.stdout = proc.stdout or ""
+                    self.stderr = proc.stderr or ""
+                    logf.write(self.stderr)
+                else:
+                    stdout = subprocess.DEVNULL if self.output is not None else None
+                    proc = run_managed_process(
+                        cmd,
+                        stdout=stdout,
+                        stderr=None if self._stream_stderr else logf,
+                        cwd=self.artefact_dir,
+                    )
 
         log_event(
             logger,
@@ -316,6 +401,150 @@ class RtlBuddyView:
             returncode=proc.returncode,
         )
         return proc.returncode
+
+
+class RtlBuddyViewGraph(RtlBuddyView):
+    """Generates a filelist + invokes ``rtl-buddy-view graph``.
+
+    The **design tier** of the knowledge graph (rtl_buddy#375 /
+    rtl-buddy-view#126): module / instance / port / parameter /
+    interface / modport nodes written as node-link JSON, plus the
+    viewer's own ``graph-meta.json`` provenance sidecar beside it.
+
+    Shares ``rb hier``'s ``artefacts/hier/<model>/hier.f`` — the input
+    to a graph export is exactly the input to a render, so generating a
+    second filelist would only create a way for the two to disagree.
+    The viewer's stdout is suppressed (we always pass ``--output``) and
+    its stderr is captured to ``graph.log`` next to the filelist.
+
+    With ``test_cfg`` set the export is **TB-rooted** (#377 follow-up):
+    the parent's DUT+TB filelist merge runs, the artefact dir keys on
+    ``(model, tb)`` exactly as ``rb hier --view tb`` does, and
+    ``--tb-top`` is passed alongside ``--top`` so the viewer elaborates
+    from the testbench and records the DUT name in
+    ``graph.design.dut_top``. Module ids are ``module:<name>`` either
+    way, which is what welds the TB export's DUT subtree onto the
+    DUT-rooted export at merge time.
+    """
+
+    _event_name = "graph_design"
+    _status_label = "graph export"
+    _stream_stderr = False
+
+    def __init__(
+        self,
+        name: str,
+        model_cfg: ModelConfig,
+        *,
+        suite_dir: str,
+        output: str,
+        project_root: str,
+        frontend: str | None = None,
+        executable: str = "rtl-buddy-view",
+        test_cfg: TestConfig | None = None,
+        test_suite_dir: str | None = None,
+    ):
+        super().__init__(
+            name,
+            model_cfg,
+            suite_dir=suite_dir,
+            output=output,
+            frontend=frontend,
+            executable=executable,
+            test_cfg=test_cfg,
+            test_suite_dir=test_suite_dir,
+        )
+        self.project_root = project_root
+
+    def tb_top(self) -> str | None:
+        """The ``--tb-top`` this export will elaborate from, or None.
+
+        Same convention as :class:`RtlBuddyView`: the testbench's
+        explicit ``toplevel:`` when it has one, else its config name
+        (which is the TB's top module name by project convention). The
+        viewer auto-corrects a hint that names no real module, so the
+        elaborated answer is read back off the export rather than
+        trusted from here.
+        """
+        if self.test_cfg is None:
+            return None
+        return self.test_cfg.tb.toplevel or self.test_cfg.tb.name
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "graph.log")
+
+    def log_path(self) -> str:
+        """Where the viewer's stderr lands, for citing in a failure report.
+
+        ``rb graph build`` records this in ``graph-meta.json`` when a
+        model fails to export, so the public accessor exists rather than
+        having the orchestrator reach for ``_log_path``.
+        """
+        return self._log_path()
+
+    def _event_fields(self) -> dict[str, object]:
+        return {"output": self.output}
+
+    def write_filelist(self) -> str:
+        """Generate the filelist without invoking the viewer.
+
+        ``rb graph build`` hashes the model's sources *before* deciding
+        whether an export is needed at all, and the filelist is where
+        that source list comes from. Writing it is cheap (no parse), and
+        :meth:`run` regenerates it identically, so calling this first
+        costs nothing and keeps the no-op check honest.
+        """
+        return self._write_filelist()
+
+    def source_files(self) -> list[str]:
+        """Absolute source paths in the generated filelist.
+
+        The filelist is written with ``strip=True``, so every non-empty,
+        non-comment line is a bare path — relative ones resolve against
+        the filelist's own directory, which is how the viewer reads them.
+        """
+        fl_path = self._filelist_path()
+        files: list[str] = []
+        try:
+            lines = Path(fl_path).read_text().splitlines()
+        except OSError:
+            return files
+        base = os.path.dirname(fl_path)
+        for line in lines:
+            entry = line.strip()
+            if not entry or entry.startswith("//") or entry.startswith("#"):
+                continue
+            files.append(os.path.abspath(os.path.join(base, entry)))
+        return files
+
+    def meta_path(self) -> str:
+        """Where the viewer writes its provenance sidecar for ``--output``."""
+        out = Path(self.output)
+        return str(out.with_name(f"{out.stem}-meta.json"))
+
+    def _build_cmd(self, fl_path: str) -> list[str]:
+        cmd = [
+            self.executable,
+            "graph",
+            "--filelist",
+            fl_path,
+            "--top",
+            self.model_cfg.name,
+            "--output",
+            str(self.output),
+            "--project-root",
+            self.project_root,
+        ]
+        tb_top = self.tb_top()
+        if tb_top is not None:
+            # ``--tb-top`` roots the export at the testbench; ``--top``
+            # stays the DUT so the viewer can record which subtree is
+            # the design under test. Both names land in
+            # ``graph.design``.
+            cmd += ["--tb-top", tb_top]
+        if self.frontend is not None:
+            cmd += ["--frontend", self.frontend]
+        return cmd
 
 
 _QUERY_VERBS = (
@@ -356,6 +585,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
         context: int | None = None,
         line_numbers: bool = True,
         executable: str = "rtl-buddy-view",
+        capture: bool = False,
     ):
         super().__init__(
             name,
@@ -364,6 +594,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
             frontend=frontend,
             executable=executable,
         )
+        self.capture = capture
         if verb not in _QUERY_VERBS:
             raise FatalRtlBuddyError(
                 f"hier-query: unknown verb {verb!r}; "

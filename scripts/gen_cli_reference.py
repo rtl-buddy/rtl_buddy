@@ -36,6 +36,8 @@ SUBCOMMANDS = [
     "fpv",
     "fpv-regression",
     "tool-check",
+    "graph",
+    "mcp",
     "axi-profile",
     "verible",
     "mut",

@@ -66,6 +66,17 @@ classifiers = [
 # same floor at import time (_check_xeno_version) for git/editable
 # installs that bypass this resolve-time guard; keep the two in sync.
 mut = ["rtl-buddy-xeno[verible,slang] >= 0.1.0"]
+# `rb mcp`, the stdio Model Context Protocol server (#380). Optional on
+# purpose: MCP is a *second* agent surface, and everything it serves is
+# also reachable from the CLI with `--machine`, which needs no extra
+# dependency. `rtl_buddy.mcp.toolset` therefore imports no SDK at all --
+# only `rtl_buddy.mcp.server` does, lazily, behind `require_sdk()` -- so
+# an install without this extra still imports, still runs, and fails
+# only at `rb mcp` with an install hint. The `>= 1.2.0` floor is the
+# first SDK release with the low-level stdio server this uses; both the
+# 1.x decorator API and the 2.x constructor-callback API are supported
+# by `mcp/server.py:build_server`.
+mcp = ["mcp >= 1.2.0"]
 
 [project.urls]
 Source = "https://github.com/rtl-buddy/rtl_buddy"
@@ -112,6 +123,10 @@ test = [
   "pytest>=9.0.3",
   "pytest-cov>=6.0.0",
   "pytest-asyncio>=0.24.0",
+  # So CI actually exercises the `rb mcp` SDK boundary. The tests that
+  # need it still skip when it is absent (a contributor without the
+  # extra must not see red), but the skip must not be the CI outcome.
+  "mcp>=1.2.0",
 ]
 dev = [
   { include-group = "docs" },

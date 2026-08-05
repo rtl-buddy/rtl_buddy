@@ -1,0 +1,8 @@
+# Fixture for tests/test_graph_config_tier.py — a suite with no tests.
+rtl-buddy-filetype: test_config
+
+testbenches:
+  - name: "tb_orphan"
+    filelist: []
+
+tests: []

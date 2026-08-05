@@ -9,7 +9,45 @@ description: How rtl_buddy is built for AI-agent use — the bundled skill, loca
 - a **bundled agent skill** that installs into Claude Code and Codex,
 - **local docs access** through the `rtl-buddy docs` command, so reference material always matches the installed version,
 - a **machine mode** (`--machine`) that switches the orchestration log to JSON Lines and emits a stable stdout envelope on exit,
+- a **design knowledge graph** you query instead of grepping the tree, plus an **MCP server** (`rb mcp`) that exposes the same answers as discoverable tools,
 - and deterministic [exit codes](concepts/tests.md#exit-codes) that let an orchestrator distinguish test failures from configuration errors.
+
+## Graph first, files last
+
+The default way to find anything in an rtl_buddy project is the [design knowledge graph](concepts/graph.md), not a file read. One `graph.json` holds modules, instances and ports from the elaborated RTL alongside tests, testbenches, models, spec blocks and coverage items from the YAML, in one id namespace, with the last regression result joined on.
+
+The contract is two steps:
+
+1. **Locate** with `rb --machine graph query "<question>"`. Matching is deterministic keyword scoring — no model call — and every match arrives with its neighbourhood, so structural context and pass/fail status come back together.
+2. **Cite** with `rb hier-query <model> source-snippet <path>`. Every node the graph returns carries a `cite` block with its `file` and `line`, and instance nodes carry the exact `source-snippet` command that quotes them.
+
+Raw file reads are the fallback for finding things, not the default: read a file once the graph has told you which file, and which lines.
+
+Where that rule stops, measured over six tasks in [Token Efficiency](concepts/graph.md#token-efficiency) — a hop through the graph is worth it when the file it saves you is bigger than the payload that replaces it, which today means:
+
+- **Ask the graph for relations grep cannot compute.** "Which tops contain `ip_cdc_sync`?" is one `explain` on the module node, exact, with the whole transitive closure already flattened by elaboration. Grep needs an iterative fixpoint over mentions, gets false positives from comments, and is quietly wrong if you stop a round early.
+- **Do not ask it a config-tier question.** Which tests exercise a block, at which `reglvl`, claiming which coverage items — the `tests.yaml` that answers it is smaller than the `explain` payloads that would replace it, every time.
+- **Do not ask it a single-file question.** A module's port list, one instance's connections: let the graph name the file and the line range, then read those lines.
+
+```bash
+rb --machine graph build                                    # once per source change
+rb --machine graph results                                  # after a regression
+rb --machine graph query "which tests cover SAND-FUNC-FLAG-C-ADD"  # locate + status
+rb --machine graph explain test:verif/demo_tiny_alu#flags          # one node in full
+rb --machine graph path cocotb_random module:demo_tiny_alu        # how related?
+```
+
+`graph query` exits 1 when nothing matched (a graceful "no"), 2 when there is no graph to query — the error names `rb graph build`. Details, flags and the node/edge vocabulary: `rtl-buddy docs show concepts/graph`.
+
+### MCP
+
+`rb mcp` serves the same verbs — plus `find_module`, `instances_of`, `port_connections`, `source_snippet` and, when a hub is running, the live-session tools — as MCP tools over stdio. It needs no daemon and is configured statically:
+
+```json
+{"mcpServers": {"rtl-buddy": {"command": "rb", "args": ["mcp"]}}}
+```
+
+Each tool returns its `--machine` counterpart's `payload` verbatim, wrapped in `{tool, ok, meta: {rtl_buddy_version, project_root, command}, payload}`; a failure is `ok: false` plus `error`, never a transport error. Install with `pip install 'rtl_buddy[mcp]'`. Everything MCP serves is also reachable from the CLI, so MCP is a convenience surface — never a prerequisite.
 
 ## Bundled agent skill
 

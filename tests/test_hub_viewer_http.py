@@ -168,22 +168,30 @@ async def test_http_404_for_unknown_path(hub_and_viewer):
 
 
 @pytest.mark.asyncio
-async def test_http_view_json_404_when_path_unset(hub_and_viewer):
-    """No view_json_path configured → 404 (not a 500 or empty 200)."""
+async def test_http_view_json_409_when_path_unset(hub_and_viewer):
+    """No view_json_path configured → 409 no_active_model (not a 500,
+    not an empty 200, and not a plain-text body): the route exists and
+    the hub is healthy, there is just nothing selected yet
+    (rtl-buddy-view#130)."""
 
     _hub, viewer = hub_and_viewer
     url = f"http://127.0.0.1:{viewer.http_port}/view.json"
     try:
         await asyncio.to_thread(_http_get, url)
     except urllib.error.HTTPError as exc:
-        assert exc.code == 404
+        assert exc.code == 409
+        assert "application/json" in (exc.headers or {}).get("Content-Type", "")
+        payload = _json.loads(exc.read())
+        assert payload["error"]["kind"] == "no_active_model"
+        assert payload["error"]["models_url"] == "/models"
+        assert payload["error"]["message"]
     else:
-        pytest.fail("expected 404")
+        pytest.fail("expected 409")
 
 
 @pytest.mark.asyncio
-async def test_http_view_json_404_when_file_missing(tmp_path: Path):
-    """view_json_path set but file doesn't exist → 404."""
+async def test_http_view_json_409_when_file_missing(tmp_path: Path):
+    """view_json_path set but file doesn't exist → 409, same shape."""
 
     hub = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
     hub_host, hub_port = await hub.start()
@@ -201,9 +209,10 @@ async def test_http_view_json_404_when_file_missing(tmp_path: Path):
         try:
             await asyncio.to_thread(_http_get, url)
         except urllib.error.HTTPError as exc:
-            assert exc.code == 404
+            assert exc.code == 409
+            assert _json.loads(exc.read())["error"]["kind"] == "no_active_model"
         else:
-            pytest.fail("expected 404")
+            pytest.fail("expected 409")
     finally:
         await viewer.shutdown()
         await hub.shutdown()
@@ -628,14 +637,25 @@ async def test_models_endpoint_has_cdc_false_when_cdc_file_missing(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_view_json_query_param_unknown_model_400(tmp_path: Path):
+async def test_view_json_query_param_unknown_model_404(tmp_path: Path):
+    """A name that resolves to no model → 404 ``unknown_model`` as JSON
+    (rtl-buddy-view#130). The name is echoed back so the SPA can name it
+    in the placeholder without re-parsing the prose."""
+
     _write_models_yaml(tmp_path / "models.yaml", [{"name": "alpha"}])
     hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
     try:
         url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=no_such"
-        status, _, body = await asyncio.to_thread(_http_get_allow_4xx, url)
-        assert status == 400
-        assert b"no_such" in body
+        status, headers, body = await asyncio.to_thread(_http_get_allow_4xx, url)
+        assert status == 404
+        assert "application/json" in headers.get("Content-Type", "")
+        payload = _json.loads(body)
+        assert payload["error"]["kind"] == "unknown_model"
+        assert payload["error"]["model"] == "no_such"
+        assert "no_such" in payload["error"]["message"]
+        # Summary only — the loader's multi-line candidate list stays in
+        # the hub log, not in the SPA's one-line banner.
+        assert "\n" not in payload["error"]["message"]
     finally:
         await _teardown(hub, viewer, hub_task, vtask)
 
@@ -1094,5 +1114,310 @@ async def test_switch_model_clears_active_test(
         await asyncio.to_thread(_http_get, url)
         assert viewer.active_test is None
         assert viewer.active_model == "demo"
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+# ---------------------------------------------------------------------------
+# structured view errors + model health (rtl-buddy-view#130)
+# ---------------------------------------------------------------------------
+
+
+def _fail_build_view_json(monkeypatch: pytest.MonkeyPatch, message: str):
+    """Make ``build_view_json`` fail the way a refusing renderer does."""
+
+    from rtl_buddy.hub import view_builder
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    def boom(*, project_root, model_cfg, axi_perf_source=None, **_kw):
+        raise FatalRtlBuddyError(message)
+
+    monkeypatch.setattr(view_builder, "build_view_json", boom)
+
+
+def _hier_log(root: Path, model: str, lines: list[str]) -> Path:
+    log = root / "artefacts" / "hier" / model / "hier.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return log
+
+
+@pytest.mark.asyncio
+async def test_view_json_generation_failure_is_structured_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A failing generation → 500 with the pinned JSON shape: kind,
+    model, one-line message, absolute log path, and the log tail as a
+    list of lines. The SPA renders the tail verbatim, so this shape is
+    a contract with rtl-buddy-view#130 — not an implementation detail.
+    """
+
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "apb_intf"}])
+    log = _hier_log(
+        tmp_path,
+        "apb_intf",
+        [
+            "$ rtl-buddy-view --top apb_intf --filelist hier.f",
+            "hierarchy: top module 'apb_intf' not found. Known modules: []",
+        ],
+    )
+    _fail_build_view_json(
+        monkeypatch,
+        f"rb hub --model apb_intf: rtl-buddy-view exited with code 1; "
+        f"see {log} for details.",
+    )
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=apb_intf"
+        status, headers, body = await asyncio.to_thread(_http_get_allow_4xx, url)
+        assert status == 500
+        assert "application/json" in headers.get("Content-Type", "")
+        err = _json.loads(body)["error"]
+        assert err["kind"] == "view_generation_failed"
+        assert err["model"] == "apb_intf"
+        assert err["message"].startswith("rb hub --model apb_intf:")
+        assert err["log_path"] == str(log)
+        assert err["log_tail"] == [
+            "$ rtl-buddy-view --top apb_intf --filelist hier.f",
+            "hierarchy: top module 'apb_intf' not found. Known modules: []",
+        ]
+        # Exactly the five keys the SPA is built against.
+        assert set(err) == {"kind", "model", "message", "log_path", "log_tail"}
+        # A failure must NOT promote the model to active.
+        assert viewer.active_model is None
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_view_json_failure_log_tail_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A 500-line log yields the last ``LOG_TAIL_LINES`` lines only."""
+
+    from rtl_buddy.hub.viewer_http import LOG_TAIL_LINES
+
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    log = _hier_log(tmp_path, "demo", [f"line {i}" for i in range(500)])
+    _fail_build_view_json(
+        monkeypatch, f"rb hub --model demo: exited with code 1; see {log} for details."
+    )
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        _status, _, body = await asyncio.to_thread(_http_get_allow_4xx, url)
+        tail = _json.loads(body)["error"]["log_tail"]
+        assert len(tail) == LOG_TAIL_LINES
+        assert tail[-1] == "line 499"
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_view_json_failure_without_log_still_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No hier.log on disk (the failure happened before the subprocess
+    ran) → empty tail and a derived path, never a second failure on the
+    failure path."""
+
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    _fail_build_view_json(monkeypatch, "rb hub --model demo: filelist entry missing")
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        status, _, body = await asyncio.to_thread(_http_get_allow_4xx, url)
+        assert status == 500
+        err = _json.loads(body)["error"]
+        assert err["log_tail"] == []
+        assert err["log_path"] == str(
+            tmp_path / "artefacts" / "hier" / "demo" / "hier.log"
+        )
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_bare_view_json_replays_the_active_model_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Payload consistency: once a model is active and its regeneration
+    fails, the bare ``GET /view.json`` answers with the SAME
+    ``view_generation_failed`` body the ``?model=`` path returned — not
+    a ``409``, and not stale bytes."""
+
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    log = _hier_log(tmp_path, "demo", ["boom"])
+    _fail_build_view_json(
+        monkeypatch, f"rb hub --model demo: exited with code 1; see {log} for details."
+    )
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        named = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        named_status, _, named_body = await asyncio.to_thread(
+            _http_get_allow_4xx, named
+        )
+        assert named_status == 500
+        # The hub is now pointed at ``demo`` even though the build failed.
+        viewer.active_model = "demo"
+        bare = f"http://127.0.0.1:{viewer.http_port}/view.json"
+        bare_status, _, bare_body = await asyncio.to_thread(_http_get_allow_4xx, bare)
+        assert bare_status == 500
+        assert _json.loads(bare_body) == _json.loads(named_body)
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_models_view_status_never_built_then_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``/models`` health transitions: never_built → failed, with the
+    one-line error attached and no ``stale_cache`` (nothing cached)."""
+
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        models_url = f"http://127.0.0.1:{viewer.http_port}/models"
+        _status, _, body = await asyncio.to_thread(_http_get, models_url)
+        entry = _json.loads(body)["models"][0]
+        assert entry["view_status"] == "never_built"
+        assert "error" not in entry
+
+        log = _hier_log(tmp_path, "demo", ["hierarchy: top module not found"])
+        _fail_build_view_json(
+            monkeypatch,
+            f"rb hub --model demo: rtl-buddy-view exited with code 1; "
+            f"see {log} for details.",
+        )
+        view_url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        status, _, _ = await asyncio.to_thread(_http_get_allow_4xx, view_url)
+        assert status == 500
+
+        _status, _, body = await asyncio.to_thread(_http_get, models_url)
+        entry = _json.loads(body)["models"][0]
+        assert entry["view_status"] == "failed"
+        assert entry["error"].startswith("rb hub --model demo:")
+        assert "stale_cache" not in entry
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_models_view_status_ok_after_successful_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """failed → ok: a later successful generation clears the remembered
+    failure, and the cached file alone is enough for ``ok`` on a model
+    nobody asked for this session."""
+
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}, {"name": "other"}])
+    from rtl_buddy.hub import view_builder
+
+    log = _hier_log(tmp_path, "demo", ["boom"])
+    _fail_build_view_json(
+        monkeypatch, f"rb hub --model demo: exited with code 1; see {log} for details."
+    )
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        models_url = f"http://127.0.0.1:{viewer.http_port}/models"
+        view_url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        await asyncio.to_thread(_http_get_allow_4xx, view_url)
+        _status, _, body = await asyncio.to_thread(_http_get, models_url)
+        by_name = {m["name"]: m for m in _json.loads(body)["models"]}
+        assert by_name["demo"]["view_status"] == "failed"
+        assert by_name["other"]["view_status"] == "never_built"
+
+        # Now let the build succeed.
+        cache = view_builder.view_json_path(tmp_path, "demo")
+
+        def ok_build(*, project_root, model_cfg, axi_perf_source=None, **_kw):
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text('{"schema_version":"1.0","top":"demo"}')
+            return cache
+
+        monkeypatch.setattr(view_builder, "build_view_json", ok_build)
+        status, _, _ = await asyncio.to_thread(_http_get, view_url)
+        assert status == 200
+
+        _status, _, body = await asyncio.to_thread(_http_get, models_url)
+        by_name = {m["name"]: m for m in _json.loads(body)["models"]}
+        assert by_name["demo"]["view_status"] == "ok"
+        assert "error" not in by_name["demo"]
+
+        # A cache file written for a model this session never touched is
+        # itself the ``ok`` signal — that is what survives a hub restart.
+        other_cache = view_builder.view_json_path(tmp_path, "other")
+        other_cache.write_text('{"schema_version":"1.0","top":"other"}')
+        _status, _, body = await asyncio.to_thread(_http_get, models_url)
+        by_name = {m["name"]: m for m in _json.loads(body)["models"]}
+        assert by_name["other"]["view_status"] == "ok"
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_models_view_status_failed_with_stale_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A cached view from BEFORE a later failure is ``failed`` plus
+    ``stale_cache: true`` — servable bytes that no longer reflect the
+    sources must not read as healthy."""
+
+    _write_models_yaml(tmp_path / "models.yaml", [{"name": "demo"}])
+    from rtl_buddy.hub import view_builder
+
+    cache = view_builder.view_json_path(tmp_path, "demo")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text('{"schema_version":"1.0","top":"demo"}')
+
+    log = _hier_log(tmp_path, "demo", ["boom"])
+    _fail_build_view_json(
+        monkeypatch, f"rb hub --model demo: exited with code 1; see {log} for details."
+    )
+
+    hub, viewer, hub_task, vtask = await _viewer_with_project(tmp_path)
+    try:
+        models_url = f"http://127.0.0.1:{viewer.http_port}/models"
+        _status, _, body = await asyncio.to_thread(_http_get, models_url)
+        # Cache alone → ok.
+        assert _json.loads(body)["models"][0]["view_status"] == "ok"
+
+        view_url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        await asyncio.to_thread(_http_get_allow_4xx, view_url)
+
+        _status, _, body = await asyncio.to_thread(_http_get, models_url)
+        entry = _json.loads(body)["models"][0]
+        assert entry["view_status"] == "failed"
+        assert entry["stale_cache"] is True
+    finally:
+        await _teardown(hub, viewer, hub_task, vtask)
+
+
+@pytest.mark.asyncio
+async def test_view_json_model_without_project_root_is_structured(tmp_path: Path):
+    """``?model=`` on a hub with no project root keeps the envelope —
+    the SPA never has to parse a plain-text body."""
+
+    hub = HubServer(host="127.0.0.1", port=0, server_version="0.0.0+test")
+    hub_host, hub_port = await hub.start()
+    hub_task = asyncio.create_task(hub.serve_forever())
+    viewer = ViewerServer(hub_host=hub_host, hub_port=hub_port, http_port=0)
+    await viewer.start()
+    vtask = asyncio.create_task(viewer.serve_forever())
+    try:
+        url = f"http://127.0.0.1:{viewer.http_port}/view.json?model=demo"
+        status, headers, body = await asyncio.to_thread(_http_get_allow_4xx, url)
+        assert status == 400
+        assert "application/json" in headers.get("Content-Type", "")
+        err = _json.loads(body)["error"]
+        assert err["kind"] == "no_project_root"
+        assert err["model"] == "demo"
     finally:
         await _teardown(hub, viewer, hub_task, vtask)

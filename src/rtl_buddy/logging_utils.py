@@ -780,6 +780,87 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "translate to the Vivado backend — waivers ignored; findings still "
                 "carry full detail for downstream filtering"
             )
+        case "graph_config.suite_load_failed":
+            return (
+                f"graph: could not load {fields.get('path')} — its tests, "
+                "testbenches and coverage links are missing from the graph"
+            )
+        case "graph_config.regression_load_failed":
+            return (
+                f"graph: could not load {fields.get('path')} — the "
+                f"{fields.get('flow')} flow's suites are missing from the graph "
+                "and their tests are not flow-stamped"
+            )
+        case "graph_config.node_id_conflict":
+            return (
+                f"graph: node id {fields.get('node')!r} claimed by both "
+                f"{fields.get('first_type')} and {fields.get('second_type')} — "
+                "keeping the first; rename one so the id is unique"
+            )
+        case "graph_build.design_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for model {fields.get('model')} — "
+                f"that model's modules, instances and ports are missing from "
+                f"the graph; see {fields.get('log')}"
+            )
+        case "graph_build.tb_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for testbench "
+                f"{fields.get('testbench')} (--tb-top {fields.get('tb_top')}) — "
+                f"that testbench's own hierarchy is missing from the graph, "
+                f"the DUT's is not; see {fields.get('log')}"
+            )
+        case "graph_build.tb_id_collision":
+            return (
+                f"graph build: {fields.get('ids')} design-tier id(s) are "
+                f"claimed by more than one file (e.g. {fields.get('example')}) — "
+                "the testbench copies were qualified with their suite so the "
+                "merged graph keeps them apart; rename the duplicated module "
+                "to make the qualification unnecessary"
+            )
+        case "graph_build.graphify_failed":
+            return (
+                f"graph build: the graphify binding tier failed "
+                f"({fields.get('detail')}) — the design + config tiers were "
+                "still merged and written"
+            )
+        case "graph_build.graphify_merge_mismatch":
+            return (
+                f"graph build: `graphify merge-graphs` disagrees with the "
+                f"internal merge ({fields.get('only_internal')} nodes only "
+                f"ours, {fields.get('only_graphify')} only theirs) — the "
+                "internal merge is what was written; see graph-meta.json "
+                "merge.graphify_cross_check"
+            )
+        case "graph_bind.cocotb_module_not_found":
+            return (
+                f"graph build: test {fields.get('test')} names cocotb module "
+                f"{fields.get('module')!r} but no {fields.get('expected')} "
+                "exists — the test still binds to the DUT, but nothing was "
+                "scanned for dut.<signal> accesses or golden-model imports"
+            )
+        case "graph_results.overlay_rejected":
+            return (
+                f"graph: {fields.get('path')} is not a readable results "
+                f"overlay (filetype {fields.get('filetype')!r}, schema "
+                f"{fields.get('schema_version')!r}) — querying the graph "
+                "without result status; re-run `rb graph results`"
+            )
+        case "test.result_json_write_failed":
+            return (
+                f"could not write the result record for {fields.get('test')} to "
+                f"{fields.get('path')} ({fields.get('error')}) — the run itself "
+                "is unaffected, but `rb graph results` will report it as UNKNOWN"
+            )
+        case "graph_merge.node_type_conflict":
+            return (
+                f"graph: node id {fields.get('node')!r} is a "
+                f"{fields.get('first_type')} in one tier and a "
+                f"{fields.get('second_type')} in {fields.get('tier')} — "
+                "keeping the first; the two tiers disagree about what that id means"
+            )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
             # This is fine for DEBUG/INFO events. Events logged at WARNING or above

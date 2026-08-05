@@ -28,6 +28,12 @@ from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
+from .graph import build as graph_build_mod
+from .graph import graphify as graphify_mod
+from .graph import query as graph_query_mod
+from .graph import results as graph_results_mod
+from .mcp import server as mcp_server_mod
+from .mcp import toolset as mcp_toolset_mod
 from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
@@ -95,7 +101,11 @@ from .tools.axi_profile_rtl_buddy import (
 )
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
-from .tools.hier_rtl_buddy_view import RtlBuddyView, RtlBuddyViewQuery
+from .tools.hier_rtl_buddy_view import (
+    RtlBuddyView,
+    RtlBuddyViewQuery,
+    probe_view_version,
+)
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
@@ -116,6 +126,15 @@ from .xplr import ledger as xplr_ledger
 from .xplr import mockflow as xplr_mockflow
 
 logger = logging.getLogger(__name__)
+
+
+def _graph_where(node: dict) -> str:
+    """``file:line`` for a graph node summary, or ``-`` (#380)."""
+    file_path = node.get("file")
+    if not file_path:
+        return "-"
+    line = node.get("line")
+    return f"{file_path}:{line}" if line is not None else str(file_path)
 
 
 class RtlBuddy:
@@ -233,6 +252,53 @@ class RtlBuddy:
             "(find-module, subtree, instances-of, port-connections, "
             "source-snippet); JSON on stdout",
         )(self.do_cmd_hier_query)
+        self.app.command(
+            "mcp",
+            help=(
+                "serve the design knowledge graph and hierarchy queries over "
+                "the Model Context Protocol (stdio); needs the 'mcp' extra"
+            ),
+        )(self.do_cmd_mcp)
+        self.graph_app = typer.Typer(
+            help=(
+                "design knowledge graph: one queryable graph.json stitching "
+                "the design tier (rtl-buddy-view), the config tier "
+                "(tests/models/specs) and, when installed, Graphify's "
+                "binding tier"
+            ),
+            no_args_is_help=True,
+        )
+        self.graph_app.command(
+            "build",
+            help="extract every tier and merge them into artefacts/graph/graph.json",
+        )(self.do_graph_build)
+        self.graph_app.command(
+            "results",
+            help=(
+                "refresh artefacts/graph/results-overlay.json — last status, "
+                "seed and artefact paths per test node; graph.json is not touched"
+            ),
+        )(self.do_graph_results)
+        self.graph_app.command(
+            "query",
+            help=(
+                "keyword search over graph.json with neighbourhood expansion "
+                "and the results overlay joined in"
+            ),
+        )(self.do_graph_query)
+        self.graph_app.command(
+            "path",
+            help="shortest chain of edges between two graph nodes",
+        )(self.do_graph_path)
+        self.graph_app.command(
+            "explain",
+            help="one node's attributes, every edge on it, and its last result",
+        )(self.do_graph_explain)
+        self.app.add_typer(
+            self.graph_app,
+            name="graph",
+            help="build the design knowledge graph",
+        )
         self.axi_profile_app.command(
             "run",
             help="ingest a test's FST and emit per-test axi-perf.json",
@@ -480,6 +546,11 @@ class RtlBuddy:
         self._builder_override: str | None = None
         self._artifact_locks = ArtifactLocks()
         self._xplr_root_override: Path | None = None
+        # Per-invocation nonce stamped into every result envelope this
+        # process writes (#379). Under dispatch the head's plan token
+        # replaces it, so an envelope's identity is the same whether the
+        # run happened in-process or on a compute node.
+        self._run_token: str | None = None
 
     def run(self):
         try:
@@ -1501,6 +1572,10 @@ class RtlBuddy:
                 run_token = read_plan_token(self._abs_invocation_path(plan))
             except FatalRtlBuddyError:
                 run_token = None
+        # The artifact-dir envelope this job also writes (#379) carries the
+        # head's token too, so the two records of one run agree on identity.
+        if run_token is not None:
+            self._run_token = run_token
 
         if setup_error is not None:
             res = SetupFailResults(name=test_name + "/results", desc=setup_error)
@@ -1786,7 +1861,61 @@ class RtlBuddy:
             # so a known-failing test can live in a suite/regression.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
+        self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
+
+    def _invocation_run_token(self) -> str:
+        """This process's result-envelope nonce, minted on first use.
+
+        Same role as the dispatch plan's token: it identifies the run that
+        produced an envelope, so a reader can tell one run's results from a
+        leftover without comparing timestamps. `_test-job` overwrites it
+        with the head's token so a dispatched run and its collected
+        envelope agree.
+        """
+        if self._run_token is None:
+            self._run_token = uuid.uuid4().hex
+        return self._run_token
+
+    def _record_run_results(self, test_cfg, suite_dir, run_ids, results):
+        """Write each run's result envelope into its artifact directory (#379).
+
+        The durable, machine-readable record of what a test did, written
+        wherever a test runs — the dispatch path's `dispatch/result-*.json`
+        only exists when a head asked for one, so without this a plain
+        `rb test` / `rb regression` would leave nothing behind but logs and
+        `rb graph results` would have nothing but mtimes to report.
+        Best-effort by design: a run that passed must never be reported as
+        failed because its side-car could not be written.
+        """
+        token = self._invocation_run_token()
+        for run_id, res in zip(run_ids, results):
+            path = (
+                Path(test_artifact_dir(suite_dir, test_cfg.get_name(), run_id=run_id))
+                / "result.json"
+            )
+            try:
+                write_result_json(
+                    path,
+                    test_name=test_cfg.get_name(),
+                    run_id=run_id,
+                    results=res,
+                    run_token=token,
+                )
+            except Exception as exc:  # noqa: BLE001 - best-effort side-car:
+                # a run that passed must never be reported failed because
+                # its envelope could not be written (serialization and
+                # metadata errors included, not just OSError — the
+                # dispatch-path write is the strict one, this is not it).
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "test.result_json_write_failed",
+                    test=test_cfg.get_name(),
+                    run_id=run_id,
+                    path=str(path),
+                    error=str(exc),
+                )
 
     def _append_results(self, test_name, run_ids, results, suite_results, builder=None):
         for run_id, test_results in zip(run_ids, results):
@@ -3254,6 +3383,898 @@ class RtlBuddy:
             executable=tool,
         )
         raise typer.Exit(runner.run())
+
+    def _graph_models(
+        self,
+        ctx: ExecutionContext,
+        *,
+        model: list[str] | None,
+        regression: str | None,
+        design_dir: str,
+    ) -> list[ModelConfig] | None:
+        """Resolve ``rb graph build``'s model selection.
+
+        ``None`` means "whatever is under ``design_dir``" and is left for
+        :func:`~rtl_buddy.graph.build.build_graph` to expand, so the
+        default path has exactly one implementation.
+        """
+        if model and regression:
+            raise FatalRtlBuddyError(
+                "graph build: --model and --regression are mutually exclusive; "
+                "--regression already pins the models its suites run"
+            )
+        if regression:
+            return graph_build_mod.models_from_regression(ctx.resolve_input(regression))
+        if not model:
+            return None
+
+        available = graph_build_mod.models_from_design_tree(design_dir)
+        by_name: dict[str, ModelConfig] = {}
+        for cfg in available:
+            by_name.setdefault(cfg.name, cfg)
+        missing = [name for name in model if name not in by_name]
+        if missing:
+            known = ", ".join(sorted(by_name)) or "(none)"
+            raise FatalRtlBuddyError(
+                f"graph build: unknown model(s): {', '.join(missing)}; "
+                f"models found under {design_dir}: {known}"
+            )
+        # Preserve the user's order but drop repeats.
+        selected: list[ModelConfig] = []
+        for name in model:
+            cfg = by_name[name]
+            if cfg not in selected:
+                selected.append(cfg)
+        return selected
+
+    def do_graph_build(
+        self,
+        model: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--model",
+                help=(
+                    "model name to export in the design tier; repeatable. "
+                    "Default: every model declared under --design-dir"
+                ),
+            ),
+        ] = None,
+        regression: Annotated[
+            str | None,
+            typer.Option(
+                "-c",
+                "--regression",
+                help=(
+                    "regression.yaml whose suites pin the models to export "
+                    "(mutually exclusive with --model)"
+                ),
+            ),
+        ] = None,
+        spec_dir: Annotated[
+            str | None,
+            typer.Option("--spec-dir", help="directory searched for specs.yaml"),
+        ] = None,
+        verif_dir: Annotated[
+            str | None,
+            typer.Option("--verif-dir", help="directory searched for tests.yaml"),
+        ] = None,
+        design_dir: Annotated[
+            str | None,
+            typer.Option("--design-dir", help="directory searched for models.yaml"),
+        ] = None,
+        out_dir: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--out-dir",
+                help="output directory (default: <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="viewer parser frontend (verible|slang)"),
+        ] = None,
+        design: Annotated[
+            bool,
+            typer.Option(
+                "--design/--no-design",
+                help="run the rtl-buddy-view design tier (default on)",
+            ),
+        ] = True,
+        tb: Annotated[
+            bool,
+            typer.Option(
+                "--tb/--no-tb",
+                help=(
+                    "also export each testbench's own hierarchy, rooted at "
+                    "its toplevel: (default on; --no-tb is DUT-only)"
+                ),
+            ),
+        ] = True,
+        bind: Annotated[
+            bool,
+            typer.Option(
+                "--bind/--no-bind",
+                help=(
+                    "run the post-merge binding stage that ties cocotb "
+                    "tests to the DUT hierarchy (default on)"
+                ),
+            ),
+        ] = True,
+        graphify: Annotated[
+            bool,
+            typer.Option(
+                "--graphify/--no-graphify",
+                help="run Graphify's binding tier when it is installed",
+            ),
+        ] = True,
+        graphify_llm: Annotated[
+            bool,
+            typer.Option(
+                "--graphify-llm",
+                help=(
+                    "opt into Graphify's LLM pass — sends verif Python and "
+                    "spec markdown to its configured model. Off by default"
+                ),
+            ),
+        ] = False,
+        graphify_cross_check: Annotated[
+            bool,
+            typer.Option(
+                "--graphify-cross-check/--no-graphify-cross-check",
+                help=(
+                    "cross-check the internal merge against "
+                    "`graphify merge-graphs` when Graphify is installed"
+                ),
+            ),
+        ] = True,
+        force: Annotated[
+            bool,
+            typer.Option("--force", help="rebuild even when no input changed"),
+        ] = False,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help="exit non-zero on any per-item failure, not just a dead tier",
+            ),
+        ] = False,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+    ):
+        """
+        extract the design, config and (optional) binding tiers and merge
+        them into artefacts/graph/graph.json
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root)
+        search_design = (
+            str(ctx.resolve_input(design_dir))
+            if design_dir is not None
+            else os.path.join(root, "design")
+        )
+        models = self._graph_models(
+            ctx, model=model, regression=regression, design_dir=search_design
+        )
+
+        # Version-gate the viewer the way `rb hier-query` gates on
+        # rtl-buddy-view >= 0.3.0: probe once here, hand the answer to
+        # build_graph so the same string lands in the fingerprint (a
+        # viewer upgrade must invalidate the cached design tier).
+        view_version = probe_view_version(tool) if design else None
+        gfy_status = graphify_mod.graphify_status(self.root_cfg) if graphify else None
+        graphify_version = None
+        if gfy_status is not None and gfy_status.status != "missing":
+            # A found-but-unprobeable Graphify still runs; "unknown" keeps
+            # it in the fingerprint so a later probe-able upgrade
+            # invalidates the cache instead of silently reusing it.
+            graphify_version = gfy_status.version or "unknown"
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_build",
+            command="graph build",
+            models=len(models) if models is not None else None,
+            design=design,
+            tb=tb,
+            graphify=graphify_version is not None,
+            force=force,
+        )
+
+        build = graph_build_mod.build_graph(
+            root,
+            models=models,
+            spec_dir=str(ctx.resolve_input(spec_dir)) if spec_dir else None,
+            verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
+            design_dir=search_design,
+            out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
+            view_executable=tool,
+            view_version=view_version,
+            frontend=frontend,
+            design=design,
+            tb=tb,
+            bind=bind,
+            graphify_enabled=graphify,
+            graphify_llm=graphify_llm,
+            graphify_cross_check=graphify_cross_check,
+            graphify_version=graphify_version,
+            force=force,
+        )
+
+        exit_code = 0
+        if build.failed_tiers() or (strict and build.has_failures()):
+            exit_code = 1
+
+        if self.machine:
+            self._emit_machine_result(
+                "graph build", exit_code, **build.payload(Path(root))
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title="Design Knowledge Graph",
+            columns=[
+                ("tier", "Tier"),
+                ("status", "Status"),
+                ("nodes", "Nodes"),
+                ("links", "Links"),
+                ("detail", "Detail"),
+            ],
+            rows=[
+                {
+                    "tier": t.tier,
+                    "status": t.status,
+                    "nodes": str(t.nodes),
+                    "links": str(t.links),
+                    "detail": t.row_detail(),
+                }
+                for t in build.tiers
+            ],
+            logger=logger,
+        )
+        verb = "unchanged" if build.unchanged else "wrote"
+        emit_console_text(
+            f"{verb} {os.path.relpath(build.graph_path, root)}: "
+            f"{build.nodes} nodes, {build.links} links "
+            f"({build.merge.get('stitch_points', 0)} stitch points)",
+            stream="stdout",
+        )
+        binding = build.binding or {}
+        if binding.get("status") == "built":
+            emit_console_text(
+                f"binding: {binding.get('tests', 0)} cocotb test(s) bound to "
+                f"{binding.get('python_modules', 0)} Python module(s), "
+                f"{binding.get('drives', 0)} drives edges "
+                f"({binding.get('drives_inferred', 0)} inferred), "
+                f"{binding.get('checks_against', 0)} golden-model checks",
+                stream="stdout",
+            )
+        dangling = build.merge.get("dangling") or []
+        if dangling:
+            emit_console_text(
+                f"dangling link targets ({len(dangling)}): "
+                f"{', '.join(dangling[:5])}"
+                f"{' ...' if len(dangling) > 5 else ''}",
+                style="yellow",
+            )
+        raise typer.Exit(exit_code)
+
+    def do_graph_results(
+        self,
+        verif_dir: Annotated[
+            str | None,
+            typer.Option("--verif-dir", help="directory searched for tests.yaml"),
+        ] = None,
+        out_dir: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--out-dir",
+                help="output directory (default: <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        graph: Annotated[
+            str | None,
+            typer.Option(
+                "--graph",
+                help=(
+                    "graph.json to cross-check ids against "
+                    "(default: <out-dir>/graph.json); read, never written"
+                ),
+            ),
+        ] = None,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help=(
+                    "exit non-zero when an envelope could not be read, a test "
+                    "node has no result, or a result matches no node"
+                ),
+            ),
+        ] = False,
+    ):
+        """
+        refresh the results overlay beside graph.json: last status, run token,
+        seed and artefact paths per test node
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_results",
+            command="graph results",
+            verif_dir=verif_dir,
+            strict=strict,
+        )
+
+        overlay = graph_results_mod.refresh_results_overlay(
+            root,
+            verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
+            out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
+            graph_path=str(ctx.resolve_input(graph)) if graph else None,
+        )
+
+        exit_code = 0
+        if strict and (overlay.problems or overlay.missing or overlay.unmatched):
+            exit_code = 1
+
+        if self.machine:
+            self._emit_machine_result(
+                "graph results",
+                exit_code,
+                overlay=os.path.relpath(overlay.path, root),
+                graph=overlay.overlay.get("graph"),
+                tests=len(overlay.entries),
+                with_results=overlay.with_results(),
+                statuses=overlay.status_counts(),
+                missing=overlay.missing,
+                unmatched=overlay.unmatched,
+                problems=overlay.problems,
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title="Regression Results Overlay",
+            columns=[
+                ("test", "Test"),
+                ("status", "Status"),
+                ("run", "Run"),
+                ("when", "When"),
+                ("artefacts", "Artefacts"),
+            ],
+            rows=[
+                {
+                    "test": entry["id"],
+                    "status": entry["status"],
+                    "run": str(entry.get("run_id"))
+                    if entry.get("run_id") is not None
+                    else "-",
+                    "when": entry.get("timestamp") or "-",
+                    "artefacts": ", ".join(
+                        k for k in sorted(entry.get("artefacts", {})) if k != "dir"
+                    )
+                    or "-",
+                }
+                for entry in overlay.entries.values()
+            ],
+            logger=logger,
+        )
+        counts = ", ".join(f"{k} {v}" for k, v in overlay.status_counts().items())
+        emit_console_text(
+            f"wrote {os.path.relpath(overlay.path, root)}: "
+            f"{len(overlay.entries)} test(s), "
+            f"{overlay.with_results()} with a result envelope"
+            f"{' (' + counts + ')' if counts else ''}",
+            stream="stdout",
+        )
+        if overlay.missing:
+            emit_console_text(
+                f"no results for {len(overlay.missing)} test node(s): "
+                f"{', '.join(overlay.missing[:5])}"
+                f"{' ...' if len(overlay.missing) > 5 else ''}",
+                style="yellow",
+            )
+        if overlay.problems:
+            emit_console_text(
+                f"unreadable result envelope(s) ({len(overlay.problems)}): "
+                f"{overlay.problems[0]['error']}",
+                style="yellow",
+            )
+        raise typer.Exit(exit_code)
+
+    # ------------------------------------------------------------------
+    # graph query verbs (#380)
+    # ------------------------------------------------------------------
+
+    def _graph_query_context(
+        self,
+        ctx: ExecutionContext,
+        root: str,
+        *,
+        graph: str | None,
+        overlay: str | None,
+        results: bool,
+    ):
+        return graph_query_mod.load_context(
+            root,
+            graph_path=str(ctx.resolve_input(graph)) if graph else None,
+            overlay_path=str(ctx.resolve_input(overlay)) if overlay else None,
+            with_results=results,
+        )
+
+    def _graph_query_candidates(self, exc: graph_query_mod.GraphQueryError) -> None:
+        """Print a failed node reference's near misses before exiting.
+
+        A miss with no candidates is a dead end; a miss with candidates
+        is one retry away, which is worth two lines of console output.
+        """
+        if not exc.candidates:
+            return
+        emit_console_text(
+            "did you mean: " + ", ".join(exc.candidates[:10]),
+            style="yellow",
+        )
+
+    def do_graph_query(
+        self,
+        question: Annotated[
+            str,
+            typer.Argument(
+                help=(
+                    "what to look for — an identifier or a plain question, "
+                    'e.g. "A-COV-1" or "which tests exercise blk_a"'
+                )
+            ),
+        ],
+        node_type: Annotated[
+            str | None,
+            typer.Option(
+                "--type",
+                help="restrict to one node type (module, test, coverage_item, ...)",
+            ),
+        ] = None,
+        tier: Annotated[
+            str | None,
+            typer.Option("--tier", help="restrict to one tier (design|config|binding)"),
+        ] = None,
+        limit: Annotated[
+            int,
+            typer.Option("--limit", help="maximum matches to report"),
+        ] = graph_query_mod.DEFAULT_LIMIT,
+        depth: Annotated[
+            int,
+            typer.Option(
+                "--depth",
+                help=(
+                    "hops of neighbourhood expansion around each match "
+                    f"(0 disables; maximum {graph_query_mod.MAX_DEPTH})"
+                ),
+            ),
+        ] = graph_query_mod.DEFAULT_DEPTH,
+        results: Annotated[
+            bool,
+            typer.Option(
+                "--results/--no-results",
+                help="join the regression-results overlay onto every node",
+            ),
+        ] = True,
+        graph: Annotated[
+            str | None,
+            typer.Option(
+                "--graph",
+                help="graph.json to query (default <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option(
+                "--overlay",
+                help="results-overlay.json to join (default: beside graph.json)",
+            ),
+        ] = None,
+    ):
+        """
+        search the design knowledge graph by keyword and expand the
+        neighbourhood around every match, with the results overlay joined in
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        # `list_only=True` keeps the read verbs **lock-free**. The
+        # artefact lock is exclusive and held to process exit, so taking
+        # it here would make `rb graph query` fail while a regression is
+        # running in the same tree — which is precisely when an agent
+        # asks the graph what it is looking at. Nothing under it is
+        # written, and no RootConfig is needed to read a JSON file.
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_query",
+            command="graph query",
+            question=question,
+        )
+        gctx = self._graph_query_context(
+            ctx, root, graph=graph, overlay=overlay, results=results
+        )
+        payload = graph_query_mod.query(
+            gctx,
+            question,
+            node_type=node_type,
+            tier=tier,
+            limit=limit,
+            depth=depth,
+            results=results,
+        )
+        # A question nobody can answer is not a crash: exit 1 (the
+        # "graceful no" code) so a shell loop can branch on it, and 0
+        # whenever at least one node matched.
+        exit_code = 0 if payload["matches"] else 1
+
+        if self.machine:
+            self._emit_machine_result("graph query", exit_code, **payload)
+            raise typer.Exit(exit_code)
+
+        if not payload["matches"]:
+            emit_console_text(
+                f"no node matches {question!r} in "
+                f"{payload['graph']} ({payload['counts']['nodes']} nodes)",
+                style="yellow",
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title=f"Graph Query — {question}",
+            columns=[
+                ("id", "Node"),
+                ("type", "Type"),
+                ("score", "Score"),
+                ("status", "Status"),
+                ("where", "Where"),
+            ],
+            rows=[
+                {
+                    "id": match["id"],
+                    "type": match.get("type", "-"),
+                    "score": str(match.get("score", 0)),
+                    "status": (match.get("results") or {}).get("status", "-"),
+                    "where": _graph_where(match),
+                }
+                for match in payload["matches"]
+            ],
+            logger=logger,
+        )
+        for match in payload["matches"]:
+            neighbors = match.get("neighbors") or []
+            if not neighbors:
+                continue
+            emit_console_text(
+                f"\n{match['id']}", style="bold", stream="stdout", markup=False
+            )
+            for neighbor in neighbors:
+                via = neighbor.get("via", {})
+                arrow = "->" if via.get("direction") == "out" else "<-"
+                status = (neighbor.get("results") or {}).get("status")
+                emit_console_text(
+                    f"  {arrow} {via.get('type', '?')} {neighbor['id']}"
+                    f"{f' ({status})' if status else ''}",
+                    stream="stdout",
+                    markup=False,
+                )
+        raise typer.Exit(exit_code)
+
+    def do_graph_path(
+        self,
+        source: Annotated[
+            str, typer.Argument(help="start node id, or a bare unambiguous name")
+        ],
+        target: Annotated[
+            str, typer.Argument(help="end node id, or a bare unambiguous name")
+        ],
+        directed: Annotated[
+            bool,
+            typer.Option(
+                "--directed/--undirected",
+                help=(
+                    "follow edge direction; undirected by default because "
+                    "edge direction encodes role, not reachability"
+                ),
+            ),
+        ] = False,
+        max_paths: Annotated[
+            int,
+            typer.Option("--max-paths", help="shortest paths to report"),
+        ] = graph_query_mod.DEFAULT_MAX_PATHS,
+        results: Annotated[
+            bool,
+            typer.Option(
+                "--results/--no-results",
+                help="join the regression-results overlay onto every node",
+            ),
+        ] = True,
+        graph: Annotated[
+            str | None,
+            typer.Option("--graph", help="graph.json to query"),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option("--overlay", help="results-overlay.json to join"),
+        ] = None,
+    ):
+        """
+        report the shortest chain of edges connecting two graph nodes
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        # Lock-free, as `graph query` is — see there.
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_path",
+            command="graph path",
+            source=source,
+            target=target,
+        )
+        gctx = self._graph_query_context(
+            ctx, root, graph=graph, overlay=overlay, results=results
+        )
+        try:
+            payload = graph_query_mod.path(
+                gctx,
+                source,
+                target,
+                directed=directed,
+                max_paths=max_paths,
+                results=results,
+            )
+        except graph_query_mod.GraphQueryError as exc:
+            if self.machine:
+                self._emit_machine_result(
+                    "graph path", 2, error=str(exc), candidates=exc.candidates
+                )
+                raise typer.Exit(2)
+            self._graph_query_candidates(exc)
+            raise
+
+        exit_code = 0 if payload["found"] else 1
+        if self.machine:
+            self._emit_machine_result("graph path", exit_code, **payload)
+            raise typer.Exit(exit_code)
+
+        if not payload["found"]:
+            emit_console_text(
+                f"no path between {payload['source']['id']} and "
+                f"{payload['target']['id']}"
+                f"{' (try --undirected)' if directed else ''}",
+                style="yellow",
+            )
+            raise typer.Exit(exit_code)
+
+        for walk in payload["paths"]:
+            emit_console_text(
+                f"{walk['length']} hop(s):", style="bold", stream="stdout"
+            )
+            nodes = walk["nodes"]
+            emit_console_text(f"  {nodes[0]['id']}", stream="stdout", markup=False)
+            for step, node in zip(walk["edges"], nodes[1:]):
+                types = ", ".join(
+                    sorted({str(link.get("type")) for link in step["links"]})
+                )
+                emit_console_text(
+                    f"    --{types}--> {node['id']}", stream="stdout", markup=False
+                )
+        raise typer.Exit(exit_code)
+
+    def do_graph_explain(
+        self,
+        node: Annotated[
+            str, typer.Argument(help="node id, or a bare unambiguous name")
+        ],
+        results: Annotated[
+            bool,
+            typer.Option(
+                "--results/--no-results",
+                help="join the regression-results overlay onto every node",
+            ),
+        ] = True,
+        graph: Annotated[
+            str | None,
+            typer.Option("--graph", help="graph.json to query"),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option("--overlay", help="results-overlay.json to join"),
+        ] = None,
+    ):
+        """
+        report one node's attributes, every edge on it with the far endpoint
+        resolved, and its last regression result
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        # Lock-free, as `graph query` is — see there.
+        ctx = self._enter_command_context(command_root=root, list_only=True)
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_explain",
+            command="graph explain",
+            node=node,
+        )
+        gctx = self._graph_query_context(
+            ctx, root, graph=graph, overlay=overlay, results=results
+        )
+        try:
+            payload = graph_query_mod.explain(gctx, node, results=results)
+        except graph_query_mod.GraphQueryError as exc:
+            if self.machine:
+                self._emit_machine_result(
+                    "graph explain", 2, error=str(exc), candidates=exc.candidates
+                )
+                raise typer.Exit(2)
+            self._graph_query_candidates(exc)
+            raise
+
+        if self.machine:
+            self._emit_machine_result("graph explain", 0, **payload)
+            raise typer.Exit(0)
+
+        summary = payload["node"]
+        emit_console_text(
+            f"{summary['id']}  ({summary.get('type', '?')}, "
+            f"tier {summary.get('tier', '?')})",
+            style="bold",
+            stream="stdout",
+        )
+        where = _graph_where(summary)
+        if where != "-":
+            emit_console_text(f"  source: {where}", stream="stdout")
+        cite = summary.get("cite") or {}
+        if cite.get("command"):
+            emit_console_text(f"  cite:   {cite['command']}", stream="stdout")
+        entry = payload.get("results")
+        if entry:
+            emit_console_text(
+                f"  result: {entry.get('status')} "
+                f"({entry.get('timestamp', 'unknown time')})",
+                stream="stdout",
+            )
+        rows = [
+            {
+                "dir": edge["direction"],
+                "type": str(edge.get("type")),
+                "peer": edge["peer"],
+                "peer_type": edge["node"].get("type", "-"),
+                "confidence": str(edge.get("confidence", "-")),
+            }
+            for edge in payload["outgoing"] + payload["incoming"]
+        ]
+        if rows:
+            render_summary(
+                title=f"Edges — {summary['id']}",
+                columns=[
+                    ("dir", "Dir"),
+                    ("type", "Edge"),
+                    ("peer", "Peer"),
+                    ("peer_type", "Peer Type"),
+                    ("confidence", "Confidence"),
+                ],
+                rows=rows,
+                logger=logger,
+            )
+        else:
+            emit_console_text("  (no edges)", stream="stdout")
+        raise typer.Exit(0)
+
+    def do_cmd_mcp(
+        self,
+        graph: Annotated[
+            str | None,
+            typer.Option(
+                "--graph",
+                help="graph.json to serve (default <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        overlay: Annotated[
+            str | None,
+            typer.Option("--overlay", help="results-overlay.json to join"),
+        ] = None,
+        root_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--root",
+                help=(
+                    "project root to serve; default is discovered from cwd, "
+                    "which is what an agent host's spawn gives you"
+                ),
+            ),
+        ] = None,
+        design_dir: Annotated[
+            str | None,
+            typer.Option("--design-dir", help="directory searched for models.yaml"),
+        ] = None,
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="viewer parser frontend (verible|slang)"),
+        ] = None,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+        list_tools: Annotated[
+            bool,
+            typer.Option(
+                "--list-tools",
+                help="print the tool schemas and exit instead of serving",
+            ),
+        ] = False,
+    ):
+        """
+        serve the design knowledge graph, the hierarchy query verbs and — when
+        a hub is running — the live session over the Model Context Protocol
+        """
+        root = str(
+            Path(root_dir).resolve()
+            if root_dir
+            else discover_project_root(fallback_cwd=True)
+        )
+        toolset = mcp_toolset_mod.build_toolset(
+            root,
+            graph_path=graph,
+            overlay_path=overlay,
+            view_executable=tool,
+            design_dir=design_dir,
+            frontend=frontend,
+        )
+
+        if list_tools:
+            payload = {
+                "project_root": root,
+                "hub": toolset.hub.payload(),
+                "sdk": {
+                    "available": mcp_server_mod.sdk_available(),
+                    "version": mcp_server_mod.sdk_version(),
+                },
+                "tools": [spec.to_mcp_dict() for spec in toolset.specs()],
+            }
+            if self.machine:
+                self._emit_machine_result("mcp --list-tools", 0, **payload)
+                raise typer.Exit(0)
+            render_summary(
+                title="MCP Tools",
+                columns=[("name", "Tool"), ("title", "Title"), ("cmd", "CLI Mirror")],
+                rows=[
+                    {
+                        "name": spec.name,
+                        "title": spec.title,
+                        "cmd": spec.command or "-",
+                    }
+                    for spec in toolset.specs()
+                ],
+                logger=logger,
+            )
+            emit_console_text(
+                f"hub: {'connected' if toolset.hub.present else 'not running'}"
+                f"{' (' + toolset.hub.reason + ')' if toolset.hub.reason else ''}",
+                stream="stdout",
+            )
+            raise typer.Exit(0)
+
+        # Everything below writes to stderr or to the log: stdout belongs
+        # to the JSON-RPC stream for as long as the server runs.
+        log_event(
+            logger,
+            logging.INFO,
+            "command.mcp",
+            command="mcp",
+            project_root=root,
+            tools=len(toolset.specs()),
+            hub=toolset.hub.present,
+        )
+        raise typer.Exit(mcp_server_mod.serve_stdio(toolset))
 
     def do_cmd_axi_profile_discover(
         self,

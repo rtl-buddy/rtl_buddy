@@ -622,9 +622,29 @@ def _builtin_manifest() -> list[ToolSpec]:
             install_hint={
                 "any": "uv tool install rtl-buddy-view  (or pip install rtl-buddy-view)",
             },
-            used_by=("hier", "hier-query", "hub"),
+            used_by=("hier", "hier-query", "graph", "hub"),
             optional=False,
             description="Hierarchy viewer + JSON exporter for rtl_buddy",
+        ),
+        ToolSpec(
+            name="graphify",
+            binaries=("graphify",),
+            version_cmd=("graphify", "--version"),
+            # Version must directly follow the tool name ("graphify
+            # 1.4.0"). Anything fancier ("graphify (python 3.12) 0.2.0")
+            # yields NO version rather than the wrong one — unknown is
+            # recoverable, a wrong number in the fingerprint is not.
+            version_regex=r"graphify\s+v?([\d.]+)",
+            minimum_version=None,
+            detection=(PathDetector(), PythonPackageDetector("graphify")),
+            install_hint={
+                "any": "install the Graphify CLI (optional — rb graph build "
+                "writes the design + config tiers without it)",
+            },
+            used_by=("graph",),
+            optional=True,
+            description="Graphify — binding-tier extraction over verif Python "
+            "and spec markdown for rb graph build",
         ),
         ToolSpec(
             name="rtl-buddy-cdc",
@@ -668,6 +688,24 @@ def _builtin_manifest() -> list[ToolSpec]:
             used_by=("hier", "synth", "cdc"),
             optional=True,
             description="Python slang frontend — alternative parser for rb hier / synth / cdc",
+        ),
+        ToolSpec(
+            name="mcp",
+            # No PathDetector and no binary contract: the SDK is a
+            # library; an empty tuple keeps any future "not found on
+            # PATH" formatting from naming a binary nobody installs.
+            binaries=(),
+            version_cmd=None,
+            version_regex=None,
+            minimum_version="1.2.0",
+            detection=(PythonPackageDetector("mcp"),),
+            install_hint={
+                "any": 'pip install "rtl_buddy[mcp]"  (only needed to serve '
+                "rb mcp; every tool it exposes is also reachable with --machine)",
+            },
+            used_by=("mcp",),
+            optional=True,
+            description="Model Context Protocol SDK — the stdio server behind rb mcp",
         ),
         ToolSpec(
             name="cocotb",

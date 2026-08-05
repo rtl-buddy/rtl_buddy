@@ -288,6 +288,44 @@ def test_wrapper_rejects_missing_tool_on_path(tmp_path: Path, monkeypatch):
         view.run()
 
 
+def test_wrapper_resolves_sibling_of_interpreter(tmp_path: Path, monkeypatch):
+    """A bare command name absent from PATH still resolves when the
+    binary sits next to ``sys.executable`` — rb invoked by absolute venv
+    path without activation must not lose the viewer that venv ships."""
+    import sys as _sys
+
+    bindir = tmp_path / "venvbin"
+    bindir.mkdir()
+    fake = bindir / "totally-fake-binary-xyz"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(_sys, "executable", str(bindir / "python"))
+    monkeypatch.setenv("PATH", "")
+
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=[str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        executable="totally-fake-binary-xyz",
+    )
+    # run() proceeds past resolution (the fake tool exits 0 with no
+    # output, which the wrapper reports as a tool failure downstream —
+    # anything but the "not found" FatalRtlBuddyError proves the point).
+    try:
+        view.run()
+    except Exception as exc:  # noqa: BLE001 - only the message matters here
+        assert "not found" not in str(exc)
+    assert view.executable == str(fake)
+
+
 # --- rb hier command (integration through Typer) --------------------------
 
 

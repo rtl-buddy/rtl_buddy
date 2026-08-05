@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
@@ -37,10 +38,58 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..logging_utils import log_event
+from . import graph_page
 from .event_broker import EventBroker
 
 
 logger = logging.getLogger(__name__)
+
+
+# How many trailing lines of ``hier.log`` a ``view_generation_failed``
+# body carries. The SPA renders the tail verbatim in its "no view
+# available" placeholder (rtl-buddy-view#130), so this is a display
+# budget, not a diagnostic one: the whole point is that the recurring
+# causes (a top that never elaborated, an uninitialised vendor
+# submodule, a ``-v`` library entry) name themselves in the last few
+# renderer lines, and a longer tail scrolls the fix off the screen.
+LOG_TAIL_LINES = 40
+
+# ``build_view_json`` reports the log it wrote as "see <path> for
+# details."  Reading the path back out of the message keeps one
+# producer of it — the DUT and TB artefact dirs differ, and a second
+# derivation here would be a second thing to keep in step.
+_LOG_PATH_RE = re.compile(r"see (?P<path>\S.*?\.log) for details")
+
+
+def _one_line(message: str) -> str:
+    """First non-empty line of ``message``, whitespace-normalised.
+
+    The structured error's ``message`` is a *summary* — the SPA puts it
+    on one line above the log tail. Multi-line diagnostics (model
+    discovery lists every candidate name) keep their detail in the
+    log tail and in the hub log; only the headline travels here.
+    """
+
+    for line in str(message).splitlines():
+        stripped = " ".join(line.split())
+        if stripped:
+            return stripped
+    return ""
+
+
+def _read_log_tail(log_path: Path, limit: int = LOG_TAIL_LINES) -> list[str]:
+    """Last ``limit`` lines of ``log_path``; ``[]`` when unreadable.
+
+    Never raises: a missing or unreadable log is a *thinner* error
+    payload, not a second failure on the failure path.
+    """
+
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = text.splitlines()
+    return lines[-limit:] if limit > 0 else lines
 
 
 PLACEHOLDER_HTML = """<!doctype html>
@@ -72,6 +121,11 @@ PLACEHOLDER_HTML = """<!doctype html>
   <p>
     Inspect <code>window.__RTL_BUDDY_HUB__</code> in DevTools, or watch
     the WebSocket round-trip below.
+  </p>
+  <p>
+    The design knowledge graph pane is served independently of the SPA
+    at <a href="/graph"><code>/graph</code></a> — it needs only
+    <code>rb graph build</code>, not a viewer bundle.
   </p>
   <p id="status">Connecting to <code>/ws</code>…</p>
   <script>
@@ -115,6 +169,7 @@ def render_index_html(
     bundle_index: Path | None,
     hub_addr: str,
     view_url: str | None = None,
+    graph_url: str | None = None,
 ) -> bytes:
     """Return the HTML body served at ``/`` with hub address injected.
 
@@ -127,6 +182,11 @@ def render_index_html(
     When ``view_url`` is provided, ``window.__RTL_BUDDY_VIEW_URL__`` is
     set alongside ``__RTL_BUDDY_HUB__`` so the SPA bootstrap can fetch
     the view.json without the user passing ``?view=`` in the URL.
+
+    ``graph_url`` does the same for the design knowledge graph (#382):
+    it is set only when this hub has a built ``graph.json`` to serve, so
+    an SPA overlay can advertise the graph pane on presence of the
+    global instead of probing the endpoint and handling a 404.
     """
 
     if bundle_index is not None and bundle_index.is_file():
@@ -137,6 +197,8 @@ def render_index_html(
     parts = [f"window.__RTL_BUDDY_HUB__ = {hub_addr!r};"]
     if view_url is not None:
         parts.append(f"window.__RTL_BUDDY_VIEW_URL__ = {view_url!r};")
+    if graph_url is not None:
+        parts.append(f"window.__RTL_BUDDY_GRAPH_URL__ = {graph_url!r};")
     preamble = "\n".join(parts)
 
     if "%HUB_INJECTION%" in html:
@@ -208,6 +270,16 @@ class ViewerServer:
         # ``?model=X`` / ``?model=Y`` requests run in parallel. Locks
         # are allocated lazily and never garbage-collected per session.
         self._model_locks: dict[str, asyncio.Lock] = {}
+        # Per-model view-generation outcome for THIS hub session
+        # (rtl-buddy-view#130). ``{model: {"ok": bool, "message": str,
+        # "log_path": str, "log_tail": [str]}}``. Two readers: ``GET
+        # /models`` turns it into ``view_status``, and the bare ``GET
+        # /view.json`` replays a remembered failure so the named-model
+        # and active-model request paths answer with the same body.
+        # In memory only — a hub restart resets every model to what
+        # the cache on disk says, which is the honest answer after a
+        # restart anyway.
+        self._model_view_outcomes: dict[str, dict[str, Any]] = {}
         # Per-test lock map for ``?test=NAME`` (TB view, #99 / 6b).
         # Same race-prevention as ``_model_locks`` — two SPA clicks on
         # the same test funnel through one build, two clicks on
@@ -249,6 +321,17 @@ class ViewerServer:
 
     def _has_view_json(self) -> bool:
         return self.view_json_path is not None and self.view_json_path.is_file()
+
+    def _has_graph_json(self) -> bool:
+        """Whether ``rb graph build`` has produced a graph for this root.
+
+        Re-checked per request (one ``stat``) so a graph built while the
+        hub is running is advertised without a restart — the same
+        per-request-walk rule ``/models`` and ``/tests`` follow.
+        """
+        if self.project_root is None:
+            return False
+        return graph_page.graph_files_present(self.project_root)
 
     async def start(self) -> tuple[str, int]:
         """Bind the HTTP+WS listener; return ``(host, port)``."""
@@ -327,6 +410,9 @@ class ViewerServer:
                 bundle_index=self._bundle_index,
                 hub_addr=self.hub_address,
                 view_url="/view.json" if self._has_view_json() else None,
+                graph_url=(
+                    graph_page.GRAPH_JSON_ROUTE if self._has_graph_json() else None
+                ),
             )
             return _http_response(
                 connection, 200, body, content_type="text/html; charset=utf-8"
@@ -334,6 +420,12 @@ class ViewerServer:
 
         if path == "/healthz":
             return _http_response(connection, 200, b"ok\n", content_type="text/plain")
+
+        if path == graph_page.GRAPH_PAGE_ROUTE:
+            return self._handle_graph_page(connection)
+
+        if path == graph_page.GRAPH_JSON_ROUTE:
+            return await self._handle_graph_json(connection)
 
         if path == "/models":
             return await self._handle_models(connection)
@@ -359,20 +451,8 @@ class ViewerServer:
             requested = query.get("model", [None])[0]
             if requested is not None:
                 return await self._handle_view_json_for_model(connection, requested)
-            # No ``?model=`` query → serve the active model. Falls back
-            # to the start-time view.json (legacy path for pre-feature
-            # SPAs / embed.py users) when no model is active yet.
-            if not self._has_view_json():
-                return _http_response(
-                    connection, 404, b"no view.json configured for this hub"
-                )
-            assert self.view_json_path is not None
-            return _http_response(
-                connection,
-                200,
-                self.view_json_path.read_bytes(),
-                content_type="application/json",
-            )
+            # No ``?model=`` query → serve the active model.
+            return self._serve_active_view_json(connection)
 
         # Bundle static assets: only served when the bundle is a directory.
         if self.viewer_bundle and self.viewer_bundle.is_dir():
@@ -381,6 +461,52 @@ class ViewerServer:
                 return static
 
         return _http_response(connection, 404, b"not found")
+
+    # ------------------------------------------------------------------
+    # /graph + /graph.json (issue #382)
+    # ------------------------------------------------------------------
+
+    def _handle_graph_page(self, connection: ServerConnection) -> Response:
+        """``GET /graph`` — the interactive design-knowledge-graph pane.
+
+        Always 200, even with no graph built: the page's own empty state
+        names ``rb graph build``, which is more useful than a 404 body
+        the browser renders as a blank tab. The page is static; all the
+        data arrives from ``GET /graph.json``.
+        """
+
+        return _http_response(
+            connection,
+            200,
+            graph_page.render_graph_html(hub_addr=self.hub_address),
+            content_type="text/html; charset=utf-8",
+        )
+
+    async def _handle_graph_json(self, connection: ServerConnection) -> Response:
+        """``GET /graph.json`` — the merged graph joined with the overlay.
+
+        Read off disk on every request rather than cached: the point of
+        the ``reload`` button is that ``rb graph build`` / ``rb graph
+        results`` in another terminal shows up here, and a cache keyed
+        on anything less than the file's own bytes would have to be
+        invalidated by exactly the events we cannot see.
+        """
+
+        if self.project_root is None:
+            return _http_response(
+                connection,
+                400,
+                json.dumps(
+                    {
+                        "error": "hub started without project_root; /graph.json requires it"
+                    }
+                ).encode("utf-8"),
+                content_type="application/json",
+            )
+        status, body = await asyncio.to_thread(
+            graph_page.graph_payload_bytes, self.project_root
+        )
+        return _http_response(connection, status, body, content_type="application/json")
 
     # ------------------------------------------------------------------
     # /models + /view.json?model= (issue #174)
@@ -540,6 +666,11 @@ class ViewerServer:
                             "name": m.name,
                             "models_file": str(mf),
                             "has_cdc": self._model_has_resolvable_cdc(m),
+                            # Model health (rtl-buddy-view#130) so the
+                            # picker can badge a model that can never
+                            # elaborate, instead of letting the user
+                            # discover it via an empty canvas.
+                            **self._view_status_fields(m.name),
                         }
                     )
 
@@ -637,22 +768,190 @@ class ViewerServer:
         except Exception:
             return False
 
+    # ------------------------------------------------------------------
+    # Structured view errors + model health (rtl-buddy-view#130)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _error_response(
+        connection: ServerConnection,
+        status: int,
+        kind: str,
+        message: str,
+        **extra: Any,
+    ) -> Response:
+        """Every ``/view.json`` failure body, in one shape.
+
+        ``{"error": {"kind": ..., "message": ..., <extra>}}`` with
+        ``Content-Type: application/json``. The SPA branches on
+        ``kind`` — never on the status code and never on the prose —
+        so a new failure mode is a new ``kind`` and nothing else moves.
+        """
+
+        payload = {"error": {"kind": kind, "message": message, **extra}}
+        return _http_response(
+            connection,
+            status,
+            json.dumps(payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+    def _view_generation_error(self, model: str, exc: Exception) -> dict[str, Any]:
+        """Turn a failed generation into the remembered outcome record.
+
+        The record is both the ``500`` body's ``error`` object (minus
+        ``kind``) and what ``GET /models`` reads for ``view_status``,
+        so the two endpoints cannot disagree about why a model is
+        broken.
+        """
+
+        message = _one_line(str(exc))
+        match = _LOG_PATH_RE.search(str(exc))
+        if match:
+            log_path = Path(match.group("path"))
+        elif self.project_root is not None:
+            # Mirrors ``RtlBuddyView``'s artefact root for the failure
+            # modes that never reached the subprocess (a bad filelist,
+            # an unresolvable cdc: back-pointer) and so never named a log.
+            log_path = self.project_root / "artefacts" / "hier" / model / "hier.log"
+        else:
+            log_path = Path("hier.log")
+        return {
+            "ok": False,
+            "model": model,
+            "message": message,
+            "log_path": str(log_path),
+            "log_tail": _read_log_tail(log_path),
+        }
+
+    def _record_view_failure(
+        self, model: str, outcome: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._model_view_outcomes[model] = outcome
+        return outcome
+
+    def _record_view_success(self, model: str) -> None:
+        self._model_view_outcomes[model] = {"ok": True, "model": model}
+
+    def _failed_view_response(
+        self, connection: ServerConnection, outcome: dict[str, Any]
+    ) -> Response:
+        return self._error_response(
+            connection,
+            500,
+            "view_generation_failed",
+            outcome["message"],
+            model=outcome["model"],
+            log_path=outcome["log_path"],
+            log_tail=outcome["log_tail"],
+        )
+
+    def _view_status_fields(self, model_name: str) -> dict[str, Any]:
+        """``view_status`` (+ optional ``error``/``stale_cache``) for one
+        ``GET /models`` entry.
+
+        Three inputs, in precedence order: a remembered failure from
+        this session wins over everything (a model that just failed is
+        broken even though ``.rtl-buddy/cache/view-<m>.json`` may still
+        hold last week's tree — that combination is exactly what
+        ``stale_cache`` names); then a remembered success; then the
+        cache file, which is what carries ``ok`` across a hub restart.
+        """
+
+        from . import view_builder
+
+        outcome = self._model_view_outcomes.get(model_name)
+        cached = (
+            self.project_root is not None
+            and view_builder.view_json_path(self.project_root, model_name).is_file()
+        )
+        if outcome is not None and not outcome["ok"]:
+            fields: dict[str, Any] = {
+                "view_status": "failed",
+                "error": outcome["message"],
+            }
+            if cached:
+                fields["stale_cache"] = True
+            return fields
+        if outcome is not None or cached:
+            return {"view_status": "ok"}
+        return {"view_status": "never_built"}
+
+    def _no_active_model_response(self, connection: ServerConnection) -> Response:
+        """Bare ``GET /view.json`` with nothing to serve.
+
+        ``409`` rather than ``404``: the route exists and the hub is
+        healthy, it just has no model selected — which is a state the
+        caller fixes (pick one from ``models_url``), not a wrong URL.
+        """
+
+        log_event(
+            logger,
+            logging.INFO,
+            "hub.viewer_http.view_json_no_active_model",
+            active_model=self.active_model or "",
+        )
+        return self._error_response(
+            connection,
+            409,
+            "no_active_model",
+            "no model is active on this hub; select one from /models "
+            "or start the hub with `rb hub start --model NAME`",
+            models_url="/models",
+        )
+
+    def _serve_active_view_json(self, connection: ServerConnection) -> Response:
+        """``GET /view.json`` with no query — serve the active model.
+
+        Same three answers the ``?model=`` path gives, for the same
+        reasons: the bytes, the remembered failure for whatever model
+        is active, or ``no_active_model``. Falls back to the start-time
+        ``view.json`` (legacy path for pre-feature SPAs / embed.py
+        users) when no model has been selected yet.
+        """
+
+        if self._has_view_json():
+            assert self.view_json_path is not None
+            return _http_response(
+                connection,
+                200,
+                self.view_json_path.read_bytes(),
+                content_type="application/json",
+            )
+        outcome = (
+            self._model_view_outcomes.get(self.active_model)
+            if self.active_model is not None
+            else None
+        )
+        if outcome is not None and not outcome["ok"]:
+            return self._failed_view_response(connection, outcome)
+        return self._no_active_model_response(connection)
+
     async def _handle_view_json_for_model(
         self, connection: ServerConnection, requested: str
     ) -> Response:
         """``GET /view.json?model=NAME`` — build (or reuse) the per-
         model view.json and serve it. Updates ``active_model`` on
         success and broadcasts ``view_changed``.
+
+        Failures are structured JSON (rtl-buddy-view#130), never a
+        plain-text body: an unresolvable name is ``404 unknown_model``,
+        a renderer that refused to elaborate is ``500
+        view_generation_failed`` carrying the ``hier.log`` path and its
+        tail, because "which model, and what did the renderer say" is
+        the whole content of the SPA's failure placeholder.
         """
 
         from . import model_discovery, view_builder
-        from ..errors import FatalRtlBuddyError
+        from ..errors import FatalRtlBuddyError, RtlBuddyError
 
         if self.project_root is None:
-            return _http_response(
+            return self._error_response(
                 connection,
                 400,
-                b"hub started without project_root; ?model= requires it",
+                "no_project_root",
+                "hub started without project_root; ?model= requires it",
+                model=requested,
             )
 
         # Resolve to ModelConfig — honours ``--models-file`` pin if
@@ -663,9 +962,27 @@ class ViewerServer:
                 requested,
                 models_file=self.models_file_pin,
             )
+            model_cfg = loader.get_model(requested)
         except FatalRtlBuddyError as exc:
-            return _http_response(connection, 400, str(exc).encode("utf-8"))
-        model_cfg = loader.get_model(requested)
+            # Every way a name fails to resolve to exactly one model
+            # lands here — absent, ambiguous across models.yaml files,
+            # or in a file that won't load. They are one state to the
+            # SPA ("this name will not give you a view"); the loader's
+            # own headline says which.
+            log_event(
+                logger,
+                logging.INFO,
+                "hub.viewer_http.view_json_unknown_model",
+                model=requested,
+                error=str(exc),
+            )
+            return self._error_response(
+                connection,
+                404,
+                "unknown_model",
+                _one_line(str(exc)),
+                model=requested,
+            )
 
         # Per-model lock. Two concurrent ?model=requested requests
         # serialise; one runs build_view_json, the other waits.
@@ -678,16 +995,26 @@ class ViewerServer:
                     model_cfg=model_cfg,
                     axi_perf_source=self.axi_perf_source,
                 )
-            except FatalRtlBuddyError as exc:
+            except RtlBuddyError as exc:
+                # ``RtlBuddyError`` rather than ``FatalRtlBuddyError``
+                # so a ``FilelistError`` from the model filelist gets
+                # the same structured answer instead of escaping into
+                # the websockets layer's opaque fallback body (same
+                # reason the ``?test=`` path widened its catch).
+                outcome = self._record_view_failure(
+                    requested, self._view_generation_error(requested, exc)
+                )
                 log_event(
                     logger,
                     logging.ERROR,
                     "hub.viewer_http.view_json_build_failed",
                     model=requested,
                     error=str(exc),
+                    log_path=outcome["log_path"],
                 )
-                return _http_response(connection, 500, str(exc).encode("utf-8"))
+                return self._failed_view_response(connection, outcome)
 
+        self._record_view_success(requested)
         await self._set_active_model(
             model_name=requested, models_file=models_yaml, view_path=cache_path
         )
@@ -1120,8 +1447,11 @@ def _http_response(
 
 _REASON_PHRASES = {
     200: "OK",
+    400: "Bad Request",
     403: "Forbidden",
     404: "Not Found",
+    409: "Conflict",
+    500: "Internal Server Error",
 }
 
 
@@ -1145,6 +1475,7 @@ def _guess_content_type(path: Path) -> str:
 
 
 __all__ = [
+    "LOG_TAIL_LINES",
     "PLACEHOLDER_HTML",
     "ViewerServer",
     "render_index_html",

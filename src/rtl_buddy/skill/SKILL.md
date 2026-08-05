@@ -5,13 +5,15 @@ description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, r
 
 # rtl_buddy
 
-Run `rtl-buddy --version` at the top of every run summary.
-
-Use this skill for agent-specific workflow rules only. For command syntax or schema details, start with `rb --help`, `rb <subcommand> --help`, `rtl-buddy docs list`, `rtl-buddy docs show agents`, and `rtl-buddy --machine docs show reference/yaml`. When behavior surprises you (silent failures, paths landing in the wrong place, hook cwd), check `rtl-buddy docs show known-issues` first.
+Run `rtl-buddy --version` at the top of every run summary. Use this skill for agent-specific workflow rules only. For command syntax or schema details, start with `rb --help`, `rb <subcommand> --help`, `rtl-buddy docs list`, `rtl-buddy docs show agents`, and `rtl-buddy --machine docs show reference/yaml`. When behavior surprises you (silent failures, paths landing in the wrong place, hook cwd), check `rtl-buddy docs show known-issues` first.
 
 ## Always use `--machine`
 
 All agent invocations must use `--machine`: `rtl_buddy.log` becomes JSONL, and structured result commands (including `rb docs list`, excluding `rb docs show`) print a single JSON envelope to **stdout** — parse this for results. Envelope schema, JSONL log format, and exit codes (0 pass, 1 test failures, 2 fatal): `rtl-buddy docs show agents`.
+
+## Graph first, files last
+
+Do not grep the tree for anything relational or spread across files. **Locate** with `rb --machine graph query "<question>"` — one graph.json holds modules/instances/ports plus tests/testbenches/models/spec-blocks/coverage-items in one id namespace, matching is deterministic keyword scoring (no model call), and each match returns its neighbours with their last regression status joined on, so "which tests cover SAND-FUNC-FLAG-C-ADD and did they pass" is ONE command. Then **cite** with `rb hier-query <model> source-snippet <path>` — every node carries a `cite` block naming its file/line and, for instances, that exact command. Measured over six tasks (`docs show concepts/graph#token-efficiency`), a graph hop is worth it only when the file it saves is bigger than the payload replacing it: ask the graph for relations grep cannot compute (every top containing a shared IP is ONE `rb graph explain module:<ip>` — grep needs an iterative fixpoint and hits comment false-positives), but answer config-tier questions (which tests, which reglvl, which covers) by reading the `tests.yaml`, and single-file questions (a module's port list, one instance's connections) by letting the graph name the file and lines and then reading those lines. Also `rb graph explain <node>` (one node, every edge, its result) and `rb graph path <A> <B>` (undirected by default — edge direction encodes role, not reachability). Refresh with `rb graph build` after source/YAML changes and `rb graph results` after a regression; query exits 1 = no match, 2 = no graph yet (build it). `rb mcp` serves the same verbs as MCP tools over stdio (`{"command":"rb","args":["mcp"]}`) with identical payloads — a convenience surface, never a prerequisite. Details: `rtl-buddy docs show concepts/graph`.
 
 ## YAML map
 
@@ -20,13 +22,11 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 - `root_config.yaml` configures platforms, builders, coverage, waveform, synth, P&R, CDC, FPV, and default regression paths.
 - `tests.yaml` is suite-local and defines testbenches plus tests; invoke from anywhere with `-c <path>` (outputs anchor on the config dir — see Execution context below).
 - `models.yaml` defines design filelists referenced by tests, synth, CDC, and FPV.
-- `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows; `regression.yaml`, `synth_regression.yaml`, `fpga_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists.
-- `mut.yaml` defines one mutation-testing campaign for `rb mut`; `specs.yaml` feeds `rb spec` traceability commands.
+- `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows; `regression.yaml`, `synth_regression.yaml`, `fpga_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists; `mut.yaml` defines one `rb mut` campaign; `specs.yaml` feeds `rb spec` traceability.
 
 ## Pass/fail detection
 
-- UVM uses configured warning/error thresholds; cocotb uses `cocotb_results.xml`, not `PASS`/`FAIL` stdout markers.
-- Other sims should emit `PASS` or `FAIL` in `artefacts/<test>/test.log` (add an `ERR:` or `FAT:` line on failure); formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
+- UVM uses configured warning/error thresholds; cocotb uses `cocotb_results.xml`, not `PASS`/`FAIL` stdout markers. Other sims should emit `PASS` or `FAIL` in `artefacts/<test>/test.log` (add an `ERR:` or `FAT:` line on failure); formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
 
 ## Formal property authoring
 
