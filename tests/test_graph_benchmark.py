@@ -62,13 +62,32 @@ def test_token_proxy_is_chars_over_four():
     assert bench.approx_tokens("a" * 4000) == 1000
 
 
+def test_repeating_a_query_is_free_the_way_re_reading_a_file_is(tmp_path):
+    """The change-impact walk revisits its own starting node.
+
+    Charging the same `explain` twice would tax the graph route for a
+    line an agent already has in its transcript — the mirror of the rule
+    `read()` has always followed.
+    """
+    stub = "import json; print(json.dumps({'payload': {'node': {}}}))"
+    route = bench.Route(
+        bench.Runner(project=tmp_path, rb=[sys.executable, "-c", stub]), "graph"
+    )
+    first = route.machine("graph", "explain", "module:x")
+    second = route.machine("graph", "explain", "module:x")
+    assert first == second
+    assert route.run.calls == 1
+    route.machine("graph", "explain", "module:y")
+    assert route.run.calls == 2
+
+
 def test_a_step_charges_for_the_command_as_well_as_the_output():
     step = bench.Step("cat verif/x/tests.yaml", "y" * 400)
     assert step.tokens == bench.approx_tokens(step.command) + 100
 
 
 def test_every_task_has_a_key_a_question_and_an_expected_answer():
-    assert len(bench.TASKS) == 4
+    assert len(bench.TASKS) == 6
     keys = [task.key for task in bench.TASKS]
     assert len(set(keys)) == len(keys)
     for task in bench.TASKS:
@@ -182,6 +201,121 @@ blocks:
 def test_specs_yaml_parse_reads_block_docs_and_items():
     blocks = bench._spec_blocks(_SPECS_YAML)
     assert blocks == [("widget", ["README.md"], ["BLK-FUNC-A", "BLK-FUNC-B"])]
+
+
+def test_test_records_carry_the_testbench_the_deep_chain_hops_through():
+    records = {r["name"]: r for r in bench._test_records(_TESTS_YAML)}
+    assert records["basic"]["testbench"] == "tb_top"
+    assert records["basic"]["covers"] == ["BLK-FUNC-A", "BLK-FUNC-B"]
+    assert records["nightly"]["model"] == "widget_subsys"
+
+
+# ---------------------------------------------------------------------------
+# the parsers the two structural tasks added
+# ---------------------------------------------------------------------------
+
+_SV_TREE = """\
+// widget_top wraps widget. The comment below is the false positive the
+// change-impact raw route pays to read: ip_cdc_sync is named, not used.
+module widget_top (input logic clk);
+  widget u_w (.clk(clk));
+  leaf   u_l (.clk(clk));
+endmodule
+
+module widget (input logic clk);
+  leaf u_leaf (.clk(clk));
+endmodule
+"""
+
+
+def test_module_instantiations_maps_each_module_to_its_children():
+    assert bench._module_instantiations(_SV_TREE) == {
+        "widget_top": {"widget", "leaf"},
+        "widget": {"leaf"},
+    }
+
+
+def test_module_instantiations_ignores_a_name_that_only_appears_in_a_comment():
+    # The whole point of the fixpoint being over parsed instances rather
+    # than over grep hits: a mention is not a consumer.
+    for children in bench._module_instantiations(_SV_TREE).values():
+        assert "ip_cdc_sync" not in children
+
+
+_SYNTH_YAML = """\
+rtl-buddy-filetype: synth_config
+syntheses:
+  - name: "widget_synth_generic"
+    model: "widget_synth_top"
+    tool: "yosys"
+    reglvl: 0
+  - name: "widget_synth_nangate45"
+    model: "widget_synth_top"
+    reglvl: 1000
+"""
+
+
+def test_runs_in_yaml_reads_a_synthesis_suite_not_only_a_test_suite():
+    assert bench._runs_in_yaml(_SYNTH_YAML) == [
+        ("widget_synth_generic", "widget_synth_top"),
+        ("widget_synth_nangate45", "widget_synth_top"),
+    ]
+
+
+def test_runs_in_yaml_still_reads_a_tests_yaml():
+    assert bench._runs_in_yaml(_TESTS_YAML) == [
+        ("basic", "widget"),
+        ("nightly", "widget_subsys"),
+    ]
+
+
+_MODELS_YAML = """\
+rtl-buddy-filetype: model_config
+models:
+  - name: "widget"
+    desc: "a widget"
+    filelist: ["-v widget.sv"]
+    spec: "../../spec/widget/specs.yaml"
+  - name: "widget_subsys"
+    filelist: ["-F widget_subsys.f"]
+"""
+
+
+def test_model_entries_reads_names_and_spec_paths():
+    assert bench._model_entries(_MODELS_YAML) == {
+        "widget": "../../spec/widget/specs.yaml",
+        "widget_subsys": None,
+    }
+
+
+_MANIFEST = """\
+rtl-buddy-filetype: reg_config
+# Discoverable list of suites.
+test-configs:
+  - "verif/apb/tests.yaml"
+  - "verif/widget/tests.yaml"   # the leaf IP
+"""
+
+
+def test_manifest_entries_lists_the_suite_configs_a_flow_claims():
+    assert bench._manifest_entries(_MANIFEST) == [
+        "verif/apb/tests.yaml",
+        "verif/widget/tests.yaml",
+    ]
+
+
+def test_elaboration_root_survives_the_suite_qualification():
+    assert (
+        bench._elaboration_root("inst:mem_subsys/mem_subsys.u_wr_hs.u_sync_ack")
+        == "module:mem_subsys"
+    )
+    assert (
+        bench._elaboration_root("inst:tb_top/tb_top.u_dut@verif/ip_cdc_sync")
+        == "module:tb_top@verif/ip_cdc_sync"
+    )
+    assert bench._elaboration_root("inst:ip_cdc_sync/ip_cdc_sync") == (
+        "module:ip_cdc_sync"
+    )
 
 
 # ---------------------------------------------------------------------------

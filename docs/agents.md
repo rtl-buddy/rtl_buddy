@@ -23,7 +23,11 @@ The contract is two steps:
 
 Raw file reads are the fallback for finding things, not the default: read a file once the graph has told you which file, and which lines.
 
-Where that rule stops: a question whose whole answer sits in one file — a module's port list, one instance's connections — is answered from that file, because walking the graph for it currently costs more tokens than reading it. The graph's job there is to name the file and the line range. The measurements behind that split, task by task, are in [Token Efficiency](concepts/graph.md#token-efficiency).
+Where that rule stops, measured over six tasks in [Token Efficiency](concepts/graph.md#token-efficiency) — a hop through the graph is worth it when the file it saves you is bigger than the payload that replaces it, which today means:
+
+- **Ask the graph for relations grep cannot compute.** "Which tops contain `ip_cdc_sync`?" is one `explain` on the module node, exact, with the whole transitive closure already flattened by elaboration. Grep needs an iterative fixpoint over mentions, gets false positives from comments, and is quietly wrong if you stop a round early.
+- **Do not ask it a config-tier question.** Which tests exercise a block, at which `reglvl`, claiming which coverage items — the `tests.yaml` that answers it is smaller than the `explain` payloads that would replace it, every time.
+- **Do not ask it a single-file question.** A module's port list, one instance's connections: let the graph name the file and the line range, then read those lines.
 
 ```bash
 rb --machine graph build                                    # once per source change

@@ -5,12 +5,18 @@ Graphify's ~70x tokens-per-query claim is measured on software corpora.
 This script measures *our* number, on an RTL project, before SKILL.md
 steers every agent at the graph.
 
-Four questions an agent actually asks are answered twice:
+Six questions an agent actually asks are answered twice:
 
 * the **graph route** — `rb --machine graph query|path|explain` against
   `artefacts/graph/graph.json`, the surface #380 built;
 * the **raw route** — filelist / grep / whole-file reads, which is what
   an agent does in a tree with no graph.
+
+Four of them are single-hop-ish lookups. The last two exist to test the
+structural hypothesis — that the graph pays off when the answer is a
+long chain or a transitive closure: a five-hop traceability walk
+(coverage item down to the golden model), and change impact on a piece
+of IP that half the tree instantiates.
 
 Both routes end in a machine-comparable answer, and both are checked
 against a hand-written key (`EXPECTED`, verified against the template
@@ -115,12 +121,22 @@ class Route:
         self.runner = runner
         self.run = RouteRun(route=name)
         self._read: dict[str, str] = {}
+        self._asked: dict[str, dict] = {}
 
     # -- graph route -------------------------------------------------
     def machine(self, *args: str) -> dict:
-        """`rb --machine <args>` -> the payload, with the cost recorded."""
-        argv = [*self.runner.rb, "--machine", *args]
+        """`rb --machine <args>` -> the payload, with the cost recorded.
+
+        Repeating a command is free, on the same rule that makes a
+        second `read()` free: an agent does not re-run a query whose
+        answer is still in its transcript. It matters from the
+        change-impact task onwards, where the hub node of the walk is
+        also one of the roots the walk visits.
+        """
         printed = "rb --machine " + " ".join(_quote(a) for a in args)
+        if printed in self._asked:
+            return self._asked[printed]
+        argv = [*self.runner.rb, "--machine", *args]
         proc = subprocess.run(
             argv,
             cwd=self.runner.project,
@@ -133,7 +149,9 @@ class Route:
         if not out:
             raise RouteError(f"{printed}: no output (exit {proc.returncode})")
         envelope = json.loads(out)
-        return envelope.get("payload") or {}
+        payload = envelope.get("payload") or {}
+        self._asked[printed] = payload
+        return payload
 
     # -- raw route ---------------------------------------------------
     def shell(self, argv: list[str], *, allow_fail: bool = True) -> str:
@@ -524,6 +542,379 @@ def interface_raw(route: Route) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# task 5 — the deep chain: coverage item -> tests -> testbenches -> DUT -> spec
+# ---------------------------------------------------------------------------
+#
+# Task 3 asks the same corner of the project one hop deep — item to the
+# block that declares it, and everything hangs off the block. This one
+# refuses the shortcut and walks the chain an engineer actually follows
+# when a coverage hole shows up in a report: *who* claims this item,
+# *what* do they elaborate, *which* RTL is that, and *what* is it
+# checked against. Five hops, three tiers, two suites:
+#
+#   covitem:demo_tiny_alu#SAND-FUNC-OP-ADD
+#     <- covers      test:verif/demo_tiny_alu#basic
+#     <- covers      test:verif/demo_tiny_alu#ops_sweep
+#     <- covers      test:verif/demo_tiny_alu_cocotb#cocotb_random
+#     -> runs_on     tb:verif/demo_tiny_alu#tb_top          (SV testbench)
+#     -> runs_on     tb:verif/demo_tiny_alu_cocotb#tb_alu_random  (cocotb)
+#     -> exercises   model:design/demo_tiny_alu/models.yaml#demo_tiny_alu
+#     -> maps_to     module:demo_tiny_alu  (design/demo_tiny_alu/demo_tiny_alu.sv)
+#     -> specified_by spec:demo_tiny_alu
+#     -> documented_by doc:spec/demo_tiny_alu/README.md
+#     <- implements  golden:spec/demo_tiny_alu/tiny_alu_model.py
+#
+# Hand-checked against verif/demo_tiny_alu/tests.yaml (basic, ops_sweep
+# both list SAND-FUNC-OP-ADD under covers:, both testbench: tb_top),
+# verif/demo_tiny_alu_cocotb/tests.yaml (cocotb_random lists it,
+# testbench: tb_alu_random; cocotb_flags does not),
+# design/demo_tiny_alu/models.yaml, spec/demo_tiny_alu/specs.yaml and
+# the two files in spec/demo_tiny_alu/. The item was picked because it
+# fans out across two suites and two *kinds* of testbench — an SV
+# tb_top and a cocotb bench whose toplevel is the DUT itself.
+
+DEEP_ITEM = "SAND-FUNC-OP-ADD"
+DEEP_ITEM_NODE = f"covitem:demo_tiny_alu#{DEEP_ITEM}"
+
+
+def deep_chain_graph(route: Route) -> dict:
+    """One `explain` per node on the chain — no query, no keyword search.
+
+    The item's node id is derivable from the block and the id, so the
+    walk starts with `explain` rather than the `query` task 3 uses: a
+    keyword search would only re-find a node the chain already names.
+    Each hop is a different edge type in a different direction, which is
+    the point — this is the shape of question the graph is *for*.
+    """
+    item = route.machine("graph", "explain", DEEP_ITEM_NODE, "--no-results")
+    tests = [
+        edge["peer"]
+        for edge in item.get("incoming", [])
+        if edge.get("type") == "covers"
+    ]
+    if not tests:
+        raise RouteError(f"nothing covers {DEEP_ITEM}")
+
+    benches: list[str] = []
+    for test in sorted(tests):
+        payload = route.machine("graph", "explain", test, "--no-results")
+        benches += [
+            edge["peer"]
+            for edge in payload.get("outgoing", [])
+            if edge.get("type") == "runs_on"
+        ]
+
+    models: list[str] = []
+    for bench in sorted(set(benches)):
+        payload = route.machine("graph", "explain", bench, "--no-results")
+        models += [
+            edge["peer"]
+            for edge in payload.get("outgoing", [])
+            if edge.get("type") == "exercises"
+        ]
+
+    duts: list[tuple[str, str]] = []
+    specs: list[str] = []
+    for model in sorted(set(models)):
+        payload = route.machine("graph", "explain", model, "--no-results")
+        for edge in payload.get("outgoing", []):
+            if edge.get("type") == "maps_to":
+                # The peer summary carries the module's file — the design
+                # tier's whole contribution to this chain, for free.
+                duts.append((edge["node"]["label"], edge["node"]["file"]))
+            elif edge.get("type") == "specified_by":
+                specs.append(edge["peer"])
+
+    docs: list[str] = []
+    goldens: list[str] = []
+    for spec in sorted(set(specs)):
+        payload = route.machine("graph", "explain", spec, "--no-results")
+        docs += [
+            edge["peer"][len("doc:") :]
+            for edge in payload.get("outgoing", [])
+            if edge.get("type") == "documented_by"
+        ]
+        goldens += [
+            edge["peer"][len("golden:") :]
+            for edge in payload.get("incoming", [])
+            if edge.get("type") == "implements"
+        ]
+    return _deep_chain_answer(tests, benches, duts, docs, goldens)
+
+
+def deep_chain_raw(route: Route) -> dict:
+    """grep the id, then follow the same chain through the files.
+
+    The one grep lands on both ends of the chain at once — the suites
+    that claim the item and the spec that declares it — so the route
+    goes straight to `specs.yaml` rather than routing through
+    `models.yaml` to find it. That is what an agent with the grep output
+    in front of it would do, and skipping a file makes the raw route
+    cheaper, not the graph route dearer.
+    """
+    grep = route.shell(["grep", "-rn", DEEP_ITEM, "verif", "spec"])
+    suite_files: list[str] = []
+    spec_files: list[str] = []
+    for line in grep.splitlines():
+        path = line.split(":", 1)[0]
+        if path.endswith("tests.yaml") and path not in suite_files:
+            suite_files.append(path)
+        elif path.endswith("specs.yaml") and path not in spec_files:
+            spec_files.append(path)
+
+    tests: list[str] = []
+    benches: list[str] = []
+    model_names: list[str] = []
+    for path in sorted(suite_files):
+        text = route.read(path)
+        suite = str(Path(path).parent).replace(os.sep, "/")
+        for record in _test_records(text):
+            if DEEP_ITEM not in record["covers"]:
+                continue
+            tests.append(f"{suite}#{record['name']}")
+            if record["testbench"]:
+                benches.append(f"{suite}#{record['testbench']}")
+            if record["model"]:
+                model_names.append(record["model"])
+
+    duts: list[tuple[str, str]] = []
+    if model_names:
+        # A model's name is its elaboration top, so the declaration is
+        # what names the file — the same one-grep move task 4 makes.
+        argv = ["grep", "-rn"]
+        for name in sorted(set(model_names)):
+            argv += ["-e", f"^module {name}"]
+        argv.append("design")
+        for line in route.shell(argv).splitlines():
+            if not line.strip():
+                continue
+            file, _, rest = line.partition(":")
+            name = rest.split("module ", 1)[-1].split()[0].rstrip("#(;")
+            if name in model_names:
+                duts.append((name, file))
+
+    docs: list[str] = []
+    goldens: list[str] = []
+    for path in sorted(spec_files):
+        text = route.read(path)
+        spec_dir = str(Path(path).parent).replace(os.sep, "/")
+        for _block, block_docs, items in _spec_blocks(text):
+            if DEEP_ITEM in items:
+                docs += [f"{spec_dir}/{doc}" for doc in block_docs]
+        listing = route.shell(["ls", spec_dir])
+        goldens += [
+            f"{spec_dir}/{name}"
+            for name in listing.split()
+            if name.endswith(".py") and not name.startswith("_")
+        ]
+    return _deep_chain_answer(tests, benches, duts, docs, goldens)
+
+
+def _deep_chain_answer(
+    tests: list[str],
+    benches: list[str],
+    duts: list[tuple[str, str]],
+    docs: list[str],
+    goldens: list[str],
+) -> dict:
+    return {
+        "tests": sorted({_strip_prefix(t, "test:") for t in tests}),
+        "testbenches": sorted({_strip_prefix(b, "tb:") for b in benches}),
+        "dut": sorted({name for name, _file in duts}),
+        "dut_file": sorted({file for _name, file in duts}),
+        "docs": sorted(set(docs)),
+        "goldens": sorted(set(goldens)),
+    }
+
+
+def _strip_prefix(value: str, prefix: str) -> str:
+    return value[len(prefix) :] if value.startswith(prefix) else value
+
+
+# ---------------------------------------------------------------------------
+# task 6 — change impact on a piece of IP that half the tree instantiates
+# ---------------------------------------------------------------------------
+#
+# "`design/common/ip_cdc_sync.sv` changed — which runs must re-run?"
+#
+# Inclusion criterion, decided here and stated in the docs: a run counts
+# when (a) one of the **project-root** regression manifests claims its
+# suite — `regression.yaml`, `synth_regression.yaml`,
+# `fpv_regression.yaml`, `fpga_regression.yaml` — and (b) the
+# elaboration that run drives contains an `ip_cdc_sync` instance. So a
+# synthesis of an affected top counts as much as a simulation of one:
+# the netlist changes either way.
+#
+# The template's CDC analyses are out of scope for **both** routes, and
+# not by preference. `cdc_regression.yaml` lives at `lint/cdc/`, not the
+# project root, so the graph's flow discovery — which is by root
+# filename — never sees it, and there is no root manifest for the raw
+# route to read either. Three analyses would otherwise be in the answer:
+# `ip_cdc_handshake_lint`, `demo_tiny_alu_subsys_lint` and
+# `demo_cdc_mem_macro_lint` (lint/cdc/cdc.yaml). Recorded rather than
+# silently dropped.
+#
+# Hand-checked against the sources. Instantiations of `ip_cdc_sync`:
+#   design/common/ip_cdc_handshake.sv:52,55       u_sync_req, u_sync_ack
+#   design/common/ip_async_fifo.sv:62,84          u_sync_rptr, u_sync_wptr
+#   design/demo_tiny_alu_subsys/..._top.sv:114,180  u_sync_src, u_sync_empty
+# and transitively, through those:
+#   design/demo_cdc_mem_macro/mem_subsys.sv:35    ip_cdc_handshake u_wr_hs
+#   design/demo_tiny_alu_subsys/..._synth_top.sv:41  ..._top u_inner
+# `design/demo_cdc_open/cdc_open_sync.sv` names it in a comment only and
+# is *not* a consumer — the false positive the raw route pays to read.
+# The six affected models are the entries in design/common/models.yaml
+# (all three), design/demo_tiny_alu_subsys/models.yaml (top and
+# synth_top, but not `demo_tiny_alu_subsys_compute`, which pulls only
+# the ALU) and design/demo_cdc_mem_macro/models.yaml (mem_subsys).
+# `mem_subsys` is affected and no root manifest runs anything on it —
+# its only consumer is the out-of-scope CDC analysis.
+
+IP_BLOCK = "ip_cdc_sync"
+IP_MODULE = f"module:{IP_BLOCK}"
+
+#: The project-root manifests that decide what "must run" even means.
+RUN_MANIFESTS = (
+    "regression.yaml",
+    "synth_regression.yaml",
+    "fpv_regression.yaml",
+    "fpga_regression.yaml",
+)
+
+
+def change_impact_graph(route: Route) -> dict:
+    """`instance_of` already *is* the transitive closure — no walk needed.
+
+    This is the one question where the graph's shape does something grep
+    cannot. Elaboration has already flattened the hierarchy, so every
+    instance of `ip_cdc_sync` anywhere in the project hangs off the
+    module node by a single edge, and the first component of an
+    instance's id is the root that elaboration was exported from. One
+    call therefore yields the complete set of affected elaborations,
+    with no fixpoint iteration and no false positives.
+
+    What it does not yield is the config side, so the rest is one
+    `explain` per affected root (to pick up its `maps_to` model, its
+    `elaborates_as` testbench or its `targets` run) and one per
+    testbench (for `runs_on`). Reading the run off the module rather
+    than off the model is deliberate: a run is affected when its
+    *elaboration* is, and a cocotb bench elaborates as the DUT module
+    itself, so the module is where both kinds of testbench meet.
+    """
+    hub = route.machine("graph", "explain", IP_MODULE, "--no-results")
+    roots = {
+        _elaboration_root(edge["peer"])
+        for edge in hub.get("incoming", [])
+        if edge.get("type") == "instance_of"
+    }
+    if not roots:
+        raise RouteError(f"no instance of {IP_BLOCK} in the graph")
+
+    models: list[str] = []
+    benches: list[str] = []
+    runs: list[str] = []
+    for root in sorted(roots):
+        payload = route.machine("graph", "explain", root, "--no-results")
+        for edge in payload.get("incoming", []):
+            kind = edge.get("type")
+            if kind == "maps_to":
+                models.append(edge["peer"].split("#", 1)[-1])
+            elif kind == "elaborates_as":
+                benches.append(edge["peer"])
+            elif kind == "targets":
+                runs.append(_strip_prefix(edge["peer"], "test:"))
+
+    for bench in sorted(set(benches)):
+        payload = route.machine("graph", "explain", bench, "--no-results")
+        runs += [
+            _strip_prefix(edge["peer"], "test:")
+            for edge in payload.get("incoming", [])
+            if edge.get("type") == "runs_on"
+        ]
+    return {"models": sorted(set(models)), "runs": sorted(set(runs))}
+
+
+def _elaboration_root(instance_id: str) -> str:
+    """`inst:<root>/<path>[@<suite>]` -> `module:<root>[@<suite>]`.
+
+    The suite qualification is appended to the whole id (#377), so it
+    has to come off before the path is split and go back on after.
+    """
+    body, sep, suite = instance_id.partition("@")
+    root = _strip_prefix(body, "inst:").split("/", 1)[0]
+    return f"module:{root}" + (f"{sep}{suite}" if sep else "")
+
+
+def change_impact_raw(route: Route) -> dict:
+    """A grep fixpoint over the RTL, then the manifests, then the suites.
+
+    Three phases, and the first is the one that has no cheap version:
+    grep finds *textual* mentions of a module name, so the consumers of
+    a consumer need another round, and each round's cost is the files it
+    has to open to find out which module the mention was inside. It
+    terminates when a round adds no module — three rounds here — and it
+    opens two files (`cdc_open_sync.sv`, `cdc_open_handshake.sv`) whose
+    only mention of the IP is a comment.
+    """
+    closure = {IP_BLOCK}
+    frontier = [IP_BLOCK]
+    seen: set[str] = set()
+    instantiates: dict[str, set[str]] = {}
+    file_of: dict[str, str] = {}
+
+    while frontier:
+        argv = ["grep", "-rl", "--include=*.sv"]
+        for name in sorted(frontier):
+            argv += ["-e", name]
+        argv.append("design")
+        for path in sorted(
+            line for line in route.shell(argv).splitlines() if line.strip()
+        ):
+            if path in seen:
+                continue
+            seen.add(path)
+            text = route.read(path)
+            for module, children in _module_instantiations(text).items():
+                instantiates[module] = children
+                file_of[module] = path
+        frontier = sorted(
+            module
+            for module, children in instantiates.items()
+            if module not in closure and children & closure
+        )
+        closure.update(frontier)
+
+    # Which of those modules is a *model* — i.e. something a run can top
+    # out at — is only in models.yaml, one per design directory.
+    models: list[str] = []
+    for design_dir in sorted(
+        {str(Path(file_of[m]).parent).replace(os.sep, "/") for m in closure}
+    ):
+        text = route.read(f"{design_dir}/models.yaml")
+        models += [name for name in _model_entries(text) if name in closure]
+
+    # The manifests are what makes "must run" a finite question.
+    suite_files: list[str] = []
+    for manifest in RUN_MANIFESTS:
+        suite_files += _manifest_entries(route.read(manifest))
+
+    runs: list[str] = []
+    if models and suite_files:
+        argv = ["grep", "-l"]
+        for name in sorted(set(models)):
+            argv += ["-e", name]
+        argv += sorted(set(suite_files))
+        for path in sorted(
+            line for line in route.shell(argv).splitlines() if line.strip()
+        ):
+            suite = str(Path(path).parent).replace(os.sep, "/")
+            for name, model in _runs_in_yaml(route.read(path)):
+                if model in models:
+                    runs.append(f"{suite}#{name}")
+    return {"models": sorted(set(models)), "runs": sorted(set(runs))}
+
+
+# ---------------------------------------------------------------------------
 # the small amount of SystemVerilog / YAML parsing the raw route needs
 # ---------------------------------------------------------------------------
 #
@@ -587,6 +978,25 @@ def _module_params(text: str) -> dict[str, list[str]]:
     return out
 
 
+def _module_instantiations(text: str) -> dict[str, set[str]]:
+    """module name -> the set of module names instantiated in its body.
+
+    The body is everything between the header and the next `endmodule`,
+    which is enough because the template does not nest module
+    definitions. Instance recognition is `_INSTANCE`'s, so it depends on
+    the `u_` prefix convention the template follows throughout — the raw
+    route's answer is only as good as that convention, which is a real
+    property of grep-and-read and not a handicap invented here.
+    """
+    body = _strip_comments(text)
+    out: dict[str, set[str]] = {}
+    for match in _MODULE_HEADER.finditer(body):
+        end = body.find("\nendmodule", match.end())
+        chunk = body[match.end() : end if end != -1 else len(body)]
+        out[match.group(1)] = {m.group("module") for m in _INSTANCE.finditer(chunk)}
+    return out
+
+
 def _instance_bindings(text: str, signal: str) -> list[tuple[str, str, str]]:
     """[(module, instance, formal)] for every port bound to `signal`."""
     body = _strip_comments(text)
@@ -631,32 +1041,90 @@ def _yaml_section(text: str, key: str) -> str:
     return "\n".join(buffer)
 
 
-def _tests_with_covers(text: str) -> list[tuple[str, str | None, object, list[str]]]:
-    """[(test name, model, reglvl, covers)] out of a tests.yaml."""
-    if not text:
-        return []
-    section = _yaml_section(text, "tests")
-    entries: list[tuple[str, str | None, object, list[str]]] = []
+def _entry_chunks(section: str) -> list[tuple[str, str]]:
+    """[(entry name, the YAML text of that entry)] in a list-of-mappings."""
+    chunks: list[tuple[str, str]] = []
     starts = [m.start() for m in _TEST_ENTRY.finditer(section)]
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else len(section)
         chunk = section[start:end]
-        name = _TEST_ENTRY.match(chunk).group("name")
-        model = re.search(r"^\s*model:\s*\"?([\w.\-]+)\"?", chunk, re.MULTILINE)
+        chunks.append((_TEST_ENTRY.match(chunk).group("name"), chunk))
+    return chunks
+
+
+def _scalar(chunk: str, key: str) -> str | None:
+    match = re.search(rf"^\s*{key}:\s*\"?([\w./\-]+)\"?", chunk, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _test_records(text: str) -> list[dict]:
+    """Every entry under `tests:` in a tests.yaml, as a record.
+
+    One parser, five callers: the reglvl question wants `model` and
+    `reglvl`, the traceability chain wants `covers` and `testbench`.
+    """
+    if not text:
+        return []
+    records: list[dict] = []
+    for name, chunk in _entry_chunks(_yaml_section(text, "tests")):
         reglvl = re.search(r"^\s*reglvl:\s*(\S+)", chunk, re.MULTILINE)
-        covers = re.findall(r"^\s*-\s*\"?([A-Z][\w\-]+)\"?\s*$", chunk, re.MULTILINE)
         value: object = None
         if reglvl:
             raw = reglvl.group(1).split("#")[0].strip()
             value = int(raw) if raw.lstrip("-").isdigit() else raw
-        entries.append((name, model.group(1) if model else None, value, covers))
-    return entries
+        records.append(
+            {
+                "name": name,
+                "model": _scalar(chunk, "model"),
+                "model_path": _scalar(chunk, "model_path"),
+                "testbench": _scalar(chunk, "testbench"),
+                "reglvl": value,
+                "covers": re.findall(
+                    r"^\s*-\s*\"?([A-Z][\w\-]+)\"?\s*$", chunk, re.MULTILINE
+                ),
+            }
+        )
+    return records
+
+
+def _tests_with_covers(text: str) -> list[tuple[str, str | None, object, list[str]]]:
+    """[(test name, model, reglvl, covers)] out of a tests.yaml."""
+    return [
+        (r["name"], r["model"], r["reglvl"], r["covers"]) for r in _test_records(text)
+    ]
 
 
 def _tests_in_yaml(text: str) -> list[tuple[str, str | None, object]]:
     return [
         (name, model, reglvl) for name, model, reglvl, _c in _tests_with_covers(text)
     ]
+
+
+#: The list key a run lives under, per flow. `rb <flow>-regression`
+#: knows these; an agent reading the files has to know them too.
+RUN_SECTIONS = ("tests", "syntheses", "verifications", "analyses", "runs")
+
+
+def _runs_in_yaml(text: str) -> list[tuple[str, str | None]]:
+    """[(run name, model)] out of any flow's suite config."""
+    runs: list[tuple[str, str | None]] = []
+    for key in RUN_SECTIONS:
+        for name, chunk in _entry_chunks(_yaml_section(text, key)):
+            runs.append((name, _scalar(chunk, "model")))
+    return runs
+
+
+def _model_entries(text: str) -> dict[str, str | None]:
+    """model name -> its `spec:` path, out of a models.yaml."""
+    return {
+        name: _scalar(chunk, "spec")
+        for name, chunk in _entry_chunks(_yaml_section(text, "models"))
+    }
+
+
+def _manifest_entries(text: str) -> list[str]:
+    """The suite config paths a repo-level regression manifest lists."""
+    return re.findall(r"^\s*-\s*\"?([\w./\-]+\.yaml)\"?", text, re.MULTILINE)
 
 
 def _spec_blocks(text: str) -> list[tuple[str, list[str], list[str]]]:
@@ -739,6 +1207,43 @@ EXPECTED_INTERFACE = {
 }
 
 
+EXPECTED_DEEP_CHAIN = {
+    "tests": [
+        "verif/demo_tiny_alu#basic",
+        "verif/demo_tiny_alu#ops_sweep",
+        "verif/demo_tiny_alu_cocotb#cocotb_random",
+    ],
+    "testbenches": [
+        "verif/demo_tiny_alu#tb_top",
+        "verif/demo_tiny_alu_cocotb#tb_alu_random",
+    ],
+    "dut": ["demo_tiny_alu"],
+    "dut_file": ["design/demo_tiny_alu/demo_tiny_alu.sv"],
+    "docs": ["spec/demo_tiny_alu/README.md"],
+    "goldens": ["spec/demo_tiny_alu/tiny_alu_model.py"],
+}
+
+EXPECTED_CHANGE_IMPACT = {
+    "models": [
+        "demo_tiny_alu_subsys_synth_top",
+        "demo_tiny_alu_subsys_top",
+        "ip_async_fifo",
+        "ip_cdc_handshake",
+        "ip_cdc_sync",
+        "mem_subsys",
+    ],
+    "runs": [
+        "synth/demo_tiny_alu_subsys#demo_tiny_alu_subsys_synth_generic",
+        "synth/demo_tiny_alu_subsys#demo_tiny_alu_subsys_synth_nangate45",
+        "verif/demo_tiny_alu_subsys#csr_smoke",
+        "verif/demo_tiny_alu_subsys#fifo_stream",
+        "verif/ip_async_fifo#smoke",
+        "verif/ip_cdc_handshake#smoke",
+        "verif/ip_cdc_sync#smoke",
+    ],
+}
+
+
 TASKS = [
     Task(
         key="signal-trace",
@@ -774,6 +1279,29 @@ TASKS = [
         expected=EXPECTED_INTERFACE,
         graph=interface_graph,
         raw=interface_raw,
+    ),
+    Task(
+        key="deep-chain",
+        title="Deep chain",
+        question=(
+            f"Coverage item {DEEP_ITEM} is short — which tests claim it, on which "
+            "testbenches, against which DUT source file, and what spec doc and "
+            "golden model is that DUT held to?"
+        ),
+        expected=EXPECTED_DEEP_CHAIN,
+        graph=deep_chain_graph,
+        raw=deep_chain_raw,
+    ),
+    Task(
+        key="change-impact",
+        title="Change impact on shared IP",
+        question=(
+            f"design/common/{IP_BLOCK}.sv changed — which models are affected, and "
+            "which runs claimed by the root regression manifests must re-run?"
+        ),
+        expected=EXPECTED_CHANGE_IMPACT,
+        graph=change_impact_graph,
+        raw=change_impact_raw,
     ),
 ]
 
@@ -880,7 +1408,7 @@ def render_table(results: list[dict]) -> str:
     raw_total = sum(r["raw"]["tokens"] for r in results)
     graph_total = sum(r["graph"]["tokens"] for r in results)
     rows.append(
-        f"| **all four** | {sum(r['answer_tokens'] for r in results)} "
+        f"| **all {len(results)}** | {sum(r['answer_tokens'] for r in results)} "
         f"| **{raw_total}** | "
         f"{sum(r['raw']['calls'] for r in results)} | **{graph_total}** | "
         f"{sum(r['graph']['calls'] for r in results)} | "
