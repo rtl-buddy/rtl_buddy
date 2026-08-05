@@ -60,6 +60,7 @@ from . import graphify as graphify_mod
 from .binding import BINDING_TIER, bind_python, collect_sources
 from .config_tier import (
     CONFIG_TIER,
+    ELABORATES_AS,
     EXTRACTED,
     GRAPH_JSON_NAME,
     GRAPH_META_NAME,
@@ -544,18 +545,19 @@ def _tb_exporters(
 
 
 def _tb_stitch_link(node_id: str, module_node_id: str) -> dict:
-    """``tb:<suite>#<name> --maps_to--> module:<tb top>``.
+    """``tb:<suite>#<name> --elaborates_as--> module:<tb top>``.
 
-    The same edge type the model node uses for its config↔design
-    stitch: a ``tb:`` node is metadata about an elaboration, and
-    ``maps_to`` is already "this config thing is that design thing".
-    Emitting a new edge type for the identical relation would make
-    every consumer learn two words for one idea.
+    The observed twin of the config tier's declared ``elaborates_as``:
+    a ``tb:`` node is metadata about an elaboration, and this edge says
+    which design module that elaboration is topped by. It is the same
+    relation the model node's ``maps_to`` states, spelled with the
+    testbench's own verb so a reader never has to recover the source
+    kind from the id prefix.
     """
     return {
         "source": node_id,
         "target": module_node_id,
-        "type": "maps_to",
+        "type": ELABORATES_AS,
         "confidence": EXTRACTED,
     }
 
@@ -1061,7 +1063,7 @@ def build_graph(
         config.graph["links"] = [
             link
             for link in config.graph["links"]
-            if not (link["source"] in exported and link["type"] == "maps_to")
+            if not (link["source"] in exported and link["type"] == ELABORATES_AS)
         ]
         config.graph["links"].extend(tb_stitches)
         # Restore the extractor's canonical ordering so the config

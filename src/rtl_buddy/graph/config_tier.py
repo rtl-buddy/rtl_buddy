@@ -80,6 +80,16 @@ GRAPH_META_NAME = "graph-meta.json"
 #: the binding tier's ``dut.<signal>`` scan (#378).
 EXTRACTED = "EXTRACTED"
 
+#: The three config->design stitches. Same relation ("this config thing
+#: is that design module"), same direction, same provenance rules — but
+#: three edge *types*, one per source kind, because the source kind is
+#: the thing a consumer keeps asking about and a single verb threw it
+#: away. Recovering it meant re-deriving it from the source id prefix at
+#: every read site, which is a fact the edge already knew.
+MAPS_TO = "maps_to"  #: model -> the module it names
+ELABORATES_AS = "elaborates_as"  #: testbench -> the top it elaborates
+TARGETS = "targets"  #: non-simulation run -> its ``top:``
+
 #: Suffixes scanned when looking for verif-side references to a golden
 #: model. Text formats only; anything else is skipped unread.
 _VERIF_SOURCE_SUFFIXES = (".py", ".sv", ".svh", ".v", ".vh", ".yaml", ".yml", ".f")
@@ -201,8 +211,9 @@ def module_id(module_name: str) -> str:
     """Design-tier module id.
 
     The config tier never *creates* these nodes — ``rtl-buddy-view``
-    owns them. It only points ``maps_to`` links at them, and the shared
-    id is what stitches the two tiers together at merge time.
+    owns them. It only points its three config->design stitches
+    (``maps_to`` / ``elaborates_as`` / ``targets``) at them, and the
+    shared id is what stitches the two tiers together at merge time.
     """
     return f"module:{module_name}"
 
@@ -578,7 +589,7 @@ def _add_model_node(
     # this tier does not define; it resolves when the tiers are merged,
     # and stays dangling (harmless — node-link readers auto-create it) if
     # only the config tier is exported.
-    gb.add_link(node, module_id(model.name), "maps_to")
+    gb.add_link(node, module_id(model.name), MAPS_TO)
     return node
 
 
@@ -613,9 +624,10 @@ def _add_testbench_node(
         flow=flow,
     )
     gb.add_link(suite_node, node, "declares")
-    # The testbench↔design stitch, the same `maps_to` the model node
-    # uses: `toplevel:` names the module the testbench elaborates from,
-    # so `module:<toplevel>` is where this metadata node meets the
+    # The testbench↔design stitch. Same relation as the model node's
+    # `maps_to` and same target namespace, but its own verb: `toplevel:`
+    # names the module the testbench *elaborates from*, so
+    # `module:<toplevel>` is where this metadata node meets the
     # hierarchy `rb graph build` exports TB-rooted. Only emitted when
     # `toplevel:` is actually declared — a plain SV testbench that
     # leaves it out is topped by convention (the testbench's own name),
@@ -623,7 +635,7 @@ def _add_testbench_node(
     # config readback. `rb graph build` adds that edge instead, from
     # the top the viewer really elaborated.
     if tb.toplevel:
-        gb.add_link(node, module_id(tb.toplevel), "maps_to")
+        gb.add_link(node, module_id(tb.toplevel), ELABORATES_AS)
     return node
 
 
@@ -749,8 +761,9 @@ def _add_flow_suite_nodes(
     `test:<dir>#<name>`) rather than inventing a parallel vocabulary. Two
     things differ: there is no testbench between the run and the model, so
     `exercises` is emitted from the run itself; and a run's `top:` (which a
-    formal verification may override away from the model name) becomes the
-    same `maps_to` stitch a testbench's `toplevel:` does.
+    formal verification may override away from the model name) is the
+    run's own config->design stitch, `targets` — the same relation a
+    testbench's `elaborates_as` states, from a third kind of source.
     """
     for flow, suite_cfg, entries_attr in flows.suites:
         cfg_path = suite_cfg.get_path()
@@ -784,7 +797,7 @@ def _add_flow_suite_nodes(
             gb.add_link(suite_node, test_node, "declares")
             gb.add_link(test_node, model_node, "exercises")
             if top:
-                gb.add_link(test_node, module_id(top), "maps_to")
+                gb.add_link(test_node, module_id(top), TARGETS)
 
 
 def _hash_inputs(project_root: Path, paths: list[str]) -> list[dict]:

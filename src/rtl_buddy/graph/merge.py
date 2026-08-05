@@ -188,7 +188,8 @@ def stitch_points(tier_graphs: list[tuple[str, dict]]) -> list[str]:
 
     The second case is the one that matters, and the reason a merged-graph-only
     implementation would report zero: the config tier never creates
-    ``module:`` nodes, it only points ``maps_to`` at them. The design
+    ``module:`` nodes, it only points its config->design stitches
+    (``maps_to`` / ``elaborates_as`` / ``targets``) at them. The design
     tier defines them. That asymmetry *is* the stitch, so a count of
     "nodes both tiers emitted" would always be 0 on a healthy project.
     """
@@ -214,7 +215,7 @@ def stitch_points(tier_graphs: list[tuple[str, dict]]) -> list[str]:
 def dangling_targets(graph: dict) -> list[str]:
     """Link endpoints with no node of their own, sorted.
 
-    A config-tier-only export leaves every ``maps_to`` target dangling
+    A config-tier-only export leaves every config->design stitch's target dangling
     by design; after a merge with the design tier the list should be
     empty (or name a model whose ``module:`` never got exported), which
     makes it a cheap health signal for the merged file.

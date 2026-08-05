@@ -276,8 +276,8 @@ class GraphIndex:
             index.inc.setdefault(target, []).append(link)
             # A link endpoint with no node of its own is a dangling
             # target (``merge.dangling_targets``). It is still a real
-            # answer — a `maps_to` into a design tier that was never
-            # exported names a module that exists — so it is indexed as
+            # answer — a config->design stitch into a design tier that
+            # was never exported names a module that exists — so it is indexed as
             # an attribute-less node rather than dropped.
             for endpoint in (source, target):
                 if endpoint not in index.nodes:
@@ -302,6 +302,13 @@ class GraphIndex:
         that file's directory. Without this the ``cite`` command a
         payload hands back would only work from one directory, which is
         not a citation an agent can use.
+
+        This is the **model** stitch specifically, which is why the
+        split of the config->design edge into three verbs matters here:
+        a testbench (``elaborates_as``) or a non-simulation run
+        (``targets``) also points at ``module:<name>``, and their
+        ``file`` is a ``tests.yaml`` / ``synth.yaml`` that ``-c`` must
+        never be filled from. The edge type rules them out on its own.
         """
         target = f"module:{module_name}"
         for link in self.inc.get(target, ()):

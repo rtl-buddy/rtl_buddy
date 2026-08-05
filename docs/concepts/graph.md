@@ -107,7 +107,7 @@ A `tb:` node on its own carries what `tests.yaml` says about a testbench and not
 
 The weld is the shared `module:<name>` id: a testbench's instance of the DUT emits `instance_of` pointing at the very `module:` node the DUT-rooted export produced, so "which testbenches instantiate this module?" is answerable from the graph.
 
-Two testbenches are the same export when they resolve to the same model, suite, testbench filelist and top — so ten tests sharing a testbench elaborate it once. A testbench whose top *is* the DUT top is not exported at all: that is the cocotb and SystemC case, where `toplevel:` names the DUT and there is no SystemVerilog testbench above it. Its `tb:` node still stitches to the DUT via `maps_to`.
+Two testbenches are the same export when they resolve to the same model, suite, testbench filelist and top — so ten tests sharing a testbench elaborate it once. A testbench whose top *is* the DUT top is not exported at all: that is the cocotb and SystemC case, where `toplevel:` names the DUT and there is no SystemVerilog testbench above it. Its `tb:` node still stitches to the DUT via `elaborates_as`.
 
 #### When two testbenches share a top module name
 
@@ -332,7 +332,7 @@ Every node summary these verbs return carries a `cite` block wherever the source
 }
 ```
 
-That is the "locate in the graph, cite from source" contract in [agent use](../agents.md) made mechanical: the payload hands over the second half instead of leaving it to be reconstructed. `-c` is filled in from the config tier's `maps_to` edge — without it the command would only run from that `models.yaml`'s own directory. Both it and `file` are repo-relative, so run the command from the project root (where `rb graph query` itself runs).
+That is the "locate in the graph, cite from source" contract in [agent use](../agents.md) made mechanical: the payload hands over the second half instead of leaving it to be reconstructed. `-c` is filled in from the config tier's `maps_to` edge — the *model* stitch specifically, which is why the three config-to-design edges are three types: a testbench's `elaborates_as` and a run's `targets` point at the same `module:` node from a `tests.yaml` or a `synth.yaml`, and neither is a `-c` a `hier-query` would accept. Without it the command would only run from that `models.yaml`'s own directory. Both it and `file` are repo-relative, so run the command from the project root (where `rb graph query` itself runs).
 
 ### Machine mode
 
@@ -365,11 +365,11 @@ What it shows:
   | `test-cocotb` | anything stamped `cocotb: true`, plus the binding tier's `python_module` nodes |
   | `other` | anything the rules cannot place — rendered, never dropped |
 
-  A testbench *hierarchy* follows its suite's flow, so an fpv suite's testbench top and everything under it land in `formal-config` rather than sitting in the middle of the design. Recognising those nodes is the one non-obvious part, because both halves of `rb graph build` are `tier: design`: a node is testbench-side when it carries `qualified_by`, when it is the module a `tb:` node `maps_to` (unless a `models.yaml` claims it too — a cocotb testbench tops at the DUT itself), or when its `inst:<root>/…` id is rooted at such a module. A module under a testbench root that is none of those stays in `design`: over-claiming would file a vendor IP block under someone's testbench.
+  A testbench *hierarchy* follows its suite's flow, so an fpv suite's testbench top and everything under it land in `formal-config` rather than sitting in the middle of the design. Recognising those nodes is the one non-obvious part, because both halves of `rb graph build` are `tier: design`: a node is testbench-side when it carries `qualified_by`, when it is the module a `tb:` node `elaborates_as` (unless a `models.yaml` `maps_to` it too — a cocotb testbench tops at the DUT itself), or when its `inst:<root>/…` id is rooted at such a module. A module under a testbench root that is none of those stays in `design`: over-claiming would file a vendor IP block under someone's testbench.
 
   The column is computed server-side into a `category` attribute on `GET /graph.json` — two of its inputs are graph-wide joins not worth redoing per render — and is deliberately **not** written into `graph.json`, for the same reason the results overlay is not: the layout is a presentation choice and must never make the built graph churn.
 - **Pass/fail from the overlay.** Test nodes get a status ring straight from `results-overlay.json`, so a failing test is visible in the picture and its `desc`, seed, timestamp and artefact paths are one click away in the inspector. The join happens in memory — `graph.json` on disk is never rewritten (see [Results Overlay](#results-overlay)).
-- **Dangling targets.** A link into a tier that was never exported (`maps_to` → a module whose design tier was skipped) is drawn as a hollow node rather than dropped, matching what [`merge.dangling_targets`](#merging) records.
+- **Dangling targets.** A link into a tier that was never exported (a config-to-design stitch → a module whose design tier was skipped) is drawn as a hollow node rather than dropped, matching what [`merge.dangling_targets`](#merging) records.
 
 What it does:
 
@@ -593,8 +593,8 @@ Config tier:
 | `implements` | golden model | spec block |
 | `exercises` | test | model (a synth / fpv / cdc / fpga run, which has no testbench) |
 | `maps_to` | model | **design-tier** module |
-| `maps_to` | testbench | **design-tier** module (the top it elaborates) |
-| `maps_to` | test | **design-tier** module (a non-simulation run's `top:`) |
+| `elaborates_as` | testbench | **design-tier** module (the top it elaborates) |
+| `targets` | test | **design-tier** module (a non-simulation run's `top:`) |
 
 Binding tier:
 
@@ -608,7 +608,23 @@ Binding tier:
 
 `drives` is the only edge class in the whole graph that is allowed to be `INFERRED`; everything else, in every tier, is `EXTRACTED`. `via` on a `drives` or `checks_against` edge names the helper module the fact was inherited through — absent means the module says it itself.
 
-`maps_to` is the config-to-design stitch, from a model to the module it names and from a testbench to the module it is topped by. The testbench edge comes from `toplevel:` when the config declares one, and otherwise from the top `rb graph build` saw the viewer elaborate — the config tier does not guess a top from a testbench's name. Its target `module:<name>` is a design-tier id that the config tier never creates — exporting the config tier alone leaves those targets dangling, which node-link readers resolve by auto-creating an attribute-less node. Merging with a design-tier export fills them in.
+### The config-to-design stitch is three verbs
+
+`maps_to`, `elaborates_as` and `targets` are one relation — "this config thing is that design module" — stated by three kinds of source, and the edge type is what says which:
+
+| Edge | The source says | Where the module name comes from |
+| --- | --- | --- |
+| `maps_to` | a `models.yaml` **declares** this module | the model's own `name` |
+| `elaborates_as` | a testbench **elaborates from** this module | `toplevel:`, or the top the viewer really elaborated |
+| `targets` | a synth / fpv / cdc / fpga run **runs against** this module | the run's `top:` |
+
+They were one `maps_to` at first, on the reasoning that a second word for an identical relation costs every consumer a lookup. What that missed is that the *source kind* is the thing consumers actually ask about, and one verb threw it away: the hub pane has to know whether a `module:` is a testbench root or a DUT before it can column it, and `cite_hint`'s `-c` must come from a `models.yaml` and never from the `tests.yaml` behind an identically-shaped edge. Both were recovering the answer by re-reading the source id's prefix — a fact the edge already knew and was declining to say. Three types say it once, and leave the renderer free to colour them the same if that reads better.
+
+Everything else about them is shared. All three point config → design, all three are `EXTRACTED`, and all three target a `module:<name>` id that the config tier never creates — exporting the config tier alone leaves those targets dangling, which node-link readers resolve by auto-creating an attribute-less node. Merging with a design-tier export fills them in.
+
+`elaborates_as` is the one with two sources: the config tier emits it from `toplevel:` when a suite declares one, and `rb graph build` replaces it with the top it saw the viewer elaborate. The config tier never guesses a top from a testbench's name — a declaration and an observation of the same fact are both welcome, and where both exist the observation wins.
+
+`exercises` is deliberately *not* split the same way, even though it too runs from two source types (a testbench, and a non-simulation run that has no testbench). The split above pays for itself because a consumer of the stitch has a different question per source kind — which `models.yaml` to cite, which column to draw a module in. Nobody asks a different question of `exercises`: "what verifies this model" wants both answers in one list, and two verbs there would make every such query a union.
 
 ## What the Config Tier Reads
 
@@ -622,7 +638,7 @@ Everything comes from the loaders that back `rb test`, `rb spec check-coverage` 
 
 A `covers:` entry names a bare coverage-item id, and more than one block may declare the same id. `rb spec check-coverage` treats every such block as covered, and the graph matches it: one `covers` edge per declaring block.
 
-A testbench's `toplevel:`, when declared, also becomes a `maps_to` edge to `module:<toplevel>`.
+A testbench's `toplevel:`, when declared, also becomes an `elaborates_as` edge to `module:<toplevel>`.
 
 Testbenches declared but used by no test still become nodes — a dead testbench should be visible in the graph, not silently absent. Suites that fail to load are reported rather than fatal; the failure list lands in `graph-meta.json`.
 
@@ -641,7 +657,7 @@ A `tests.yaml` does not know that it is a *simulation* suite, and nothing under 
 Four consequences:
 
 - **A suite no regression file claims is `sim`.** A `tests.yaml` nobody has wired up yet is still a simulation suite, and an "unknown" bucket would hide exactly the suites a project is in the middle of adding.
-- **The four non-simulation flows become nodes too.** No `verif/` walk reaches `synth/tiny_alu/synth.yaml`, so before this the graph could not answer "what synthesises this module?". Each of those files is a `suite:<dir>` whose named runs are `test:<dir>#<name>` — the same types and the same ids a `tests.yaml` produces, not a parallel vocabulary. There is no testbench between a run and its model, so `exercises` starts at the run; a run's `top:` (which a formal verification may point at a wrapper) becomes the same `maps_to` stitch a testbench's `toplevel:` does.
+- **The four non-simulation flows become nodes too.** No `verif/` walk reaches `synth/tiny_alu/synth.yaml`, so before this the graph could not answer "what synthesises this module?". Each of those files is a `suite:<dir>` whose named runs are `test:<dir>#<name>` — the same types and the same ids a `tests.yaml` produces, not a parallel vocabulary. There is no testbench between a run and its model, so `exercises` starts at the run; a run's `top:` (which a formal verification may point at a wrapper) becomes `targets`, the run's own [config-to-design stitch](#the-config-to-design-stitch-is-three-verbs).
 - **A suite claimed by two flows gets a list**, in the table's order. That happens when one directory holds two flows' configs — a `synth.yaml` and a `cdc.yaml` side by side. Individual runs are always stamped with the single flow of the file that declared them.
 - **`cocotb: true`** is stamped on a cocotb test *and* on its testbench. `kind: cocotb` already says it on the testbench and `cocotb_modules` implies it on the test; the flat boolean is so a consumer bucketing nodes does not have to know which type spells it which way.
 

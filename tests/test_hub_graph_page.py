@@ -241,11 +241,15 @@ _BUCKET_GRAPH = {
     ],
     "links": [
         _link("model:design/fifo/models.yaml#fifo", "module:fifo", "maps_to"),
-        _link("tb:verif/fifo#tb_top", "module:tb_top@verif/fifo", "maps_to"),
-        _link("tb:fpv/fifo#fv_top", "module:fifo_fv_top", "maps_to"),
+        _link("tb:verif/fifo#tb_top", "module:tb_top@verif/fifo", "elaborates_as"),
+        _link("tb:fpv/fifo#fv_top", "module:fifo_fv_top", "elaborates_as"),
         # A cocotb testbench tops at the DUT itself; that must not drag
         # the DUT's whole hierarchy into a flow column.
-        _link("tb:verif/fifo#tb_cocotb", "module:fifo", "maps_to"),
+        _link("tb:verif/fifo#tb_cocotb", "module:fifo", "elaborates_as"),
+        # A non-simulation run's `top:`. Same target namespace, third
+        # verb — and, like today, not a testbench-ownership signal: the
+        # module a synth run names is still design.
+        _link("test:synth/fifo#generic", "module:fifo", "targets"),
     ],
 }
 
@@ -305,6 +309,10 @@ def test_cocotb_wins_over_the_suites_flow(bucket_graph: Path):
 
 def test_dut_hierarchy_stays_in_the_design_column(bucket_graph: Path):
     columns = _columns(bucket_graph)
+    # `module:fifo` is pointed at by all three config->design verbs at
+    # once — a model's `maps_to`, a cocotb testbench's `elaborates_as`
+    # and a synth run's `targets`. The model's claim wins, which is the
+    # rule that keeps a DUT out of a flow column.
     assert columns["module:fifo"] == "design"
     assert columns["inst:fifo/fifo.u_wr"] == "design"
     assert columns["port:fifo.clk"] == "design"

@@ -250,7 +250,7 @@ def test_flow_runs_carry_their_tool_reglvl_and_top(graph):
     assert "reglvl" not in tests["test:impl/blk_a#blk_a_lint"]
 
 
-def test_an_fpv_top_that_overrides_the_model_is_where_maps_to_lands(tmp_path):
+def test_an_fpv_top_that_overrides_the_model_is_where_targets_lands(tmp_path):
     """`top:` names the module the run elaborates, `model:` the DUT.
 
     A formal verification often tops at a wrapper that binds the checker
@@ -277,9 +277,10 @@ def test_an_fpv_top_that_overrides_the_model_is_where_maps_to_lands(tmp_path):
 
     graph = build_config_tier(tmp_path)
     assert _nodes_by_type(graph, "test")["test:fpv/blk#safety"]["toplevel"] == "blk_fv"
-    assert ("test:fpv/blk#safety", "module:blk_fv") in _links_of_type(graph, "maps_to")
+    assert ("test:fpv/blk#safety", "module:blk_fv") in _links_of_type(graph, "targets")
     # The model still stitches to its own module — the two are different
-    # design-tier nodes and the run is attached to both.
+    # design-tier nodes and the run is attached to both, through two
+    # different verbs.  A `maps_to` never comes from a run.
     assert ("model:design/blk/models.yaml#blk", "module:blk") in _links_of_type(
         graph, "maps_to"
     )
@@ -430,25 +431,36 @@ def test_unknown_coverage_id_produces_no_edge(graph):
 # ---------------------------------------------------------------------------
 
 
-def test_maps_to_targets_design_tier_module_ids(graph):
+def test_the_three_stitches_target_design_tier_module_ids(graph):
+    """One relation, three source kinds, three edge types.
+
+    Every one of these points config -> design at a `module:<name>` id;
+    what the type adds is *which kind of config thing said so*, which is
+    the question consumers were otherwise re-deriving from the source
+    id's prefix.
+    """
+    # A model declares a module.
     assert _links_of_type(graph, "maps_to") == {
         ("model:design/blk_a/models.yaml#blk_a", "module:blk_a"),
         ("model:design/blk_b/models.yaml#blk_b", "module:blk_b"),
-        # A testbench with a declared `toplevel:` stitches the same way
-        # a model does — `rb graph build` exports that hierarchy rooted
-        # at the testbench, and this is where the metadata node meets it.
+    }
+    # A testbench with a declared `toplevel:` elaborates from one —
+    # `rb graph build` exports that hierarchy rooted at the testbench,
+    # and this is where the metadata node meets it.
+    assert _links_of_type(graph, "elaborates_as") == {
         ("tb:verif/blk_a#tb_cocotb", "module:blk_a"),
-        # A non-simulation run's `top:` is the same relation: the module
-        # the run elaborates. For synth/cdc it is the model's own name;
-        # for fpv it may be a wrapper the checker binds into (see
-        # test_an_fpv_top_that_overrides_the_model_is_where_maps_to_lands).
+    }
+    # A non-simulation run runs against one. For synth/cdc it is the
+    # model's own name; for fpv it may be a wrapper the checker binds
+    # into (see test_an_fpv_top_that_overrides_the_model_is_where_targets_lands).
+    assert _links_of_type(graph, "targets") == {
         ("test:impl/blk_a#blk_a_generic", "module:blk_a"),
         ("test:impl/blk_a#blk_a_lint", "module:blk_a"),
         ("test:fpv/blk_a#blk_a_safety", "module:blk_a"),
     }
 
 
-def test_a_testbench_without_a_toplevel_gets_no_maps_to(graph):
+def test_a_testbench_without_a_toplevel_gets_no_elaborates_as(graph):
     """Guessing the top from the testbench name would be inference.
 
     The config tier is pure config readback — every link it emits is
@@ -463,7 +475,7 @@ def test_a_testbench_without_a_toplevel_gets_no_maps_to(graph):
     sourced = {
         link["source"]
         for link in graph["links"]
-        if link["type"] == "maps_to" and link["source"].startswith("tb:")
+        if link["type"] == "elaborates_as" and link["source"].startswith("tb:")
     }
     assert sourced == declared
 

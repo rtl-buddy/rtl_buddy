@@ -349,7 +349,7 @@ def test_path_reports_the_edges_it_walked(graph_project: Path):
 
 
 def test_path_crosses_the_config_to_design_stitch(graph_project: Path):
-    """`maps_to` is the whole point of one id namespace."""
+    """The config->design stitch is the whole point of one id namespace."""
     graph_json = _build(graph_project)
     _with_design_tier(graph_json)
     ctx = load_context(graph_project)
@@ -386,9 +386,10 @@ def test_explain_resolves_both_edge_directions_and_the_result(graph_project: Pat
 def test_explain_hands_back_a_runnable_source_snippet_command(graph_project: Path):
     """Locate in the graph, cite from source — the payload does half.
 
-    ``-c`` comes from the config tier's ``maps_to`` edge. Without it the
-    command only runs from the models.yaml's own directory, which is not
-    a citation an agent invoked from the project root can use.
+    ``-c`` comes from the config tier's ``maps_to`` edge — the *model*
+    stitch. Without it the command only runs from the models.yaml's own
+    directory, which is not a citation an agent invoked from the project
+    root can use.
     """
     graph_json = _build(graph_project)
     _with_design_tier(graph_json)
@@ -405,7 +406,14 @@ def test_explain_hands_back_a_runnable_source_snippet_command(graph_project: Pat
 def test_the_cite_command_omits_c_when_no_model_declares_the_module(
     graph_project: Path,
 ):
-    """A design tier exported without a config tier still cites its file."""
+    """A design tier exported without a config tier still cites its file.
+
+    Dropping only ``maps_to`` leaves the fixture's ``elaborates_as`` edge
+    into ``module:blk_a`` standing, so this also pins the reason the
+    stitch is three verbs and not one: a testbench points at the same
+    module from a ``tests.yaml``, and a ``-c`` filled in from *that*
+    would hand back a command that cannot run.
+    """
     graph_json = _build(graph_project)
     _with_design_tier(graph_json)
     graph = json.loads(graph_json.read_text())

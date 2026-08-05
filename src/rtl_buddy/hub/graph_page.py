@@ -40,12 +40,14 @@ import os
 from pathlib import Path
 
 from ..graph.config_tier import (
+    ELABORATES_AS,
     FLOW_CDC,
     FLOW_FPGA,
     FLOW_FPV,
     FLOW_SIM,
     FLOW_SYNTH,
     GRAPH_JSON_NAME,
+    MAPS_TO,
 )
 from ..graph.build import QUALIFIER_SEP
 from ..graph.merge import rel_path
@@ -145,10 +147,12 @@ def _tb_hierarchy_suites(nodes: list[dict], links: list[dict]) -> dict[str, str]
 
     1. ``qualified_by`` — set by the build on any id two files claimed, and
        its value already *is* the suite directory.
-    2. A module a ``tb:`` node ``maps_to`` is that testbench's root, unless
-       a ``model:`` node maps to it too: a cocotb or SystemC testbench tops
-       at the DUT itself, and a module a ``models.yaml`` declares is design
-       whatever else elaborates it.
+    2. A module a ``tb:`` node ``elaborates_as`` is that testbench's root,
+       unless a ``model:`` node ``maps_to`` it too: a cocotb or SystemC
+       testbench tops at the DUT itself, and a module a ``models.yaml``
+       declares is design whatever else elaborates it. The two stitches are
+       separate edge types (#376), so the source kind is read off the edge
+       rather than off the id prefix.
     3. An ``inst:<root>/<path>`` id embeds the root it was reached from, so
        every instance under a testbench root belongs to that testbench.
 
@@ -172,11 +176,11 @@ def _tb_hierarchy_suites(nodes: list[dict], links: list[dict]) -> dict[str, str]
         source, target = link.get("source"), link.get("target")
         if not isinstance(source, str) or not isinstance(target, str):
             continue
-        if link.get("type") == "maps_to" and source.startswith("model:"):
+        if link.get("type") == MAPS_TO and source.startswith("model:"):
             model_targets.add(target)
     for link in links:
         source, target = link.get("source"), link.get("target")
-        if link.get("type") != "maps_to" or not isinstance(source, str):
+        if link.get("type") != ELABORATES_AS or not isinstance(source, str):
             continue
         if not source.startswith("tb:") or not isinstance(target, str):
             continue

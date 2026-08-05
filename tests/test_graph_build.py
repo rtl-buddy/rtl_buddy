@@ -579,12 +579,12 @@ def test_build_merges_design_and_config_and_writes_both_files(
     graph = json.loads(build.graph_path.read_text())
     nodes = _nodes(graph)
 
-    # Both tiers landed, and the config tier's maps_to target resolves to
+    # Both tiers landed, and the config tier's `maps_to` target resolves to
     # the design tier's module node — the whole point of the merge.
     assert "module:blk_a" in nodes and "module:blk_b" in nodes
     assert "model:design/blk_a/models.yaml#blk_a" in nodes
     # The design tier is the only tier that *defines* a module node; the
-    # config tier only points maps_to at it, so a resolved stitch shows up
+    # config tier only points its stitches at it, so a resolved stitch shows up
     # as an empty dangling list, not as a shared node.
     assert nodes["module:blk_a"]["tier"] == "design"
     assert dangling_targets(graph) == []
@@ -910,7 +910,7 @@ def test_tb_export_is_rooted_at_the_tb_top_and_welds_to_the_dut(
     assert design.extra["testbenches"] == ["verif/blk_a#tb_hdl"]
 
 
-def test_tb_node_maps_to_the_top_the_viewer_elaborated(
+def test_tb_node_elaborates_as_the_top_the_viewer_elaborated(
     graph_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """`tb_hdl` declares no `toplevel:`; the viewer's answer is the fact.
@@ -931,11 +931,19 @@ def test_tb_node_maps_to_the_top_the_viewer_elaborated(
     stitches = {
         (link["source"], link["target"])
         for link in graph["links"]
-        if link["type"] == "maps_to" and link["source"].startswith("tb:")
+        if link["type"] == "elaborates_as" and link["source"].startswith("tb:")
     }
     assert ("tb:verif/blk_a#tb_hdl", "module:tb_top") in stitches
     assert "module:tb_top" in _nodes(graph)
     assert not dangling_targets(graph)
+    # The testbench's verb is its own: a `tb:` node never emits `maps_to`,
+    # which is what lets a reader tell a declaration of a module from an
+    # elaboration of one without parsing the source id.
+    assert not [
+        link
+        for link in graph["links"]
+        if link["type"] == "maps_to" and not link["source"].startswith("model:")
+    ]
 
 
 def test_declared_toplevel_stitches_without_an_export(
@@ -955,7 +963,8 @@ def test_declared_toplevel_stitches_without_an_export(
     assert {
         (link["source"], link["target"])
         for link in graph["links"]
-        if link["type"] == "maps_to" and link["source"] == "tb:verif/blk_a#tb_cocotb"
+        if link["type"] == "elaborates_as"
+        and link["source"] == "tb:verif/blk_a#tb_cocotb"
     } == {("tb:verif/blk_a#tb_cocotb", "module:blk_a")}
 
 
