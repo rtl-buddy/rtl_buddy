@@ -8,6 +8,12 @@ The home for rtl_buddy behavior that does not follow convention: quirks, surpris
 
 Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one `##` section per quirk, name it after the behavior, and say what to do about it.
 
+## v6.26.0's `rtl_buddy[graph-extract]` extra fails at pip/uv resolution
+
+The v6.26.0 wheel advertises a `graph-extract` extra whose dependency, `rtl-buddy-graph-extract`, has no PyPI release yet — so `pip install "rtl_buddy[graph-extract]"` (or `uv add "rtl_buddy[graph-extract]"`) fails with a resolution error on that version. Nothing is wrong with your environment.
+
+Workaround on v6.26.0: install rtl_buddy without the extra and add the extractor directly with `uv pip install git+https://github.com/rtl-buddy/rtl-buddy-graph-extract` — `rb graph build` discovers it on PATH; without it the binding tier is simply reported as skipped. Later releases do not advertise the extra at all (the dependency moved to an unpublished dev group); it will return as a real extra once the extractor's first PyPI release lands.
+
 ## Coverage follows the platform builder, not a per-test/suite `builder:`
 
 A test can pick its simulator with a per-test or suite-wide `builder:` (see [Selecting the simulator builder](reference/yaml.md#selecting-the-simulator-builder)), but coverage collection and reporting — `rb test --coverage`, the Coverview packer, and the `builder`/`simulator_family` labels on coverage artifacts — key off the **platform-selected** builder, not the test's effective one. When a test's effective builder differs from the platform default *and* no `--builder` override is in effect, the coverage layer can mislabel or misparse results.

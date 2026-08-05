@@ -121,17 +121,6 @@ exclude = ["src/rtl_buddy/docs"]
 "docs" = "rtl_buddy/docs"
 
 [dependency-groups]
-# The bundled binding-tier extractor for `rb graph build` (#391): the
-# clean-room implementation of the extract contract. A subprocess tool,
-# not a library import. Deliberately a dependency GROUP and not a
-# `[project.optional-dependencies]` extra: no PyPI release of the
-# extractor exists yet, and groups stay out of published wheel
-# metadata, so the wheel never advertises `rtl_buddy[graph-extract]`
-# as something pip could satisfy. Downstream users install the tool
-# with `uv pip install git+https://github.com/rtl-buddy/rtl-buddy-graph-extract`
-# (same command as the tool-check install hint) until the first PyPI
-# release (rtl-buddy-graph-extract#1) promotes this to a real extra.
-graph-extract = ["rtl-buddy-graph-extract"]
 docs = [
   "mkdocs>=1.6.0",
   "mkdocs-material>=9.5.0",
@@ -149,6 +138,22 @@ test = [
   # extra must not see red), but the skip must not be the CI outcome.
   "mcp>=1.2.0",
 ]
+# The bundled binding-tier extractor for `rb graph build` (#391): the
+# clean-room implementation of the extract contract. A subprocess tool,
+# not a library import. Deliberately a dependency GROUP and not a
+# `[project.optional-dependencies]` extra: no PyPI release of the
+# extractor exists yet, and groups stay out of published wheel
+# metadata, so the wheel never advertises `rtl_buddy[graph-extract]`
+# as something pip could satisfy (guarded by
+# test_graph_extract_is_an_unpublished_dependency_group, which is also
+# the reminder to flip this when the first PyPI release lands —
+# rtl-buddy-graph-extract#1). Downstream users install the tool with
+# `uv pip install git+https://github.com/rtl-buddy/rtl-buddy-graph-extract`
+# (same command as the tool-check install hint). Deliberately NOT in
+# the composite `dev` group below: an optional subprocess tool, not
+# part of the baseline dev env — the two real-binary tests skip
+# without it, and `uv sync --group graph-extract` opts in.
+graph-extract = ["rtl-buddy-graph-extract"]
 dev = [
   { include-group = "docs" },
   { include-group = "lint" },
