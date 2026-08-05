@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,6 +30,42 @@ from ..logging_utils import log_event, task_status
 from ..process_utils import run_managed_process
 
 logger = logging.getLogger(__name__)
+
+#: ``rtl-buddy-view --version`` prints ``rtl-buddy-view <version>``.
+#: Unlike ``tool_manifest``'s probe this keeps the **whole** version
+#: token, dev suffix included: the manifest only needs to compare
+#: ``X.Y.Z`` against a floor, but a per-feature gate has to tell an
+#: editable ``0.3.1.dev1+g<sha>`` build (which may well carry the
+#: feature) apart from a released ``0.3.1`` (which cannot).
+_VIEW_VERSION_RE = re.compile(r"rtl-buddy-view\s+(\S+)")
+
+#: Seconds to wait for the version probe. A viewer that cannot answer
+#: ``--version`` promptly is treated as unprobeable, not as a failure.
+_VERSION_PROBE_TIMEOUT = 30
+
+
+def probe_view_version(executable: str = "rtl-buddy-view") -> str | None:
+    """Full version string reported by ``<executable> --version``.
+
+    ``None`` when the binary is missing, too old to know the flag, or
+    prints something unrecognizable. Callers must treat ``None`` as
+    "unknown", never as "too old" — a pre-0.2.1 viewer has no
+    ``--version`` at all, and refusing to run on that basis would be a
+    guess where the subsequent invocation's exit code is the real answer.
+    """
+    try:
+        proc = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=_VERSION_PROBE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    match = _VIEW_VERSION_RE.search((proc.stdout or "") + (proc.stderr or ""))
+    return match.group(1) if match else None
 
 
 def _is_non_source_filelist_line(line: str) -> bool:
@@ -316,6 +353,116 @@ class RtlBuddyView:
             returncode=proc.returncode,
         )
         return proc.returncode
+
+
+class RtlBuddyViewGraph(RtlBuddyView):
+    """Generates a filelist + invokes ``rtl-buddy-view graph``.
+
+    The **design tier** of the knowledge graph (rtl_buddy#375 /
+    rtl-buddy-view#126): module / instance / port / parameter /
+    interface / modport nodes written as node-link JSON, plus the
+    viewer's own ``graph-meta.json`` provenance sidecar beside it.
+
+    Shares ``rb hier``'s ``artefacts/hier/<model>/hier.f`` — the input
+    to a graph export is exactly the input to a render, so generating a
+    second filelist would only create a way for the two to disagree.
+    The viewer's stdout is suppressed (we always pass ``--output``) and
+    its stderr is captured to ``graph.log`` next to the filelist.
+    """
+
+    _event_name = "graph_design"
+    _status_label = "graph export"
+    _stream_stderr = False
+
+    def __init__(
+        self,
+        name: str,
+        model_cfg: ModelConfig,
+        *,
+        suite_dir: str,
+        output: str,
+        project_root: str,
+        frontend: str | None = None,
+        executable: str = "rtl-buddy-view",
+    ):
+        super().__init__(
+            name,
+            model_cfg,
+            suite_dir=suite_dir,
+            output=output,
+            frontend=frontend,
+            executable=executable,
+        )
+        self.project_root = project_root
+
+    def _log_path(self) -> str:
+        return os.path.join(self.artefact_dir, "graph.log")
+
+    def log_path(self) -> str:
+        """Where the viewer's stderr lands, for citing in a failure report.
+
+        ``rb graph build`` records this in ``graph-meta.json`` when a
+        model fails to export, so the public accessor exists rather than
+        having the orchestrator reach for ``_log_path``.
+        """
+        return self._log_path()
+
+    def _event_fields(self) -> dict[str, object]:
+        return {"output": self.output}
+
+    def write_filelist(self) -> str:
+        """Generate the filelist without invoking the viewer.
+
+        ``rb graph build`` hashes the model's sources *before* deciding
+        whether an export is needed at all, and the filelist is where
+        that source list comes from. Writing it is cheap (no parse), and
+        :meth:`run` regenerates it identically, so calling this first
+        costs nothing and keeps the no-op check honest.
+        """
+        return self._write_filelist()
+
+    def source_files(self) -> list[str]:
+        """Absolute source paths in the generated filelist.
+
+        The filelist is written with ``strip=True``, so every non-empty,
+        non-comment line is a bare path — relative ones resolve against
+        the filelist's own directory, which is how the viewer reads them.
+        """
+        fl_path = self._filelist_path()
+        files: list[str] = []
+        try:
+            lines = Path(fl_path).read_text().splitlines()
+        except OSError:
+            return files
+        base = os.path.dirname(fl_path)
+        for line in lines:
+            entry = line.strip()
+            if not entry or entry.startswith("//") or entry.startswith("#"):
+                continue
+            files.append(os.path.abspath(os.path.join(base, entry)))
+        return files
+
+    def meta_path(self) -> str:
+        """Where the viewer writes its provenance sidecar for ``--output``."""
+        out = Path(self.output)
+        return str(out.with_name(f"{out.stem}-meta.json"))
+
+    def _build_cmd(self, fl_path: str) -> list[str]:
+        cmd = [
+            self.executable,
+            "graph",
+            "--filelist",
+            fl_path,
+            "--top",
+            self.model_cfg.name,
+            "--output",
+            str(self.output),
+            "--project-root",
+            self.project_root,
+        ]
+        if self.frontend is not None:
+            cmd += ["--frontend", self.frontend]
+        return cmd
 
 
 _QUERY_VERBS = (

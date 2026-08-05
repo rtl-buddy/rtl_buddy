@@ -66,6 +66,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
 │ tool-check         check installed tool dependencies and subcommand readiness        │
+│ graph              build the design knowledge graph                                  │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
 │ mut                mutation testing                                                  │
@@ -511,6 +512,84 @@ Usage: rtl-buddy tool-check [OPTIONS]
 │                                                      (default: yes)                  │
 │                                                      [default: probe-versions]       │
 │ --help                                               Show this message and exit.     │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph
+
+```text
+Usage: rtl-buddy graph [OPTIONS] COMMAND [ARGS]...                                     
+                                                                                        
+ build the design knowledge graph                                                       
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ build  extract every tier and merge them into artefacts/graph/graph.json             │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph build
+
+```text
+Usage: rtl-buddy graph build [OPTIONS]                                                 
+                                                                                        
+ extract every tier and merge them into artefacts/graph/graph.json                      
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --model                                                TEXT  model name to export in │
+│                                                              the design tier;        │
+│                                                              repeatable. Default:    │
+│                                                              every model declared    │
+│                                                              under --design-dir      │
+│ --regression            -c                             TEXT  regression.yaml whose   │
+│                                                              suites pin the models   │
+│                                                              to export (mutually     │
+│                                                              exclusive with --model) │
+│ --spec-dir                                             TEXT  directory searched for  │
+│                                                              specs.yaml              │
+│ --verif-dir                                            TEXT  directory searched for  │
+│                                                              tests.yaml              │
+│ --design-dir                                           TEXT  directory searched for  │
+│                                                              models.yaml             │
+│ --out-dir               -o                             TEXT  output directory        │
+│                                                              (default: <project      │
+│                                                              root>/artefacts/graph)  │
+│ --frontend                                             TEXT  viewer parser frontend  │
+│                                                              (verible|slang)         │
+│ --design                    --no-design                      run the rtl-buddy-view  │
+│                                                              design tier (default    │
+│                                                              on)                     │
+│                                                              [default: design]       │
+│ --graphify                  --no-graphify                    run Graphify's binding  │
+│                                                              tier when it is         │
+│                                                              installed               │
+│                                                              [default: graphify]     │
+│ --graphify-llm                                               opt into Graphify's LLM │
+│                                                              pass — sends verif      │
+│                                                              Python and spec         │
+│                                                              markdown to its         │
+│                                                              configured model. Off   │
+│                                                              by default              │
+│ --graphify-cross-check      --no-graphify-cross-ch…          cross-check the         │
+│                                                              internal merge against  │
+│                                                              `graphify merge-graphs` │
+│                                                              when Graphify is        │
+│                                                              installed               │
+│                                                              [default:               │
+│                                                              graphify-cross-check]   │
+│ --force                                                      rebuild even when no    │
+│                                                              input changed           │
+│ --strict                                                     exit non-zero on any    │
+│                                                              per-item failure, not   │
+│                                                              just a dead tier        │
+│ --tool                                                 TEXT  path to the             │
+│                                                              rtl-buddy-view binary   │
+│                                                              [default:               │
+│                                                              rtl-buddy-view]         │
+│ --help                                                       Show this message and   │
+│                                                              exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

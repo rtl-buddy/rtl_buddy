@@ -791,6 +791,34 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('first_type')} and {fields.get('second_type')} — "
                 "keeping the first; rename one so the id is unique"
             )
+        case "graph_build.design_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for model {fields.get('model')} — "
+                f"that model's modules, instances and ports are missing from "
+                f"the graph; see {fields.get('log')}"
+            )
+        case "graph_build.graphify_failed":
+            return (
+                f"graph build: the graphify binding tier failed "
+                f"({fields.get('detail')}) — the design + config tiers were "
+                "still merged and written"
+            )
+        case "graph_build.graphify_merge_mismatch":
+            return (
+                f"graph build: `graphify merge-graphs` disagrees with the "
+                f"internal merge ({fields.get('only_internal')} nodes only "
+                f"ours, {fields.get('only_graphify')} only theirs) — the "
+                "internal merge is what was written; see graph-meta.json "
+                "merge.graphify_cross_check"
+            )
+        case "graph_merge.node_type_conflict":
+            return (
+                f"graph: node id {fields.get('node')!r} is a "
+                f"{fields.get('first_type')} in one tier and a "
+                f"{fields.get('second_type')} in {fields.get('tier')} — "
+                "keeping the first; the two tiers disagree about what that id means"
+            )
         case _:
             # Fallback: converts "foo.bar" → "foo bar" and appends select fields.
             # This is fine for DEBUG/INFO events. Events logged at WARNING or above

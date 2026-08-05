@@ -622,9 +622,25 @@ def _builtin_manifest() -> list[ToolSpec]:
             install_hint={
                 "any": "uv tool install rtl-buddy-view  (or pip install rtl-buddy-view)",
             },
-            used_by=("hier", "hier-query", "hub"),
+            used_by=("hier", "hier-query", "graph", "hub"),
             optional=False,
             description="Hierarchy viewer + JSON exporter for rtl_buddy",
+        ),
+        ToolSpec(
+            name="graphify",
+            binaries=("graphify",),
+            version_cmd=("graphify", "--version"),
+            version_regex=r"([\d.]+)",
+            minimum_version=None,
+            detection=(PathDetector(), PythonPackageDetector("graphify")),
+            install_hint={
+                "any": "install the Graphify CLI (optional — rb graph build "
+                "writes the design + config tiers without it)",
+            },
+            used_by=("graph",),
+            optional=True,
+            description="Graphify — binding-tier extraction over verif Python "
+            "and spec markdown for rb graph build",
         ),
         ToolSpec(
             name="rtl-buddy-cdc",

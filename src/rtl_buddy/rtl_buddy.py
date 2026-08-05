@@ -28,6 +28,8 @@ from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
+from .graph import build as graph_build_mod
+from .graph import graphify as graphify_mod
 from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
@@ -95,7 +97,11 @@ from .tools.axi_profile_rtl_buddy import (
 )
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
-from .tools.hier_rtl_buddy_view import RtlBuddyView, RtlBuddyViewQuery
+from .tools.hier_rtl_buddy_view import (
+    RtlBuddyView,
+    RtlBuddyViewQuery,
+    probe_view_version,
+)
 from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
@@ -233,6 +239,24 @@ class RtlBuddy:
             "(find-module, subtree, instances-of, port-connections, "
             "source-snippet); JSON on stdout",
         )(self.do_cmd_hier_query)
+        self.graph_app = typer.Typer(
+            help=(
+                "design knowledge graph: one queryable graph.json stitching "
+                "the design tier (rtl-buddy-view), the config tier "
+                "(tests/models/specs) and, when installed, Graphify's "
+                "binding tier"
+            ),
+            no_args_is_help=True,
+        )
+        self.graph_app.command(
+            "build",
+            help="extract every tier and merge them into artefacts/graph/graph.json",
+        )(self.do_graph_build)
+        self.app.add_typer(
+            self.graph_app,
+            name="graph",
+            help="build the design knowledge graph",
+        )
         self.axi_profile_app.command(
             "run",
             help="ingest a test's FST and emit per-test axi-perf.json",
@@ -3254,6 +3278,252 @@ class RtlBuddy:
             executable=tool,
         )
         raise typer.Exit(runner.run())
+
+    def _graph_models(
+        self,
+        ctx: ExecutionContext,
+        *,
+        model: list[str] | None,
+        regression: str | None,
+        design_dir: str,
+    ) -> list[ModelConfig] | None:
+        """Resolve ``rb graph build``'s model selection.
+
+        ``None`` means "whatever is under ``design_dir``" and is left for
+        :func:`~rtl_buddy.graph.build.build_graph` to expand, so the
+        default path has exactly one implementation.
+        """
+        if model and regression:
+            raise FatalRtlBuddyError(
+                "graph build: --model and --regression are mutually exclusive; "
+                "--regression already pins the models its suites run"
+            )
+        if regression:
+            return graph_build_mod.models_from_regression(ctx.resolve_input(regression))
+        if not model:
+            return None
+
+        available = graph_build_mod.models_from_design_tree(design_dir)
+        by_name: dict[str, ModelConfig] = {}
+        for cfg in available:
+            by_name.setdefault(cfg.name, cfg)
+        missing = [name for name in model if name not in by_name]
+        if missing:
+            known = ", ".join(sorted(by_name)) or "(none)"
+            raise FatalRtlBuddyError(
+                f"graph build: unknown model(s): {', '.join(missing)}; "
+                f"models found under {design_dir}: {known}"
+            )
+        # Preserve the user's order but drop repeats.
+        selected: list[ModelConfig] = []
+        for name in model:
+            cfg = by_name[name]
+            if cfg not in selected:
+                selected.append(cfg)
+        return selected
+
+    def do_graph_build(
+        self,
+        model: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--model",
+                help=(
+                    "model name to export in the design tier; repeatable. "
+                    "Default: every model declared under --design-dir"
+                ),
+            ),
+        ] = None,
+        regression: Annotated[
+            str | None,
+            typer.Option(
+                "-c",
+                "--regression",
+                help=(
+                    "regression.yaml whose suites pin the models to export "
+                    "(mutually exclusive with --model)"
+                ),
+            ),
+        ] = None,
+        spec_dir: Annotated[
+            str | None,
+            typer.Option("--spec-dir", help="directory searched for specs.yaml"),
+        ] = None,
+        verif_dir: Annotated[
+            str | None,
+            typer.Option("--verif-dir", help="directory searched for tests.yaml"),
+        ] = None,
+        design_dir: Annotated[
+            str | None,
+            typer.Option("--design-dir", help="directory searched for models.yaml"),
+        ] = None,
+        out_dir: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--out-dir",
+                help="output directory (default: <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        frontend: Annotated[
+            str | None,
+            typer.Option("--frontend", help="viewer parser frontend (verible|slang)"),
+        ] = None,
+        design: Annotated[
+            bool,
+            typer.Option(
+                "--design/--no-design",
+                help="run the rtl-buddy-view design tier (default on)",
+            ),
+        ] = True,
+        graphify: Annotated[
+            bool,
+            typer.Option(
+                "--graphify/--no-graphify",
+                help="run Graphify's binding tier when it is installed",
+            ),
+        ] = True,
+        graphify_llm: Annotated[
+            bool,
+            typer.Option(
+                "--graphify-llm",
+                help=(
+                    "opt into Graphify's LLM pass — sends verif Python and "
+                    "spec markdown to its configured model. Off by default"
+                ),
+            ),
+        ] = False,
+        graphify_cross_check: Annotated[
+            bool,
+            typer.Option(
+                "--graphify-cross-check/--no-graphify-cross-check",
+                help=(
+                    "cross-check the internal merge against "
+                    "`graphify merge-graphs` when Graphify is installed"
+                ),
+            ),
+        ] = True,
+        force: Annotated[
+            bool,
+            typer.Option("--force", help="rebuild even when no input changed"),
+        ] = False,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help="exit non-zero on any per-item failure, not just a dead tier",
+            ),
+        ] = False,
+        tool: Annotated[
+            str,
+            typer.Option("--tool", help="path to the rtl-buddy-view binary"),
+        ] = "rtl-buddy-view",
+    ):
+        """
+        extract the design, config and (optional) binding tiers and merge
+        them into artefacts/graph/graph.json
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root)
+        search_design = (
+            str(ctx.resolve_input(design_dir))
+            if design_dir is not None
+            else os.path.join(root, "design")
+        )
+        models = self._graph_models(
+            ctx, model=model, regression=regression, design_dir=search_design
+        )
+
+        # Version-gate the viewer the way `rb hier-query` gates on
+        # rtl-buddy-view >= 0.3.0: probe once here, hand the answer to
+        # build_graph so the same string lands in the fingerprint (a
+        # viewer upgrade must invalidate the cached design tier).
+        view_version = probe_view_version(tool) if design else None
+        gfy_status = graphify_mod.graphify_status(self.root_cfg) if graphify else None
+        graphify_version = None
+        if gfy_status is not None and gfy_status.status != "missing":
+            # A found-but-unprobeable Graphify still runs; "unknown" keeps
+            # it in the fingerprint so a later probe-able upgrade
+            # invalidates the cache instead of silently reusing it.
+            graphify_version = gfy_status.version or "unknown"
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_build",
+            command="graph build",
+            models=len(models) if models is not None else None,
+            design=design,
+            graphify=graphify_version is not None,
+            force=force,
+        )
+
+        build = graph_build_mod.build_graph(
+            root,
+            models=models,
+            spec_dir=str(ctx.resolve_input(spec_dir)) if spec_dir else None,
+            verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
+            design_dir=search_design,
+            out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
+            view_executable=tool,
+            view_version=view_version,
+            frontend=frontend,
+            design=design,
+            graphify_enabled=graphify,
+            graphify_llm=graphify_llm,
+            graphify_cross_check=graphify_cross_check,
+            graphify_version=graphify_version,
+            force=force,
+        )
+
+        exit_code = 0
+        if build.failed_tiers() or (strict and build.has_failures()):
+            exit_code = 1
+
+        if self.machine:
+            self._emit_machine_result(
+                "graph build", exit_code, **build.payload(Path(root))
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title="Design Knowledge Graph",
+            columns=[
+                ("tier", "Tier"),
+                ("status", "Status"),
+                ("nodes", "Nodes"),
+                ("links", "Links"),
+                ("detail", "Detail"),
+            ],
+            rows=[
+                {
+                    "tier": t.tier,
+                    "status": t.status,
+                    "nodes": str(t.nodes),
+                    "links": str(t.links),
+                    "detail": t.detail
+                    or (f"{len(t.failures)} failed" if t.failures else "-"),
+                }
+                for t in build.tiers
+            ],
+            logger=logger,
+        )
+        verb = "unchanged" if build.unchanged else "wrote"
+        emit_console_text(
+            f"{verb} {os.path.relpath(build.graph_path, root)}: "
+            f"{build.nodes} nodes, {build.links} links "
+            f"({build.merge.get('stitch_points', 0)} stitch points)",
+            stream="stdout",
+        )
+        dangling = build.merge.get("dangling") or []
+        if dangling:
+            emit_console_text(
+                f"dangling link targets ({len(dangling)}): "
+                f"{', '.join(dangling[:5])}"
+                f"{' ...' if len(dangling) > 5 else ''}",
+                style="yellow",
+            )
+        raise typer.Exit(exit_code)
 
     def do_cmd_axi_profile_discover(
         self,
