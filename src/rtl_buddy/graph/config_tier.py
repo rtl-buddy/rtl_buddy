@@ -10,9 +10,17 @@ design <-> verif <-> spec relationships (``testbench:``, ``model:``,
 them into graph nodes and edges *deterministically* — every link is
 tagged ``EXTRACTED``, nothing is inferred by an LLM.
 
+The repo-level regression files (``regression.yaml``,
+``synth_regression.yaml``, ``fpv_regression.yaml``, ``cdc_regression.yaml``,
+``fpga_regression.yaml``) add the one thing a suite config cannot say about
+itself: which *flow* runs it. Every suite, test and testbench node carries a
+``flow`` stamp, and the non-simulation flows' suites — which no ``verif/``
+walk would ever reach — become nodes of the same three types.
+
 Everything here reads through the existing loaders
 (:mod:`rtl_buddy.config.spec`, :mod:`~rtl_buddy.config.model`,
-:mod:`~rtl_buddy.config.suite`) and the discovery helpers in
+:mod:`~rtl_buddy.config.suite`, and each flow's ``*RegConfig``) and the
+discovery helpers in
 :mod:`rtl_buddy.tools.spec_trace` that ``rb spec check-coverage`` and
 ``rb spec check-design`` use, so the graph cannot disagree with those
 commands. There is no second YAML parser.
@@ -39,8 +47,13 @@ from pathlib import Path
 
 from serde.yaml import from_yaml
 
+from ..config.cdc import CdcRegConfig
+from ..config.fpga import FpgaRegConfig
+from ..config.fpv import FpvRegConfig
+from ..config.reg import RegConfig
 from ..config.spec import SpecBlock, SpecConfig
 from ..config.suite import SuiteConfig, SuiteConfigFile
+from ..config.synth import SynthRegConfig
 from ..config.test import TestbenchConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
@@ -78,6 +91,62 @@ _SKIP_DIRS = frozenset(
 
 #: Largest verif source file read during the golden-model reference scan.
 _MAX_SCAN_BYTES = 1 << 20
+
+# ---------------------------------------------------------------------------
+# Flow provenance
+#
+# A project runs the same design through several flows, and each has its own
+# repo-level regression file listing the suites it owns. Those files are the
+# only place that says "this suite is a formal suite, that one is a CDC
+# suite" — a `tests.yaml` on its own does not know. Reading them here turns
+# `flow` into a node attribute, which is what lets a consumer (the hub pane,
+# #382) group by flow instead of by tier.
+# ---------------------------------------------------------------------------
+
+#: Simulation. `tests.yaml` suites under `verif/`, listed by `regression.yaml`.
+FLOW_SIM = "sim"
+#: Synthesis. `synth.yaml` suites, listed by `synth_regression.yaml`.
+FLOW_SYNTH = "synth"
+#: Formal property verification. `fpv.yaml` / `fpv_regression.yaml`.
+FLOW_FPV = "fpv"
+#: CDC lint. `cdc.yaml` / `cdc_regression.yaml`.
+FLOW_CDC = "cdc"
+#: FPGA implementation. `fpga.yaml` / `fpga_regression.yaml`.
+FLOW_FPGA = "fpga"
+
+#: Flow assumed for a suite no repo-level regression file claims. A
+#: `tests.yaml` that simply is not wired into `regression.yaml` yet is still
+#: a simulation suite, and dropping it into an "unknown" bucket would hide
+#: the suites a project is in the middle of adding.
+DEFAULT_FLOW = FLOW_SIM
+
+
+@dataclass(frozen=True)
+class _FlowSource:
+    """One repo-level regression file and how to walk what it lists.
+
+    ``entries`` is the accessor on each listed suite config that returns
+    that flow's runs (``get_syntheses``, ``get_verifications``, ...). The
+    simulation flow leaves it empty: its suites are already emitted by the
+    ``verif/`` walk, so ``regression.yaml`` only contributes the stamp.
+    """
+
+    flow: str
+    filename: str
+    loader: type
+    entries: str = ""
+
+
+#: The five flows, in the order they are read. Discovery is by filename at
+#: the project root — the same convention `rb <flow>-regression` uses when
+#: no `-c` is passed.
+FLOW_SOURCES: tuple[_FlowSource, ...] = (
+    _FlowSource(FLOW_SIM, "regression.yaml", RegConfig),
+    _FlowSource(FLOW_SYNTH, "synth_regression.yaml", SynthRegConfig, "get_syntheses"),
+    _FlowSource(FLOW_FPV, "fpv_regression.yaml", FpvRegConfig, "get_verifications"),
+    _FlowSource(FLOW_CDC, "cdc_regression.yaml", CdcRegConfig, "get_analyses"),
+    _FlowSource(FLOW_FPGA, "fpga_regression.yaml", FpgaRegConfig, "get_runs"),
+)
 
 
 def _tool_version() -> str:
@@ -242,6 +311,76 @@ def _rel(project_root: Path, path: str | os.PathLike) -> str:
 def default_graph_dir(project_root: str | os.PathLike) -> Path:
     """``<project root>/artefacts/graph`` — the contracted output dir."""
     return Path(project_root) / "artefacts" / "graph"
+
+
+# ---------------------------------------------------------------------------
+# Flow discovery
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Flows:
+    """What the repo-level regression files said.
+
+    Attributes:
+      by_suite (dict[str, list[str]]): suite dir (repo-relative) -> the
+        flows that claim it, in :data:`FLOW_SOURCES` order.
+      suites (list[tuple[str, object, str]]): ``(flow, suite config,
+        entries accessor)`` for the non-simulation flows, whose suites are
+        not reachable from the ``verif/`` walk and must be emitted here.
+      inputs (list[str]): every file read, for the input hashes.
+      failures (list[str]): regression files that would not load.
+    """
+
+    by_suite: dict[str, list[str]] = dc_field(default_factory=dict)
+    suites: list[tuple[str, object, str]] = dc_field(default_factory=list)
+    inputs: list[str] = dc_field(default_factory=list)
+    failures: list[str] = dc_field(default_factory=list)
+
+
+def _collect_flows(project_root: Path) -> _Flows:
+    """Read every repo-level regression file that exists.
+
+    Loading goes through each flow's own ``*RegConfig``, which is the same
+    class ``rb <flow>-regression`` constructs — so a suite this says is a
+    CDC suite is one ``rb cdc-regression`` would actually run. A file that
+    will not load is recorded and skipped: flow provenance is a labelling
+    nicety, and losing it must not cost a project its whole graph.
+    """
+    flows = _Flows()
+    for source in FLOW_SOURCES:
+        path = project_root / source.filename
+        if not path.is_file():
+            continue
+        flows.inputs.append(str(path))
+        try:
+            reg = source.loader(name=f"graph/{source.flow}", path=str(path))
+        except Exception:
+            log_event(
+                logger,
+                logging.WARNING,
+                "graph_config.regression_load_failed",
+                flow=source.flow,
+                path=str(path),
+            )
+            flows.failures.append(_rel(project_root, path))
+            continue
+        for suite_cfg in reg.get_suite_configs():
+            suite_path = suite_cfg.get_path()
+            suite_rel = _rel(project_root, os.path.dirname(suite_path))
+            claimed = flows.by_suite.setdefault(suite_rel, [])
+            if source.flow not in claimed:
+                claimed.append(source.flow)
+            if source.entries:
+                flows.inputs.append(suite_path)
+                flows.suites.append((source.flow, suite_cfg, source.entries))
+    return flows
+
+
+def _flow_attr(by_suite: dict[str, list[str]], suite_rel: str) -> str | list[str]:
+    """The ``flow`` stamp for one suite: a string, or a list when shared."""
+    claimed = by_suite.get(suite_rel) or [DEFAULT_FLOW]
+    return claimed[0] if len(claimed) == 1 else list(claimed)
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +596,7 @@ def _add_testbench_node(
     suite_node: str,
     tests_rel: str,
     tb: TestbenchConfig,
+    flow: str | list[str],
 ) -> str:
     node = gb.add_node(
         testbench_id(suite_rel, tb.get_name()),
@@ -466,6 +606,11 @@ def _add_testbench_node(
         toplevel=tb.toplevel,
         kind=_testbench_kind(tb),
         cocotb_modules=tb.cocotb.get_modules() if tb.is_cocotb() else None,
+        # `kind` already says cocotb; `cocotb` is the flat boolean a
+        # consumer can test on a test node and a testbench node alike,
+        # without knowing which attribute each type spells it with.
+        cocotb=True if tb.is_cocotb() else None,
+        flow=flow,
     )
     gb.add_link(suite_node, node, "declares")
     # The testbench↔design stitch, the same `maps_to` the model node
@@ -504,6 +649,7 @@ def _add_suite_nodes(
     project_root: Path,
     verif_dir: str,
     cov_owners: dict[str, list[str]],
+    by_suite: dict[str, list[str]],
 ) -> list[str]:
     """Emit suites, testbenches, tests and everything hanging off them.
 
@@ -526,21 +672,23 @@ def _add_suite_nodes(
             continue
 
         tests_rel = _rel(project_root, path)
+        flow = _flow_attr(by_suite, suite_rel)
         suite_node = gb.add_node(
             suite_id(suite_rel),
             "suite",
             os.path.basename(suite_rel) or suite_rel,
             file=tests_rel,
+            flow=flow,
         )
 
         declared = _declared_testbenches(path)
         if declared is not None:
             for tb in declared:
-                _add_testbench_node(gb, suite_rel, suite_node, tests_rel, tb)
+                _add_testbench_node(gb, suite_rel, suite_node, tests_rel, tb, flow)
 
         for test in suite.get_tests():
             tb_node = _add_testbench_node(
-                gb, suite_rel, suite_node, tests_rel, test.get_testbench()
+                gb, suite_rel, suite_node, tests_rel, test.get_testbench(), flow
             )
             model = test.get_model()
             model_node = _add_model_node(gb, project_root, model.path, model)
@@ -558,6 +706,8 @@ def _add_suite_nodes(
                 cocotb_modules=test.get_testbench().cocotb.get_modules()
                 if test.get_testbench().is_cocotb()
                 else None,
+                cocotb=True if test.get_testbench().is_cocotb() else None,
+                flow=flow,
                 xfail=test.is_xfail() or None,
             )
             gb.add_link(suite_node, test_node, "declares")
@@ -584,6 +734,57 @@ def _add_suite_nodes(
                     )
 
     return failures
+
+
+def _add_flow_suite_nodes(
+    gb: _GraphBuilder,
+    project_root: Path,
+    flows: _Flows,
+) -> None:
+    """Emit the non-simulation flows' suites and runs.
+
+    A `synth.yaml` / `fpv.yaml` / `cdc.yaml` / `fpga.yaml` is a suite of
+    named runs against a model, which is the same shape a `tests.yaml` has
+    — so it reuses the same node types and the same ids (`suite:<dir>`,
+    `test:<dir>#<name>`) rather than inventing a parallel vocabulary. Two
+    things differ: there is no testbench between the run and the model, so
+    `exercises` is emitted from the run itself; and a run's `top:` (which a
+    formal verification may override away from the model name) becomes the
+    same `maps_to` stitch a testbench's `toplevel:` does.
+    """
+    for flow, suite_cfg, entries_attr in flows.suites:
+        cfg_path = suite_cfg.get_path()
+        suite_rel = _rel(project_root, os.path.dirname(cfg_path))
+        cfg_rel = _rel(project_root, cfg_path)
+        stamp = _flow_attr(flows.by_suite, suite_rel)
+        suite_node = gb.add_node(
+            suite_id(suite_rel),
+            "suite",
+            os.path.basename(suite_rel) or suite_rel,
+            file=cfg_rel,
+            flow=stamp,
+        )
+        for entry in getattr(suite_cfg, entries_attr)():
+            model = entry.get_model()
+            model_node = _add_model_node(gb, project_root, model.path, model)
+            top = entry.get_top()
+            test_node = gb.add_node(
+                test_id(suite_rel, entry.get_name()),
+                "test",
+                entry.get_name(),
+                file=cfg_rel,
+                desc=getattr(entry, "desc", None),
+                # Raw `reglvl:` as written, exactly as a simulation test
+                # node keeps it — resolving it needs a tool name.
+                reglvl=getattr(entry, "_reglvl", None),
+                tool=entry.get_tool_name(),
+                toplevel=top,
+                flow=flow,
+            )
+            gb.add_link(suite_node, test_node, "declares")
+            gb.add_link(test_node, model_node, "exercises")
+            if top:
+                gb.add_link(test_node, module_id(top), "maps_to")
 
 
 def _hash_inputs(project_root: Path, paths: list[str]) -> list[dict]:
@@ -636,14 +837,18 @@ def extract_config_tier(
         _scan_verif_sources(search_verif) if os.path.isdir(search_verif) else []
     )
 
+    flows = _collect_flows(root)
+
     gb = _GraphBuilder()
     cov_owners = _add_spec_nodes(gb, root, spec_configs, verif_sources)
     _add_model_nodes(gb, root, spec_configs, model_entries)
     failures = (
-        _add_suite_nodes(gb, root, search_verif, cov_owners)
+        _add_suite_nodes(gb, root, search_verif, cov_owners, flows.by_suite)
         if os.path.isdir(search_verif)
         else []
     )
+    _add_flow_suite_nodes(gb, root, flows)
+    failures += flows.failures
 
     generator = {
         "tool": "rtl_buddy",
@@ -669,6 +874,10 @@ def extract_config_tier(
         if os.path.isdir(search_verif)
         else []
     )
+    # The regression files and the per-flow suites they list are inputs
+    # now: wiring a suite into `fpv_regression.yaml` changes the graph, so
+    # `rb graph build`'s no-op check has to see the edit.
+    inputs += flows.inputs
     meta = {
         "schema_version": SCHEMA_VERSION,
         "tiers": {

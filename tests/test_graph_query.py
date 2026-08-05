@@ -449,7 +449,10 @@ def test_an_ambiguous_name_fails_with_its_candidates(graph_project: Path):
     with pytest.raises(GraphQueryError) as excinfo:
         resolve_node(ctx, "blk_a")
 
-    assert "matches 4 nodes" in str(excinfo.value)
+    # spec block, model, design-tier module, and one suite per flow that
+    # runs blk_a — sim, synth+cdc, fpv — all of which label themselves
+    # after the block.
+    assert "matches 6 nodes" in str(excinfo.value)
     assert "spec:blk_a" in excinfo.value.candidates
 
 
@@ -556,7 +559,7 @@ def test_cli_path_with_an_ambiguous_endpoint_exits_two(graph_project: Path):
 
     assert result.exit_code == 2
     envelope = json.loads(result.output.strip().splitlines()[-1])
-    assert "matches 4 nodes" in envelope["payload"]["error"]
+    assert "matches 6 nodes" in envelope["payload"]["error"]
     assert envelope["payload"]["candidates"]
 
 

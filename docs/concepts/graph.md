@@ -352,7 +352,22 @@ The pane needs nothing but `rb graph build`: the design + config tiers are enoug
 
 What it shows:
 
-- **Tier columns.** `design` → `config` → `binding`, left to right, the order [`merge.TIER_ORDER`](#merging) sorts by, with a small force relaxation inside each column and an unknown tier landing in a trailing `other` column. Colour follows the same axis.
+- **Flow columns.** Eight of them, left to right, with a small force relaxation inside each and its own colour. Columns are deliberately *not* tiers: a tier says which tool produced a node, which is a fact about the build, and `design` + `config` between them hold the spec, the DUT, four flows' suites and every testbench hierarchy — a three-column picture put two thirds of the graph in one stripe. The bucketing is:
+
+  | Column | What lands in it |
+  | --- | --- |
+  | `spec` | `spec_block`, `coverage_item`, `spec_doc`, `golden_model` |
+  | `design` | the DUT hierarchy, plus the `model` nodes that alias its modules |
+  | `test-config` | `flow: sim` suites/tests/testbenches, **and** their SystemVerilog testbench hierarchies |
+  | `syn-config` | `flow: synth` and `flow: fpga` |
+  | `formal-config` | `flow: fpv` |
+  | `cdc-config` | `flow: cdc` |
+  | `test-cocotb` | anything stamped `cocotb: true`, plus the binding tier's `python_module` nodes |
+  | `other` | anything the rules cannot place — rendered, never dropped |
+
+  A testbench *hierarchy* follows its suite's flow, so an fpv suite's testbench top and everything under it land in `formal-config` rather than sitting in the middle of the design. Recognising those nodes is the one non-obvious part, because both halves of `rb graph build` are `tier: design`: a node is testbench-side when it carries `qualified_by`, when it is the module a `tb:` node `maps_to` (unless a `models.yaml` claims it too — a cocotb testbench tops at the DUT itself), or when its `inst:<root>/…` id is rooted at such a module. A module under a testbench root that is none of those stays in `design`: over-claiming would file a vendor IP block under someone's testbench.
+
+  The column is computed server-side into a `category` attribute on `GET /graph.json` — two of its inputs are graph-wide joins not worth redoing per render — and is deliberately **not** written into `graph.json`, for the same reason the results overlay is not: the layout is a presentation choice and must never make the built graph churn.
 - **Pass/fail from the overlay.** Test nodes get a status ring straight from `results-overlay.json`, so a failing test is visible in the picture and its `desc`, seed, timestamp and artefact paths are one click away in the inspector. The join happens in memory — `graph.json` on disk is never rewritten (see [Results Overlay](#results-overlay)).
 - **Dangling targets.** A link into a tier that was never exported (`maps_to` → a module whose design tier was skipped) is drawn as a hollow node rather than dropped, matching what [`merge.dangling_targets`](#merging) records.
 
@@ -541,9 +556,9 @@ Config tier (`rtl_buddy`):
 
 | Type | Id | Notable attributes |
 | --- | --- | --- |
-| `suite` | `suite:<suite dir>` | |
-| `test` | `test:<suite dir>#<test name>` | `reglvl` (raw, as written), `cocotb_modules`, `xfail` |
-| `testbench` | `tb:<suite dir>#<tb name>` | `toplevel`, `kind` (`cocotb`/`systemc`/`hdl`) |
+| `suite` | `suite:<suite dir>` | `flow` |
+| `test` | `test:<suite dir>#<test name>` | `flow`, `reglvl` (raw, as written), `cocotb`, `cocotb_modules`, `xfail`; on a non-simulation run also `tool` and `toplevel` |
+| `testbench` | `tb:<suite dir>#<tb name>` | `flow`, `toplevel`, `kind` (`cocotb`/`systemc`/`hdl`), `cocotb` |
 | `model` | `model:<models.yaml>#<name>` | `desc` |
 | `spec_block` | `spec:<block name>` | `desc` |
 | `coverage_item` | `covitem:<block name>#<ID>` | `desc`, `block` |
@@ -576,8 +591,10 @@ Config tier:
 | `specified_by` | model | spec block |
 | `documented_by` | spec block | spec doc |
 | `implements` | golden model | spec block |
+| `exercises` | test | model (a synth / fpv / cdc / fpga run, which has no testbench) |
 | `maps_to` | model | **design-tier** module |
 | `maps_to` | testbench | **design-tier** module (the top it elaborates) |
+| `maps_to` | test | **design-tier** module (a non-simulation run's `top:`) |
 
 Binding tier:
 
@@ -600,6 +617,7 @@ Everything comes from the loaders that back `rb test`, `rb spec check-coverage` 
 - `specs.yaml` under `<root>/spec` gives spec blocks, their `docs:` and their `coverage-items`.
 - `models.yaml` under `<root>/design` gives models, and each model's `spec:` back-pointer gives `specified_by`.
 - `tests.yaml` under `<root>/verif` gives suites, testbenches and tests. A test's `testbench:` becomes `runs_on`, its `model:` becomes `exercises` on the testbench, and each entry in its `covers:` becomes a `covers` edge.
+- The repo-level regression files at the project root give the `flow` stamp — see below.
 - Golden models are found by convention: non-private Python files sitting next to a `specs.yaml`, for example `spec/demo_tiny_alu/tiny_alu_model.py`. Each node records the verif files that mention it in `referenced_by`.
 
 A `covers:` entry names a bare coverage-item id, and more than one block may declare the same id. `rb spec check-coverage` treats every such block as covered, and the graph matches it: one `covers` edge per declaring block.
@@ -607,6 +625,29 @@ A `covers:` entry names a bare coverage-item id, and more than one block may dec
 A testbench's `toplevel:`, when declared, also becomes a `maps_to` edge to `module:<toplevel>`.
 
 Testbenches declared but used by no test still become nodes — a dead testbench should be visible in the graph, not silently absent. Suites that fail to load are reported rather than fatal; the failure list lands in `graph-meta.json`.
+
+### Flow provenance
+
+A `tests.yaml` does not know that it is a *simulation* suite, and nothing under `verif/` mentions the `fpv.yaml` next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all five — each through its own `RegConfig`, the same class `rb <flow>-regression` constructs — and stamps `flow` on every `suite`, `test` and `testbench` node:
+
+| File at the project root | `flow` | Suites it lists |
+| --- | --- | --- |
+| `regression.yaml` | `sim` | `tests.yaml` |
+| `synth_regression.yaml` | `synth` | `synth.yaml` |
+| `fpv_regression.yaml` | `fpv` | `fpv.yaml` |
+| `cdc_regression.yaml` | `cdc` | `cdc.yaml` |
+| `fpga_regression.yaml` | `fpga` | `fpga.yaml` |
+
+Four consequences:
+
+- **A suite no regression file claims is `sim`.** A `tests.yaml` nobody has wired up yet is still a simulation suite, and an "unknown" bucket would hide exactly the suites a project is in the middle of adding.
+- **The four non-simulation flows become nodes too.** No `verif/` walk reaches `synth/tiny_alu/synth.yaml`, so before this the graph could not answer "what synthesises this module?". Each of those files is a `suite:<dir>` whose named runs are `test:<dir>#<name>` — the same types and the same ids a `tests.yaml` produces, not a parallel vocabulary. There is no testbench between a run and its model, so `exercises` starts at the run; a run's `top:` (which a formal verification may point at a wrapper) becomes the same `maps_to` stitch a testbench's `toplevel:` does.
+- **A suite claimed by two flows gets a list**, in the table's order. That happens when one directory holds two flows' configs — a `synth.yaml` and a `cdc.yaml` side by side. Individual runs are always stamped with the single flow of the file that declared them.
+- **`cocotb: true`** is stamped on a cocotb test *and* on its testbench. `kind: cocotb` already says it on the testbench and `cocotb_modules` implies it on the test; the flat boolean is so a consumer bucketing nodes does not have to know which type spells it which way.
+
+All five files, and every suite they list, join the config tier's input hashes — wiring a suite into a flow changes the graph, so [the no-op re-run check](#caching) has to see the edit.
+
+Discovery is by filename at the project root, the same convention `rb <flow>-regression` uses when no `-c` is passed. A missing file is not an error, it is a project that does not run that flow; one that will not load is reported like a bad suite and costs only its own flow's nodes.
 
 ## Python API
 

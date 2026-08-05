@@ -24,10 +24,17 @@
       --accent:    #6ea8fe;
       --edge:      #39424f;
       --edge-hot:  #6ea8fe;
-      --design:    #4c9aff;
-      --config:    #f0a742;
-      --binding:   #a78bfa;
-      --other:     #94a3b8;
+      /* One colour per column (see COLUMNS below). Eight hues, each
+         legible on both backgrounds: pink, blue, green, amber, violet,
+         cyan, lime, slate. */
+      --col-spec:          #f472b6;
+      --col-design:        #4c9aff;
+      --col-test-config:   #34d399;
+      --col-syn-config:    #f0a742;
+      --col-formal-config: #a78bfa;
+      --col-cdc-config:    #22d3ee;
+      --col-test-cocotb:   #a3e635;
+      --col-other:         #94a3b8;
       --pass:      #3ec46d;
       --fail:      #ef5350;
       --warn:      #e0b33a;
@@ -41,10 +48,14 @@
         --fg:      #1d222b;
         --fg-dim:  #5d6779;
         --edge:    #b9c1cd;
-        --design:  #1f6fd0;
-        --config:  #b97407;
-        --binding: #7c53d6;
-        --other:   #6b7688;
+        --col-spec:          #be185d;
+        --col-design:        #1f6fd0;
+        --col-test-config:   #0f7a52;
+        --col-syn-config:    #b97407;
+        --col-formal-config: #7c53d6;
+        --col-cdc-config:    #0e7490;
+        --col-test-cocotb:   #557c0b;
+        --col-other:         #6b7688;
       }
     }
     * { box-sizing: border-box; }
@@ -191,14 +202,32 @@
 
   var GRAPH_URL = window.__RTL_BUDDY_GRAPH_URL__ || '/graph.json';
 
-  // Left-to-right column order. Mirrors rtl_buddy.graph.merge.TIER_ORDER
-  // so the picture reads in the direction the build produced it; an
-  // unknown tier lands in the trailing "other" column instead of being
-  // dropped.
-  var COLUMNS = ['design', 'config', 'binding', 'other'];
-  var TIER_COLOR = {
-    design: 'var(--design)', config: 'var(--config)',
-    binding: 'var(--binding)', other: 'var(--other)'
+  // Left-to-right column order. Columns are NOT tiers: the spec on the
+  // left, the design in the middle, one column per verification flow on
+  // the right. The server computes each node's column into `category`
+  // (rtl_buddy.hub.graph_page.categorize_nodes) because two of the inputs
+  // — which design-tier nodes came from a testbench elaboration, and which
+  // flow the suite that owns them runs — are graph-wide joins not worth
+  // redoing per render. `graph.hub.columns` is authoritative when served;
+  // this list is the fallback for an older payload.
+  var COLUMNS = [
+    'spec', 'design', 'test-config', 'syn-config',
+    'formal-config', 'cdc-config', 'test-cocotb', 'other'
+  ];
+  var COLUMN_COLOR = {
+    'spec': 'var(--col-spec)',
+    'design': 'var(--col-design)',
+    'test-config': 'var(--col-test-config)',
+    'syn-config': 'var(--col-syn-config)',
+    'formal-config': 'var(--col-formal-config)',
+    'cdc-config': 'var(--col-cdc-config)',
+    'test-cocotb': 'var(--col-test-cocotb)',
+    'other': 'var(--col-other)'
+  };
+  // Last-resort mapping for a node the server did not categorise (a
+  // payload from an older hub, or a dangling target the page invented).
+  var TIER_FALLBACK = {
+    design: 'design', config: 'test-config', binding: 'test-cocotb'
   };
   var STATUS_COLOR = {
     PASS: 'var(--pass)', FAIL: 'var(--fail)', SKIP: 'var(--warn)',
@@ -212,7 +241,7 @@
     golden_model: 7, python_module: 7, port: 4, parameter: 4
   };
 
-  var W = 2000, H = 1300;   // virtual layout extent
+  var W = 3000, H = 1300;   // virtual layout extent (eight columns wide)
   var els = {
     scene: document.getElementById('scene'),
     bands: document.getElementById('bands'),
@@ -236,7 +265,7 @@
   var state = {
     nodes: [], links: [], byId: Object.create(null),
     out: Object.create(null), inc: Object.create(null),
-    hiddenTiers: Object.create(null), filter: '',
+    hiddenCols: Object.create(null), filter: '',
     selected: null, hovered: null,
     view: { x: 0, y: 0, k: 1 }, ticks: 0, raf: 0
   };
@@ -250,12 +279,14 @@
     for (var k in attrs) { if (attrs[k] != null) n.setAttribute(k, attrs[k]); }
     return n;
   }
-  function tierOf(node) {
-    var t = node && node.tier;
-    return COLUMNS.indexOf(t) >= 0 ? t : 'other';
+  function categoryOf(node) {
+    if (!node) { return 'other'; }
+    if (COLUMNS.indexOf(node.category) >= 0) { return node.category; }
+    var fallback = TIER_FALLBACK[node.tier];
+    return COLUMNS.indexOf(fallback) >= 0 ? fallback : 'other';
   }
   function colOf(node) {
-    var i = COLUMNS.indexOf(tierOf(node));
+    var i = COLUMNS.indexOf(categoryOf(node));
     return i < 0 ? COLUMNS.length - 1 : i;
   }
   function radiusOf(node) { return RADIUS[node.type] || 6; }
@@ -439,8 +470,9 @@
     });
 
     var hub = (payload.graph && payload.graph.hub) || {};
+    if (Array.isArray(hub.columns) && hub.columns.length) { COLUMNS = hub.columns; }
     renderHeader(hub);
-    renderLegend(hub.tiers || {});
+    renderLegend(hub.categories || {});
     layoutInit();
     render();
     fit();
@@ -465,24 +497,27 @@
     els.counts.textContent = '· ' + parts.join(' · ');
   }
 
-  function renderLegend(tiers) {
+  function renderLegend(counts) {
     els.legend.textContent = '';
-    COLUMNS.forEach(function (tier) {
-      var count = tiers[tier] || 0;
-      if (!count && tier === 'other') { return; }
+    COLUMNS.forEach(function (col) {
+      var count = counts[col] || 0;
+      // An empty flow column is a fact about the project (no fpv suites
+      // yet), so it keeps its band and its label; only an empty "other"
+      // — which means nothing went unplaced — drops out of the legend.
+      if (!count && col === 'other') { return; }
       var label = document.createElement('label');
       label.className = 'chk';
       var box = document.createElement('input');
-      box.type = 'checkbox'; box.checked = !state.hiddenTiers[tier];
+      box.type = 'checkbox'; box.checked = !state.hiddenCols[col];
       box.addEventListener('change', function () {
-        state.hiddenTiers[tier] = !box.checked;
+        state.hiddenCols[col] = !box.checked;
         render();
       });
       var sw = document.createElement('span');
       sw.className = 'swatch';
-      sw.style.background = TIER_COLOR[tier];
+      sw.style.background = COLUMN_COLOR[col] || 'var(--col-other)';
       label.appendChild(box); label.appendChild(sw);
-      label.appendChild(document.createTextNode(tier + ' ' + count));
+      label.appendChild(document.createTextNode(col + ' ' + count));
       els.legend.appendChild(label);
     });
   }
@@ -639,7 +674,7 @@
         }));
       }
       var body = el('circle', {
-        class: 'body', r: r, fill: n.dangling ? 'none' : TIER_COLOR[tierOf(n)],
+        class: 'body', r: r, fill: n.dangling ? 'none' : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)'),
         stroke: n.dangling ? 'var(--other)' : null
       });
       g.appendChild(body);
@@ -695,7 +730,7 @@
     for (var id in gfx.nodes) {
       var n = state.byId[id];
       var g = gfx.nodes[id].g;
-      var hidden = state.hiddenTiers[tierOf(n)];
+      var hidden = state.hiddenCols[categoryOf(n)];
       var dim = hidden || !matches(n) || (near && !near[id]);
       g.setAttribute('class', 'node' + (dim ? ' dim' : '') + (id === state.selected ? ' sel' : ''));
       g.style.display = hidden && !state.filter ? 'none' : '';
@@ -707,7 +742,7 @@
     for (var i = 0; i < gfx.links.length; i++) {
       var line = gfx.links[i];
       var hot = focus && (line.__link.source === focus || line.__link.target === focus);
-      var off = state.hiddenTiers[tierOf(line.__a)] || state.hiddenTiers[tierOf(line.__z)];
+      var off = state.hiddenCols[categoryOf(line.__a)] || state.hiddenCols[categoryOf(line.__z)];
       line.setAttribute('class', 'link' + (hot ? ' hot' : (focus ? ' dim' : '')));
       line.style.display = off ? 'none' : '';
     }
@@ -926,10 +961,12 @@
     dl.className = 'kv';
     row(dl, 'id', n.id);
     if (n.type) { row(dl, 'type', n.type); }
-    row(dl, 'tier', tierOf(n));
+    row(dl, 'column', categoryOf(n));
+    if (n.tier) { row(dl, 'tier', n.tier); }
     if (n.label && n.label !== n.id) { row(dl, 'label', n.label); }
     if (n.file) { row(dl, 'file', n.file + (n.line ? ':' + n.line : '')); }
-    ['dir', 'width', 'toplevel', 'reglvl', 'cocotb', 'module', 'suite', 'test']
+    ['dir', 'width', 'toplevel', 'flow', 'reglvl', 'cocotb', 'kind', 'tool',
+     'module', 'suite', 'test', 'qualified_by']
       .forEach(function (k) { if (n[k] != null) { row(dl, k, n[k]); } });
     els.inspector.appendChild(dl);
 

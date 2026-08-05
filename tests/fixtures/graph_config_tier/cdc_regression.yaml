@@ -1,0 +1,7 @@
+# Fixture for tests/test_graph_config_tier.py — the CDC flow. Its suite
+# shares a directory with the synthesis one, which is the only way a
+# suite ends up claimed by two flows.
+rtl-buddy-filetype: cdc_reg_config
+
+cdc-configs:
+  - "impl/blk_a/cdc.yaml"

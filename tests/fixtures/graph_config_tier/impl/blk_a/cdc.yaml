@@ -1,0 +1,10 @@
+# Fixture for tests/test_graph_config_tier.py
+rtl-buddy-filetype: cdc_config
+
+analyses:
+  - name: "blk_a_lint"
+    desc: "CDC lint of blk_a"
+    model: "blk_a"
+    model_path: "../../design/blk_a/models.yaml"
+    tool: "rtl-buddy-cdc"
+    constraints: "blk_a.sdc"

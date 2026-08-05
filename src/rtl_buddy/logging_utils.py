@@ -785,6 +785,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"graph: could not load {fields.get('path')} — its tests, "
                 "testbenches and coverage links are missing from the graph"
             )
+        case "graph_config.regression_load_failed":
+            return (
+                f"graph: could not load {fields.get('path')} — the "
+                f"{fields.get('flow')} flow's suites are missing from the graph "
+                "and their tests are not flow-stamped"
+            )
         case "graph_config.node_id_conflict":
             return (
                 f"graph: node id {fields.get('node')!r} claimed by both "

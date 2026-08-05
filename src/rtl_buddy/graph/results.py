@@ -53,7 +53,14 @@ from ..runner.result_io import load_result_json
 from ..tools.artifact_paths import sanitize_artifact_component
 from ..tools.spec_trace import _walk_yaml_files
 from ..tools.wave_trace import TRACE_CANDIDATES
-from .config_tier import GRAPH_JSON_NAME, GRAPH_META_NAME, default_graph_dir, test_id
+from .config_tier import (
+    DEFAULT_FLOW,
+    GRAPH_JSON_NAME,
+    GRAPH_META_NAME,
+    default_graph_dir,
+    test_id,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +91,17 @@ _NON_TEST_DIRS = frozenset({"hier", "axi", "graph", "cov", "coverage"})
 #: _test-job`` writes for the head to collect (#351).
 _RESULT_JSON = "result.json"
 _DISPATCH_DIR = "dispatch"
+
+
+def _flows_of(flow: object) -> set[str]:
+    """The ``flow`` attribute as a set — it is a string, or a list."""
+    if flow is None:
+        return {DEFAULT_FLOW}
+    if isinstance(flow, str):
+        return {flow}
+    if isinstance(flow, (list, tuple)):
+        return {str(f) for f in flow}
+    return {DEFAULT_FLOW}
 
 
 def _tool_version() -> str:
@@ -436,10 +454,18 @@ def collect_results(
     unmatched: list[str] = []
     missing: list[str] = []
     if graph is not None:
+        # Only *simulation* tests. The config tier also emits a `test`
+        # node per synthesis / formal / CDC / FPGA run (#376), and those
+        # leave no `artefacts/<test>/result.json` behind — counting them
+        # here would report every one of them `missing` and make
+        # `rb graph results --strict` fail on any project that runs more
+        # than one flow. A node with no `flow` at all predates the stamp
+        # and is a simulation test by the same default the stamp uses.
         graph_tests = {
             node["id"]
             for node in graph.get("nodes") or []
             if node.get("type") == "test"
+            and _flows_of(node.get("flow")) <= {DEFAULT_FLOW}
         }
         for node_id, entry in entries.items():
             entry["in_graph"] = node_id in graph_tests

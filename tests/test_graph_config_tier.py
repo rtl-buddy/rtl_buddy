@@ -16,6 +16,11 @@ Fixture (``tests/fixtures/graph_config_tier/``):
   design/blk_b/models.yaml -- model "blk_b", no spec: back-pointer
   verif/blk_a/tests.yaml  -- 3 testbenches (one unused), 2 tests
   verif/empty_suite/tests.yaml -- declares a testbench, has no tests
+  regression.yaml         -- sim flow; claims verif/blk_a only
+  synth_regression.yaml   -- synth flow -> impl/blk_a/synth.yaml
+  cdc_regression.yaml     -- cdc flow   -> impl/blk_a/cdc.yaml (same dir)
+  fpv_regression.yaml     -- fpv flow   -> fpv/blk_a/fpv.yaml
+  (no fpga_regression.yaml -- a flow the project does not run)
 """
 
 from __future__ import annotations
@@ -106,10 +111,17 @@ def test_suite_test_and_testbench_node_ids(graph):
     assert set(_nodes_by_type(graph, "suite")) == {
         "suite:verif/blk_a",
         "suite:verif/empty_suite",
+        # The non-simulation flows' suites: no `verif/` walk reaches
+        # these, they come from the repo-level regression files.
+        "suite:impl/blk_a",
+        "suite:fpv/blk_a",
     }
     assert set(_nodes_by_type(graph, "test")) == {
         "test:verif/blk_a#t_basic",
         "test:verif/blk_a#t_cocotb",
+        "test:impl/blk_a#blk_a_generic",
+        "test:impl/blk_a#blk_a_lint",
+        "test:fpv/blk_a#blk_a_safety",
     }
     # tb_unused is declared but referenced by no test — still a node, or a
     # dead testbench would be invisible to the graph.
@@ -183,6 +195,151 @@ def test_golden_model_discovered_by_convention_with_referencing_files(graph):
 
 
 # ---------------------------------------------------------------------------
+# Flow provenance
+#
+# The repo-level regression files are the only place that says which flow
+# owns a suite. Everything below is about that stamp reaching the nodes.
+# ---------------------------------------------------------------------------
+
+
+def _flows(graph: dict, node_type: str) -> dict[str, object]:
+    return {
+        node_id: node.get("flow")
+        for node_id, node in _nodes_by_type(graph, node_type).items()
+    }
+
+
+def test_suites_are_stamped_with_the_flow_that_runs_them(graph):
+    assert _flows(graph, "suite") == {
+        "suite:verif/blk_a": "sim",
+        # Claimed by no regression file at all. A tests.yaml nobody has
+        # wired up yet is still a simulation suite.
+        "suite:verif/empty_suite": "sim",
+        "suite:fpv/blk_a": "fpv",
+        # One directory, two flows -> a list, in FLOW_SOURCES order.
+        "suite:impl/blk_a": ["synth", "cdc"],
+    }
+
+
+def test_tests_and_testbenches_inherit_their_suites_flow(graph):
+    assert _flows(graph, "testbench") == {
+        "tb:verif/blk_a#tb_hdl": "sim",
+        "tb:verif/blk_a#tb_cocotb": "sim",
+        "tb:verif/blk_a#tb_unused": "sim",
+        "tb:verif/empty_suite#tb_orphan": "sim",
+    }
+    # A run in a two-flow directory is stamped with the flow of the file
+    # it was declared in, not with its suite's list: `blk_a_lint` is a CDC
+    # analysis whatever else shares its directory.
+    assert _flows(graph, "test") == {
+        "test:verif/blk_a#t_basic": "sim",
+        "test:verif/blk_a#t_cocotb": "sim",
+        "test:impl/blk_a#blk_a_generic": "synth",
+        "test:impl/blk_a#blk_a_lint": "cdc",
+        "test:fpv/blk_a#blk_a_safety": "fpv",
+    }
+
+
+def test_flow_runs_carry_their_tool_reglvl_and_top(graph):
+    tests = _nodes_by_type(graph, "test")
+    synth = tests["test:impl/blk_a#blk_a_generic"]
+    assert (synth["tool"], synth["reglvl"], synth["toplevel"]) == ("yosys", 0, "blk_a")
+    assert tests["test:fpv/blk_a#blk_a_safety"]["tool"] == "sby"
+    # `reglvl:` is absent from the cdc entry and stays absent — the graph
+    # does not invent a default a tool would have to resolve anyway.
+    assert "reglvl" not in tests["test:impl/blk_a#blk_a_lint"]
+
+
+def test_an_fpv_top_that_overrides_the_model_is_where_maps_to_lands(tmp_path):
+    """`top:` names the module the run elaborates, `model:` the DUT.
+
+    A formal verification often tops at a wrapper that binds the checker
+    alongside the DUT, and it is that wrapper the hierarchy is rooted at.
+    """
+
+    design = tmp_path / "design" / "blk"
+    design.mkdir(parents=True)
+    (design / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n"
+        "  - name: blk\n    filelist: [blk.sv]\n"
+    )
+    fpv = tmp_path / "fpv" / "blk"
+    fpv.mkdir(parents=True)
+    (fpv / "fpv.yaml").write_text(
+        "rtl-buddy-filetype: fpv_config\nverifications:\n"
+        "  - name: safety\n    desc: bounded proof\n    model: blk\n"
+        "    model_path: ../../design/blk/models.yaml\n    tool: sby\n"
+        "    top: blk_fv\n"
+    )
+    (tmp_path / "fpv_regression.yaml").write_text(
+        "rtl-buddy-filetype: fpv_reg_config\nfpv-configs: [fpv/blk/fpv.yaml]\n"
+    )
+
+    graph = build_config_tier(tmp_path)
+    assert _nodes_by_type(graph, "test")["test:fpv/blk#safety"]["toplevel"] == "blk_fv"
+    assert ("test:fpv/blk#safety", "module:blk_fv") in _links_of_type(graph, "maps_to")
+    # The model still stitches to its own module — the two are different
+    # design-tier nodes and the run is attached to both.
+    assert ("model:design/blk/models.yaml#blk", "module:blk") in _links_of_type(
+        graph, "maps_to"
+    )
+
+
+def test_cocotb_is_stamped_on_the_test_and_its_testbench(graph):
+    """A flat boolean, on both node types.
+
+    ``kind: cocotb`` already says it on a testbench and ``cocotb_modules``
+    implies it on a test, but a consumer bucketing nodes should not have
+    to know which type spells it which way.
+    """
+    cocotb = {n["id"] for n in graph["nodes"] if n.get("cocotb")}
+    assert cocotb == {"test:verif/blk_a#t_cocotb", "tb:verif/blk_a#tb_cocotb"}
+    # Absent rather than false, so the attribute set stays minimal.
+    assert "cocotb" not in _nodes_by_type(graph, "test")["test:verif/blk_a#t_basic"]
+
+
+def test_a_flow_with_no_regression_file_contributes_nothing(graph):
+    """There is no ``fpga_regression.yaml`` in the fixture."""
+
+    assert not [n for n in graph["nodes"] if n.get("flow") == "fpga"]
+
+
+def test_an_unloadable_regression_file_is_reported_not_raised(tmp_path):
+    (tmp_path / "cdc_regression.yaml").write_text(
+        "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: [nope/cdc.yaml]\n"
+    )
+    result = extract_config_tier(tmp_path)
+    assert result.suite_load_failures == ["cdc_regression.yaml"]
+    assert result.graph["nodes"] == []
+
+
+def test_flow_stamp_changes_the_input_hashes(tmp_path):
+    """The fingerprint has to see a suite being wired into a flow."""
+
+    verif = tmp_path / "verif" / "blk"
+    verif.mkdir(parents=True)
+    (verif / "tests.yaml").write_text(
+        "rtl-buddy-filetype: test_config\ntestbenches:\n"
+        "  - name: tb\n    filelist: []\ntests: []\n"
+    )
+    before = extract_config_tier(tmp_path)
+    assert _nodes_by_type(before.graph, "suite")["suite:verif/blk"]["flow"] == "sim"
+    before_inputs = {
+        e["path"]: e["sha256"] for e in before.meta["tiers"]["config"]["inputs"]
+    }
+
+    (tmp_path / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: [verif/blk/tests.yaml]\n"
+    )
+    after = extract_config_tier(tmp_path)
+    after_inputs = {
+        e["path"]: e["sha256"] for e in after.meta["tiers"]["config"]["inputs"]
+    }
+    assert "regression.yaml" not in before_inputs
+    assert "regression.yaml" in after_inputs
+
+
+# ---------------------------------------------------------------------------
 # Edges
 # ---------------------------------------------------------------------------
 
@@ -204,6 +361,11 @@ def test_runs_on_and_exercises_edges(graph):
     assert _links_of_type(graph, "exercises") == {
         ("tb:verif/blk_a#tb_hdl", "model:design/blk_a/models.yaml#blk_a"),
         ("tb:verif/blk_a#tb_cocotb", "model:design/blk_a/models.yaml#blk_a"),
+        # A synth / cdc / fpv run has no testbench between it and the
+        # model, so the edge starts at the run itself.
+        ("test:impl/blk_a#blk_a_generic", "model:design/blk_a/models.yaml#blk_a"),
+        ("test:impl/blk_a#blk_a_lint", "model:design/blk_a/models.yaml#blk_a"),
+        ("test:fpv/blk_a#blk_a_safety", "model:design/blk_a/models.yaml#blk_a"),
     }
 
 
@@ -276,6 +438,13 @@ def test_maps_to_targets_design_tier_module_ids(graph):
         # a model does — `rb graph build` exports that hierarchy rooted
         # at the testbench, and this is where the metadata node meets it.
         ("tb:verif/blk_a#tb_cocotb", "module:blk_a"),
+        # A non-simulation run's `top:` is the same relation: the module
+        # the run elaborates. For synth/cdc it is the model's own name;
+        # for fpv it may be a wrapper the checker binds into (see
+        # test_an_fpv_top_that_overrides_the_model_is_where_maps_to_lands).
+        ("test:impl/blk_a#blk_a_generic", "module:blk_a"),
+        ("test:impl/blk_a#blk_a_lint", "module:blk_a"),
+        ("test:fpv/blk_a#blk_a_safety", "module:blk_a"),
     }
 
 
@@ -365,7 +534,15 @@ def test_search_directories_can_be_overridden(tmp_path):
         design_dir=tmp_path,
     )
     assert set(_nodes_by_type(graph, "spec_block")) == {"spec:blk_b"}
-    assert _nodes_by_type(graph, "test") == {}
+    # The three search dirs govern spec/design/verif discovery. The
+    # repo-level regression files are found at the project root itself and
+    # are deliberately not overridable — they are what makes the root a
+    # project, so the non-simulation flows survive.
+    assert set(_nodes_by_type(graph, "test")) == {
+        "test:impl/blk_a#blk_a_generic",
+        "test:impl/blk_a#blk_a_lint",
+        "test:fpv/blk_a#blk_a_safety",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +561,15 @@ def test_meta_hashes_every_config_file_read(tmp_path):
         "design/blk_b/models.yaml",
         "verif/blk_a/tests.yaml",
         "verif/empty_suite/tests.yaml",
+        # Flow provenance changes the graph, so the files that carry it
+        # have to be able to invalidate `rb graph build`'s no-op check.
+        "regression.yaml",
+        "synth_regression.yaml",
+        "cdc_regression.yaml",
+        "fpv_regression.yaml",
+        "impl/blk_a/synth.yaml",
+        "impl/blk_a/cdc.yaml",
+        "fpv/blk_a/fpv.yaml",
     }
     assert all(len(entry["sha256"]) == 64 for entry in inputs)
     # Hashes are provenance, not graph content — they must not be baked

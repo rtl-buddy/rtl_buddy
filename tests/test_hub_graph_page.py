@@ -1,16 +1,21 @@
 """Tests for the hub-served design-knowledge-graph pane (#382).
 
-Three surfaces, in the order a user meets them:
+Four surfaces, in the order a user meets them:
 
 1. ``GET /graph.json`` — ``artefacts/graph/graph.json`` joined with
    ``artefacts/graph/results-overlay.json`` in memory. The join must not
    touch ``graph.json`` on disk: hash stability across regressions is
    the whole reason the overlay is a separate file (#379).
-2. ``GET /graph`` — one self-contained HTML document. The offline rule
+2. Column bucketing — every node lands in exactly one of the eight
+   :data:`~rtl_buddy.hub.graph_page.COLUMN_ORDER` columns, computed
+   server-side because two of its inputs are graph-wide joins. This is
+   also where the ``category`` stamp is pinned as *served only*: writing
+   it back to disk would be the churn #379 exists to prevent.
+3. ``GET /graph`` — one self-contained HTML document. The offline rule
    is asserted structurally (no external ``src``/``href``, no CDN host),
    because "it worked on my laptop" is exactly the failure mode a hub
    running on an air-gapped build machine hits.
-3. ``graph_focus`` — the wire type behind ``rb hub send graph-focus``:
+4. ``graph_focus`` — the wire type behind ``rb hub send graph-focus``:
    schema-valid, broadcast to peers, and replayed to a peer that
    connects after the fact.
 """
@@ -147,6 +152,210 @@ def built_graph(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# column bucketing
+#
+# One graph per rule, rather than one big one: the interesting cases are
+# the design-tier nodes that came from a *testbench* elaboration, and the
+# only way to state what should happen to them is to name them.
+# ---------------------------------------------------------------------------
+
+
+def _node(node_id: str, node_type: str, tier: str, **attrs) -> dict:
+    return {
+        "id": node_id,
+        "type": node_type,
+        "label": node_id.split(":", 1)[-1],
+        "tier": tier,
+        **attrs,
+    }
+
+
+def _link(source: str, target: str, link_type: str) -> dict:
+    return {
+        "source": source,
+        "target": target,
+        "type": link_type,
+        "confidence": "EXTRACTED",
+    }
+
+
+#: Every column, exercised once. The `fpv` testbench hierarchy is
+#: synthetic — today only `tests.yaml` suites produce `tb:` nodes with a
+#: hierarchy — but the rule is driven by the suite's `flow`, not by which
+#: config file it came from, and that is the property worth pinning.
+_BUCKET_GRAPH = {
+    "directed": True,
+    "multigraph": True,
+    "graph": {"schema_version": 1, "project_root_rel": "."},
+    "nodes": [
+        # spec
+        _node("spec:fifo", "spec_block", "config"),
+        _node("covitem:fifo#F-COV-1", "coverage_item", "config"),
+        _node("doc:spec/fifo/README.md", "spec_doc", "config"),
+        _node("golden:spec/fifo/fifo_model.py", "golden_model", "config"),
+        # design — the DUT hierarchy, plus the model that aliases it
+        _node("model:design/fifo/models.yaml#fifo", "model", "config"),
+        _node("module:fifo", "module", "design"),
+        _node("inst:fifo/fifo.u_wr", "instance", "design"),
+        _node("port:fifo.clk", "port", "design", owner="fifo"),
+        # sim suite + its SystemVerilog testbench hierarchy
+        _node("suite:verif/fifo", "suite", "config", flow="sim"),
+        _node("test:verif/fifo#smoke", "test", "config", flow="sim"),
+        _node("tb:verif/fifo#tb_top", "testbench", "config", flow="sim"),
+        _node(
+            "module:tb_top@verif/fifo", "module", "design", qualified_by="verif/fifo"
+        ),
+        _node(
+            "inst:tb_top/tb_top.u_dut@verif/fifo",
+            "instance",
+            "design",
+            qualified_by="verif/fifo",
+        ),
+        # Not qualified (no other file declares a `tb_top` parameter of
+        # this name), so it has to reach its column through its owner.
+        _node("param:tb_top.WIDTH", "parameter", "design", owner="tb_top"),
+        # synth
+        _node("suite:synth/fifo", "suite", "config", flow="synth"),
+        _node("test:synth/fifo#generic", "test", "config", flow="synth"),
+        # fpv, with a testbench hierarchy of its own
+        _node("suite:fpv/fifo", "suite", "config", flow="fpv"),
+        _node("test:fpv/fifo#safety", "test", "config", flow="fpv"),
+        _node("tb:fpv/fifo#fv_top", "testbench", "config", flow="fpv"),
+        _node("module:fifo_fv_top", "module", "design"),
+        _node("inst:fifo_fv_top/fifo_fv_top.u_dut", "instance", "design"),
+        # cdc, and fpga sharing the synthesis column
+        _node("suite:lint/cdc", "suite", "config", flow="cdc"),
+        _node("test:lint/cdc#fifo_lint", "test", "config", flow="cdc"),
+        _node("suite:fpga/fifo", "suite", "config", flow="fpga"),
+        _node("test:fpga/fifo#a35t", "test", "config", flow="fpga"),
+        # cocotb wins over its suite's flow
+        _node("test:verif/fifo#cocotb", "test", "config", flow="sim", cocotb=True),
+        _node(
+            "tb:verif/fifo#tb_cocotb", "testbench", "config", flow="sim", cocotb=True
+        ),
+        _node("py:verif/fifo/cocotb_fifo.py", "python_module", "binding"),
+        # render-don't-drop: an unknown flow, an unknown type, no tier
+        _node("suite:verif/odd", "suite", "config", flow="teleportation"),
+        _node("weird:thing", "sorcery", "config"),
+        {"id": "orphan:1", "type": "mystery", "label": "orphan"},
+    ],
+    "links": [
+        _link("model:design/fifo/models.yaml#fifo", "module:fifo", "maps_to"),
+        _link("tb:verif/fifo#tb_top", "module:tb_top@verif/fifo", "maps_to"),
+        _link("tb:fpv/fifo#fv_top", "module:fifo_fv_top", "maps_to"),
+        # A cocotb testbench tops at the DUT itself; that must not drag
+        # the DUT's whole hierarchy into a flow column.
+        _link("tb:verif/fifo#tb_cocotb", "module:fifo", "maps_to"),
+    ],
+}
+
+
+@pytest.fixture
+def bucket_graph(tmp_path: Path) -> Path:
+    out = tmp_path / "artefacts" / "graph"
+    out.mkdir(parents=True)
+    (out / "graph.json").write_text(json.dumps(_BUCKET_GRAPH), encoding="utf-8")
+    return tmp_path
+
+
+def _columns(project_root: Path) -> dict[str, str]:
+    payload = graph_page.build_graph_payload(project_root)
+    return {n["id"]: n["category"] for n in payload["nodes"]}
+
+
+def test_every_node_lands_in_exactly_one_declared_column(bucket_graph: Path):
+    columns = _columns(bucket_graph)
+    assert len(columns) == len(_BUCKET_GRAPH["nodes"])
+    assert set(columns.values()) <= set(graph_page.COLUMN_ORDER)
+
+
+def test_spec_types_and_models_bucket_by_type(bucket_graph: Path):
+    columns = _columns(bucket_graph)
+    for node_id in (
+        "spec:fifo",
+        "covitem:fifo#F-COV-1",
+        "doc:spec/fifo/README.md",
+        "golden:spec/fifo/fifo_model.py",
+    ):
+        assert columns[node_id] == "spec"
+    # A model *is* its module under another name, so it sits beside the
+    # design it aliases rather than in the suite's flow column.
+    assert columns["model:design/fifo/models.yaml#fifo"] == "design"
+
+
+def test_flow_stamp_picks_the_config_column(bucket_graph: Path):
+    columns = _columns(bucket_graph)
+    assert columns["suite:verif/fifo"] == "test-config"
+    assert columns["test:synth/fifo#generic"] == "syn-config"
+    assert columns["test:fpv/fifo#safety"] == "formal-config"
+    assert columns["test:lint/cdc#fifo_lint"] == "cdc-config"
+    # FPGA implementation is the synthesis flow carried further, and
+    # shares its column rather than earning a near-always-empty one.
+    assert columns["test:fpga/fifo#a35t"] == "syn-config"
+
+
+def test_cocotb_wins_over_the_suites_flow(bucket_graph: Path):
+    columns = _columns(bucket_graph)
+    assert columns["test:verif/fifo#cocotb"] == "test-cocotb"
+    assert columns["tb:verif/fifo#tb_cocotb"] == "test-cocotb"
+    assert columns["py:verif/fifo/cocotb_fifo.py"] == "test-cocotb"
+    # Its suite is still a simulation suite.
+    assert columns["suite:verif/fifo"] == "test-config"
+
+
+def test_dut_hierarchy_stays_in_the_design_column(bucket_graph: Path):
+    columns = _columns(bucket_graph)
+    assert columns["module:fifo"] == "design"
+    assert columns["inst:fifo/fifo.u_wr"] == "design"
+    assert columns["port:fifo.clk"] == "design"
+
+
+def test_testbench_hierarchy_follows_its_suites_flow(bucket_graph: Path):
+    """The point of the split: a testbench is not the design.
+
+    Both halves of a `rb graph build` are `tier: design`, so the tier
+    cannot say which is which; the suite that owns the elaboration can.
+    """
+
+    columns = _columns(bucket_graph)
+    assert columns["module:tb_top@verif/fifo"] == "test-config"
+    assert columns["inst:tb_top/tb_top.u_dut@verif/fifo"] == "test-config"
+    # Reached through its `owner`, whose id had to be suite-qualified.
+    assert columns["param:tb_top.WIDTH"] == "test-config"
+    # An fpv suite's testbench hierarchy lands in the formal column.
+    assert columns["module:fifo_fv_top"] == "formal-config"
+    assert columns["inst:fifo_fv_top/fifo_fv_top.u_dut"] == "formal-config"
+
+
+def test_unplaceable_nodes_land_in_other_rather_than_vanish(bucket_graph: Path):
+    columns = _columns(bucket_graph)
+    # An unknown flow is still a suite: it keeps the default flow column
+    # rather than being exiled, because "sim" is what a suite is.
+    assert columns["suite:verif/odd"] == graph_page.FALLBACK_FLOW_COLUMN
+    assert columns["weird:thing"] == "other"
+    assert columns["orphan:1"] == "other"
+
+
+def test_hub_block_carries_the_column_order_and_counts(bucket_graph: Path):
+    hub = graph_page.build_graph_payload(bucket_graph)["graph"]["hub"]
+    assert hub["columns"] == list(graph_page.COLUMN_ORDER)
+    assert set(hub["categories"]) == set(graph_page.COLUMN_ORDER)
+    assert sum(hub["categories"].values()) == len(_BUCKET_GRAPH["nodes"])
+    assert hub["categories"]["cdc-config"] == 2
+    assert hub["categories"]["design"] == 4
+
+
+def test_category_is_served_only_and_never_written_to_disk(bucket_graph: Path):
+    """`category` is a presentation choice; graph.json must not churn."""
+
+    graph_file = bucket_graph / "artefacts" / "graph" / "graph.json"
+    before = graph_file.read_bytes()
+    graph_page.build_graph_payload(bucket_graph)
+    assert graph_file.read_bytes() == before
+    assert all("category" not in n for n in json.loads(before)["nodes"])
+
+
+# ---------------------------------------------------------------------------
 # build_graph_payload
 # ---------------------------------------------------------------------------
 
@@ -189,6 +398,9 @@ def test_payload_hub_block_describes_the_render(built_graph: Path):
     assert hub["tiers"]["design"] == 2
     assert hub["tiers"]["config"] == 2
     assert hub["tiers"]["binding"] == 1
+    # Tiers still count what the build produced; columns are the layout.
+    assert hub["columns"] == list(graph_page.COLUMN_ORDER)
+    assert sum(hub["categories"].values()) == len(_GRAPH["nodes"])
     assert hub["overlay_summary"]["statuses"] == {"PASS": 1, "FAIL": 1}
 
 
@@ -245,7 +457,10 @@ def test_page_is_self_contained():
 
 def test_page_carries_the_pieces_the_issue_asks_for():
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    # colour by tier, pass/fail badges, and the two envelope types
+    # every column, a colour for each, pass/fail badges, the envelopes
+    for column in graph_page.COLUMN_ORDER:
+        assert f"'{column}'" in body, column
+        assert f"--col-{column}:" in body, column
     for token in ("design", "config", "binding", "PASS", "FAIL"):
         assert token in body
     assert "selection_changed" in body
