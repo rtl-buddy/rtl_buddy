@@ -823,6 +823,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../concepts/graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Knowledge Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/wave/" class="md-nav__link">
         
   
@@ -1814,6 +1842,24 @@
 <td>Pluggable — curated</td>
 <td><a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a></td>
 <td><code>uv tool install rtl-buddy-view</code> (≥ 0.3.0 for the <code>hier-query</code> verbs). Optional: <code>graphviz</code> (<code>dot</code>) for <code>--format dot</code> → SVG/PNG; <code>pyslang</code> for <code>--frontend slang</code>. See <a href="../concepts/hier/">Hierarchy Rendering</a>.</td>
+</tr>
+<tr>
+<td><code>rb graph build</code></td>
+<td>Pluggable — curated</td>
+<td><a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a>, optional <code>graphify</code></td>
+<td>The design tier needs <code>rtl-buddy-view</code> with the <code>graph</code> verb (≥ 0.4.0); an older viewer fails that tier with an upgrade hint. Graphify is <strong>optional</strong> — without it the merged graph still carries the design + config tiers and the binding tier is reported as skipped. Gate both with <code>rb tool-check --explain rtl-buddy-view</code> / <code>--explain graphify</code>. See <a href="../concepts/graph/">Design Knowledge Graph</a>.</td>
+</tr>
+<tr>
+<td><code>rb graph query</code>, <code>rb graph path</code>, <code>rb graph explain</code></td>
+<td>None</td>
+<td>—</td>
+<td>Pure readers of <code>artefacts/graph/graph.json</code> and the results overlay beside it; no external tool, no daemon. They need a graph, so run <code>rb graph build</code> first. See <a href="../concepts/graph/#querying-the-graph">Design Knowledge Graph</a>.</td>
+</tr>
+<tr>
+<td><code>rb mcp</code></td>
+<td>Python extra</td>
+<td><code>mcp</code> SDK ≥ 1.2.0</td>
+<td>The stdio Model Context Protocol server. Enable with the <code>[mcp]</code> extra: <code>uv add "rtl_buddy[mcp]"</code> (or <code>pip install "rtl_buddy[mcp]"</code>); without it <code>rb mcp</code> exits 2 with an install hint and nothing else in rtl_buddy imports the SDK. The hierarchy tools additionally need <code>rtl-buddy-view</code> (as <code>rb hier-query</code> does); the graph tools need none. See <a href="../concepts/graph/#the-mcp-server">The MCP Server</a>.</td>
 </tr>
 <tr>
 <td><code>rb axi-profile</code></td>

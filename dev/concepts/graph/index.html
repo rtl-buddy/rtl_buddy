@@ -1,0 +1,3726 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="The design knowledge graph — the shared graph.json contract, the node and edge vocabulary of each tier, how rtl_buddy extracts the config tier from tests.yaml, models.yaml and specs.yaml, and the measured token cost of querying it against reading the tree.">
+      
+      
+        <meta name="author" content="RTL Buddy contributors">
+      
+      
+        <link rel="canonical" href="https://rtl-buddy.github.io/rtl_buddy/dev/concepts/graph/">
+      
+      
+        <link rel="prev" href="../spec-traceability/">
+      
+      
+        <link rel="next" href="../wave/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Design Knowledge Graph - RTL Buddy</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#design-knowledge-graph" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="RTL Buddy" class="md-header__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            RTL Buddy
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Design Knowledge Graph
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="RTL Buddy" class="md-nav__button md-logo" aria-label="RTL Buddy" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    RTL Buddy
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/rtl-buddy/rtl_buddy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    rtl-buddy/rtl_buddy
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../execution-context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../root-config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Root Config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../simulators/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Simulators (Verilator vs Icarus)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regressions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regressions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dispatch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Dispatch (Slurm)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../expected-failures/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Expected Failures (xfail)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../coverage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coverage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cocotb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    cocotb
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec-traceability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spec Traceability
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Knowledge Graph
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Knowledge Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#graphjson-envelope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        graph.json Envelope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output Paths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building the Graph
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Building the Graph">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#testbenches-are-part-of-the-design-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testbenches are part of the design tier
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testbenches are part of the design tier">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-two-testbenches-share-a-top-module-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When two testbenches share a top module name
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-missing-tier-is-not-a-failed-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A missing tier is not a failed build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#binding-cocotb-to-the-dut" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Binding cocotb to the DUT
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#machine-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results Overlay
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results Overlay">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-the-numbers-come-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the numbers come from
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#joining-it-back-to-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joining it back to the graph
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#machine-mode_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#querying-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Querying the Graph
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Querying the Graph">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rb-graph-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph query
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rb-graph-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rb-graph-explain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph explain
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#machine-mode_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#looking-at-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Looking at the Graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-mcp-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The MCP Server
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The MCP Server">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#no-daemon-required" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No daemon required
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stateless-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stateless tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hub-tools-dial-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub tools dial in
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#python-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#token-efficiency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token Efficiency
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Token Efficiency">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#method" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Method">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-must-re-run-means" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What "must re-run" means
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-the-tokens-went" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the tokens went
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-the-graph-does-win" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the graph does win
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-this-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this gates
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#node-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-config-to-design-stitch-is-three-verbs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The config-to-design stitch is three verbs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-config-tier-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the Config Tier Reads
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What the Config Tier Reads">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#flow-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flow provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#python-api_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python API
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#loading-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Loading the Graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../wave/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Waveform Viewer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchy Rendering
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hub/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hub
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../synthesis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Synthesis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pnr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Place-and-Route
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../power/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Power Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fpga/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FPGA Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fpv/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Formal Property Verification
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../abv-simulation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Assertion-Based Verification (sim)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mut/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mutation Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../xplr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design-Space Exploration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../axi-profile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AXI Profiling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tool-check/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Check
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    YAML Formats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    For Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/guidelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/docs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Documentation Guidelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../known-issues/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quirks & Known Issues
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#graphjson-envelope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        graph.json Envelope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#output-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Output Paths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#building-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Building the Graph
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Building the Graph">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#testbenches-are-part-of-the-design-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testbenches are part of the design tier
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testbenches are part of the design tier">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#when-two-testbenches-share-a-top-module-name" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When two testbenches share a top module name
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-missing-tier-is-not-a-failed-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A missing tier is not a failed build
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#merging" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Merging
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#binding-cocotb-to-the-dut" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Binding cocotb to the DUT
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#machine-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results Overlay
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results Overlay">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-the-numbers-come-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the numbers come from
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#joining-it-back-to-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joining it back to the graph
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#machine-mode_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#querying-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Querying the Graph
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Querying the Graph">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rb-graph-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph query
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rb-graph-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rb-graph-explain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph explain
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#machine-mode_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Machine mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#looking-at-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Looking at the Graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-mcp-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The MCP Server
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The MCP Server">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#no-daemon-required" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        No daemon required
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#stateless-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stateless tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hub-tools-dial-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub tools dial in
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#python-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#token-efficiency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token Efficiency
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Token Efficiency">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#method" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Method">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-must-re-run-means" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What "must re-run" means
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-the-tokens-went" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the tokens went
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#when-the-graph-does-win" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When the graph does win
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-this-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this gates
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#node-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node Types
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#edge-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Edge Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Edge Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-config-to-design-stitch-is-three-verbs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The config-to-design stitch is three verbs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-config-tier-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the Config Tier Reads
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What the Config Tier Reads">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#flow-provenance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flow provenance
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#python-api_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python API
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#loading-the-graph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Loading the Graph
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="design-knowledge-graph">Design Knowledge Graph</h1>
+<p>The design knowledge graph is one JSON file describing how a project fits together: which test runs on which testbench, which testbench exercises which model, which module that model is, which spec block specifies it, and which coverage items each test claims. Agents query it instead of grepping the tree.</p>
+<p>It is assembled from three independent tiers that share one node-id namespace:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>Produced by</th>
+<th>Covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>design</td>
+<td><code>rtl-buddy-view</code></td>
+<td>modules, instances, ports, parameters, interfaces — of every model <em>and</em> of every testbench</td>
+</tr>
+<tr>
+<td>config</td>
+<td><code>rtl_buddy</code> (this page)</td>
+<td>suites, tests, testbenches, models, spec blocks, coverage items, spec docs, golden models</td>
+</tr>
+<tr>
+<td>binding</td>
+<td><code>rtl_buddy</code>, plus Graphify when installed</td>
+<td>cocotb test to Python module to DUT, <code>dut.&lt;signal&gt;</code> to port, test to golden model</td>
+</tr>
+</tbody>
+</table>
+<p>Merging is a node-id union. Identical ids emitted by different tiers are the stitch points, so each tier can be produced, cached and re-exported on its own.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>build<span class="w">                    </span><span class="c1"># every model under design/, all available tiers</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rb<span class="w"> </span>graph<span class="w"> </span>build<span class="w"> </span>--model<span class="w"> </span>blk_a<span class="w">      </span><span class="c1"># one model&#39;s design tier (repeatable)</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rb<span class="w"> </span>graph<span class="w"> </span>build<span class="w"> </span>-c<span class="w"> </span>regression.yaml<span class="w"> </span><span class="c1"># the models that regression&#39;s suites run</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>rb<span class="w"> </span>graph<span class="w"> </span>results<span class="w">                  </span><span class="c1"># refresh the results overlay beside it</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>rb<span class="w"> </span>graph<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span><span class="w">   </span><span class="c1"># locate, with status</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>rb<span class="w"> </span>graph<span class="w"> </span>path<span class="w"> </span>cocotb_random<span class="w"> </span>module:demo_tiny_alu<span class="w">          </span><span class="c1"># how are these related?</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>rb<span class="w"> </span>graph<span class="w"> </span>explain<span class="w"> </span>test:verif/demo_tiny_alu#flags<span class="w">           </span><span class="c1"># one node, every edge</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>rb<span class="w"> </span>mcp<span class="w">                                                    </span><span class="c1"># the same, over MCP</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w">                               </span><span class="c1"># then open /graph</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>rb<span class="w"> </span>hub<span class="w"> </span>send<span class="w"> </span>graph-focus<span class="w"> </span>test:verif/demo_tiny_alu#flags<span class="w">    </span><span class="c1"># drive the pane</span>
+</code></pre></div>
+<h2 id="graphjson-envelope">graph.json Envelope</h2>
+<p>The file is <a href="https://networkx.org/documentation/stable/reference/readwrite/json_graph.html">NetworkX node-link JSON</a>, so <code>networkx.node_link_graph(data, edges="links")</code> loads it directly:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;directed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;multigraph&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">&quot;graph&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">&quot;generator&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;tool&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rtl_buddy&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;6.24.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tier&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;config&quot;</span><span class="p">},</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">&quot;project_root_rel&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;.&quot;</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">&quot;nodes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test:verif/demo_tiny_alu_cocotb#cocotb_random&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cocotb_random&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tier&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;config&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_tiny_alu_cocotb/tests.yaml&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reglvl&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">}</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="nt">&quot;links&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test:verif/demo_tiny_alu_cocotb#cocotb_random&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;target&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tb:verif/demo_tiny_alu_cocotb#tb_alu_random&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;runs_on&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;confidence&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;EXTRACTED&quot;</span><span class="p">}</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="p">}</span>
+</code></pre></div>
+<p>Every node carries <code>id</code>, <code>type</code>, <code>label</code> and <code>tier</code>; <code>file</code> (repo-relative) is present wherever the source is a file. Every link carries <code>confidence</code>: <code>EXTRACTED</code> for anything read straight out of config or source, <code>INFERRED</code> / <code>AMBIGUOUS</code> only for the binding tier's <code>dut.&lt;signal&gt;</code> scan.</p>
+<p>Paths inside ids are always repo-relative and posix-separated, so an id computed on macOS matches one computed on Linux.</p>
+<h2 id="output-paths">Output Paths</h2>
+<p>The merged graph lives at <code>&lt;project root&gt;/artefacts/graph/graph.json</code>, with provenance beside it in <code>graph-meta.json</code>. The sidecar holds the generator identity and the SHA-256 of every input file per tier — that is how a consumer knows whether a cached graph is stale.</p>
+<p>Each tier's own export is kept next to the merged file, so a surprising merge can be traced back to the tier that produced it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>artefacts/graph/
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>├── graph.json              # the merged graph — this is what you query
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>├── graph-meta.json         # fingerprint, tool versions, per-tier provenance
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>├── results-overlay.json    # last status / seed / artefact paths per test node
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>├── design/&lt;model&gt;/graph.json            # one design-tier export per model
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>├── design/&lt;model&gt;/tb/&lt;tb&gt;/graph.json    # one per testbench, rooted at its top
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>├── config/graph.json            # the config tier on its own
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>├── binding/graph.json           # Graphify&#39;s tier, when it ran
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>├── bind/graph.json              # the post-merge binding stage&#39;s own edges
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>└── graphify.log                 # Graphify&#39;s stdout/stderr, when it ran
+</code></pre></div>
+<p>The design tier's filelist is <code>rb hier</code>'s: <code>artefacts/hier/&lt;model&gt;/hier.f</code>, generated by the same machinery, so a graph export and a hierarchy render always see the same sources. The viewer's stderr for a model lands in <code>artefacts/hier/&lt;model&gt;/graph.log</code>. A testbench export reuses <code>rb hier --view tb</code>'s DUT+TB merged filelist at <code>artefacts/hier/&lt;model&gt;/tb/&lt;tb&gt;/hier.f</code> the same way.</p>
+<p>Volatile data never enters <code>graph.json</code>: no pass/fail status, no seeds, no artefact paths, no timestamps. Results are a separate overlay file keyed by node id, so re-running a regression does not churn the graph. See <a href="#results-overlay">Results Overlay</a>.</p>
+<h2 id="building-the-graph">Building the Graph</h2>
+<p><code>rb graph build</code> runs each tier and merges the results. Model selection is <code>--model NAME</code> (repeatable), <code>-c/--regression FILE</code> (every model the regression's suites run), or, by default, every model declared under <code>--design-dir</code>. <code>--model</code> and <code>--regression</code> are mutually exclusive.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--spec-dir</code> / <code>--verif-dir</code> / <code>--design-dir</code></td>
+<td>Search roots, same defaults as the <code>rb spec</code> commands</td>
+</tr>
+<tr>
+<td><code>-o, --out-dir</code></td>
+<td>Output directory (default <code>artefacts/graph</code>)</td>
+</tr>
+<tr>
+<td><code>--frontend</code></td>
+<td>Viewer parser frontend (<code>verible</code>, <code>slang</code>)</td>
+</tr>
+<tr>
+<td><code>--no-design</code></td>
+<td>Skip the design tier — config-only graph, no viewer needed</td>
+</tr>
+<tr>
+<td><code>--no-tb</code></td>
+<td>Skip the TB-rooted half of the design tier (DUT hierarchies only)</td>
+</tr>
+<tr>
+<td><code>--no-bind</code></td>
+<td>Skip the post-merge binding stage (no <code>binds_to</code> / <code>drives</code> / <code>checks_against</code> edges)</td>
+</tr>
+<tr>
+<td><code>--no-graphify</code></td>
+<td>Skip Graphify's binding tier without probing for Graphify</td>
+</tr>
+<tr>
+<td><code>--graphify-llm</code></td>
+<td>Opt into Graphify's LLM pass (off by default)</td>
+</tr>
+<tr>
+<td><code>--no-graphify-cross-check</code></td>
+<td>Don't run <code>graphify merge-graphs</code> as a second opinion</td>
+</tr>
+<tr>
+<td><code>--force</code></td>
+<td>Rebuild even when nothing changed</td>
+</tr>
+<tr>
+<td><code>--strict</code></td>
+<td>Exit non-zero on any per-item failure, not just a dead tier</td>
+</tr>
+<tr>
+<td><code>--tool</code></td>
+<td>Path to the <code>rtl-buddy-view</code> binary</td>
+</tr>
+</tbody>
+</table>
+<p>The design tier needs <code>rtl-buddy-view</code> with the <code>graph</code> verb; <code>rb tool-check --explain rtl-buddy-view</code> reports it. An older viewer fails that tier with an upgrade hint instead of producing a half-graph.</p>
+<h3 id="testbenches-are-part-of-the-design-tier">Testbenches are part of the design tier</h3>
+<p>A <code>tb:</code> node on its own carries what <code>tests.yaml</code> says about a testbench and nothing about the SystemVerilog it elaborates. So the design tier is exported twice per design: once rooted at the model (<code>--top</code>), and once per testbench rooted at that testbench's top (<code>--tb-top</code>), over the same DUT+TB filelist the compile flow builds. Both are the same <code>rtl-buddy-view graph</code> invocation and both land in the same tier — <code>--design/--no-design</code> governs them together, and <code>--no-tb</code> drops just the testbench half when the extra elaboration is not worth its cost.</p>
+<p>The weld is the shared <code>module:&lt;name&gt;</code> id: a testbench's instance of the DUT emits <code>instance_of</code> pointing at the very <code>module:</code> node the DUT-rooted export produced, so "which testbenches instantiate this module?" is answerable from the graph.</p>
+<p>Two testbenches are the same export when they resolve to the same model, suite, testbench filelist and top — so ten tests sharing a testbench elaborate it once. A testbench whose top <em>is</em> the DUT top is not exported at all: that is the cocotb and SystemC case, where <code>toplevel:</code> names the DUT and there is no SystemVerilog testbench above it. Its <code>tb:</code> node still stitches to the DUT via <code>elaborates_as</code>.</p>
+<h4 id="when-two-testbenches-share-a-top-module-name">When two testbenches share a top module name</h4>
+<p><code>module:&lt;name&gt;</code> is a global id, but a SystemVerilog module name is only unique inside one elaboration, and the conventional name for a testbench top is <code>tb_top</code> — a project with eight suites has eight different modules called that. Unioned naively they become one node that instantiates every DUT in the project, and one <code>inst:tb_top/tb_top.i_dut</code> that is <code>instance_of</code> four different modules; both are statements the graph would be making that are false.</p>
+<p>So when the same id is claimed by more than one <em>file</em>, the testbench copies are qualified with the suite that owns them: <code>module:tb_top@verif/template</code>, <code>inst:tb_top/tb_top.i_dut@verif/template</code>. The node keeps its <code>label</code> (<code>tb_top</code>), so searching by name still finds all of them, and records <code>unqualified_id</code> / <code>qualified_by</code>. DUT ids are never qualified — they are the weld. Every qualification is listed in <code>graph-meta.json</code> under the design tier's <code>id_collisions</code>, and renaming the duplicated module makes it unnecessary.</p>
+<h3 id="a-missing-tier-is-not-a-failed-build">A missing tier is not a failed build</h3>
+<p>Graphify is optional. Without it installed the merged graph still holds the design and config tiers and is fully queryable; the binding tier is reported as <code>skipped</code> with the reason. Only a tier that was asked for and <em>broke</em> — an unparseable model, a Graphify crash — is <code>failed</code>, which is what makes the exit code non-zero. Per-item failures (one model of five) leave the exit code at 0 unless <code>--strict</code> is passed, and are always listed in <code>graph-meta.json</code>.</p>
+<p>Graphify's semantic pass ships file content to whatever model it is configured with, so it is never run implicitly: only <code>--graphify-llm</code> turns it on.</p>
+<h3 id="merging">Merging</h3>
+<p>The union is implemented in <code>rtl_buddy.graph.merge</code>, not delegated to Graphify — an optional dependency cannot own the step that every build needs. Nodes are unioned by <code>id</code> with earlier tiers winning attribute conflicts (design, then config, then binding), and links are unioned by their full content, so two <code>connects</code> edges that differ only in <code>formal</code> both survive while byte-identical duplicates collapse.</p>
+<p>When Graphify <em>is</em> installed, <code>graphify merge-graphs</code> runs over the same per-tier files as a cross-check and the comparison lands in <code>graph-meta.json</code> under <code>merge.graphify_cross_check</code>. A disagreement is reported, never adopted.</p>
+<p><code>merge.dangling</code> lists link endpoints with no node of their own. On a merged graph it should be empty; a <code>module:&lt;name&gt;</code> in that list means the config tier names a model whose design tier never exported.</p>
+<h3 id="binding-cocotb-to-the-dut">Binding cocotb to the DUT</h3>
+<p>The design tier has never heard of Python; the config tier has never heard of <code>dut.a</code>. A stage that runs <strong>after</strong> the merge closes that gap, because it is the only point where both halves are readable at once. It needs no external tool and runs on every build unless <code>--no-bind</code> is passed.</p>
+<p>For every test whose testbench has a <code>cocotb: {module: M}</code> entry it emits:</p>
+<ul>
+<li><code>binds_to</code> from the test node to <code>M</code>'s Python-module node, and from that module to the testbench's <code>toplevel:</code> as a <code>module:</code> node. Both come straight out of <code>tests.yaml</code>, so both are <code>EXTRACTED</code>. That is the two-hop path from any cocotb test to its DUT.</li>
+<li><code>imports</code> between Python-module nodes, from a real <code>ast</code> parse. This is what makes a shared helper such as <code>verif/demo_tiny_alu_cocotb/_alu_common.py</code> reachable from the tests that use it.</li>
+<li><code>drives</code> from a Python module to a <code>port:</code> node, one per <code>dut.&lt;name&gt;</code> attribute access.</li>
+<li><code>checks_against</code> from the test to a <code>golden_model</code> node, when the cocotb module imports one — directly, or through a helper.</li>
+</ul>
+<p><code>dut.&lt;name&gt;</code> is found with <code>ast</code>, so the string <code>"dut.a"</code> and <code>self.dut.a</code> are not mistaken for accesses and the reported <code>line</code> is the real one. The handle is <code>dut</code> plus the first parameter of every <code>@cocotb.test()</code> function, so a suite that calls it <code>alu</code> still binds. A file that does not parse falls back to a regex sweep rather than contributing nothing.</p>
+<p>Confidence on a <code>drives</code> edge is decided by the port table and nothing else:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Confidence</th>
+<th>Target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&lt;name&gt;</code> is a port of the toplevel</td>
+<td><code>EXTRACTED</code></td>
+<td>that port</td>
+</tr>
+<tr>
+<td>differs only in case</td>
+<td><code>INFERRED</code></td>
+<td>the real port</td>
+</tr>
+<tr>
+<td>no port matches (a bus wrapper, an internal signal)</td>
+<td><code>INFERRED</code> + <code>resolved: false</code></td>
+<td><code>port:&lt;top&gt;.&lt;name&gt;</code>, which will dangle</td>
+</tr>
+<tr>
+<td>no design tier was exported, so no port is known</td>
+<td><code>INFERRED</code></td>
+<td><code>port:&lt;top&gt;.&lt;name&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Reach is transitive but honest. <code>test_alu_random.py</code> never says <code>dut.a</code> — <code>_alu_common.py</code> does, and the test imports it. The <code>drives</code> edge is emitted from <em>both</em> Python modules, and the inherited one carries <code>via</code> naming the file the access really came from, so first-hand evidence stays distinguishable from inherited. <code>file</code> and <code>line</code> on the edge always point at the file that contains the access.</p>
+<p>A golden model is the one import not resolved as a file. It lives under <code>spec/</code> and cocotb suites reach it through a runtime <code>sys.path</code> insert, which no static resolver should emulate; instead an import whose name matches a config-tier <code>golden_model</code> node's stem binds to that node.</p>
+<p>When Graphify is installed, its Python nodes are reused rather than duplicated: the two tools are matched on the node's repo-relative <code>file</code>, so one file never ends up with two ids. Without Graphify the stage synthesizes minimal <code>py:&lt;path&gt;</code> nodes, which is what keeps the binding useful on a machine that has never installed it.</p>
+<p>Counts land in <code>graph-meta.json</code> under <code>binding</code> (and in the machine envelope's <code>payload.binding</code>), including <code>drives_extracted</code> / <code>drives_inferred</code> and a bounded <code>unresolved</code> list naming cocotb modules whose file was not found and accesses that matched no port.</p>
+<h3 id="caching">Caching</h3>
+<p>Every input is hashed before any exporter runs, and the combined fingerprint — input hashes plus tool versions plus schema version — is stored in <code>graph-meta.json</code>. A re-run whose fingerprint still matches skips the build entirely and reports <code>unchanged</code>, with each tier marked <code>cached</code>. Tool versions are part of the fingerprint because upgrading <code>rtl-buddy-view</code> can change the design tier without a single source file moving. A tier that failed in the cached build stays <code>failed</code> — a matching fingerprint proves the inputs held still, not that a broken viewer got fixed.</p>
+<h3 id="machine-mode">Machine mode</h3>
+<p><code>rb --machine graph build</code> emits the standard <a href="../../agents/#machine-mode">envelope</a>. <code>payload</code> carries <code>graph</code> and <code>meta</code> (repo-relative paths), <code>unchanged</code>, <code>nodes</code>, <code>links</code>, <code>fingerprint</code>, a <code>tiers</code> list of <code>{tier, status, nodes, links}</code> (plus <code>detail</code> / <code>failures</code> / <code>models</code> where they apply), <code>merge</code> with <code>strategy</code>, <code>stitch_points</code> and <code>dangling</code>, and <code>binding</code> with the stage's per-edge-class counts. Exit code 0 means the graph was written; 1 means a tier failed; 2 is the usual fatal-configuration exit.</p>
+<h2 id="results-overlay">Results Overlay</h2>
+<p>The graph answers <em>what exists and what covers what</em>. "What passed last night, and where are its artefacts" is a different question with a different lifetime, so it gets a different file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>results<span class="w">          </span><span class="c1"># refresh artefacts/graph/results-overlay.json</span>
+</code></pre></div>
+<p><code>results-overlay.json</code> sits next to <code>graph.json</code> and is keyed by <strong>test node id</strong> — the same <code>test:&lt;suite dir&gt;#&lt;name&gt;</code> the config tier emits — so joining the two needs no name mangling and no knowledge of the artefact layout:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;rtl-buddy-filetype&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graph_results_overlay&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">&quot;graph&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;artefacts/graph/graph.json&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;present&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;fingerprint&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;9f2c...&quot;</span><span class="p">},</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">&quot;tests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">&quot;test:verif/demo_tiny_alu#random&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">      </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test:verif/demo_tiny_alu#random&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">      </span><span class="nt">&quot;suite&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_tiny_alu&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">      </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;random&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">      </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PASS&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">      </span><span class="nt">&quot;run_token&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;e10b2eb8aebf4feb&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">      </span><span class="nt">&quot;randseed&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">481723</span><span class="p">,</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">      </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-08-04T22:19:35Z&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">      </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;result-envelope&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">      </span><span class="nt">&quot;result_json&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_tiny_alu/artefacts/random/result.json&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">      </span><span class="nt">&quot;artefacts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">        </span><span class="nt">&quot;dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_tiny_alu/artefacts/random&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">        </span><span class="nt">&quot;log&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_tiny_alu/artefacts/random/test.log&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">        </span><span class="nt">&quot;coverage&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_tiny_alu/artefacts/random/coverage.dat&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="w">        </span><span class="nt">&quot;trace&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_tiny_alu/artefacts/random/dump.fst&quot;</span>
+<a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="w">      </span><span class="p">},</span>
+<a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">      </span><span class="nt">&quot;in_graph&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="w">  </span><span class="nt">&quot;summary&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;tests&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;with_results&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;statuses&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;PASS&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;FAIL&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">},</span><span class="w"> </span><span class="nt">&quot;missing&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w"> </span><span class="nt">&quot;unmatched&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w"> </span><span class="nt">&quot;problems&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]}</span>
+<a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a><span class="p">}</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--verif-dir</code></td>
+<td>Tree searched for <code>tests.yaml</code> (default <code>verif/</code>, the config tier's)</td>
+</tr>
+<tr>
+<td><code>-o, --out-dir</code></td>
+<td>Output directory (default <code>artefacts/graph</code>)</td>
+</tr>
+<tr>
+<td><code>--graph</code></td>
+<td><code>graph.json</code> to cross-check ids against; read, never written</td>
+</tr>
+<tr>
+<td><code>--strict</code></td>
+<td>Exit non-zero on an unreadable envelope, a test node with no result, or a result matching no node</td>
+</tr>
+</tbody>
+</table>
+<h3 id="where-the-numbers-come-from">Where the numbers come from</h3>
+<p>Two sources, both already on disk after a run:</p>
+<ul>
+<li>The per-run <strong>result envelope</strong> (<code>runner/result_io.py</code>) gives <code>status</code>, <code>run_token</code>, <code>run_id</code> and the rtl_buddy version that wrote it. Every run writes one to <code>&lt;suite&gt;/artefacts/&lt;test&gt;/result.json</code> (or <code>run-NNNN/result.json</code> for a <code>randtest</code> iteration); a dispatched run additionally writes the head's collection copy at <code>&lt;suite&gt;/artefacts/&lt;test&gt;/dispatch/result-&lt;tag&gt;.json</code>. Both are read, and the newer wins.</li>
+<li>The documented <strong>artefact layout</strong> gives the paths: <code>test.log</code>, <code>test.err</code>, <code>test.randseed</code>, <code>coverage.dat</code>, the newest trace (<code>dump.fst</code> / <code>dump.vcd</code> / <code>vcdplus.vpd</code>) and the compile transcript. Only files that exist are listed, so a key that is present is a path that resolves.</li>
+</ul>
+<p><code>timestamp</code> is the <strong>envelope file's</strong> mtime, never a wall clock read at refresh time. That is what makes a refresh with nothing re-run byte-identical to the previous one — the overlay is a function of the tree, not of when you asked.</p>
+<p>A <code>randtest</code> reports every iteration under <code>runs</code>, and the entry's own <code>status</code> is the last of them (newest timestamp, ties broken by highest <code>run_id</code>).</p>
+<p>A test directory with artefacts but no envelope still gets an entry, with <code>status: "UNKNOWN"</code> and <code>source: "artefacts"</code>. Its seed and paths are real and replayable; only the verdict is unknown. That is the honest answer for a tree written before the envelope existed, or a run that died before POST.</p>
+<p><code>run_token</code> is the per-invocation nonce: every run of one <code>rb regression</code> shares it, and the dispatch path reuses the head's plan token. Two tests carrying different tokens are results from different invocations, whatever their timestamps say.</p>
+<h3 id="joining-it-back-to-the-graph">Joining it back to the graph</h3>
+<p>The overlay never mutates <code>graph.json</code> — refreshing it after ten regressions leaves the graph byte-for-byte identical, and leaves the build fingerprint alone too (artefact directories are not inputs to any tier). Consumers join on the id:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rtl_buddy.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_overlay</span><span class="p">,</span> <span class="n">overlay_for_node</span><span class="p">,</span> <span class="n">annotate_graph</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">overlay</span> <span class="o">=</span> <span class="n">load_overlay</span><span class="p">(</span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">)</span>     <span class="c1"># file, its dir, or the project root</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">entry</span> <span class="o">=</span> <span class="n">overlay_for_node</span><span class="p">(</span><span class="n">overlay</span><span class="p">,</span> <span class="s2">&quot;test:verif/demo_tiny_alu#random&quot;</span><span class="p">)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">entry</span><span class="p">[</span><span class="s2">&quot;status&quot;</span><span class="p">],</span> <span class="n">entry</span><span class="p">[</span><span class="s2">&quot;artefacts&quot;</span><span class="p">][</span><span class="s2">&quot;log&quot;</span><span class="p">])</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">annotate_graph</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">overlay</span><span class="p">)</span>                  <span class="c1"># attach entries in memory, for a query</span>
+</code></pre></div>
+<p><code>load_overlay()</code> returns <code>None</code> for an absent, unreadable or foreign file — a graph with no overlay is still fully queryable, so "no results known" is a state every consumer must handle anyway. <code>annotate_graph()</code> mutates the dict you hand it and nothing on disk; do not write the annotated graph back over <code>graph.json</code>.</p>
+<p><code>--graph</code> cross-checking adds <code>in_graph</code> to each entry and fills <code>summary.missing</code> (test nodes with no result at all) and <code>summary.unmatched</code> (results whose id no node claims — typically a sweep expansion such as <code>t_basic_1</code>, which runs under a name <code>tests.yaml</code> never declares).</p>
+<h3 id="machine-mode_1">Machine mode</h3>
+<p><code>rb --machine graph results</code> emits the standard <a href="../../agents/#machine-mode">envelope</a>. <code>payload</code> carries <code>overlay</code> (repo-relative), <code>graph</code> (the linkage block), <code>tests</code>, <code>with_results</code>, <code>statuses</code>, <code>missing</code>, <code>unmatched</code> and <code>problems</code>. Exit code 0 unless <code>--strict</code> turned one of the last three into a failure.</p>
+<h2 id="querying-the-graph">Querying the Graph</h2>
+<p>Three verbs read the graph back. All three join the results overlay onto every node they return, so a structural question and a "did it pass" question are one command, not two.</p>
+<p>They are also <strong>lock-free</strong>: unlike the commands that write, they do not take the artefact lock, so you can query the graph while a regression is running in the same tree — which is exactly when you want to.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span><span class="w">  </span><span class="c1"># match + neighbourhood</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>rb<span class="w"> </span>graph<span class="w"> </span>path<span class="w"> </span>cocotb_random<span class="w"> </span>module:demo_tiny_alu<span class="w">         </span><span class="c1"># how are these related?</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>rb<span class="w"> </span>graph<span class="w"> </span>explain<span class="w"> </span>test:verif/demo_tiny_alu#flags<span class="w">          </span><span class="c1"># one node in full</span>
+</code></pre></div>
+<h3 id="rb-graph-query"><code>rb graph query</code></h3>
+<p>Keyword search, then a bounded neighbourhood expansion around every match. The expansion is what makes one round-trip enough: asking about a coverage item returns the item <em>and</em> the tests that cover it <em>and</em> their last status.</p>
+<p>On the project template, after <code>rb graph build</code> and <code>rb graph results</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="gp">$ </span>rb<span class="w"> </span>graph<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="go">                Graph Query — which tests cover SAND-FUNC-FLAG-C-ADD</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="go">┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┓</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="go">┃ Node                 ┃ Type          ┃ Score ┃ Status ┃ Where               ┃</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="go">┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━┩</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="go">│ covitem:demo_tiny_a… │ coverage_item │ 60    │ -      │ spec/demo_tiny_alu… │</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="go">└──────────────────────┴───────────────┴───────┴────────┴─────────────────────┘</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="gp">covitem:demo_tiny_alu#</span>SAND-FUNC-FLAG-C-ADD
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="go">  &lt;- declares spec:demo_tiny_alu</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="go">  &lt;- covers test:verif/demo_tiny_alu#flags (FAIL)</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="go">  &lt;- covers test:verif/demo_tiny_alu_cocotb#cocotb_flags</span>
+</code></pre></div>
+<p>Two tests claim the item; one has a recorded verdict and one has never run. Both facts came out of one command, and neither <code>specs.yaml</code> nor <code>tests.yaml</code> was read.</p>
+<p>Matching is a <strong>fixed keyword rubric, not a model</strong> — an exact id beats an exact label beats a whole-word hit beats a substring, a match in the id beats the same match in a file path, and ties break on the node id. The graph exists to cost fewer tokens than reading the tree; spending an LLM call to search it would defeat the exercise. The same question over the same graph returns the same bytes on every machine.</p>
+<p>Words that name a node type (<code>tests</code>, <code>module</code>, <code>ports</code>, <code>coverage</code>, …) are pulled out of the search terms and become a <strong>preference</strong>, never a filter. "Which tests cover SAND-FUNC-FLAG-C-ADD" therefore scores on <code>sand-func-flag-c-add</code> alone — and still finds the coverage item, because that is where the tests hang off. A type word can promote a node that already matched; it can never conjure a match.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--type</code></td>
+<td>Restrict to one node type (<code>module</code>, <code>test</code>, <code>coverage_item</code>, …)</td>
+</tr>
+<tr>
+<td><code>--tier</code></td>
+<td>Restrict to one tier (<code>design</code>, <code>config</code>, <code>binding</code>)</td>
+</tr>
+<tr>
+<td><code>--limit</code></td>
+<td>Maximum matches (default 10)</td>
+</tr>
+<tr>
+<td><code>--depth</code></td>
+<td>Hops of expansion per match (default 1, maximum 3, <code>0</code> for the bare match)</td>
+</tr>
+<tr>
+<td><code>--no-results</code></td>
+<td>Skip the overlay join — a purely structural answer</td>
+</tr>
+<tr>
+<td><code>--graph</code> / <code>--overlay</code></td>
+<td>Read a graph / overlay from somewhere other than <code>artefacts/graph</code></td>
+</tr>
+</tbody>
+</table>
+<p>Expansion follows edges in <strong>both</strong> directions, because half the questions read an edge backwards: <code>covers</code> runs test → item, and "which tests cover this item" is the reverse.</p>
+<p>Exit code is 0 when at least one node matched and 1 when nothing did — a graceful "no", so a shell loop can branch on it.</p>
+<h3 id="rb-graph-path"><code>rb graph path</code></h3>
+<p>The shortest chain of edges between two nodes: how a test reaches a module, how a coverage item reaches its spec doc.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="gp">$ </span>rb<span class="w"> </span>graph<span class="w"> </span>path<span class="w"> </span>test:verif/demo_tiny_alu_cocotb#cocotb_random<span class="w"> </span>module:demo_tiny_alu
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="go">2 hop(s):</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="go">  test:verif/demo_tiny_alu_cocotb#cocotb_random</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="go">    --binds_to--&gt; py:verif/demo_tiny_alu_cocotb/test_alu_random.py</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="go">    --binds_to--&gt; module:demo_tiny_alu</span>
+</code></pre></div>
+<p><strong>Undirected by default.</strong> Edge direction in this graph encodes <em>role</em> (a suite declares a test, a test runs on a testbench), not reachability, so "how are these two related" has to be allowed to walk an edge backwards. Pass <code>--directed</code> when the direction is the question. <code>--max-paths</code> (default 3) caps how many equally-short paths are reported; enumeration is depth-first over sorted ids, so it is stable.</p>
+<p>Both endpoints accept a full node id or a bare name. A bare name that matches more than one node <strong>fails with the candidates listed</strong> rather than picking one — silently answering about the wrong <code>blk_a</code> is worse than asking again.</p>
+<h3 id="rb-graph-explain"><code>rb graph explain</code></h3>
+<p>One node's attributes, every edge on it with the far endpoint already resolved (so no second lookup is needed to know what the peer is), the in/out degree per edge type, and the node's last regression result.</p>
+<p>Every node summary these verbs return carries a <code>cite</code> block wherever the source can be quoted: <code>file</code> and <code>line</code> from the node's tier, plus — for an instance node — the exact command that quotes it, built from the id:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">&quot;cite&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb hier-query demo_cdc_open_top source-snippet demo_cdc_open_top.u_flag_sync -c design/demo_cdc_open/models.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;design/demo_cdc_open/demo_cdc_open_top.sv&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">66</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">}</span>
+</code></pre></div>
+<p>That is the "locate in the graph, cite from source" contract in <a href="../../agents/">agent use</a> made mechanical: the payload hands over the second half instead of leaving it to be reconstructed. <code>-c</code> is filled in from the config tier's <code>maps_to</code> edge — the <em>model</em> stitch specifically, which is why the three config-to-design edges are three types: a testbench's <code>elaborates_as</code> and a run's <code>targets</code> point at the same <code>module:</code> node from a <code>tests.yaml</code> or a <code>synth.yaml</code>, and neither is a <code>-c</code> a <code>hier-query</code> would accept. Without it the command would only run from that <code>models.yaml</code>'s own directory. Both it and <code>file</code> are repo-relative, so run the command from the project root (where <code>rb graph query</code> itself runs).</p>
+<h3 id="machine-mode_2">Machine mode</h3>
+<p>All three verbs emit the standard <a href="../../agents/#machine-mode">envelope</a>. <code>payload</code> always carries <code>schema_version</code>, <code>graph</code>, <code>overlay</code> (or <code>null</code>) and <code>counts</code>; then <code>matches</code> for <code>query</code>, <code>paths</code> for <code>path</code>, and <code>node</code> / <code>attributes</code> / <code>degree</code> / <code>outgoing</code> / <code>incoming</code> for <code>explain</code>. An unresolvable node reference exits 2 with <code>payload.error</code> and <code>payload.candidates</code>.</p>
+<h2 id="looking-at-the-graph">Looking at the Graph</h2>
+<p>Graphify ships a static per-directory <code>graph.html</code>. The hub can do better, because it is the process that already owns view↔wave↔src resolution and speaks <code>selection_changed</code> / <code>open_source</code> to every connected peer — so the graph is not a picture you look at, it is a picture you click through.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>rb<span class="w"> </span>graph<span class="w"> </span>build
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w">          </span><span class="c1"># prints the http_port</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="c1"># then open http://127.0.0.1:&lt;http_port&gt;/graph</span>
+</code></pre></div>
+<p>The pane needs nothing but <code>rb graph build</code>: the design + config tiers are enough to render, Graphify is not required, and neither is a viewer bundle. Everything on the page is inline — no CDN, no external font, no build step — so it opens on a machine with no route off localhost.</p>
+<p>What it shows:</p>
+<ul>
+<li><strong>Flow columns.</strong> Eight of them, left to right, with a small force relaxation inside each and its own colour. Columns are deliberately <em>not</em> tiers: a tier says which tool produced a node, which is a fact about the build, and <code>design</code> + <code>config</code> between them hold the spec, the DUT, four flows' suites and every testbench hierarchy — a three-column picture put two thirds of the graph in one stripe. The bucketing is:</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>What lands in it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>spec</code></td>
+<td><code>spec_block</code>, <code>coverage_item</code>, <code>spec_doc</code>, <code>golden_model</code></td>
+</tr>
+<tr>
+<td><code>design</code></td>
+<td>the DUT hierarchy, plus the <code>model</code> nodes that alias its modules</td>
+</tr>
+<tr>
+<td><code>test-config</code></td>
+<td><code>flow: sim</code> suites/tests/testbenches, <strong>and</strong> their SystemVerilog testbench hierarchies</td>
+</tr>
+<tr>
+<td><code>syn-config</code></td>
+<td><code>flow: synth</code> and <code>flow: fpga</code></td>
+</tr>
+<tr>
+<td><code>formal-config</code></td>
+<td><code>flow: fpv</code></td>
+</tr>
+<tr>
+<td><code>cdc-config</code></td>
+<td><code>flow: cdc</code></td>
+</tr>
+<tr>
+<td><code>test-cocotb</code></td>
+<td>anything stamped <code>cocotb: true</code>, plus the binding tier's <code>python_module</code> nodes</td>
+</tr>
+<tr>
+<td><code>other</code></td>
+<td>anything the rules cannot place — rendered, never dropped</td>
+</tr>
+</tbody>
+</table>
+<p>A testbench <em>hierarchy</em> follows its suite's flow, so an fpv suite's testbench top and everything under it land in <code>formal-config</code> rather than sitting in the middle of the design. Recognising those nodes is the one non-obvious part, because both halves of <code>rb graph build</code> are <code>tier: design</code>: a node is testbench-side when it carries <code>qualified_by</code>, when it is the module a <code>tb:</code> node <code>elaborates_as</code> (unless a <code>models.yaml</code> <code>maps_to</code> it too — a cocotb testbench tops at the DUT itself), or when its <code>inst:&lt;root&gt;/…</code> id is rooted at such a module. A module under a testbench root that is none of those stays in <code>design</code>: over-claiming would file a vendor IP block under someone's testbench.</p>
+<p>The column is computed server-side into a <code>category</code> attribute on <code>GET /graph.json</code> — two of its inputs are graph-wide joins not worth redoing per render — and is deliberately <strong>not</strong> written into <code>graph.json</code>, for the same reason the results overlay is not: the layout is a presentation choice and must never make the built graph churn.
+- <strong>Pass/fail from the overlay.</strong> Test nodes get a status ring straight from <code>results-overlay.json</code>, so a failing test is visible in the picture and its <code>desc</code>, seed, timestamp and artefact paths are one click away in the inspector. The join happens in memory — <code>graph.json</code> on disk is never rewritten (see <a href="#results-overlay">Results Overlay</a>).
+- <strong>Dangling targets.</strong> A link into a tier that was never exported (a config-to-design stitch → a module whose design tier was skipped) is drawn as a hollow node rather than dropped, matching what <a href="#merging"><code>merge.dangling_targets</code></a> records.</p>
+<p>What it does:</p>
+<table>
+<thead>
+<tr>
+<th>Click target</th>
+<th>Envelope</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>instance</code> node</td>
+<td><code>selection_changed {instance_path}</code></td>
+<td>The SPA pans/highlights that instance. The id <em>is</em> the coordinate: <code>inst:&lt;top&gt;/&lt;dot.path&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>module</code> node</td>
+<td><code>selection_changed {instance_path}</code></td>
+<td>Same, via the shallowest instance of that module — a module is not a coordinate the design view can select, its instances are.</td>
+</tr>
+<tr>
+<td>any node with <code>file</code></td>
+<td><code>open_source {file, line, col}</code></td>
+<td>The <code>src</code> peer (nvim) opens it. Test, coverage-item, spec-block and Python-module nodes all carry <code>file</code>/<code>line</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Both actions are individually toggleable in the toolbar, and both are the <em>same</em> envelopes the SPA sends — the pane is a hub peer (<code>origin: graph</code>), not a special case in the protocol. From the other direction:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>rb<span class="w"> </span>hub<span class="w"> </span>send<span class="w"> </span>graph-focus<span class="w"> </span>test:verif/dma#smoke
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>rb<span class="w"> </span>hub<span class="w"> </span>send<span class="w"> </span>graph-focus<span class="w"> </span>module:dma_engine
+</code></pre></div>
+<p>centres and selects that node. The hub caches the focus and replays it on registration, so sending it <em>before</em> the tab is open works. A <code>selection_changed</code> arriving from the SPA or the editor highlights the matching instance node in the graph.</p>
+<p>Full details of the two routes (<code>GET /graph</code>, <code>GET /graph.json</code>) are in the <a href="../hub/#design-knowledge-graph-pane">hub concept page</a>.</p>
+<h2 id="the-mcp-server">The MCP Server</h2>
+<p><code>rb mcp</code> serves the same answers over the <a href="https://modelcontextprotocol.io">Model Context Protocol</a> on stdio. It is a <strong>second</strong> agent surface, not a replacement: <code>--machine</code> is versioned by semver and works everywhere, while MCP adds discoverable tool schemas, removes the per-query shell-permission prompt, and makes rtl_buddy reachable from agent hosts that cannot invoke <code>rb</code> at all (IDE agents, web-hosted agents).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="p">{</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="nt">&quot;rtl-buddy&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;mcp&quot;</span><span class="p">]}</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="p">}</span>
+</code></pre></div>
+<p>The SDK is an optional extra:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">&#39;rtl_buddy[mcp]&#39;</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>rb<span class="w"> </span>mcp<span class="w"> </span>--list-tools<span class="w">          </span><span class="c1"># the tool schemas, without serving</span>
+</code></pre></div>
+<p>Without the extra, <code>rb mcp</code> exits 2 with an install hint. Nothing else in rtl_buddy imports the SDK, so an install that never serves MCP does not pay for it.</p>
+<h3 id="no-daemon-required">No daemon required</h3>
+<p>The server is spawned per agent session and holds no state: every call re-reads <code>artefacts/graph/graph.json</code> and the overlay, and the hierarchy tools shell out to <code>rtl-buddy-view</code> exactly as <code>rb hier-query</code> does. Requiring a running hub to answer "what instantiates X?" would be a regression against <code>rb hier-query</code> on a CI or dispatch node, and it would collide with the hub's dynamic port versus the static <code>.mcp.json</code> a host wants. Re-reading rather than caching also means an agent that runs <code>rb graph build</code> in one turn sees the new graph in the next, with no restart.</p>
+<h3 id="stateless-tools">Stateless tools</h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>CLI mirror</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>graph_status</code></td>
+<td>— (what exists: graph, overlay, hub, node-type counts)</td>
+</tr>
+<tr>
+<td><code>graph_query</code></td>
+<td><code>rb graph query</code></td>
+</tr>
+<tr>
+<td><code>graph_path</code></td>
+<td><code>rb graph path</code></td>
+</tr>
+<tr>
+<td><code>graph_explain</code></td>
+<td><code>rb graph explain</code></td>
+</tr>
+<tr>
+<td><code>test_status</code></td>
+<td><code>rb graph results</code></td>
+</tr>
+<tr>
+<td><code>find_module</code></td>
+<td><code>rb hier-query &lt;model&gt; find-module</code></td>
+</tr>
+<tr>
+<td><code>instances_of</code></td>
+<td><code>rb hier-query &lt;model&gt; instances-of</code></td>
+</tr>
+<tr>
+<td><code>port_connections</code></td>
+<td><code>rb hier-query &lt;model&gt; port-connections</code></td>
+</tr>
+<tr>
+<td><code>source_snippet</code></td>
+<td><code>rb hier-query &lt;model&gt; source-snippet</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every result is the <code>--machine</code> payload <strong>verbatim</strong>, wrapped in a thin envelope:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="p">{</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">  </span><span class="nt">&quot;tool&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;graph_query&quot;</span><span class="p">,</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">  </span><span class="nt">&quot;ok&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">  </span><span class="nt">&quot;meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;rtl_buddy_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;6.24.0&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;project_root&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb graph query&quot;</span><span class="p">},</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">  </span><span class="nt">&quot;payload&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;...&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;identical to `rb --machine graph query`&quot;</span><span class="p">}</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="p">}</span>
+</code></pre></div>
+<p>The two surfaces call the same functions on purpose: two agent-facing descriptions of one graph would drift within a release, and the payload is the contract both are versioned against. A bad question — unknown tool, missing graph, unknown model, ambiguous node — comes back as <code>ok: false</code> with a message (and <code>candidates</code> where they exist), never as a transport error.</p>
+<h3 id="hub-tools-dial-in">Hub tools dial in</h3>
+<p>When a live hub is discovered — <code>.rtl-buddy/hub.json</code>, the very record <code>rb hub send</code> reads, including its stale-PID check — five more tools appear in the listing and drive the session the user is actually looking at:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>CLI mirror</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hub_state</code></td>
+<td><code>rb hub send state</code></td>
+</tr>
+<tr>
+<td><code>hub_select</code></td>
+<td><code>rb hub send select</code></td>
+</tr>
+<tr>
+<td><code>hub_open_source</code></td>
+<td><code>rb hub send open-source</code></td>
+</tr>
+<tr>
+<td><code>hub_resolve</code></td>
+<td><code>rb hub send resolve {view-to-wave,wave-to-view,signal-to-view}</code></td>
+</tr>
+<tr>
+<td><code>hub_diagnose</code></td>
+<td><code>rb hub send diagnose</code></td>
+</tr>
+</tbody>
+</table>
+<p>Headless they are simply absent, so an agent on a CI node is never offered a tool that can only fail. The client is the same <code>rtl_buddy.hub.client.HubClient</code> every other peer uses, connecting as <code>origin: cli</code> and closing after each call — the hub's server-only invariant holds, because this is one more peer dialling in. Discovery happens once, at server start: an MCP host reads the tool list at session start, so a tool set that changed mid-session would not be seen anyway.</p>
+<h3 id="python-api">Python API</h3>
+<p>The tool set is SDK-free and importable, which is what makes it testable on a machine without <code>mcp</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rtl_buddy.mcp</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_toolset</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="n">ts</span> <span class="o">=</span> <span class="n">build_toolset</span><span class="p">(</span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="p">[</span><span class="n">spec</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">spec</span> <span class="ow">in</span> <span class="n">ts</span><span class="o">.</span><span class="n">specs</span><span class="p">()]</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="n">ts</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s2">&quot;graph_query&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;question&quot;</span><span class="p">:</span> <span class="s2">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span><span class="p">})</span>
+</code></pre></div>
+<p><code>rtl_buddy.mcp.server</code> is the only module that imports the SDK, and it supports both the 1.x decorator API and the 2.x constructor-callback API.</p>
+<h2 id="token-efficiency">Token Efficiency</h2>
+<p>The point of the graph is that an agent should answer a question about the project without reading the project. Graphify's ~70x tokens-per-query claim is measured on software corpora, so we measured our own on RTL, with <code>scripts/graph_token_benchmark.py</code>.</p>
+<p><strong>On the project template the graph route costs about 3x <em>more</em> tokens than grep-and-read — on all six questions, including the two picked to favour it.</strong> That is the honest number. The rest of this section is what it is made of, and the one line that explains every row of the table: an <code>explain</code> payload costs about a thousand tokens whatever it describes, and almost nothing in the template costs a thousand tokens to read.</p>
+<h3 id="method">Method</h3>
+<p>Six questions an agent actually asks are answered twice: once through the <strong>graph route</strong> (<code>rb --machine graph query|path|explain</code> against <code>artefacts/graph/graph.json</code>) and once through the <strong>raw route</strong> (<code>grep</code>, <code>ls</code>, whole-file reads — what an agent does in a tree with no graph). Both answers are compared against a key hand-checked against the template sources; a route that answers wrong does not get to be the cheap one. All twelve runs were correct, so the token numbers are comparable.</p>
+<p>Four of the questions are the ones an agent asks all day. The last two were added specifically to test the hypothesis that the graph pays off on <em>structure</em> — a chain too long to hold in one grep, and a transitive closure grep cannot compute in one pass:</p>
+<ul>
+<li><strong>Deep chain</strong> — five hops across three tiers: coverage item <code>SAND-FUNC-OP-ADD</code> → the three tests that claim it → the two testbenches they run on (one SV, one cocotb) → the model → the DUT source file → its spec doc and its Python golden model.</li>
+<li><strong>Change impact on shared IP</strong> — <code>design/common/ip_cdc_sync.sv</code> changed; which runs must re-run? Every consumer counts, direct or transitive: <code>ip_cdc_handshake</code> and <code>ip_async_fifo</code> instantiate it, <code>demo_tiny_alu_subsys_top</code> instantiates all three, <code>mem_subsys</code> reaches it through the handshake, and <code>demo_tiny_alu_subsys_synth_top</code> wraps the subsystem.</li>
+</ul>
+<p>The token proxy is <code>len(text) // 4</code>, applied to every byte crossing into the agent's context — the command it types plus the output it reads. No tokenizer is imported: a real BPE would pin the published number to one vendor's vocabulary, and the ratio between two routes is insensitive to the constant. Repeating a command is free on both routes, the same way re-reading a file is: an agent does not re-run a query whose answer is still in its transcript.</p>
+<p>Two costs are deliberately not charged to the graph route. <code>rb graph build</code> is an index — 7.1 s cold and 1.3 s cached on the template, paid once per source change and amortized over every question, like a <code>ctags</code> database. And <code>graph.json</code> itself (640 KiB, about 164 k tokens) is never read whole; that is what the verbs are for.</p>
+<p><code>--machine</code> is the only surface measured because it is the only one an agent can use: the human rendering is a Rich table that does not survive a pipe (<code>rb graph query</code> prints nothing at all through one) and truncates long ids with an ellipsis where it does render.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/graph_token_benchmark.py<span class="w"> </span>-p<span class="w"> </span>/path/to/rtl-buddy-project-template
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/graph_token_benchmark.py<span class="w"> </span>-p<span class="w"> </span>...<span class="w"> </span>--markdown<span class="w">   </span><span class="c1"># the table below</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>uv<span class="w"> </span>run<span class="w"> </span>python<span class="w"> </span>scripts/graph_token_benchmark.py<span class="w"> </span>-p<span class="w"> </span>...<span class="w"> </span>--json<span class="w">       </span><span class="c1"># every step, itemized</span>
+</code></pre></div>
+<h4 id="what-must-re-run-means">What "must re-run" means</h4>
+<p>The change-impact task needs an inclusion criterion, or the answer is unfalsifiable. A run counts when <strong>the project-root regression manifests claim its suite</strong> — <code>regression.yaml</code>, <code>synth_regression.yaml</code>, <code>fpv_regression.yaml</code>, <code>fpga_regression.yaml</code> — <strong>and the elaboration that run drives contains an <code>ip_cdc_sync</code> instance</strong>. Synthesis of an affected top counts as much as simulation of one: the netlist changes either way.</p>
+<p>The template's CDC analyses are out of scope for <em>both</em> routes, and not by preference: <code>cdc_regression.yaml</code> lives at <code>lint/cdc/</code>, not the project root, so the graph's flow discovery — which is by root filename — never sees it, and there is no root manifest for the raw route to read either. Three analyses would otherwise be in the answer (<code>ip_cdc_handshake_lint</code>, <code>demo_tiny_alu_subsys_lint</code>, <code>demo_cdc_mem_macro_lint</code>). Recorded here rather than silently dropped; see <a href="#flow-provenance">Flow provenance</a>.</p>
+<p>One finding falls out of the answer rather than the tokens: <code>mem_subsys</code> is affected and <strong>no run in any root manifest touches it</strong>. Its only consumer is the out-of-scope CDC analysis. Both routes report it in <code>models</code> and neither can name a run for it.</p>
+<h3 id="results">Results</h3>
+<p>Measured on <a href="https://github.com/rtl-buddy/rtl-buddy-project-template">rtl-buddy-project-template</a> at <code>6507c3a</code> (clean), against a graph of 643 nodes and 1 392 links built from all three tiers by rtl_buddy <code>feat/design-graph</code> and rtl-buddy-view <code>feat/graph-export</code> (<code>6d334ed</code>). "Answer" is the answer itself as compact JSON — the floor either route could hit. Ratio is raw / graph: above 1.00 the graph is cheaper.</p>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th style="text-align: right;">Answer</th>
+<th style="text-align: right;">Raw tokens</th>
+<th style="text-align: right;">Raw calls</th>
+<th style="text-align: right;">Graph tokens</th>
+<th style="text-align: right;">Graph calls</th>
+<th style="text-align: right;">Ratio (raw / graph)</th>
+<th>Both correct</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trace a signal</td>
+<td style="text-align: right;">46</td>
+<td style="text-align: right;">2979</td>
+<td style="text-align: right;">7</td>
+<td style="text-align: right;">10913</td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">0.27x</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Tests for a block</td>
+<td style="text-align: right;">66</td>
+<td style="text-align: right;">1782</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">11778</td>
+<td style="text-align: right;">14</td>
+<td style="text-align: right;">0.15x</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Traceability chain</td>
+<td style="text-align: right;">49</td>
+<td style="text-align: right;">1675</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">2460</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">0.68x</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Module interface</td>
+<td style="text-align: right;">35</td>
+<td style="text-align: right;">800</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">2014</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">0.40x</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Deep chain</td>
+<td style="text-align: right;">92</td>
+<td style="text-align: right;">1809</td>
+<td style="text-align: right;">6</td>
+<td style="text-align: right;">8809</td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">0.21x</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Change impact on shared IP</td>
+<td style="text-align: right;">109</td>
+<td style="text-align: right;">9021</td>
+<td style="text-align: right;">24</td>
+<td style="text-align: right;">18549</td>
+<td style="text-align: right;">14</td>
+<td style="text-align: right;">0.49x</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><strong>all 6</strong></td>
+<td style="text-align: right;">397</td>
+<td style="text-align: right;"><strong>18066</strong></td>
+<td style="text-align: right;">49</td>
+<td style="text-align: right;"><strong>54523</strong></td>
+<td style="text-align: right;">51</td>
+<td style="text-align: right;"><strong>0.33x</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p>The first four tasks are: what drives <code>rst_b_n</code> in <code>demo_cdc_open_top</code> and which instances load it; which tests exercise <code>demo_tiny_alu</code> and at which <code>reglvl</code>; which tests, spec block, spec doc and golden model chain off coverage item <code>SAND-FUNC-FLAG-C-ADD</code>; and every port of <code>demo_tiny_alu</code> with its direction, plus its parameters.</p>
+<p>The two structural tasks did not reverse the result. They did change its shape: change impact is the <strong>only</strong> task where the graph route needs <em>fewer calls</em> than the raw route (14 against 24), and it is the best ratio in the table — but the deep chain is the second <strong>worst</strong>, because every hop it adds is a hop through the config tier, where the file an <code>explain</code> replaces is a 500-token YAML.</p>
+<h3 id="where-the-tokens-went">Where the tokens went</h3>
+<p>397 tokens of answer cost the graph route 54 523, and 95% of that (51 964 tokens over 47 of its 51 calls) is <code>explain</code>. Four payload effects account for it, and none of them is a property of the graph.</p>
+<p><strong>Attributes are only reachable through <code>explain</code>.</strong> A node summary carries <code>id</code>, <code>type</code>, <code>label</code>, <code>tier</code>, <code>file</code>, <code>line</code> and nothing type-specific, so reading one <code>reglvl</code> integer or one port <code>dir</code> string costs a whole <code>explain</code> call. In the reglvl task, eleven calls are exactly that.</p>
+<p><strong>Every peer is repeated in full.</strong> An <code>explain</code> payload embeds a complete node summary for each edge endpoint, including a <code>cite</code> block that, for anything but an instance node, only repeats <code>file</code>. <code>test:verif/demo_tiny_alu#basic</code> costs 1 195 tokens, most of it nine coverage-item summaries the question never asked about; <code>spec:demo_tiny_alu</code> costs 1 915, most of it the sixteen coverage items it declares.</p>
+<p><strong>The payload grows with degree, not with relevance.</strong> <code>explain module:ip_cdc_sync</code> — the one call that makes the change-impact answer possible — is 6 174 tokens, a third of that task's whole graph route, because the node has 44 edges on it and each arrives with a full peer summary. The information the walk actually uses from it is ten root names.</p>
+<p><strong>A module's ports are not a traversal.</strong> No edge ties a <code>port:</code> node to its <code>module:</code> node — only the <code>owner</code> attribute does — so "the ports of <code>demo_tiny_alu</code>" is a substring search, and <code>port:demo_tiny_alu_subsys_compute.*</code> scores identically. Half the twenty nodes returned were noise.</p>
+<p>A fifth effect changes shape rather than size: the 25-neighbour budget in <code>query</code> is spent breadth-first, so at <code>--depth 2</code> from the model node all sixteen sibling coverage items arrive before the tests and the tests are truncated away. The traceability route uses <code>--depth 1</code> plus one <code>explain</code> for that reason — two calls that terminate beat one call that quietly drops the answer.</p>
+<h3 id="when-the-graph-does-win">When the graph does win</h3>
+<p>Both routes are linear in the size of the answer; what differs is the unit price of one step.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align: right;">count</th>
+<th style="text-align: right;">min</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">mean</th>
+<th style="text-align: right;">max</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>explain</code> payload</td>
+<td style="text-align: right;">47</td>
+<td style="text-align: right;">440</td>
+<td style="text-align: right;">946</td>
+<td style="text-align: right;">1 106</td>
+<td style="text-align: right;">6 174</td>
+</tr>
+<tr>
+<td>unique file read, RTL (<code>.sv</code>)</td>
+<td style="text-align: right;">12</td>
+<td style="text-align: right;">236</td>
+<td style="text-align: right;">632</td>
+<td style="text-align: right;">695</td>
+<td style="text-align: right;">2 019</td>
+</tr>
+<tr>
+<td>unique file read, config (YAML etc.)</td>
+<td style="text-align: right;">16</td>
+<td style="text-align: right;">133</td>
+<td style="text-align: right;">208</td>
+<td style="text-align: right;">265</td>
+<td style="text-align: right;">831</td>
+</tr>
+</tbody>
+</table>
+<p><strong>A hop pays for itself exactly when the file it replaces is bigger than the payload that replaces it.</strong> On this template that is almost never true, and it is true for one file: <code>demo_tiny_alu_subsys_top.sv</code> costs 2 019 tokens to read and 1 958 to <code>explain</code> — a dead heat. Everything else is smaller than an <code>explain</code> payload, and the config tier is <em>much</em> smaller: a <code>tests.yaml</code> costs 130–830 tokens and always beats the two or three <code>explain</code> calls that would replace it.</p>
+<p>Per task, the mean file the raw route opened, against the mean file size at which the two routes would cost the same:</p>
+<table>
+<thead>
+<tr>
+<th>Task</th>
+<th style="text-align: right;">Files read</th>
+<th style="text-align: right;">Mean file read</th>
+<th style="text-align: right;">Break-even file size</th>
+<th>What the files are</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trace a signal</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">558</td>
+<td style="text-align: right;">2 145</td>
+<td>RTL</td>
+</tr>
+<tr>
+<td>Tests for a block</td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">434</td>
+<td style="text-align: right;">2 933</td>
+<td>config</td>
+</tr>
+<tr>
+<td>Traceability chain</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">522</td>
+<td style="text-align: right;">784</td>
+<td>config</td>
+</tr>
+<tr>
+<td>Module interface</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">678</td>
+<td style="text-align: right;">1 892</td>
+<td>RTL</td>
+</tr>
+<tr>
+<td>Deep chain</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">522</td>
+<td style="text-align: right;">2 855</td>
+<td>config</td>
+</tr>
+<tr>
+<td>Change impact on shared IP</td>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">429</td>
+<td style="text-align: right;">905</td>
+<td>8 RTL, 12 config</td>
+</tr>
+</tbody>
+</table>
+<p>Break-even lands between 780 and 2 950 tokens per file — roughly 200 to 750 lines. That is above every file in the template and below a great many files in a real SoC, and it is the single number to carry away: <strong>the graph tier crosses over on designs whose RTL files are large, not on designs whose file <em>count</em> is large.</strong> Adding consumers does not help by itself, because each extra consumer costs the graph route an <code>explain</code> and the raw route a file read, and on the template the file read is cheaper.</p>
+<p>Two things the token column does not price, both real and both in the graph's favour, and both clearest in the change-impact task:</p>
+<ul>
+<li><strong>The closure is exact, and it is one call.</strong> Elaboration already flattened the hierarchy, so every instance of <code>ip_cdc_sync</code> anywhere in the project hangs off the module node by one <code>instance_of</code> edge. The raw route has to iterate: grep finds <em>mentions</em>, so the consumers of a consumer need another round, and it took three rounds to reach a fixpoint. It also read two files — <code>cdc_open_sync.sv</code> and <code>cdc_open_handshake.sv</code>, 1 244 tokens, 14% of that route — whose only mention of the IP is a comment. An agent that stopped after round one would have missed <code>mem_subsys</code> and <code>demo_tiny_alu_subsys_synth_top</code> and shipped a wrong answer cheaply.</li>
+<li><strong>The answers are node ids.</strong> The graph route's output is machine-checkable and stable; the raw route's is whatever the agent parsed out of SystemVerilog and YAML by eye, and it only found the right files because the template names modules, models and suites alike. <code>_module_instantiations</code> in the benchmark leans on the template's <code>u_</code> instance-name convention to tell an instantiation from a declaration — the raw route is as good as the conventions, and the graph route is not.</li>
+</ul>
+<h3 id="what-this-gates">What this gates</h3>
+<p>The measurement is the epic's success gate. Two rounds of it now say the same thing: the graph tier is right and the read surface is not yet, and the fix is a leaner payload — an <code>explain</code> that returns edges without expanding every peer, and node summaries that carry their type's own attributes — not more edges.</p>
+<p>Until that lands, the honest guidance, the one in <code>docs/agents.md</code> and in the bundled skill:</p>
+<ul>
+<li><strong>Use the graph to find things and to compute relations grep cannot.</strong> A transitive closure over elaborated hierarchy — which tops contain this IP, what does this instance path resolve to — is one call with no false positives and no iteration, and getting it wrong with grep is easy and quiet.</li>
+<li><strong>Do not route a config-tier question through it.</strong> Which tests exercise a block, at which <code>reglvl</code>, claiming which coverage items: the YAML that answers that is smaller than the payload that would replace it, measured, every time.</li>
+<li><strong>Do not route a single-file question through it.</strong> Let the graph name the file and the line range, then read those lines.</li>
+</ul>
+<p>Re-run the benchmark after any change to the query payloads; the script is the regression guard for this number, and <code>tests/test_graph_benchmark.py</code> keeps its route logic and hand-checked key honest in CI (correctness only — token counts are not asserted, since they depend on the project you point it at).</p>
+<h2 id="node-types">Node Types</h2>
+<p>Design tier (<code>rtl-buddy-view</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Id</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>module</code></td>
+<td><code>module:&lt;module_name&gt;</code> (<code>…@&lt;suite dir&gt;</code> when two files claim the name)</td>
+</tr>
+<tr>
+<td><code>instance</code></td>
+<td><code>inst:&lt;top&gt;/&lt;dot.path&gt;</code> (same suffix when its root is qualified)</td>
+</tr>
+<tr>
+<td><code>port</code></td>
+<td><code>port:&lt;module_name&gt;.&lt;port_name&gt;</code></td>
+</tr>
+<tr>
+<td><code>parameter</code></td>
+<td><code>param:&lt;module_name&gt;.&lt;name&gt;</code></td>
+</tr>
+<tr>
+<td><code>interface</code></td>
+<td><code>iface:&lt;name&gt;</code></td>
+</tr>
+<tr>
+<td><code>modport</code></td>
+<td><code>modport:&lt;iface&gt;.&lt;name&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Config tier (<code>rtl_buddy</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Id</th>
+<th>Notable attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>suite</code></td>
+<td><code>suite:&lt;suite dir&gt;</code></td>
+<td><code>flow</code></td>
+</tr>
+<tr>
+<td><code>test</code></td>
+<td><code>test:&lt;suite dir&gt;#&lt;test name&gt;</code></td>
+<td><code>flow</code>, <code>reglvl</code> (raw, as written), <code>cocotb</code>, <code>cocotb_modules</code>, <code>xfail</code>; on a non-simulation run also <code>tool</code> and <code>toplevel</code></td>
+</tr>
+<tr>
+<td><code>testbench</code></td>
+<td><code>tb:&lt;suite dir&gt;#&lt;tb name&gt;</code></td>
+<td><code>flow</code>, <code>toplevel</code>, <code>kind</code> (<code>cocotb</code>/<code>systemc</code>/<code>hdl</code>), <code>cocotb</code></td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>model:&lt;models.yaml&gt;#&lt;name&gt;</code></td>
+<td><code>desc</code></td>
+</tr>
+<tr>
+<td><code>spec_block</code></td>
+<td><code>spec:&lt;block name&gt;</code></td>
+<td><code>desc</code></td>
+</tr>
+<tr>
+<td><code>coverage_item</code></td>
+<td><code>covitem:&lt;block name&gt;#&lt;ID&gt;</code></td>
+<td><code>desc</code>, <code>block</code></td>
+</tr>
+<tr>
+<td><code>spec_doc</code></td>
+<td><code>doc:&lt;path&gt;</code></td>
+<td><code>exists</code></td>
+</tr>
+<tr>
+<td><code>golden_model</code></td>
+<td><code>golden:&lt;path&gt;</code></td>
+<td><code>referenced_by</code></td>
+</tr>
+</tbody>
+</table>
+<p>Binding tier (<code>rtl_buddy</code>'s stage, or Graphify):</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Id</th>
+<th>Notable attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>python_module</code></td>
+<td><code>py:&lt;repo-rel path&gt;</code></td>
+<td><code>cocotb_module</code>, <code>exists</code> (only when <code>false</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><code>py:</code> ids are only synthesized when nothing else already claims the file. Graphify names its Python nodes however it likes; the two are reconciled on the node's repo-relative <code>file</code>, so a project with Graphify installed gets Graphify's ids and everything binds to those.</p>
+<p><code>reglvl</code> is kept exactly as written, including the per-builder dict form. Resolving it needs a builder, which is a run-time choice with no place in a static graph.</p>
+<h2 id="edge-types">Edge Types</h2>
+<p>Design tier: <code>instantiates</code>, <code>child_of</code>, <code>instance_of</code>, <code>connects</code>, <code>implements</code> (module to modport), <code>overrides</code>.</p>
+<p>Config tier:</p>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>From</th>
+<th>To</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>declares</code></td>
+<td>suite</td>
+<td>test, testbench</td>
+</tr>
+<tr>
+<td><code>declares</code></td>
+<td>spec block</td>
+<td>coverage item</td>
+</tr>
+<tr>
+<td><code>runs_on</code></td>
+<td>test</td>
+<td>testbench</td>
+</tr>
+<tr>
+<td><code>exercises</code></td>
+<td>testbench</td>
+<td>model</td>
+</tr>
+<tr>
+<td><code>covers</code></td>
+<td>test</td>
+<td>coverage item</td>
+</tr>
+<tr>
+<td><code>specified_by</code></td>
+<td>model</td>
+<td>spec block</td>
+</tr>
+<tr>
+<td><code>documented_by</code></td>
+<td>spec block</td>
+<td>spec doc</td>
+</tr>
+<tr>
+<td><code>implements</code></td>
+<td>golden model</td>
+<td>spec block</td>
+</tr>
+<tr>
+<td><code>exercises</code></td>
+<td>test</td>
+<td>model (a synth / fpv / cdc / fpga run, which has no testbench)</td>
+</tr>
+<tr>
+<td><code>maps_to</code></td>
+<td>model</td>
+<td><strong>design-tier</strong> module</td>
+</tr>
+<tr>
+<td><code>elaborates_as</code></td>
+<td>testbench</td>
+<td><strong>design-tier</strong> module (the top it elaborates)</td>
+</tr>
+<tr>
+<td><code>targets</code></td>
+<td>test</td>
+<td><strong>design-tier</strong> module (a non-simulation run's <code>top:</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Binding tier:</p>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>From</th>
+<th>To</th>
+<th>Notable attributes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>binds_to</code></td>
+<td>test</td>
+<td>Python module</td>
+<td></td>
+</tr>
+<tr>
+<td><code>binds_to</code></td>
+<td>Python module</td>
+<td><strong>design-tier</strong> module</td>
+<td><code>toplevel</code></td>
+</tr>
+<tr>
+<td><code>imports</code></td>
+<td>Python module</td>
+<td>Python module</td>
+<td></td>
+</tr>
+<tr>
+<td><code>drives</code></td>
+<td>Python module</td>
+<td><strong>design-tier</strong> port</td>
+<td><code>signal</code>, <code>file</code>, <code>line</code>, <code>via</code>, <code>resolved</code></td>
+</tr>
+<tr>
+<td><code>checks_against</code></td>
+<td>test</td>
+<td>golden model</td>
+<td><code>via</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>drives</code> is the only edge class in the whole graph that is allowed to be <code>INFERRED</code>; everything else, in every tier, is <code>EXTRACTED</code>. <code>via</code> on a <code>drives</code> or <code>checks_against</code> edge names the helper module the fact was inherited through — absent means the module says it itself.</p>
+<h3 id="the-config-to-design-stitch-is-three-verbs">The config-to-design stitch is three verbs</h3>
+<p><code>maps_to</code>, <code>elaborates_as</code> and <code>targets</code> are one relation — "this config thing is that design module" — stated by three kinds of source, and the edge type is what says which:</p>
+<table>
+<thead>
+<tr>
+<th>Edge</th>
+<th>The source says</th>
+<th>Where the module name comes from</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>maps_to</code></td>
+<td>a <code>models.yaml</code> <strong>declares</strong> this module</td>
+<td>the model's own <code>name</code></td>
+</tr>
+<tr>
+<td><code>elaborates_as</code></td>
+<td>a testbench <strong>elaborates from</strong> this module</td>
+<td><code>toplevel:</code>, or the top the viewer really elaborated</td>
+</tr>
+<tr>
+<td><code>targets</code></td>
+<td>a synth / fpv / cdc / fpga run <strong>runs against</strong> this module</td>
+<td>the run's <code>top:</code></td>
+</tr>
+</tbody>
+</table>
+<p>They were one <code>maps_to</code> at first, on the reasoning that a second word for an identical relation costs every consumer a lookup. What that missed is that the <em>source kind</em> is the thing consumers actually ask about, and one verb threw it away: the hub pane has to know whether a <code>module:</code> is a testbench root or a DUT before it can column it, and <code>cite_hint</code>'s <code>-c</code> must come from a <code>models.yaml</code> and never from the <code>tests.yaml</code> behind an identically-shaped edge. Both were recovering the answer by re-reading the source id's prefix — a fact the edge already knew and was declining to say. Three types say it once, and leave the renderer free to colour them the same if that reads better.</p>
+<p>Everything else about them is shared. All three point config → design, all three are <code>EXTRACTED</code>, and all three target a <code>module:&lt;name&gt;</code> id that the config tier never creates — exporting the config tier alone leaves those targets dangling, which node-link readers resolve by auto-creating an attribute-less node. Merging with a design-tier export fills them in.</p>
+<p><code>elaborates_as</code> is the one with two sources: the config tier emits it from <code>toplevel:</code> when a suite declares one, and <code>rb graph build</code> replaces it with the top it saw the viewer elaborate. The config tier never guesses a top from a testbench's name — a declaration and an observation of the same fact are both welcome, and where both exist the observation wins.</p>
+<p><code>exercises</code> is deliberately <em>not</em> split the same way, even though it too runs from two source types (a testbench, and a non-simulation run that has no testbench). The split above pays for itself because a consumer of the stitch has a different question per source kind — which <code>models.yaml</code> to cite, which column to draw a module in. Nobody asks a different question of <code>exercises</code>: "what verifies this model" wants both answers in one list, and two verbs there would make every such query a union.</p>
+<h2 id="what-the-config-tier-reads">What the Config Tier Reads</h2>
+<p>Everything comes from the loaders that back <code>rb test</code>, <code>rb spec check-coverage</code> and <code>rb spec check-design</code>; there is no second YAML parser, so the graph cannot disagree with those commands.</p>
+<ul>
+<li><code>specs.yaml</code> under <code>&lt;root&gt;/spec</code> gives spec blocks, their <code>docs:</code> and their <code>coverage-items</code>.</li>
+<li><code>models.yaml</code> under <code>&lt;root&gt;/design</code> gives models, and each model's <code>spec:</code> back-pointer gives <code>specified_by</code>.</li>
+<li><code>tests.yaml</code> under <code>&lt;root&gt;/verif</code> gives suites, testbenches and tests. A test's <code>testbench:</code> becomes <code>runs_on</code>, its <code>model:</code> becomes <code>exercises</code> on the testbench, and each entry in its <code>covers:</code> becomes a <code>covers</code> edge.</li>
+<li>The repo-level regression files at the project root give the <code>flow</code> stamp — see below.</li>
+<li>Golden models are found by convention: non-private Python files sitting next to a <code>specs.yaml</code>, for example <code>spec/demo_tiny_alu/tiny_alu_model.py</code>. Each node records the verif files that mention it in <code>referenced_by</code>.</li>
+</ul>
+<p>A <code>covers:</code> entry names a bare coverage-item id, and more than one block may declare the same id. <code>rb spec check-coverage</code> treats every such block as covered, and the graph matches it: one <code>covers</code> edge per declaring block.</p>
+<p>A testbench's <code>toplevel:</code>, when declared, also becomes an <code>elaborates_as</code> edge to <code>module:&lt;toplevel&gt;</code>.</p>
+<p>Testbenches declared but used by no test still become nodes — a dead testbench should be visible in the graph, not silently absent. Suites that fail to load are reported rather than fatal; the failure list lands in <code>graph-meta.json</code>.</p>
+<h3 id="flow-provenance">Flow provenance</h3>
+<p>A <code>tests.yaml</code> does not know that it is a <em>simulation</em> suite, and nothing under <code>verif/</code> mentions the <code>fpv.yaml</code> next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all five — each through its own <code>RegConfig</code>, the same class <code>rb &lt;flow&gt;-regression</code> constructs — and stamps <code>flow</code> on every <code>suite</code>, <code>test</code> and <code>testbench</code> node:</p>
+<table>
+<thead>
+<tr>
+<th>File at the project root</th>
+<th><code>flow</code></th>
+<th>Suites it lists</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>regression.yaml</code></td>
+<td><code>sim</code></td>
+<td><code>tests.yaml</code></td>
+</tr>
+<tr>
+<td><code>synth_regression.yaml</code></td>
+<td><code>synth</code></td>
+<td><code>synth.yaml</code></td>
+</tr>
+<tr>
+<td><code>fpv_regression.yaml</code></td>
+<td><code>fpv</code></td>
+<td><code>fpv.yaml</code></td>
+</tr>
+<tr>
+<td><code>cdc_regression.yaml</code></td>
+<td><code>cdc</code></td>
+<td><code>cdc.yaml</code></td>
+</tr>
+<tr>
+<td><code>fpga_regression.yaml</code></td>
+<td><code>fpga</code></td>
+<td><code>fpga.yaml</code></td>
+</tr>
+</tbody>
+</table>
+<p>Four consequences:</p>
+<ul>
+<li><strong>A suite no regression file claims is <code>sim</code>.</strong> A <code>tests.yaml</code> nobody has wired up yet is still a simulation suite, and an "unknown" bucket would hide exactly the suites a project is in the middle of adding.</li>
+<li><strong>The four non-simulation flows become nodes too.</strong> No <code>verif/</code> walk reaches <code>synth/tiny_alu/synth.yaml</code>, so before this the graph could not answer "what synthesises this module?". Each of those files is a <code>suite:&lt;dir&gt;</code> whose named runs are <code>test:&lt;dir&gt;#&lt;name&gt;</code> — the same types and the same ids a <code>tests.yaml</code> produces, not a parallel vocabulary. There is no testbench between a run and its model, so <code>exercises</code> starts at the run; a run's <code>top:</code> (which a formal verification may point at a wrapper) becomes <code>targets</code>, the run's own <a href="#the-config-to-design-stitch-is-three-verbs">config-to-design stitch</a>.</li>
+<li><strong>A suite claimed by two flows gets a list</strong>, in the table's order. That happens when one directory holds two flows' configs — a <code>synth.yaml</code> and a <code>cdc.yaml</code> side by side. Individual runs are always stamped with the single flow of the file that declared them.</li>
+<li><strong><code>cocotb: true</code></strong> is stamped on a cocotb test <em>and</em> on its testbench. <code>kind: cocotb</code> already says it on the testbench and <code>cocotb_modules</code> implies it on the test; the flat boolean is so a consumer bucketing nodes does not have to know which type spells it which way.</li>
+</ul>
+<p>All five files, and every suite they list, join the config tier's input hashes — wiring a suite into a flow changes the graph, so <a href="#caching">the no-op re-run check</a> has to see the edit.</p>
+<p>Discovery is by filename at the project root, the same convention <code>rb &lt;flow&gt;-regression</code> uses when no <code>-c</code> is passed. A missing file is not an error, it is a project that does not run that flow; one that will not load is reported like a bad suite and costs only its own flow's nodes.</p>
+<h2 id="python-api_1">Python API</h2>
+<p>Everything <code>rb graph build</code> does is importable:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rtl_buddy.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_graph</span><span class="p">,</span> <span class="n">extract_config_tier</span><span class="p">,</span> <span class="n">merge_graphs</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a><span class="n">build</span> <span class="o">=</span> <span class="n">build_graph</span><span class="p">(</span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">)</span>       <span class="c1"># all tiers, writes artefacts/graph/</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a><span class="nb">print</span><span class="p">(</span><span class="n">build</span><span class="o">.</span><span class="n">nodes</span><span class="p">,</span> <span class="n">build</span><span class="o">.</span><span class="n">links</span><span class="p">,</span> <span class="n">build</span><span class="o">.</span><span class="n">unchanged</span><span class="p">)</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a><span class="k">for</span> <span class="n">tier</span> <span class="ow">in</span> <span class="n">build</span><span class="o">.</span><span class="n">tiers</span><span class="p">:</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">tier</span><span class="o">.</span><span class="n">tier</span><span class="p">,</span> <span class="n">tier</span><span class="o">.</span><span class="n">status</span><span class="p">,</span> <span class="n">tier</span><span class="o">.</span><span class="n">detail</span><span class="p">)</span>
+</code></pre></div>
+<p><code>build_graph()</code> never raises for a tier it could not build — inspect <code>failed_tiers()</code> / <code>has_failures()</code>. Only an unrecoverable setup problem (an unreadable regression config, an unwritable output directory) propagates.</p>
+<p>The tiers are usable on their own:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rtl_buddy.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">extract_config_tier</span><span class="p">,</span> <span class="n">write_graph_json</span><span class="p">,</span> <span class="n">write_graph_meta</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">extract_config_tier</span><span class="p">(</span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a><span class="n">write_graph_json</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">graph</span><span class="p">,</span> <span class="s2">&quot;artefacts/graph/graph.json&quot;</span><span class="p">)</span>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="n">write_graph_meta</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">meta</span><span class="p">,</span> <span class="s2">&quot;artefacts/graph/graph-meta.json&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p><code>build_config_tier(project_root)</code> is the shorthand when only the graph dict is wanted. <code>spec_dir</code>, <code>verif_dir</code> and <code>design_dir</code> override the search roots; each defaults to the same directory the <code>rb spec</code> commands use. Node and link lists are sorted, so re-exporting an unchanged project produces a byte-identical file.</p>
+<p><code>merge_graphs([(tier, graph), ...])</code>, <code>stitch_points()</code> and <code>dangling_targets()</code> are the merge primitives; <code>models_from_regression()</code> and <code>models_from_design_tree()</code> are the two model-selection paths behind the CLI flags.</p>
+<p>The binding stage is a pure function of an already-merged graph, so it can be re-run over a <code>graph.json</code> on disk without rebuilding anything:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rtl_buddy.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">bind_python</span><span class="p">,</span> <span class="n">scan_python_source</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="n">merged</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="s2">&quot;artefacts/graph/graph.json&quot;</span><span class="p">))</span>
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="n">stage</span> <span class="o">=</span> <span class="n">bind_python</span><span class="p">(</span><span class="n">merged</span><span class="p">,</span> <span class="s2">&quot;/path/to/project&quot;</span><span class="p">)</span>
+<a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a><span class="nb">print</span><span class="p">(</span><span class="n">stage</span><span class="o">.</span><span class="n">summary</span><span class="p">())</span>          <span class="c1"># counts, and any unresolved accesses</span>
+<a id="__codelineno-19-7" name="__codelineno-19-7" href="#__codelineno-19-7"></a><span class="nb">print</span><span class="p">(</span><span class="n">stage</span><span class="o">.</span><span class="n">graph</span><span class="p">[</span><span class="s2">&quot;links&quot;</span><span class="p">][</span><span class="mi">0</span><span class="p">])</span>  <span class="c1"># the contribution, ready to merge back in</span>
+<a id="__codelineno-19-8" name="__codelineno-19-8" href="#__codelineno-19-8"></a>
+<a id="__codelineno-19-9" name="__codelineno-19-9" href="#__codelineno-19-9"></a><span class="n">scan_python_source</span><span class="p">(</span><span class="s2">&quot;verif/demo_tiny_alu_cocotb/_alu_common.py&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">accesses</span>
+<a id="__codelineno-19-10" name="__codelineno-19-10" href="#__codelineno-19-10"></a><span class="c1"># {&#39;a&#39;: 24, &#39;b&#39;: 25, &#39;clk&#39;: 18, ...} — signal name to first line</span>
+</code></pre></div>
+<p>The read side is importable too, and returns the same payloads the CLI and MCP surfaces emit:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rtl_buddy.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_context</span><span class="p">,</span> <span class="n">query_graph</span><span class="p">,</span> <span class="n">query_path</span><span class="p">,</span> <span class="n">explain</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="n">ctx</span> <span class="o">=</span> <span class="n">load_context</span><span class="p">(</span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">)</span>       <span class="c1"># graph + the overlay beside it</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="n">query_graph</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="s2">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span><span class="p">)[</span><span class="s2">&quot;matches&quot;</span><span class="p">]</span>
+<a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="n">query_path</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="s2">&quot;cocotb_random&quot;</span><span class="p">,</span> <span class="s2">&quot;module:demo_tiny_alu&quot;</span><span class="p">)[</span><span class="s2">&quot;paths&quot;</span><span class="p">]</span>
+<a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a><span class="n">explain</span><span class="p">(</span><span class="n">ctx</span><span class="p">,</span> <span class="s2">&quot;inst:demo_tiny_alu/demo_tiny_alu.u_alu&quot;</span><span class="p">)[</span><span class="s2">&quot;node&quot;</span><span class="p">][</span><span class="s2">&quot;cite&quot;</span><span class="p">][</span><span class="s2">&quot;command&quot;</span><span class="p">]</span>
+</code></pre></div>
+<p><code>load_context()</code> accepts a project root, a graph directory or <code>graph.json</code> itself, and raises <code>GraphQueryError</code> (a <code>FatalRtlBuddyError</code>) naming <code>rb graph build</code> when there is no graph. A missing overlay is never an error — pass <code>with_results=False</code> to skip loading one at all.</p>
+<h2 id="loading-the-graph">Loading the Graph</h2>
+<p>The envelope is what <code>networkx</code> writes, so any node-link reader loads it:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span><span class="o">,</span><span class="w"> </span><span class="nn">networkx</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">nx</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="n">data</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="s2">&quot;artefacts/graph/graph.json&quot;</span><span class="p">))</span>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="n">g</span> <span class="o">=</span> <span class="n">nx</span><span class="o">.</span><span class="n">node_link_graph</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">edges</span><span class="o">=</span><span class="s2">&quot;links&quot;</span><span class="p">)</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="nb">print</span><span class="p">(</span><span class="n">nx</span><span class="o">.</span><span class="n">shortest_path</span><span class="p">(</span><span class="n">g</span><span class="p">,</span> <span class="s2">&quot;test:verif/blk_a#t_cocotb&quot;</span><span class="p">,</span> <span class="s2">&quot;module:blk_a&quot;</span><span class="p">))</span>
+</code></pre></div>
+<p><code>networkx</code> is not an rtl_buddy dependency — the graph is plain JSON and most consumers only need <code>json</code>.</p>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

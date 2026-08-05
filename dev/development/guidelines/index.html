@@ -671,6 +671,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../concepts/graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Knowledge Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../concepts/wave/" class="md-nav__link">
         
   
@@ -2003,6 +2031,18 @@ Explicit CLI input and output paths should remain relative to <code>invocation_c
 <td style="text-align: right;"><code>&lt;artifact&gt;</code></td>
 </tr>
 <tr>
+<td><code>graph build</code></td>
+<td style="text-align: right;">project root</td>
+<td style="text-align: right;"><code>&lt;root&gt;/artefacts/graph/</code></td>
+<td style="text-align: right;"><code>rtl-buddy-view</code> per model in <code>&lt;model_root&gt;/artefacts/hier/&lt;model&gt;</code> — deliberately <code>rb hier</code>'s artefact dir, not the graph's, so the two flows share one filelist + CST cache</td>
+</tr>
+<tr>
+<td><code>graph results</code> / <code>graph query</code> / <code>graph path</code> / <code>graph explain</code> / <code>mcp</code></td>
+<td style="text-align: right;">project root</td>
+<td style="text-align: right;"><code>&lt;root&gt;/artefacts/graph/</code> (read-only; <code>graph results</code> writes the overlay)</td>
+<td style="text-align: right;">none, except <code>mcp</code>'s hierarchy tools which invoke <code>rtl-buddy-view</code> as <code>graph build</code> does</td>
+</tr>
+<tr>
 <td><code>filelist</code></td>
 <td style="text-align: right;"><code>dirname(models.yaml)</code> for config reads</td>
 <td style="text-align: right;">explicit output path</td>
@@ -2045,6 +2085,10 @@ Repeated or randomized runs should use stable run directories such as <code>run-
 Convenience symlinks may point at the latest run, but they must not be the only durable location.</p>
 <p>Compile-side generated files such as <code>run.f</code>, <code>compile.log</code>, builder outputs, and relative <code>builder-simv</code> paths belong in the per-test artifact root.
 Simulation outputs for <code>randtest</code> belong in the per-run artifact directory to avoid side-file clobbering across iterations.</p>
+<p>Every run writes its result envelope (<code>runner/result_io.py</code>) as <code>result.json</code> in the run's artifact directory — the per-test root for a single run, <code>run-NNNN/</code> for a <code>randtest</code> iteration.
+This is the durable, machine-readable record of what a test did; <code>rb graph results</code> reads it, and a consumer must never have to parse <code>test.log</code> to learn a verdict.
+Writing it is best-effort: a run that passed is never reported as failed because its envelope could not be written.
+Dispatched runs additionally write the head's collection copy under <code>&lt;test&gt;/dispatch/result-&lt;tag&gt;.json</code>; that one is the dispatch protocol's, not the artifact layout's.</p>
 <h2 id="subprocesses">Subprocesses</h2>
 <p>Every external tool invocation should pass an explicit <code>cwd</code>.
 Use the command's artifact directory unless the command has a documented reason to run elsewhere.</p>

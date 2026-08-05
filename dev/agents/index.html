@@ -671,6 +671,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../concepts/graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Knowledge Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/wave/" class="md-nav__link">
         
   
@@ -1217,6 +1245,34 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#graph-first-files-last" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph first, files last
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Graph first, files last">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MCP
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#bundled-agent-skill" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1536,6 +1592,34 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#graph-first-files-last" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph first, files last
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Graph first, files last">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MCP
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#bundled-agent-skill" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1622,14 +1706,41 @@
 <li>a <strong>bundled agent skill</strong> that installs into Claude Code and Codex,</li>
 <li><strong>local docs access</strong> through the <code>rtl-buddy docs</code> command, so reference material always matches the installed version,</li>
 <li>a <strong>machine mode</strong> (<code>--machine</code>) that switches the orchestration log to JSON Lines and emits a stable stdout envelope on exit,</li>
+<li>a <strong>design knowledge graph</strong> you query instead of grepping the tree, plus an <strong>MCP server</strong> (<code>rb mcp</code>) that exposes the same answers as discoverable tools,</li>
 <li>and deterministic <a href="../concepts/tests/#exit-codes">exit codes</a> that let an orchestrator distinguish test failures from configuration errors.</li>
 </ul>
+<h2 id="graph-first-files-last">Graph first, files last</h2>
+<p>The default way to find anything in an rtl_buddy project is the <a href="../concepts/graph/">design knowledge graph</a>, not a file read. One <code>graph.json</code> holds modules, instances and ports from the elaborated RTL alongside tests, testbenches, models, spec blocks and coverage items from the YAML, in one id namespace, with the last regression result joined on.</p>
+<p>The contract is two steps:</p>
+<ol>
+<li><strong>Locate</strong> with <code>rb --machine graph query "&lt;question&gt;"</code>. Matching is deterministic keyword scoring — no model call — and every match arrives with its neighbourhood, so structural context and pass/fail status come back together.</li>
+<li><strong>Cite</strong> with <code>rb hier-query &lt;model&gt; source-snippet &lt;path&gt;</code>. Every node the graph returns carries a <code>cite</code> block with its <code>file</code> and <code>line</code>, and instance nodes carry the exact <code>source-snippet</code> command that quotes them.</li>
+</ol>
+<p>Raw file reads are the fallback for finding things, not the default: read a file once the graph has told you which file, and which lines.</p>
+<p>Where that rule stops, measured over six tasks in <a href="../concepts/graph/#token-efficiency">Token Efficiency</a> — a hop through the graph is worth it when the file it saves you is bigger than the payload that replaces it, which today means:</p>
+<ul>
+<li><strong>Ask the graph for relations grep cannot compute.</strong> "Which tops contain <code>ip_cdc_sync</code>?" is one <code>explain</code> on the module node, exact, with the whole transitive closure already flattened by elaboration. Grep needs an iterative fixpoint over mentions, gets false positives from comments, and is quietly wrong if you stop a round early.</li>
+<li><strong>Do not ask it a config-tier question.</strong> Which tests exercise a block, at which <code>reglvl</code>, claiming which coverage items — the <code>tests.yaml</code> that answers it is smaller than the <code>explain</code> payloads that would replace it, every time.</li>
+<li><strong>Do not ask it a single-file question.</strong> A module's port list, one instance's connections: let the graph name the file and the line range, then read those lines.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rb<span class="w"> </span>--machine<span class="w"> </span>graph<span class="w"> </span>build<span class="w">                                    </span><span class="c1"># once per source change</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rb<span class="w"> </span>--machine<span class="w"> </span>graph<span class="w"> </span>results<span class="w">                                  </span><span class="c1"># after a regression</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rb<span class="w"> </span>--machine<span class="w"> </span>graph<span class="w"> </span>query<span class="w"> </span><span class="s2">&quot;which tests cover SAND-FUNC-FLAG-C-ADD&quot;</span><span class="w">  </span><span class="c1"># locate + status</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>rb<span class="w"> </span>--machine<span class="w"> </span>graph<span class="w"> </span>explain<span class="w"> </span>test:verif/demo_tiny_alu#flags<span class="w">          </span><span class="c1"># one node in full</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>rb<span class="w"> </span>--machine<span class="w"> </span>graph<span class="w"> </span>path<span class="w"> </span>cocotb_random<span class="w"> </span>module:demo_tiny_alu<span class="w">        </span><span class="c1"># how related?</span>
+</code></pre></div>
+<p><code>graph query</code> exits 1 when nothing matched (a graceful "no"), 2 when there is no graph to query — the error names <code>rb graph build</code>. Details, flags and the node/edge vocabulary: <code>rtl-buddy docs show concepts/graph</code>.</p>
+<h3 id="mcp">MCP</h3>
+<p><code>rb mcp</code> serves the same verbs — plus <code>find_module</code>, <code>instances_of</code>, <code>port_connections</code>, <code>source_snippet</code> and, when a hub is running, the live-session tools — as MCP tools over stdio. It needs no daemon and is configured statically:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;rtl-buddy&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;mcp&quot;</span><span class="p">]}}}</span>
+</code></pre></div>
+<p>Each tool returns its <code>--machine</code> counterpart's <code>payload</code> verbatim, wrapped in <code>{tool, ok, meta: {rtl_buddy_version, project_root, command}, payload}</code>; a failure is <code>ok: false</code> plus <code>error</code>, never a transport error. Install with <code>pip install 'rtl_buddy[mcp]'</code>. Everything MCP serves is also reachable from the CLI, so MCP is a convenience surface — never a prerequisite.</p>
 <h2 id="bundled-agent-skill">Bundled agent skill</h2>
 <p>The <code>rtl_buddy</code> wheel ships an agent skill that teaches Claude Code and Codex the conventions for invoking <code>rtl_buddy</code> — when to use <code>--machine</code>, where logs are written, how multi-suite runs lay out artefacts, and which docs to consult. Because the skill ships with the wheel, its content is locked to the installed <code>rtl_buddy</code> major version.</p>
 <p>Users materialize the skill once with <code>rtl-buddy skill install</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w">             </span><span class="c1"># default: user-level</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w"> </span>--project<span class="w">   </span><span class="c1"># project-level (overrides user-level for that project)</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>uninstall<span class="w">           </span><span class="c1"># remove skill files</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w">             </span><span class="c1"># default: user-level</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>install<span class="w"> </span>--project<span class="w">   </span><span class="c1"># project-level (overrides user-level for that project)</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>rtl-buddy<span class="w"> </span>skill<span class="w"> </span>uninstall<span class="w">           </span><span class="c1"># remove skill files</span>
 </code></pre></div>
 <p>See <a href="../reference/cli/">cli reference</a> for full <code>rb skill</code> interface.</p>
 <p>Install targets:</p>
@@ -1664,9 +1775,9 @@
 <p>For project-level installs, the install command prints the <code>.gitignore</code> lines to add. Pass <code>--no-gitignore</code> to skip that edit. Project root is discovered by walking up for <code>root_config.yaml</code> (falling back to <code>.git/</code>), so <code>rtl-buddy skill install --project</code> is safe to run from a <code>verif/</code> subdirectory.</p>
 <h2 id="local-docs-access">Local docs access</h2>
 <p>The wheel ships the full Markdown docs site alongside the CLI, exposed through:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rtl-buddy<span class="w"> </span>docs<span class="w"> </span>list
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rtl-buddy<span class="w"> </span>docs<span class="w"> </span>show<span class="w"> </span>agents
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>docs<span class="w"> </span>show<span class="w"> </span>reference/yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>rtl-buddy<span class="w"> </span>docs<span class="w"> </span>list
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rtl-buddy<span class="w"> </span>docs<span class="w"> </span>show<span class="w"> </span>agents
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>docs<span class="w"> </span>show<span class="w"> </span>reference/yaml
 </code></pre></div>
 <p>This is the recommended reference surface for agents: the docs are local (no network), and their content always matches the installed version of <code>rtl_buddy</code>. <code>docs list</code> enumerates each page's slug, title, and description; <code>docs show</code> returns the canonical Markdown for a single page. GitHub Pages at <a href="https://rtl-buddy.github.io/rtl_buddy/">https://rtl-buddy.github.io/rtl_buddy/</a> remains available as a human-facing fallback.</p>
 <p>Note one exception to the <a href="#machine-mode">machine-mode envelope</a> below: under <code>--machine</code>, <code>docs show</code> prints the raw page payload as a <strong>bare JSON object</strong> (not wrapped in the standard <code>{command, exit_code, meta, payload}</code> envelope), because its whole purpose is to hand you the page content directly. <code>docs list</code> does use the standard envelope — the page list is under <code>payload.pages</code>.</p>
@@ -1678,26 +1789,26 @@
 <li>Commands that produce structured results print a single JSON envelope to <strong>stdout</strong> on exit.</li>
 </ul>
 <p>The intent is that an orchestrator can determine the outcome of a run by parsing the stdout envelope, and reconstruct timing or per-event detail from <code>rtl_buddy.log</code>, without screen-scraping human-formatted output.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>design/regression.yaml
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span>regression<span class="w"> </span>-c<span class="w"> </span>design/regression.yaml
 </code></pre></div>
 <h3 id="stdout-envelope">Stdout envelope</h3>
 <p>In machine mode, structured-result commands print a single JSON object to stdout on exit:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">&quot;exit_code&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">&quot;meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="nt">&quot;rtl_buddy_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2.4.0&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="nt">&quot;argv&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;rtl-buddy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;--machine&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;test&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span><span class="p">],</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">    </span><span class="nt">&quot;cwd&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/suite&quot;</span><span class="p">,</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">&quot;git&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;main&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;commit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;abc1234&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;modified&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;staged&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">}</span>
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span><span class="p">},</span>
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">  </span><span class="nt">&quot;payload&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">    </span><span class="nt">&quot;results&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">      </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;result&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PASS&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;desc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic completed&quot;</span><span class="p">}</span>
-<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">    </span><span class="p">]</span>
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">  </span><span class="p">}</span>
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;test&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">&quot;exit_code&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="nt">&quot;meta&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">&quot;rtl_buddy_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2.4.0&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="nt">&quot;argv&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;rtl-buddy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;--machine&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;test&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span><span class="p">],</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">    </span><span class="nt">&quot;cwd&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/suite&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="nt">&quot;git&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;branch&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;main&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;commit&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;abc1234&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;modified&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;staged&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">}</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">  </span><span class="p">},</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">  </span><span class="nt">&quot;payload&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">    </span><span class="nt">&quot;results&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">      </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;result&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PASS&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;desc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic completed&quot;</span><span class="p">}</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">    </span><span class="p">]</span>
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="p">}</span>
 </code></pre></div>
 <p>The envelope shape is the same across commands:</p>
 <ul>
@@ -1727,8 +1838,8 @@
 <p>These same summaries are also emitted to <code>rtl_buddy.log</code> as a <code>"summary"</code> event (with <code>rows</code> and <code>metadata</code>) in machine mode, mirroring the human results table.</p>
 <h3 id="jsonl-log-format">JSONL log format</h3>
 <p>In machine mode, each line of <code>rtl_buddy.log</code> is a JSON object describing one event:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim.completed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;duration_sec&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">4.2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke: simulation completed in 4.20s&quot;</span><span class="p">}</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="p">{</span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;postproc.completed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;result&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PASS&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;desc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke completed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke: post-processing completed with result PASS (smoke completed)&quot;</span><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim.completed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;duration_sec&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">4.2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke: simulation completed in 4.20s&quot;</span><span class="p">}</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="p">{</span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;postproc.completed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;result&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;PASS&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;desc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke completed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;smoke: post-processing completed with result PASS (smoke completed)&quot;</span><span class="p">}</span>
 </code></pre></div>
 <p>Common fields:</p>
 <ul>
