@@ -819,6 +819,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "exists — the test still binds to the DUT, but nothing was "
                 "scanned for dut.<signal> accesses or golden-model imports"
             )
+        case "graph_results.overlay_rejected":
+            return (
+                f"graph: {fields.get('path')} is not a readable results "
+                f"overlay (filetype {fields.get('filetype')!r}, schema "
+                f"{fields.get('schema_version')!r}) — querying the graph "
+                "without result status; re-run `rb graph results`"
+            )
+        case "test.result_json_write_failed":
+            return (
+                f"could not write the result record for {fields.get('test')} to "
+                f"{fields.get('path')} ({fields.get('error')}) — the run itself "
+                "is unaffected, but `rb graph results` will report it as UNKNOWN"
+            )
         case "graph_merge.node_type_conflict":
             return (
                 f"graph: node id {fields.get('node')!r} is a "

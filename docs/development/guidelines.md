@@ -85,6 +85,11 @@ Convenience symlinks may point at the latest run, but they must not be the only 
 Compile-side generated files such as `run.f`, `compile.log`, builder outputs, and relative `builder-simv` paths belong in the per-test artifact root.
 Simulation outputs for `randtest` belong in the per-run artifact directory to avoid side-file clobbering across iterations.
 
+Every run writes its result envelope (`runner/result_io.py`) as `result.json` in the run's artifact directory — the per-test root for a single run, `run-NNNN/` for a `randtest` iteration.
+This is the durable, machine-readable record of what a test did; `rb graph results` reads it, and a consumer must never have to parse `test.log` to learn a verdict.
+Writing it is best-effort: a run that passed is never reported as failed because its envelope could not be written.
+Dispatched runs additionally write the head's collection copy under `<test>/dispatch/result-<tag>.json`; that one is the dispatch protocol's, not the artifact layout's.
+
 ## Subprocesses
 
 Every external tool invocation should pass an explicit `cwd`.

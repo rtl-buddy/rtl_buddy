@@ -30,6 +30,7 @@ from .config.synth import SynthRegConfig, SynthSuiteConfig
 from .docs_access import get_page, get_section, list_pages
 from .graph import build as graph_build_mod
 from .graph import graphify as graphify_mod
+from .graph import results as graph_results_mod
 from .artifact_lock import ArtifactLocks
 from .errors import FatalRtlBuddyError, FilelistError
 from .exec_context import ExecutionContext
@@ -252,6 +253,13 @@ class RtlBuddy:
             "build",
             help="extract every tier and merge them into artefacts/graph/graph.json",
         )(self.do_graph_build)
+        self.graph_app.command(
+            "results",
+            help=(
+                "refresh artefacts/graph/results-overlay.json — last status, "
+                "seed and artefact paths per test node; graph.json is not touched"
+            ),
+        )(self.do_graph_results)
         self.app.add_typer(
             self.graph_app,
             name="graph",
@@ -504,6 +512,11 @@ class RtlBuddy:
         self._builder_override: str | None = None
         self._artifact_locks = ArtifactLocks()
         self._xplr_root_override: Path | None = None
+        # Per-invocation nonce stamped into every result envelope this
+        # process writes (#379). Under dispatch the head's plan token
+        # replaces it, so an envelope's identity is the same whether the
+        # run happened in-process or on a compute node.
+        self._run_token: str | None = None
 
     def run(self):
         try:
@@ -1525,6 +1538,10 @@ class RtlBuddy:
                 run_token = read_plan_token(self._abs_invocation_path(plan))
             except FatalRtlBuddyError:
                 run_token = None
+        # The artifact-dir envelope this job also writes (#379) carries the
+        # head's token too, so the two records of one run agree on identity.
+        if run_token is not None:
+            self._run_token = run_token
 
         if setup_error is not None:
             res = SetupFailResults(name=test_name + "/results", desc=setup_error)
@@ -1810,7 +1827,57 @@ class RtlBuddy:
             # so a known-failing test can live in a suite/regression.
             for res in results:
                 self._apply_xfail_logged(res, test_cfg, "suite.xfail")
+        self._record_run_results(test_cfg, suite_dir, run_ids, results)
         return results
+
+    def _invocation_run_token(self) -> str:
+        """This process's result-envelope nonce, minted on first use.
+
+        Same role as the dispatch plan's token: it identifies the run that
+        produced an envelope, so a reader can tell one run's results from a
+        leftover without comparing timestamps. `_test-job` overwrites it
+        with the head's token so a dispatched run and its collected
+        envelope agree.
+        """
+        if self._run_token is None:
+            self._run_token = uuid.uuid4().hex
+        return self._run_token
+
+    def _record_run_results(self, test_cfg, suite_dir, run_ids, results):
+        """Write each run's result envelope into its artifact directory (#379).
+
+        The durable, machine-readable record of what a test did, written
+        wherever a test runs — the dispatch path's `dispatch/result-*.json`
+        only exists when a head asked for one, so without this a plain
+        `rb test` / `rb regression` would leave nothing behind but logs and
+        `rb graph results` would have nothing but mtimes to report.
+        Best-effort by design: a run that passed must never be reported as
+        failed because its side-car could not be written.
+        """
+        token = self._invocation_run_token()
+        for run_id, res in zip(run_ids, results):
+            path = (
+                Path(test_artifact_dir(suite_dir, test_cfg.get_name(), run_id=run_id))
+                / "result.json"
+            )
+            try:
+                write_result_json(
+                    path,
+                    test_name=test_cfg.get_name(),
+                    run_id=run_id,
+                    results=res,
+                    run_token=token,
+                )
+            except OSError as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "test.result_json_write_failed",
+                    test=test_cfg.get_name(),
+                    run_id=run_id,
+                    path=str(path),
+                    error=str(exc),
+                )
 
     def _append_results(self, test_name, run_ids, results, suite_results, builder=None):
         for run_id, test_results in zip(run_ids, results):
@@ -3542,6 +3609,132 @@ class RtlBuddy:
                 f"dangling link targets ({len(dangling)}): "
                 f"{', '.join(dangling[:5])}"
                 f"{' ...' if len(dangling) > 5 else ''}",
+                style="yellow",
+            )
+        raise typer.Exit(exit_code)
+
+    def do_graph_results(
+        self,
+        verif_dir: Annotated[
+            str | None,
+            typer.Option("--verif-dir", help="directory searched for tests.yaml"),
+        ] = None,
+        out_dir: Annotated[
+            str | None,
+            typer.Option(
+                "-o",
+                "--out-dir",
+                help="output directory (default: <project root>/artefacts/graph)",
+            ),
+        ] = None,
+        graph: Annotated[
+            str | None,
+            typer.Option(
+                "--graph",
+                help=(
+                    "graph.json to cross-check ids against "
+                    "(default: <out-dir>/graph.json); read, never written"
+                ),
+            ),
+        ] = None,
+        strict: Annotated[
+            bool,
+            typer.Option(
+                "--strict",
+                help=(
+                    "exit non-zero when an envelope could not be read, a test "
+                    "node has no result, or a result matches no node"
+                ),
+            ),
+        ] = False,
+    ):
+        """
+        refresh the results overlay beside graph.json: last status, run token,
+        seed and artefact paths per test node
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        ctx = self._enter_command_context(command_root=root)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.graph_results",
+            command="graph results",
+            verif_dir=verif_dir,
+            strict=strict,
+        )
+
+        overlay = graph_results_mod.refresh_results_overlay(
+            root,
+            verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
+            out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
+            graph_path=str(ctx.resolve_input(graph)) if graph else None,
+        )
+
+        exit_code = 0
+        if strict and (overlay.problems or overlay.missing or overlay.unmatched):
+            exit_code = 1
+
+        if self.machine:
+            self._emit_machine_result(
+                "graph results",
+                exit_code,
+                overlay=os.path.relpath(overlay.path, root),
+                graph=overlay.overlay.get("graph"),
+                tests=len(overlay.entries),
+                with_results=overlay.with_results(),
+                statuses=overlay.status_counts(),
+                missing=overlay.missing,
+                unmatched=overlay.unmatched,
+                problems=overlay.problems,
+            )
+            raise typer.Exit(exit_code)
+
+        render_summary(
+            title="Regression Results Overlay",
+            columns=[
+                ("test", "Test"),
+                ("status", "Status"),
+                ("run", "Run"),
+                ("when", "When"),
+                ("artefacts", "Artefacts"),
+            ],
+            rows=[
+                {
+                    "test": entry["id"],
+                    "status": entry["status"],
+                    "run": str(entry.get("run_id"))
+                    if entry.get("run_id") is not None
+                    else "-",
+                    "when": entry.get("timestamp") or "-",
+                    "artefacts": ", ".join(
+                        k for k in sorted(entry.get("artefacts", {})) if k != "dir"
+                    )
+                    or "-",
+                }
+                for entry in overlay.entries.values()
+            ],
+            logger=logger,
+        )
+        counts = ", ".join(f"{k} {v}" for k, v in overlay.status_counts().items())
+        emit_console_text(
+            f"wrote {os.path.relpath(overlay.path, root)}: "
+            f"{len(overlay.entries)} test(s), "
+            f"{overlay.with_results()} with a result envelope"
+            f"{' (' + counts + ')' if counts else ''}",
+            stream="stdout",
+        )
+        if overlay.missing:
+            emit_console_text(
+                f"no results for {len(overlay.missing)} test node(s): "
+                f"{', '.join(overlay.missing[:5])}"
+                f"{' ...' if len(overlay.missing) > 5 else ''}",
+                style="yellow",
+            )
+        if overlay.problems:
+            emit_console_text(
+                f"unreadable result envelope(s) ({len(overlay.problems)}): "
+                f"{overlay.problems[0]['error']}",
                 style="yellow",
             )
         raise typer.Exit(exit_code)

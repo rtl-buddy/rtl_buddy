@@ -19,6 +19,13 @@ build``: it runs each tier, unions them with
 :func:`rtl_buddy.graph.merge.merge_graphs`, and writes
 ``artefacts/graph/graph.json`` plus its ``graph-meta.json`` sidecar.
 
+:mod:`rtl_buddy.graph.results` owns the volatile half that deliberately
+never enters ``graph.json``: ``rb graph results`` reads the per-run
+result envelopes and the artefact layout into
+``artefacts/graph/results-overlay.json``, keyed by the same test node
+ids, and :func:`~rtl_buddy.graph.results.load_overlay` /
+:func:`~rtl_buddy.graph.results.overlay_for_node` join the two back up.
+
 The shared JSON envelope is documented in ``docs/concepts/graph.md``.
 """
 
@@ -59,6 +66,19 @@ from .merge import (
     merge_graphs,
     stitch_points,
 )
+from .results import (
+    OVERLAY_FILETYPE,
+    OVERLAY_SCHEMA_VERSION,
+    RESULTS_OVERLAY_NAME,
+    ResultsOverlay,
+    annotate_graph,
+    collect_results,
+    load_overlay,
+    overlay_for_node,
+    refresh_results_overlay,
+    results_overlay_path,
+    write_overlay,
+)
 
 __all__ = [
     "BINDING_TIER",
@@ -67,27 +87,38 @@ __all__ = [
     "GRAPH_JSON_NAME",
     "GRAPH_META_NAME",
     "MERGED_TIER",
+    "OVERLAY_FILETYPE",
+    "OVERLAY_SCHEMA_VERSION",
     "PY_NODE_PREFIX",
     "PYTHON_MODULE_TYPE",
+    "RESULTS_OVERLAY_NAME",
     "SCHEMA_VERSION",
     "TIER_ORDER",
     "VIEW_GRAPH_MIN_VERSION",
     "BindingStage",
     "ConfigTier",
     "GraphBuild",
+    "ResultsOverlay",
     "TierReport",
+    "annotate_graph",
     "bind_python",
     "build_graph",
     "build_config_tier",
+    "collect_results",
     "dangling_targets",
     "default_graph_dir",
     "extract_config_tier",
+    "load_overlay",
     "merge_graphs",
     "models_from_design_tree",
     "models_from_regression",
+    "overlay_for_node",
+    "refresh_results_overlay",
+    "results_overlay_path",
     "scan_python_source",
     "serialize_graph",
     "stitch_points",
     "write_graph_json",
     "write_graph_meta",
+    "write_overlay",
 ]

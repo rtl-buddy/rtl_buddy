@@ -526,7 +526,9 @@ Usage: rtl-buddy graph [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
-│ build  extract every tier and merge them into artefacts/graph/graph.json             │
+│ build    extract every tier and merge them into artefacts/graph/graph.json           │
+│ results  refresh artefacts/graph/results-overlay.json — last status, seed and        │
+│          artefact paths per test node; graph.json is not touched                     │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -595,6 +597,26 @@ Usage: rtl-buddy graph build [OPTIONS]
 │                                                              rtl-buddy-view]         │
 │ --help                                                       Show this message and   │
 │                                                              exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph results
+
+```text
+Usage: rtl-buddy graph results [OPTIONS]                                               
+                                                                                        
+ refresh artefacts/graph/results-overlay.json — last status, seed and artefact paths    
+ per test node; graph.json is not touched                                               
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --verif-dir          TEXT  directory searched for tests.yaml                         │
+│ --out-dir    -o      TEXT  output directory (default: <project                       │
+│                            root>/artefacts/graph)                                    │
+│ --graph              TEXT  graph.json to cross-check ids against (default:           │
+│                            <out-dir>/graph.json); read, never written                │
+│ --strict                   exit non-zero when an envelope could not be read, a test  │
+│                            node has no result, or a result matches no node           │
+│ --help                     Show this message and exit.                               │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
