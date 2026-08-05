@@ -3505,7 +3505,10 @@ class RtlBuddy:
             bool,
             typer.Option(
                 "--graphify/--no-graphify",
-                help="run Graphify's binding tier when it is installed",
+                help=(
+                    "run the binding tier when an extractor is installed "
+                    "(Graphify, or the bundled rtl-buddy-graph-extract)"
+                ),
             ),
         ] = True,
         graphify_llm: Annotated[
@@ -3564,13 +3567,12 @@ class RtlBuddy:
         # build_graph so the same string lands in the fingerprint (a
         # viewer upgrade must invalidate the cached design tier).
         view_version = probe_view_version(tool) if design else None
-        gfy_status = graphify_mod.graphify_status(self.root_cfg) if graphify else None
-        graphify_version = None
-        if gfy_status is not None and gfy_status.status != "missing":
-            # A found-but-unprobeable Graphify still runs; "unknown" keeps
-            # it in the fingerprint so a later probe-able upgrade
-            # invalidates the cache instead of silently reusing it.
-            graphify_version = gfy_status.version or "unknown"
+        # Graphify wins when both are installed; the bundled
+        # rtl-buddy-graph-extract otherwise (rtl_buddy#391). A
+        # found-but-unprobeable tool still runs — its "unknown" version
+        # stays in the fingerprint so a later probe-able upgrade
+        # invalidates the cache instead of silently reusing it.
+        extractor = graphify_mod.resolve_extractor(self.root_cfg) if graphify else None
 
         log_event(
             logger,
@@ -3580,7 +3582,8 @@ class RtlBuddy:
             models=len(models) if models is not None else None,
             design=design,
             tb=tb,
-            graphify=graphify_version is not None,
+            graphify=extractor is not None,
+            extractor=extractor.tool if extractor else None,
             force=force,
         )
 
@@ -3600,7 +3603,11 @@ class RtlBuddy:
             graphify_enabled=graphify,
             graphify_llm=graphify_llm,
             graphify_cross_check=graphify_cross_check,
-            graphify_version=graphify_version,
+            graphify_version=extractor.version if extractor else None,
+            graphify_executable=(
+                extractor.executable if extractor else graphify_mod.GRAPHIFY_TOOL
+            ),
+            graphify_tool=extractor.tool if extractor else graphify_mod.GRAPHIFY_TOOL,
             force=force,
         )
 

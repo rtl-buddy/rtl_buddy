@@ -77,11 +77,26 @@ mut = ["rtl-buddy-xeno[verible,slang] >= 0.1.0"]
 # 1.x decorator API and the 2.x constructor-callback API are supported
 # by `mcp/server.py:build_server`.
 mcp = ["mcp >= 1.2.0"]
+# The bundled binding-tier extractor for `rb graph build` (#391): the
+# clean-room implementation of the extract contract Graphify never
+# shipped installably. A subprocess tool, not a library import -- the
+# extra exists so one `uv sync --extra graph-extract` gives the graph
+# its binding tier. Resolved from git until the first PyPI release
+# (see [tool.uv.sources] below); drop the source pin when it lands.
+graph-extract = ["rtl-buddy-graph-extract"]
 
 [project.urls]
 Source = "https://github.com/rtl-buddy/rtl_buddy"
 Documentation = "https://rtl-buddy.github.io/rtl_buddy/"
 Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
+
+# Development-time resolution for the graph-extract extra: no PyPI
+# release exists yet, so uv resolves it from git. This table is uv-only
+# metadata -- the published wheel keeps the bare name, which will not
+# resolve from PyPI until rtl-buddy-graph-extract ships there. Drop the
+# pin with the first release (tracked in rtl_buddy#391).
+[tool.uv.sources]
+rtl-buddy-graph-extract = { git = "https://github.com/rtl-buddy/rtl-buddy-graph-extract" }
 
 [tool.hatch.version]
 source = "vcs"

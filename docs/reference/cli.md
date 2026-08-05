@@ -582,9 +582,11 @@ Usage: rtl-buddy graph build [OPTIONS]
 │                                                              cocotb tests to the DUT │
 │                                                              hierarchy (default on)  │
 │                                                              [default: bind]         │
-│ --graphify                  --no-graphify                    run Graphify's binding  │
-│                                                              tier when it is         │
-│                                                              installed               │
+│ --graphify                  --no-graphify                    run the binding tier    │
+│                                                              when an extractor is    │
+│                                                              installed (Graphify, or │
+│                                                              the bundled             │
+│                                                              rtl-buddy-graph-extrac… │
 │                                                              [default: graphify]     │
 │ --graphify-llm                                               opt into Graphify's LLM │
 │                                                              pass — sends verif      │

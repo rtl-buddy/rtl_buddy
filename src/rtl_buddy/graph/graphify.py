@@ -42,6 +42,14 @@ logger = logging.getLogger(__name__)
 #: Manifest name (and default binary name) of the Graphify CLI.
 GRAPHIFY_TOOL = "graphify"
 
+#: Manifest name of the bundled clean-room implementation of the same
+#: CLI contract (rtl_buddy#391), and the binary it installs. Kept as a
+#: separate manifest entry rather than a second binary on the graphify
+#: spec so `rb tool-check` and the build fingerprint name the tool that
+#: actually ran.
+GRAPH_EXTRACT_TOOL = "rtl-buddy-graph-extract"
+GRAPH_EXTRACT_BINARY = "rb-graph-extract"
+
 #: Subcommand that runs Graphify's deterministic extraction pass.
 EXTRACT_VERB = "extract"
 
@@ -94,6 +102,45 @@ def graphify_status(root_cfg=None) -> ToolStatus | None:
     if spec is None:  # pragma: no cover - manifest always carries it
         return None
     return check_tool(spec)
+
+
+@dataclass(frozen=True)
+class ExtractorChoice:
+    """The binding-tier extractor `rb graph build` decided to run.
+
+    Attributes:
+      tool (str): manifest name — also the fingerprint key, so swapping
+        implementations invalidates the cached build.
+      executable (str): binary handed to :func:`run_extract`.
+      version (str): probed version, or ``"unknown"`` for a tool that
+        is present but would not report one.
+    """
+
+    tool: str
+    executable: str
+    version: str
+
+
+def resolve_extractor(root_cfg=None) -> ExtractorChoice | None:
+    """First installed of Graphify, then the bundled clean-room tool.
+
+    The original tool wins when both are present: the bundled
+    implementation exists because Graphify is not installable, so
+    someone who went out of their way to install the real thing has
+    stated a preference. None means the binding tier is skipped.
+    """
+    by_name = {s.name: s for s in get_manifest(root_cfg)}
+    for tool, executable in (
+        (GRAPHIFY_TOOL, GRAPHIFY_TOOL),
+        (GRAPH_EXTRACT_TOOL, GRAPH_EXTRACT_BINARY),
+    ):
+        spec = by_name.get(tool)
+        if spec is None:  # pragma: no cover - manifest always carries both
+            continue
+        status = check_tool(spec)
+        if status.status != "missing":
+            return ExtractorChoice(tool, executable, status.version or "unknown")
+    return None
 
 
 def collect_inputs(

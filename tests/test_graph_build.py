@@ -30,6 +30,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import pytest
 from typer.testing import CliRunner
 
@@ -1105,7 +1107,8 @@ def test_graphify_absent_still_succeeds_and_says_so(
     )
     binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
     assert binding.status == "skipped"
-    assert "graphify" in binding.detail
+    assert "no binding-tier extractor" in binding.detail
+    assert "rtl-buddy-graph-extract" in binding.detail
     assert not build.failed_tiers()
     assert build.graph_path.is_file()
     meta = json.loads(build.meta_path.read_text())
@@ -1211,6 +1214,83 @@ def test_graphify_argv_shapes():
     merge = graphify_mod.build_merge_cmd("graphify", ["a.json", "b.json"], "m.json")
     assert merge[:2] == ["graphify", graphify_mod.MERGE_VERB]
     assert merge[-2:] == ["a.json", "b.json"]
+
+
+# ---------------------------------------------------------------------------
+# Extractor resolution (#391): graphify vs the bundled rb-graph-extract
+# ---------------------------------------------------------------------------
+
+
+def _fake_status(status: str, version: str | None = None):
+    return SimpleNamespace(status=status, version=version)
+
+
+def test_resolve_extractor_prefers_real_graphify(monkeypatch):
+    """Someone who went out of their way to install the real Graphify
+    has stated a preference — it wins over the bundled tool."""
+
+    def fake_check(spec):
+        if spec.name == graphify_mod.GRAPHIFY_TOOL:
+            return _fake_status("ok", "1.4.0")
+        return _fake_status("ok", "0.1.0")
+
+    monkeypatch.setattr(graphify_mod, "check_tool", fake_check)
+    choice = graphify_mod.resolve_extractor()
+    assert choice is not None
+    assert choice.tool == graphify_mod.GRAPHIFY_TOOL
+    assert choice.executable == "graphify"
+    assert choice.version == "1.4.0"
+
+
+def test_resolve_extractor_falls_back_to_bundled_tool(monkeypatch):
+    def fake_check(spec):
+        if spec.name == graphify_mod.GRAPH_EXTRACT_TOOL:
+            return _fake_status("ok", "0.1.0")
+        return _fake_status("missing")
+
+    monkeypatch.setattr(graphify_mod, "check_tool", fake_check)
+    choice = graphify_mod.resolve_extractor()
+    assert choice is not None
+    assert choice.tool == graphify_mod.GRAPH_EXTRACT_TOOL
+    assert choice.executable == graphify_mod.GRAPH_EXTRACT_BINARY
+    # The manifest name is the fingerprint key; a found-but-unprobeable
+    # tool would carry "unknown" instead of None.
+    assert choice.version == "0.1.0"
+
+
+def test_resolve_extractor_none_when_nothing_installed(monkeypatch):
+    monkeypatch.setattr(
+        graphify_mod, "check_tool", lambda spec: _fake_status("missing")
+    )
+    assert graphify_mod.resolve_extractor() is None
+
+
+@pytest.mark.skipif(
+    shutil.which(graphify_mod.GRAPH_EXTRACT_BINARY) is None,
+    reason="rb-graph-extract not installed (uv sync --extra graph-extract)",
+)
+def test_bundled_extractor_end_to_end(graph_project: Path, tmp_path: Path):
+    """The real rb-graph-extract binary, not a stub: binding tier builds,
+    its nodes stitch into the merge, the cross-check agrees, and the
+    fingerprint is keyed by the bundled tool's manifest name."""
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        graphify_executable=graphify_mod.GRAPH_EXTRACT_BINARY,
+        graphify_version="0.1.0",
+        graphify_tool=graphify_mod.GRAPH_EXTRACT_TOOL,
+    )
+    binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
+    assert binding.status == "built"
+    assert binding.generator["tool"] == "rb-graph-extract"
+    graph = json.loads(build.graph_path.read_text())
+    assert "py:verif/blk_a/cocotb_blk_a.py" in _nodes(graph)
+    meta = json.loads(build.meta_path.read_text())
+    assert meta["tools"][graphify_mod.GRAPH_EXTRACT_TOOL] == "0.1.0"
+    assert graphify_mod.GRAPHIFY_TOOL not in meta["tools"]
+    assert meta["merge"]["graphify_cross_check"]["status"] == "ok"
 
 
 def test_graphify_collect_inputs_is_verif_python_and_spec_markdown(

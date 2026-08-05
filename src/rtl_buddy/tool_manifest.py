@@ -647,6 +647,33 @@ def _builtin_manifest() -> list[ToolSpec]:
             "and spec markdown for rb graph build",
         ),
         ToolSpec(
+            name="rtl-buddy-graph-extract",
+            binaries=("rb-graph-extract",),
+            version_cmd=("rb-graph-extract", "--version"),
+            # Same discipline as graphify above: anchored on the tool
+            # name, and a surprising format yields NO version rather
+            # than a wrong one. The tail accepts PEP 440 dev/local
+            # segments ("0.1.dev1+gcc59b55") so editable installs keep
+            # a full fingerprint.
+            version_regex=r"rb-graph-extract\s+v?(\d[\w.+]*)",
+            minimum_version=None,
+            detection=(
+                PathDetector(),
+                PythonPackageDetector("rtl-buddy-graph-extract"),
+            ),
+            install_hint={
+                "any": "uv pip install "
+                "git+https://github.com/rtl-buddy/rtl-buddy-graph-extract "
+                "(optional — the bundled binding-tier extractor; rb graph "
+                "build writes the design + config tiers without it)",
+            },
+            used_by=("graph",),
+            optional=True,
+            description="rtl-buddy-graph-extract — bundled clean-room "
+            "implementation of the binding-tier extract contract "
+            "(verif Python + spec markdown) for rb graph build",
+        ),
+        ToolSpec(
             name="rtl-buddy-cdc",
             binaries=("rtl-buddy-cdc",),
             version_cmd=None,

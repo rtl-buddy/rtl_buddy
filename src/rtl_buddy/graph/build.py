@@ -820,6 +820,7 @@ def build_graph(
     graphify_executable: str = graphify_mod.GRAPHIFY_TOOL,
     graphify_cross_check: bool = True,
     graphify_version: str | None = None,
+    graphify_tool: str = graphify_mod.GRAPHIFY_TOOL,
     force: bool = False,
 ) -> GraphBuild:
     """Build (or refresh) the merged graph under ``artefacts/graph``.
@@ -845,6 +846,11 @@ def build_graph(
       graphify_llm: Opt into Graphify's LLM pass. Off by default.
       graphify_cross_check: Run ``graphify merge-graphs`` and compare
         against the internal union.
+      graphify_tool: Manifest name of the extractor behind
+        ``graphify_executable`` (``graphify`` or the bundled
+        ``rtl-buddy-graph-extract``) — the fingerprint key, so swapping
+        implementations invalidates the cached build even at an equal
+        version number.
       force: Rebuild even when the fingerprint is unchanged.
 
     Returns:
@@ -963,11 +969,11 @@ def build_graph(
     elif graphify_version is None:
         binding_report.status = SKIPPED
         binding_report.detail = (
-            "graphify not installed — design + config tiers only "
-            "(run `rb tool-check --explain graphify`)"
+            "no binding-tier extractor installed — design + config tiers "
+            "only (run `rb tool-check --explain rtl-buddy-graph-extract`)"
         )
     else:
-        tools[graphify_mod.GRAPHIFY_TOOL] = graphify_version
+        tools[graphify_tool] = graphify_version
         graphify_inputs = graphify_mod.collect_inputs(search_verif, search_spec)
         binding_report.extra["llm_pass"] = graphify_llm
         if not graphify_inputs:
