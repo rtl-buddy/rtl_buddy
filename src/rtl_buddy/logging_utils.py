@@ -798,6 +798,22 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"that model's modules, instances and ports are missing from "
                 f"the graph; see {fields.get('log')}"
             )
+        case "graph_build.tb_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for testbench "
+                f"{fields.get('testbench')} (--tb-top {fields.get('tb_top')}) — "
+                f"that testbench's own hierarchy is missing from the graph, "
+                f"the DUT's is not; see {fields.get('log')}"
+            )
+        case "graph_build.tb_id_collision":
+            return (
+                f"graph build: {fields.get('ids')} design-tier id(s) are "
+                f"claimed by more than one file (e.g. {fields.get('example')}) — "
+                "the testbench copies were qualified with their suite so the "
+                "merged graph keeps them apart; rename the duplicated module "
+                "to make the qualification unnecessary"
+            )
         case "graph_build.graphify_failed":
             return (
                 f"graph build: the graphify binding tier failed "

@@ -391,6 +391,15 @@ class RtlBuddyViewGraph(RtlBuddyView):
     second filelist would only create a way for the two to disagree.
     The viewer's stdout is suppressed (we always pass ``--output``) and
     its stderr is captured to ``graph.log`` next to the filelist.
+
+    With ``test_cfg`` set the export is **TB-rooted** (#377 follow-up):
+    the parent's DUT+TB filelist merge runs, the artefact dir keys on
+    ``(model, tb)`` exactly as ``rb hier --view tb`` does, and
+    ``--tb-top`` is passed alongside ``--top`` so the viewer elaborates
+    from the testbench and records the DUT name in
+    ``graph.design.dut_top``. Module ids are ``module:<name>`` either
+    way, which is what welds the TB export's DUT subtree onto the
+    DUT-rooted export at merge time.
     """
 
     _event_name = "graph_design"
@@ -407,6 +416,8 @@ class RtlBuddyViewGraph(RtlBuddyView):
         project_root: str,
         frontend: str | None = None,
         executable: str = "rtl-buddy-view",
+        test_cfg: TestConfig | None = None,
+        test_suite_dir: str | None = None,
     ):
         super().__init__(
             name,
@@ -415,8 +426,24 @@ class RtlBuddyViewGraph(RtlBuddyView):
             output=output,
             frontend=frontend,
             executable=executable,
+            test_cfg=test_cfg,
+            test_suite_dir=test_suite_dir,
         )
         self.project_root = project_root
+
+    def tb_top(self) -> str | None:
+        """The ``--tb-top`` this export will elaborate from, or None.
+
+        Same convention as :class:`RtlBuddyView`: the testbench's
+        explicit ``toplevel:`` when it has one, else its config name
+        (which is the TB's top module name by project convention). The
+        viewer auto-corrects a hint that names no real module, so the
+        elaborated answer is read back off the export rather than
+        trusted from here.
+        """
+        if self.test_cfg is None:
+            return None
+        return self.test_cfg.tb.toplevel or self.test_cfg.tb.name
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "graph.log")
@@ -483,6 +510,13 @@ class RtlBuddyViewGraph(RtlBuddyView):
             "--project-root",
             self.project_root,
         ]
+        tb_top = self.tb_top()
+        if tb_top is not None:
+            # ``--tb-top`` roots the export at the testbench; ``--top``
+            # stays the DUT so the viewer can record which subtree is
+            # the design under test. Both names land in
+            # ``graph.design``.
+            cmd += ["--tb-top", tb_top]
         if self.frontend is not None:
             cmd += ["--frontend", self.frontend]
         return cmd

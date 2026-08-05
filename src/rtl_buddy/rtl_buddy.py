@@ -3477,6 +3477,16 @@ class RtlBuddy:
                 help="run the rtl-buddy-view design tier (default on)",
             ),
         ] = True,
+        tb: Annotated[
+            bool,
+            typer.Option(
+                "--tb/--no-tb",
+                help=(
+                    "also export each testbench's own hierarchy, rooted at "
+                    "its toplevel: (default on; --no-tb is DUT-only)"
+                ),
+            ),
+        ] = True,
         bind: Annotated[
             bool,
             typer.Option(
@@ -3565,6 +3575,7 @@ class RtlBuddy:
             command="graph build",
             models=len(models) if models is not None else None,
             design=design,
+            tb=tb,
             graphify=graphify_version is not None,
             force=force,
         )
@@ -3580,6 +3591,7 @@ class RtlBuddy:
             view_version=view_version,
             frontend=frontend,
             design=design,
+            tb=tb,
             bind=bind,
             graphify_enabled=graphify,
             graphify_llm=graphify_llm,
@@ -3613,8 +3625,7 @@ class RtlBuddy:
                     "status": t.status,
                     "nodes": str(t.nodes),
                     "links": str(t.links),
-                    "detail": t.detail
-                    or (f"{len(t.failures)} failed" if t.failures else "-"),
+                    "detail": t.row_detail(),
                 }
                 for t in build.tiers
             ],

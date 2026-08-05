@@ -468,6 +468,17 @@ def _add_testbench_node(
         cocotb_modules=tb.cocotb.get_modules() if tb.is_cocotb() else None,
     )
     gb.add_link(suite_node, node, "declares")
+    # The testbench↔design stitch, the same `maps_to` the model node
+    # uses: `toplevel:` names the module the testbench elaborates from,
+    # so `module:<toplevel>` is where this metadata node meets the
+    # hierarchy `rb graph build` exports TB-rooted. Only emitted when
+    # `toplevel:` is actually declared — a plain SV testbench that
+    # leaves it out is topped by convention (the testbench's own name),
+    # and guessing here would be inference in a tier that is pure
+    # config readback. `rb graph build` adds that edge instead, from
+    # the top the viewer really elaborated.
+    if tb.toplevel:
+        gb.add_link(node, module_id(tb.toplevel), "maps_to")
     return node
 
 

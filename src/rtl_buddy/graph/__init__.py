@@ -47,10 +47,12 @@ from .build import (
     DESIGN_TIER,
     VIEW_GRAPH_MIN_VERSION,
     GraphBuild,
+    TestbenchTarget,
     TierReport,
     build_graph,
     models_from_design_tree,
     models_from_regression,
+    testbenches_from_suites,
 )
 from .config_tier import (
     CONFIG_TIER,
@@ -134,6 +136,7 @@ __all__ = [
     "GraphQueryError",
     "GraphBuild",
     "ResultsOverlay",
+    "TestbenchTarget",
     "TierReport",
     "annotate_graph",
     "bind_python",
@@ -162,6 +165,7 @@ __all__ = [
     "scan_python_source",
     "serialize_graph",
     "stitch_points",
+    "testbenches_from_suites",
     "test_status",
     "write_graph_json",
     "write_graph_meta",

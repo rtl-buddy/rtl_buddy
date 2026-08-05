@@ -272,7 +272,31 @@ def test_maps_to_targets_design_tier_module_ids(graph):
     assert _links_of_type(graph, "maps_to") == {
         ("model:design/blk_a/models.yaml#blk_a", "module:blk_a"),
         ("model:design/blk_b/models.yaml#blk_b", "module:blk_b"),
+        # A testbench with a declared `toplevel:` stitches the same way
+        # a model does — `rb graph build` exports that hierarchy rooted
+        # at the testbench, and this is where the metadata node meets it.
+        ("tb:verif/blk_a#tb_cocotb", "module:blk_a"),
     }
+
+
+def test_a_testbench_without_a_toplevel_gets_no_maps_to(graph):
+    """Guessing the top from the testbench name would be inference.
+
+    The config tier is pure config readback — every link it emits is
+    EXTRACTED. `rb graph build` adds the edge for these from the top the
+    viewer really elaborated.
+    """
+    declared = {
+        node["id"]
+        for node in graph["nodes"]
+        if node["type"] == "testbench" and node.get("toplevel")
+    }
+    sourced = {
+        link["source"]
+        for link in graph["links"]
+        if link["type"] == "maps_to" and link["source"].startswith("tb:")
+    }
+    assert sourced == declared
 
 
 def test_module_nodes_are_not_created_by_the_config_tier(graph):

@@ -570,6 +570,13 @@ Usage: rtl-buddy graph build [OPTIONS]
 │                                                              design tier (default    │
 │                                                              on)                     │
 │                                                              [default: design]       │
+│ --tb                        --no-tb                          also export each        │
+│                                                              testbench's own         │
+│                                                              hierarchy, rooted at    │
+│                                                              its toplevel: (default  │
+│                                                              on; --no-tb is          │
+│                                                              DUT-only)               │
+│                                                              [default: tb]           │
 │ --bind                      --no-bind                        run the post-merge      │
 │                                                              binding stage that ties │
 │                                                              cocotb tests to the DUT │

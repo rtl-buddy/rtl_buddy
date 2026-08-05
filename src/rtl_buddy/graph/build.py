@@ -7,7 +7,9 @@
 Three tiers, one file. This module owns the orchestration:
 
 1. **design** — ``rtl-buddy-view graph`` once per model, reusing ``rb
-   hier``'s ``artefacts/hier/<model>/hier.f`` filelist machinery;
+   hier``'s ``artefacts/hier/<model>/hier.f`` filelist machinery, plus
+   once per **testbench** rooted at its ``toplevel:`` (``--tb-top``),
+   reusing ``rb hier --view tb``'s DUT+TB filelist merge;
 2. **config** — :func:`rtl_buddy.graph.extract_config_tier` over the
    ``specs.yaml`` / ``models.yaml`` / ``tests.yaml`` trees;
 3. **binding** — Graphify's deterministic pass over verif Python and
@@ -50,6 +52,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 
 from ..config.model import ModelConfig
+from ..config.test import TestConfig
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from ..tools.hier_rtl_buddy_view import RtlBuddyViewGraph
@@ -57,10 +60,13 @@ from . import graphify as graphify_mod
 from .binding import BINDING_TIER, bind_python, collect_sources
 from .config_tier import (
     CONFIG_TIER,
+    EXTRACTED,
     GRAPH_JSON_NAME,
     GRAPH_META_NAME,
     SCHEMA_VERSION,
     extract_config_tier,
+    module_id,
+    testbench_id,
     write_graph_json,
     write_graph_meta,
 )
@@ -99,6 +105,10 @@ VIEW_GRAPH_MIN_VERSION = "0.4.0"
 #: on disk (not just in memory) so a failed merge is debuggable and so
 #: ``graphify merge-graphs`` has real files to cross-check against.
 DESIGN_SUBDIR = "design"
+#: TB-rooted exports nest under their DUT: ``design/<model>/tb/<tb>``.
+#: Mirrors ``rb hier --view tb``'s ``artefacts/hier/<model>/tb/<tb>``
+#: filelist cache, which is where their sources come from.
+TB_SUBDIR = "tb"
 BINDING_FILE = "binding/graph.json"
 
 #: The in-process binding stage's own export (#378). Kept apart from
@@ -207,7 +217,38 @@ class TierReport:
         models = self.extra.get("models")
         if models is not None:
             block["models"] = models
+        testbenches = self.extra.get("testbenches")
+        if testbenches is not None:
+            block["testbenches"] = testbenches
+        collisions = self.extra.get("id_collisions")
+        if collisions:
+            block["id_collisions"] = collisions
         return block
+
+    def row_detail(self) -> str:
+        """What the ``rb graph build`` summary table shows for this tier.
+
+        A tier that did not run explains itself with ``detail``; one
+        that did is described by what it covered, so the DUT and TB
+        halves of the design tier are both visible without opening the
+        meta sidecar. Failures are counted the same way whichever half
+        they came from — they are per-item, and the tier is still built.
+        """
+        if self.detail:
+            return self.detail
+        parts = []
+        models = self.extra.get("models")
+        if models is not None:
+            parts.append(f"{len(models)} model(s)")
+        testbenches = self.extra.get("testbenches")
+        if testbenches is not None:
+            parts.append(f"{len(testbenches)} testbench(es)")
+        collisions = self.extra.get("id_collisions")
+        if collisions:
+            parts.append(f"{len(collisions)} id(s) suite-qualified")
+        if self.failures:
+            parts.append(f"{len(self.failures)} failed")
+        return ", ".join(parts) or "-"
 
 
 @dataclass
@@ -297,6 +338,143 @@ def models_from_design_tree(design_dir: str | os.PathLike) -> list[ModelConfig]:
     return [model for _, model in discover_model_configs(str(design_dir))]
 
 
+def _model_key(model: ModelConfig) -> str:
+    """Identity of a model across the two ways it can be reached.
+
+    A model found by walking ``design/`` and the same model reached
+    through a test's ``model_path:`` are the same thing; comparing the
+    ``ModelConfig`` objects would say otherwise.
+    """
+    return f"{os.path.realpath(model.path)}#{model.name}"
+
+
+# ---------------------------------------------------------------------------
+# Testbench selection
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TestbenchTarget:
+    """One TB-rooted design-tier export.
+
+    Attributes:
+      suite_rel (str): Repo-relative suite directory — the same string
+        the config tier puts in ``tb:<suite dir>#<name>``.
+      suite_dir (str): Absolute suite directory. Anchors the testbench
+        filelist's relative entries, exactly as the compile flow does.
+      tb_name (str): ``testbenches:`` entry name.
+      tb_top (str): Module the export is rooted at — the testbench's
+        ``toplevel:`` when declared, else its name (the project
+        convention ``rb hier --view tb`` already relies on).
+      model (ModelConfig): The DUT whose filelist the TB filelist is
+        merged on top of.
+      test (TestConfig): The first test that names this testbench.
+        Carries the ``tb`` the exporter reads; nothing test-specific
+        (plusargs, sweeps) affects an elaborated hierarchy.
+    """
+
+    suite_rel: str
+    suite_dir: str
+    tb_name: str
+    tb_top: str
+    model: ModelConfig
+    test: TestConfig
+
+    @property
+    def node_id(self) -> str:
+        """Config-tier ``tb:`` node this export belongs to."""
+        return testbench_id(self.suite_rel, self.tb_name)
+
+    @property
+    def label(self) -> str:
+        """``<suite dir>#<tb name>`` — how failures name this target."""
+        return f"{self.suite_rel}#{self.tb_name}"
+
+
+def testbenches_from_suites(
+    project_root: str | os.PathLike,
+    verif_dir: str | os.PathLike,
+    models: list[ModelConfig] | None = None,
+) -> list[TestbenchTarget]:
+    """Every testbench worth a TB-rooted export, de-duplicated.
+
+    Reads the same ``tests.yaml`` files the config tier reads, through
+    the same :class:`~rtl_buddy.config.suite.SuiteConfig` loader, so the
+    testbenches exported here are exactly the ones that got ``tb:``
+    nodes. A suite that fails to load is skipped silently — the config
+    tier already reports it, and reporting it twice would double-count
+    the failure in the envelope.
+
+    Two testbenches are the same export when they resolve to the same
+    ``(model, suite dir, testbench filelist, tb top)``: that tuple is
+    the entire input to the viewer, so a second invocation could only
+    reproduce the first one's bytes. Names differing is not a
+    difference.
+
+    A testbench whose top is the DUT top is dropped: ``--tb-top
+    <model.name>`` would re-elaborate exactly what the DUT export
+    already covered. That is the cocotb/SystemC case, where
+    ``toplevel:`` is required *and* names the DUT — there is no SV
+    testbench above it to add.
+
+    Args:
+      project_root: Root that ``suite_rel`` is relative to.
+      verif_dir: Tree walked for ``tests.yaml``.
+      models: When given, only testbenches whose model is in this list
+        are returned, so ``--model`` / ``--regression`` narrows the TB
+        exports the same way it narrows the DUT exports. ``None`` means
+        no filtering.
+
+    Returns:
+      list[TestbenchTarget]: sorted by ``(suite dir, testbench name)``.
+    """
+    from ..config.suite import SuiteConfig
+    from ..tools.spec_trace import _walk_yaml_files
+
+    verif = str(verif_dir)
+    if not os.path.isdir(verif):
+        return []
+    allowed = {_model_key(m) for m in models} if models is not None else None
+
+    seen: set[tuple] = set()
+    targets: list[TestbenchTarget] = []
+    for path in _walk_yaml_files(verif, "tests.yaml"):
+        suite_dir = os.path.dirname(os.path.realpath(path))
+        suite_rel = rel_path(project_root, suite_dir)
+        try:
+            suite = SuiteConfig(path)
+        except FatalRtlBuddyError:
+            continue
+        for test in suite.get_tests():
+            tb = test.get_testbench()
+            model = test.get_model()
+            if allowed is not None and _model_key(model) not in allowed:
+                continue
+            tb_top = tb.toplevel or tb.get_name()
+            if tb_top == model.name:
+                continue
+            key = (
+                suite_dir,
+                _model_key(model),
+                tuple(tb.get_filelist()),
+                tb_top,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(
+                TestbenchTarget(
+                    suite_rel=suite_rel,
+                    suite_dir=suite_dir,
+                    tb_name=tb.get_name(),
+                    tb_top=tb_top,
+                    model=model,
+                    test=test,
+                )
+            )
+    return sorted(targets, key=lambda t: (t.suite_rel, t.tb_name))
+
+
 # ---------------------------------------------------------------------------
 # Tiers
 # ---------------------------------------------------------------------------
@@ -325,6 +503,251 @@ def _design_exporters(
         )
         exporters.append((model, exporter))
     return exporters
+
+
+def _tb_exporters(
+    project_root: Path,
+    targets: list[TestbenchTarget],
+    out_dir: Path,
+    *,
+    view_executable: str,
+    frontend: str | None,
+) -> list[tuple[TestbenchTarget, RtlBuddyViewGraph]]:
+    """One TB-rooted exporter per testbench, output paths disambiguated.
+
+    ``design/<model>/tb/<tb>`` is unique in every project that does not
+    name two testbenches in two suites identically *and* point them at
+    the same model; when one does, the later ones get a ``-2``, ``-3``
+    suffix rather than overwriting the first export.
+    """
+    exporters = []
+    used: set[str] = set()
+    for target in targets:
+        base = f"{target.model.name}/{TB_SUBDIR}/{target.tb_name}"
+        slug, index = base, 2
+        while slug in used:
+            slug, index = f"{base}-{index}", index + 1
+        used.add(slug)
+        exporter = RtlBuddyViewGraph(
+            name=f"graph/design/{slug}",
+            model_cfg=target.model,
+            suite_dir=str(project_root),
+            output=str(out_dir / DESIGN_SUBDIR / slug / GRAPH_JSON_NAME),
+            project_root=str(project_root),
+            frontend=frontend,
+            executable=view_executable,
+            test_cfg=target.test,
+            test_suite_dir=target.suite_dir,
+        )
+        exporters.append((target, exporter))
+    return exporters
+
+
+def _tb_stitch_link(node_id: str, module_node_id: str) -> dict:
+    """``tb:<suite>#<name> --maps_to--> module:<tb top>``.
+
+    The same edge type the model node uses for its config↔design
+    stitch: a ``tb:`` node is metadata about an elaboration, and
+    ``maps_to`` is already "this config thing is that design thing".
+    Emitting a new edge type for the identical relation would make
+    every consumer learn two words for one idea.
+    """
+    return {
+        "source": node_id,
+        "target": module_node_id,
+        "type": "maps_to",
+        "confidence": EXTRACTED,
+    }
+
+
+def _run_tb_tier(
+    project_root: Path,
+    exporters: list[tuple[TestbenchTarget, RtlBuddyViewGraph]],
+    report: TierReport,
+) -> list[tuple[TestbenchTarget, dict]]:
+    """Invoke the viewer per testbench; return the graphs that came back.
+
+    Failures are recorded per testbench exactly as the model loop
+    records them per model — one broken testbench costs its own
+    hierarchy, never the tier.
+    """
+    pairs: list[tuple[TestbenchTarget, dict]] = []
+    built: list[str] = []
+    for target, exporter in exporters:
+        try:
+            rc = exporter.run()
+        except FatalRtlBuddyError as exc:
+            report.failures.append({"testbench": target.label, "error": str(exc)})
+            continue
+        if rc != 0:
+            report.failures.append(
+                {
+                    "testbench": target.label,
+                    "error": f"rtl-buddy-view graph exited {rc}",
+                    "log": rel_path(project_root, exporter.log_path()),
+                }
+            )
+            log_event(
+                logger,
+                logging.WARNING,
+                "graph_build.tb_export_failed",
+                testbench=target.label,
+                tb_top=target.tb_top,
+                returncode=rc,
+                log=exporter.log_path(),
+            )
+            continue
+        try:
+            payload = json.loads(Path(exporter.output).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            report.failures.append({"testbench": target.label, "error": str(exc)})
+            continue
+        pairs.append((target, payload))
+        built.append(target.label)
+        if report.generator is None:
+            report.generator = (payload.get("graph") or {}).get("generator")
+    report.extra["testbenches"] = built
+    return pairs
+
+
+# ---------------------------------------------------------------------------
+# Testbench id collisions
+#
+# `module:<name>` is a *global* id by contract, but a SystemVerilog module
+# name is only unique inside one elaboration. Testbenches are where that
+# stops being a technicality: the conventional name for a testbench top is
+# `tb_top`, and a project with eight suites has eight different modules
+# called that, in eight different files. Unioned naively they become one
+# node that instantiates every DUT in the project, and one
+# `inst:tb_top/tb_top.i_dut` that is `instance_of` four different modules.
+# Those are not merge artefacts a consumer can filter out — they are
+# statements the graph makes that are false.
+#
+# So a TB export's ids are qualified with the suite that owns them when,
+# and only when, the same id is claimed by a different *file* somewhere
+# else in the design tier. DUT ids are never touched: they are the weld,
+# and the whole point of the TB export is that its `module:<dut>` is the
+# same node the DUT export produced.
+# ---------------------------------------------------------------------------
+
+#: Separates a design-tier id from the suite that disambiguates it.
+#: ``@`` cannot appear in a module name or an instance path, so a
+#: qualified id is always decomposable and never collides with a real one.
+QUALIFIER_SEP = "@"
+
+
+def _ambiguous_ids(graphs: list[dict]) -> dict[str, list[str]]:
+    """Design-tier ids claimed by more than one source file.
+
+    Nodes without a ``file`` are ignored rather than guessed at: an id
+    with no evidence of where it came from is not evidence of a clash.
+    """
+    files: dict[str, set[str]] = {}
+    for graph in graphs:
+        for node in graph.get("nodes") or []:
+            node_id, file = node.get("id"), node.get("file")
+            if node_id and file:
+                files.setdefault(node_id, set()).add(file)
+    return {k: sorted(v) for k, v in files.items() if len(v) > 1}
+
+
+def _qualify_graph(
+    graph: dict, qualifier: str, ambiguous: dict[str, list[str]]
+) -> tuple[dict, dict[str, str]]:
+    """Suite-qualify the ambiguous ids in one TB export.
+
+    Two things get qualified:
+
+    * any node whose id another file also claims — the collision itself;
+    * every ``inst:`` node in the export, when its **root module** is one
+      of those. An instance id embeds the root it was reached from
+      (``inst:tb_top/tb_top.i_dut``), so if the root is ambiguous the
+      whole path is, including the parts that happen not to clash today.
+
+    Returns the rewritten graph (the on-disk per-testbench export is left
+    exactly as the viewer wrote it — qualification is a merge-time
+    decision, not a fact about the elaboration) and the id map that was
+    applied.
+    """
+    design = (graph.get("graph") or {}).get("design") or {}
+    root_id = module_id(design.get("top") or "")
+    rename: dict[str, str] = {}
+    for node in graph.get("nodes") or []:
+        node_id = node.get("id")
+        if node_id and node_id in ambiguous:
+            rename[node_id] = f"{node_id}{QUALIFIER_SEP}{qualifier}"
+    if root_id in ambiguous:
+        for node in graph.get("nodes") or []:
+            node_id = node.get("id")
+            if node_id and node_id.startswith("inst:"):
+                rename.setdefault(node_id, f"{node_id}{QUALIFIER_SEP}{qualifier}")
+    if not rename:
+        return graph, {}
+
+    nodes = []
+    for node in graph.get("nodes") or []:
+        node_id = node.get("id")
+        if node_id in rename:
+            node = dict(node)
+            node["id"] = rename[node_id]
+            # Keep the name the design actually uses reachable: `label`
+            # is what `rb graph query` matches on, and an agent asking
+            # about `tb_top` must still find every one of them.
+            node["unqualified_id"] = node_id
+            node["qualified_by"] = qualifier
+        nodes.append(node)
+    links = []
+    for link in graph.get("links") or []:
+        source, target = link.get("source"), link.get("target")
+        if source in rename or target in rename:
+            link = dict(link)
+            link["source"] = rename.get(source, source)
+            link["target"] = rename.get(target, target)
+        links.append(link)
+    qualified = dict(graph)
+    qualified["nodes"] = nodes
+    qualified["links"] = links
+    return qualified, rename
+
+
+def _qualify_tb_graphs(
+    model_graphs: list[dict],
+    pairs: list[tuple[TestbenchTarget, dict]],
+    report: TierReport,
+) -> tuple[list[dict], list[dict]]:
+    """Resolve TB id collisions and emit the ``tb:`` -> ``module:`` stitches.
+
+    The stitch points at the top the viewer *actually* elaborated
+    (``graph.design.top``, which it auto-corrects when the ``--tb-top``
+    hint names no real module), after qualification — so the edge always
+    lands on a node that exists and is the right one.
+    """
+    ambiguous = _ambiguous_ids(model_graphs + [graph for _, graph in pairs])
+    graphs: list[dict] = []
+    stitches: list[dict] = []
+    collisions: dict[str, dict] = {}
+    for target, graph in pairs:
+        qualified, rename = _qualify_graph(graph, target.suite_rel, ambiguous)
+        graphs.append(qualified)
+        design = (graph.get("graph") or {}).get("design") or {}
+        root_id = module_id(design.get("top") or design.get("tb_top") or target.tb_top)
+        stitches.append(_tb_stitch_link(target.node_id, rename.get(root_id, root_id)))
+        for original, new_id in rename.items():
+            entry = collisions.setdefault(
+                original,
+                {"id": original, "files": ambiguous.get(original, []), "qualified": []},
+            )
+            entry["qualified"].append(new_id)
+    if collisions:
+        report.extra["id_collisions"] = [collisions[k] for k in sorted(collisions)]
+        log_event(
+            logger,
+            logging.WARNING,
+            "graph_build.tb_id_collision",
+            ids=len(collisions),
+            example=sorted(collisions)[0],
+        )
+    return graphs, stitches
 
 
 def _run_design_tier(
@@ -388,6 +811,7 @@ def build_graph(
     view_version: str | None = None,
     frontend: str | None = None,
     design: bool = True,
+    tb: bool = True,
     bind: bool = True,
     graphify_enabled: bool = True,
     graphify_llm: bool = False,
@@ -409,6 +833,10 @@ def build_graph(
       view_executable / view_version: The ``rtl-buddy-view`` binary and
         its probed version (used for the feature gate and fingerprint).
       design: False skips the design tier entirely (config-only graph).
+      tb: False skips the TB-rooted half of the design tier — DUT
+        hierarchies only, no SV testbench modules or instances. It is a
+        cost switch, not a correctness one: every testbench doubles the
+        elaboration work for the design it sits on top of.
       bind: False skips the post-merge binding stage (#378) — no
         ``binds_to`` / ``drives`` / ``checks_against`` edges.
       graphify_enabled: False skips Graphify's binding tier without probing.
@@ -443,6 +871,7 @@ def build_graph(
 
     # --- design tier: filelists first, so hashing precedes parsing ------
     exporters: list[tuple[ModelConfig, RtlBuddyViewGraph]] = []
+    tb_exporters: list[tuple[TestbenchTarget, RtlBuddyViewGraph]] = []
     design_report = TierReport(tier=DESIGN_TIER)
     if not design:
         design_report.status = SKIPPED
@@ -474,8 +903,29 @@ def build_graph(
                     continue
                 sources.extend(exporter.source_files())
                 exporters.append((model, exporter))
+            # TB-rooted exports are part of this tier: same exporter,
+            # same filelist machinery, one extra `--tb-top`. Their
+            # sources join the tier's input hashes, which is what keeps
+            # the no-op check honest when only a testbench changed.
+            if tb:
+                for target, exporter in _tb_exporters(
+                    root,
+                    testbenches_from_suites(root, search_verif, models),
+                    out,
+                    view_executable=view_executable,
+                    frontend=frontend,
+                ):
+                    try:
+                        exporter.write_filelist()
+                    except Exception as exc:  # FilelistError and friends
+                        design_report.failures.append(
+                            {"testbench": target.label, "error": str(exc)}
+                        )
+                        continue
+                    sources.extend(exporter.source_files())
+                    tb_exporters.append((target, exporter))
             design_report.inputs = hash_inputs(root, sources)
-            if not exporters:
+            if not exporters and not tb_exporters:
                 design_report.status = FAILED
                 design_report.detail = "no model produced a filelist"
     reports[DESIGN_TIER] = design_report
@@ -562,8 +1012,15 @@ def build_graph(
     tier_graphs: list[tuple[str, dict]] = []
     tier_files: list[str] = []
 
-    if exporters:
+    tb_stitches: list[dict] = []
+    if exporters or tb_exporters:
         design_graphs = _run_design_tier(root, exporters, design_report)
+        if tb_exporters:
+            tb_pairs = _run_tb_tier(root, tb_exporters, design_report)
+            tb_graphs, tb_stitches = _qualify_tb_graphs(
+                design_graphs, tb_pairs, design_report
+            )
+            design_graphs += tb_graphs
         if design_graphs:
             design_report.status = BUILT
             # One model is the common case; keep its envelope untouched
@@ -583,11 +1040,37 @@ def build_graph(
             design_report.links = len(design_graph.get("links") or [])
             tier_graphs.append((DESIGN_TIER, design_graph))
             tier_files.extend(
-                str(e.output) for _, e in exporters if Path(e.output).is_file()
+                str(e.output)
+                for _, e in [*exporters, *tb_exporters]
+                if Path(e.output).is_file()
             )
         else:
             design_report.status = FAILED
             design_report.detail = "no model exported successfully"
+
+    # The `tb:` node belongs to the config tier, so its stitch to the
+    # hierarchy it elaborates is a config-tier link — the same asymmetry
+    # `model --maps_to--> module:` already has. It can only be written
+    # after the export, because only the export knows the top the viewer
+    # really elaborated (a testbench may declare no `toplevel:` at all)
+    # and whether that id had to be suite-qualified. Where both exist the
+    # export wins: the config tier's `toplevel:`-derived edge is a
+    # declaration, this one is an observation of the same thing.
+    if tb_stitches:
+        exported = {link["source"] for link in tb_stitches}
+        config.graph["links"] = [
+            link
+            for link in config.graph["links"]
+            if not (link["source"] in exported and link["type"] == "maps_to")
+        ]
+        config.graph["links"].extend(tb_stitches)
+        # Restore the extractor's canonical ordering so the config
+        # tier's own file stays byte-identical across runs that changed
+        # nothing.
+        config.graph["links"].sort(
+            key=lambda link: (link["source"], link["target"], link["type"])
+        )
+        config_report.links = len(config.graph["links"])
 
     tier_graphs.append((CONFIG_TIER, config.graph))
     config_file = out / CONFIG_TIER / GRAPH_JSON_NAME
@@ -770,8 +1253,9 @@ def _hydrate_from_meta(reports: dict[str, TierReport], stored_meta: dict) -> Non
             report.links = int(stored.get("links") or 0)
         if not report.failures:
             report.failures = stored.get("failures") or []
-        if "models" in stored and "models" not in report.extra:
-            report.extra["models"] = stored["models"]
+        for key in ("models", "testbenches"):
+            if key in stored and key not in report.extra:
+                report.extra[key] = stored[key]
 
 
 def _read_json(path: Path) -> dict | None:
