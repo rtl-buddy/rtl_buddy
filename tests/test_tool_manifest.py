@@ -778,3 +778,39 @@ def test_cli_tool_check_default_exit_is_0(tmp_path: Path):
     """Default behavior: no --strict, no --required-for → exit 0 always."""
     result = _run_rb("tool-check", "--no-probe-versions", cwd=tmp_path)
     assert result.returncode == 0
+
+
+def test_graphify_is_optional_and_never_gates_graph_readiness():
+    """graphify is optional=True with used_by graph — its absence must
+    not fail `rb tool-check --required-for graph` (the design promise:
+    the binding tier is skipped and the build still succeeds)."""
+    by_name = {s.name: s for s in tm.get_manifest()}
+    spec = by_name["graphify"]
+    assert spec.optional
+    assert "graph" in spec.used_by
+    # The version must directly follow the tool name; a surprising
+    # format yields NO version, never a wrong one (the interpreter
+    # version below must not be mistaken for graphify's).
+    m = re.search(spec.version_regex, "graphify 1.4.0")
+    assert m is not None and m.group(1) == "1.4.0"
+    assert re.search(spec.version_regex, "graphify (python 3.12) 0.2.0") is None
+
+
+def test_rtl_buddy_view_is_required_for_graph():
+    """The design tier's exporter is a hard requirement of the graph
+    flow: used_by must carry graph so --required-for graph enforces it."""
+    by_name = {s.name: s for s in tm.get_manifest()}
+    assert "graph" in by_name["rtl-buddy-view"].used_by
+
+
+def test_mcp_sdk_detects_via_python_package_with_floor():
+    """The mcp SDK is a library: no binaries contract, PythonPackage
+    detection only, and the documented 1.2.0 floor."""
+    by_name = {s.name: s for s in tm.get_manifest()}
+    spec = by_name["mcp"]
+    assert spec.optional
+    assert spec.binaries == ()
+    assert spec.minimum_version == "1.2.0"
+    assert len(spec.detection) == 1
+    assert isinstance(spec.detection[0], tm.PythonPackageDetector)
+    assert "mcp" in spec.used_by

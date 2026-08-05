@@ -630,7 +630,11 @@ def _builtin_manifest() -> list[ToolSpec]:
             name="graphify",
             binaries=("graphify",),
             version_cmd=("graphify", "--version"),
-            version_regex=r"([\d.]+)",
+            # Version must directly follow the tool name ("graphify
+            # 1.4.0"). Anything fancier ("graphify (python 3.12) 0.2.0")
+            # yields NO version rather than the wrong one — unknown is
+            # recoverable, a wrong number in the fingerprint is not.
+            version_regex=r"graphify\s+v?([\d.]+)",
             minimum_version=None,
             detection=(PathDetector(), PythonPackageDetector("graphify")),
             install_hint={
@@ -687,7 +691,10 @@ def _builtin_manifest() -> list[ToolSpec]:
         ),
         ToolSpec(
             name="mcp",
-            binaries=("mcp",),
+            # No PathDetector and no binary contract: the SDK is a
+            # library; an empty tuple keeps any future "not found on
+            # PATH" formatting from naming a binary nobody installs.
+            binaries=(),
             version_cmd=None,
             version_regex=None,
             minimum_version="1.2.0",

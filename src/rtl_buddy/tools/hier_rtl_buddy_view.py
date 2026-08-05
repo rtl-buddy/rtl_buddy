@@ -45,6 +45,27 @@ _VIEW_VERSION_RE = re.compile(r"rtl-buddy-view\s+(\S+)")
 _VERSION_PROBE_TIMEOUT = 30
 
 
+def resolve_view_executable(executable: str = "rtl-buddy-view") -> str:
+    """The path the viewer will actually be invoked as.
+
+    Bare names (no path separator) prefer the binary sitting next to
+    ``sys.executable`` — rb is routinely invoked by absolute venv path
+    with no activation, where PATH knows nothing about the venv but the
+    viewer installed beside this interpreter is exactly the one that
+    belongs to it. Falls back to the name unchanged (PATH semantics).
+    Explicit paths pass through untouched. Every caller that talks to
+    the viewer must resolve through here, or the version that lands in
+    the build fingerprint can describe a different binary than the one
+    that ran.
+    """
+    if os.sep in executable or (os.altsep and os.altsep in executable):
+        return executable
+    sibling = Path(sys.executable).parent / executable
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return executable
+
+
 def probe_view_version(executable: str = "rtl-buddy-view") -> str | None:
     """Full version string reported by ``<executable> --version``.
 
@@ -56,7 +77,7 @@ def probe_view_version(executable: str = "rtl-buddy-view") -> str | None:
     """
     try:
         proc = subprocess.run(
-            [executable, "--version"],
+            [resolve_view_executable(executable), "--version"],
             capture_output=True,
             text=True,
             timeout=_VERSION_PROBE_TIMEOUT,
@@ -297,14 +318,8 @@ class RtlBuddyView:
                     f"{self.executable}"
                 )
         else:
-            # rb is routinely invoked by absolute venv path with no
-            # activation (agents, cron, scripts) — PATH then knows
-            # nothing about the venv, but the viewer installed next to
-            # this interpreter is exactly the one that belongs to it.
-            sibling = Path(sys.executable).parent / self.executable
-            if sibling.is_file() and os.access(sibling, os.X_OK):
-                self.executable = str(sibling)
-            elif shutil.which(self.executable) is None:
+            self.executable = resolve_view_executable(self.executable)
+            if os.sep not in self.executable and shutil.which(self.executable) is None:
                 raise FatalRtlBuddyError(
                     f"hier: '{self.executable}' not found on PATH or next to "
                     f"{sys.executable}; install rtl-buddy-view into the active "

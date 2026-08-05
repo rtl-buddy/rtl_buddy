@@ -1902,7 +1902,11 @@ class RtlBuddy:
                     results=res,
                     run_token=token,
                 )
-            except OSError as exc:
+            except Exception as exc:  # noqa: BLE001 - best-effort side-car:
+                # a run that passed must never be reported failed because
+                # its envelope could not be written (serialization and
+                # metadata errors included, not just OSError — the
+                # dispatch-path write is the strict one, this is not it).
                 log_event(
                     logger,
                     logging.WARNING,

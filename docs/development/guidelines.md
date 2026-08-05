@@ -58,6 +58,8 @@ Use these roots unless a command documents a narrower exception:
 | `axi-profile notebook` | `dirname(tests.yaml)` | `<suite>/artefacts/axi/<test>` | `<artifact>` |
 | `axi-profile discover` | `dirname(models.yaml)` | `<model_root>/artefacts/axi/<model>` | `<artifact>` |
 | `axi-profile gen-monitor` | `dirname(models.yaml)` | configured or explicit output; fallback artifact dir | `<artifact>` |
+| `graph build` | project root | `<root>/artefacts/graph/` | `rtl-buddy-view` per model in `<model_root>/artefacts/hier/<model>` — deliberately `rb hier`'s artefact dir, not the graph's, so the two flows share one filelist + CST cache |
+| `graph results` / `graph query` / `graph path` / `graph explain` / `mcp` | project root | `<root>/artefacts/graph/` (read-only; `graph results` writes the overlay) | none, except `mcp`'s hierarchy tools which invoke `rtl-buddy-view` as `graph build` does |
 | `filelist` | `dirname(models.yaml)` for config reads | explicit output path | no hidden tool CWD |
 | `saif` | invocation CWD for explicit paths | explicit output path | no hidden tool CWD |
 | `hub` | project root | `.rtl-buddy/...` | project root or `.rtl-buddy`, depending subcommand |
