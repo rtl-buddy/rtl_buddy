@@ -18,7 +18,7 @@
         <link rel="prev" href="../cocotb/">
       
       
-        <link rel="next" href="../wave/">
+        <link rel="next" href="../graph/">
       
       
         
@@ -809,10 +809,49 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#graph-export" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph export
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Knowledge Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1686,6 +1725,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#graph-export" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph export
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1828,6 +1878,8 @@
 </tbody>
 </table>
 <p>All three commands accept <code>--spec-dir</code> to target a subdirectory. <code>check-design</code> also accepts <code>--design-dir</code>; <code>check-coverage</code> accepts <code>--verif-dir</code>. <code>check-design</code> and <code>check-coverage</code> also accept a repeatable <code>--block NAME</code> (see <a href="#filtering-by-block">Filtering by block</a>).</p>
+<h2 id="graph-export">Graph export</h2>
+<p>The same relationships are also emitted as a queryable graph. <code>rtl_buddy.graph.build_config_tier()</code> turns these loaders into the config tier of the <a href="../graph/">design knowledge graph</a>, where a path query walks test to testbench to model to spec block in one hop each. It reads through the loaders behind the commands above, so the two views never disagree.</p>
 
 
 

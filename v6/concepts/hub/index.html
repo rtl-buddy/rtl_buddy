@@ -673,6 +673,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design Knowledge Graph
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../wave/" class="md-nav__link">
         
   
@@ -833,6 +861,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#view-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        View errors
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -887,6 +926,17 @@
     <span class="md-ellipsis">
       
         Driving the hub from the CLI (rb hub send)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-knowledge-graph-pane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design knowledge graph pane
       
     </span>
   </a>
@@ -1681,6 +1731,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#view-errors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        View errors
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1735,6 +1796,17 @@
     <span class="md-ellipsis">
       
         Driving the hub from the CLI (rb hub send)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-knowledge-graph-pane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design knowledge graph pane
       
     </span>
   </a>
@@ -1891,7 +1963,7 @@
 </table>
 <p><code>--daemon</code> is reserved; today it warns and runs in the foreground. Treat the explicit <code>--foreground</code> as load-bearing; future versions may detach when <code>--daemon</code> is given.</p>
 <p><code>--serve-viewer</code> enables the HTTP + WebSocket layer (<code>/</code>, <code>/ws</code>) used by the browser SPA. When you omit <code>--viewer-bundle</code>, the hub auto-discovers the SPA shipped by <a href="https://github.com/rtl-buddy/rtl-buddy-view"><code>rtl-buddy-view</code></a> via <code>importlib.resources</code> — install it alongside rtl-buddy and <code>rb hub start --serve-viewer</code> is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass <code>--viewer-bundle PATH</code> to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (<code>viewer/dist/</code>) and you don't want the in-wheel copy from the installed package.</p>
-<p>When the hub knows where to find a <code>view.json</code> (via <code>[mapping].view_json</code> in <code>hub.toml</code>, default <code>.rtl-buddy/view.json</code>), the viewer HTTP layer also serves it at <code>GET /view.json</code>. Open the SPA with <code>?view=/view.json</code> to auto-load the design — e.g. <code>http://127.0.0.1:&lt;http_port&gt;/?view=/view.json</code> — instead of drag-and-dropping the file. The index page also gets a <code>window.__RTL_BUDDY_VIEW_URL__ = "/view.json"</code> injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing, <code>/view.json</code> returns 404 and the SPA falls back to the empty state.</p>
+<p>When the hub knows where to find a <code>view.json</code> (via <code>[mapping].view_json</code> in <code>hub.toml</code>, default <code>.rtl-buddy/view.json</code>), the viewer HTTP layer also serves it at <code>GET /view.json</code>. Open the SPA with <code>?view=/view.json</code> to auto-load the design — e.g. <code>http://127.0.0.1:&lt;http_port&gt;/?view=/view.json</code> — instead of drag-and-dropping the file. The index page also gets a <code>window.__RTL_BUDDY_VIEW_URL__ = "/view.json"</code> injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, <code>/view.json</code> returns <code>409 no_active_model</code> (see <a href="#view-errors">View errors</a>) and the SPA shows its "pick a model" placeholder.</p>
 <h3 id="picking-a-model-at-start-time-model-name">Picking a model at start time (<code>--model NAME</code>)</h3>
 <p><code>--model NAME</code> tells the hub to generate <code>view.json</code> on the fly from a model entry in <code>models.yaml</code>, instead of relying on a pre-staged file:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w"> </span>--model<span class="w"> </span>ip_demo_tiny_npu
@@ -1912,63 +1984,140 @@
 <li><code>GET /models</code> — list every model the hub can serve. JSON shape:
   <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;models&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">},</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_dtnpu_dma&quot;</span><span class="p">,</span><span class="w">     </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">}</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="p">],</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nt">&quot;active&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">}</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">     </span><span class="nt">&quot;has_cdc&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;view_status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ok&quot;</span><span class="p">},</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;apb_intf&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">     </span><span class="nt">&quot;has_cdc&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;view_status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;failed&quot;</span><span class="p">,</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">     </span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb hub --model apb_intf: rtl-buddy-view exited with code 1; see …/hier.log for details.&quot;</span><span class="p">}</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span><span class="nt">&quot;active&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="p">}</span>
 </code></pre></div>
   The endpoint walks for <code>models.yaml</code> per request, so newly-edited files appear without a restart. When <code>--models-file PATH</code> was passed at start time, only that file is enumerated.</li>
-<li><code>GET /view.json?model=NAME</code> — build (or reuse) the per-model view.json at <code>.rtl-buddy/cache/view-&lt;NAME&gt;.json</code>, serve it, and promote <code>NAME</code> to the active model. <code>--models-file</code> constraints apply: <code>?model=</code> only honours entries in the pinned file. Per-model <code>asyncio.Lock</code> serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.</li>
-<li><code>GET /tests</code> — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as <code>/models</code>; entries carry the resolved <code>(model, tb)</code> pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
+</ul>
+<p><code>view_status</code> is the model's <strong>health</strong>, so the picker can badge a model that can never elaborate instead of letting the user find out via an empty canvas (rtl-buddy-view#130):</p>
+<table>
+<thead>
+<tr>
+<th>value</th>
+<th>meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ok</code></td>
+<td>a cached <code>.rtl-buddy/cache/view-&lt;NAME&gt;.json</code> exists, or this hub session generated one successfully</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>this hub session tried to generate a view for the model and the generation failed; <code>error</code> carries the one-line summary</td>
+</tr>
+<tr>
+<td><code>never_built</code></td>
+<td>neither — nobody has asked for this model yet</td>
+</tr>
+</tbody>
+</table>
+<p>A <code>failed</code> entry that still has a cache file from an earlier build also carries <code>"stale_cache": true</code> — the cached tree is servable but no longer reflects the sources. Health is remembered <strong>in memory</strong> for the hub session; a restart resets every model to what the cache on disk says.
+- <code>GET /view.json?model=NAME</code> — build (or reuse) the per-model view.json at <code>.rtl-buddy/cache/view-&lt;NAME&gt;.json</code>, serve it, and promote <code>NAME</code> to the active model. <code>--models-file</code> constraints apply: <code>?model=</code> only honours entries in the pinned file. Per-model <code>asyncio.Lock</code> serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.
+- <code>GET /tests</code> — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as <code>/models</code>; entries carry the resolved <code>(model, tb)</code> pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
   <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;tests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tb&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tb_top&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tests_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/path/to/tests.yaml&quot;</span><span class="p">}</span>
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="p">],</span>
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">&quot;active&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;basic&quot;</span>
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">}</span>
-</code></pre></div></li>
-<li><code>GET /view.json?test=NAME</code> — build (or reuse) the per-<code>(model, tb)</code> view.json at <code>.rtl-buddy/cache/view-&lt;MODEL&gt;-tb-&lt;TB&gt;.json</code>, serve it, and promote the test (and its underlying model) to active. Per-test <code>asyncio.Lock</code> mirrors the per-model lock. The renderer runs in TB-rooted mode: rtl-buddy-view is invoked with <code>--top &lt;model&gt;</code> + <code>--tb-top &lt;tb.toplevel&gt;</code> so the rendered tree is rooted at the testbench top with the DUT recorded for the SPA's dashed-boundary overlay.</li>
-<li><code>view_changed</code> event — broadcast on every active-view change. Envelope:
+</code></pre></div>
+- <code>GET /view.json?test=NAME</code> — build (or reuse) the per-<code>(model, tb)</code> view.json at <code>.rtl-buddy/cache/view-&lt;MODEL&gt;-tb-&lt;TB&gt;.json</code>, serve it, and promote the test (and its underlying model) to active. Per-test <code>asyncio.Lock</code> mirrors the per-model lock. The renderer runs in TB-rooted mode: rtl-buddy-view is invoked with <code>--top &lt;model&gt;</code> + <code>--tb-top &lt;tb.toplevel&gt;</code> so the rendered tree is rooted at the testbench top with the DUT recorded for the SPA's dashed-boundary overlay.
+- <code>view_changed</code> event — broadcast on every active-view change. Envelope:
   <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span><span class="nt">&quot;v&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="s2">&quot;…&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;origin&quot;</span><span class="p">:</span><span class="s2">&quot;cli&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="s2">&quot;event&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="s2">&quot;view_changed&quot;</span><span class="p">,</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w"> </span><span class="nt">&quot;payload&quot;</span><span class="p">:{</span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="s2">&quot;ip_dtnpu_dma&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;models_file&quot;</span><span class="p">:</span><span class="s2">&quot;/abs/path/to/models.yaml&quot;</span><span class="p">,</span>
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">            </span><span class="nt">&quot;view_url&quot;</span><span class="p">:</span><span class="s2">&quot;/view.json?model=ip_dtnpu_dma&quot;</span><span class="p">,</span>
 <a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">            </span><span class="nt">&quot;view_mode&quot;</span><span class="p">:</span><span class="s2">&quot;dut&quot;</span><span class="p">}}</span>
 </code></pre></div>
-  In TB-view mode (<code>?test=</code> switch) the payload carries <code>view_mode: "tb"</code> plus <code>test</code> + <code>tb</code> + <code>tests_file</code> fields (the <code>view_url</code> points at <code>/view.json?test=&lt;NAME&gt;</code>). v1.0 SPAs that don't know about <code>view_mode</code> ignore it and fall through to the legacy <code>model</code>-driven <code>switchModel</code> path — that's why the DUT-side envelope still carries the full set of legacy fields. Sent to every connected client (SPA tabs, nvim, <code>rb wave</code> bridge) so they can refresh view-scoped state.</li>
-</ul>
+  In TB-view mode (<code>?test=</code> switch) the payload carries <code>view_mode: "tb"</code> plus <code>test</code> + <code>tb</code> + <code>tests_file</code> fields (the <code>view_url</code> points at <code>/view.json?test=&lt;NAME&gt;</code>). v1.0 SPAs that don't know about <code>view_mode</code> ignore it and fall through to the legacy <code>model</code>-driven <code>switchModel</code> path — that's why the DUT-side envelope still carries the full set of legacy fields. Sent to every connected client (SPA tabs, nvim, <code>rb wave</code> bridge) so they can refresh view-scoped state.</p>
 <p>The active model is also recorded in <code>.rtl-buddy/hub.json</code> under <code>active_model</code> (optional field) and surfaced in <code>rb hub status</code> output.</p>
+<h3 id="view-errors">View errors</h3>
+<p>Every <code>GET /view.json</code> failure answers with <code>Content-Type: application/json</code> and one shape, so the SPA can render a "no view available" placeholder that says <em>why</em> instead of an empty canvas (rtl-buddy-view#130):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">}}</span>
+</code></pre></div>
+<p>Branch on <code>kind</code>, never on the status code or the prose:</p>
+<table>
+<thead>
+<tr>
+<th><code>kind</code></th>
+<th>status</th>
+<th>extra keys</th>
+<th>when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>view_generation_failed</code></td>
+<td>500</td>
+<td><code>model</code>, <code>log_path</code>, <code>log_tail</code></td>
+<td>rtl-buddy-view (or the filelist that feeds it) refused the model</td>
+</tr>
+<tr>
+<td><code>unknown_model</code></td>
+<td>404</td>
+<td><code>model</code></td>
+<td><code>?model=NAME</code> resolves to zero models, or to more than one <code>models.yaml</code></td>
+</tr>
+<tr>
+<td><code>no_active_model</code></td>
+<td>409</td>
+<td><code>models_url</code></td>
+<td>bare <code>GET /view.json</code> with nothing selected and no pre-staged <code>view.json</code></td>
+</tr>
+<tr>
+<td><code>no_project_root</code></td>
+<td>400</td>
+<td><code>model</code></td>
+<td><code>?model=</code> on a hub started without a project root</td>
+</tr>
+</tbody>
+</table>
+<p><code>log_tail</code> is the last 40 lines of <code>log_path</code> (<code>artefacts/hier/&lt;model&gt;/hier.log</code>) as a list of strings, or <code>[]</code> when the log is unreadable. It is the actionable half: the recurring causes name themselves there — an interface-port top that needs <code>frontend: slang</code>, a vendor submodule nobody ran <code>git submodule update --init</code> on, a <code>-v</code> library entry the parser does not accept.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span><span class="nt">&quot;error&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;view_generation_failed&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">           </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;apb_intf&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">           </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;rb hub --model apb_intf: rtl-buddy-view exited with code 1; see /abs/artefacts/hier/apb_intf/hier.log for details.&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">           </span><span class="nt">&quot;log_path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/abs/artefacts/hier/apb_intf/hier.log&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">           </span><span class="nt">&quot;log_tail&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;$ rtl-buddy-view --top apb_intf …&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">                        </span><span class="s2">&quot;hierarchy: top module &#39;apb_intf&#39; not found. Known modules: []&quot;</span><span class="p">]}}</span>
+</code></pre></div>
+<p>A failure is remembered for the hub session, so the bare <code>GET /view.json</code> replays the same body for the active model rather than answering <code>409</code> — the named-model and active-model request paths never disagree about what the hub can show.</p>
 <h2 id="discovery-rtl-buddyhubjson">Discovery (<code>.rtl-buddy/hub.json</code>)</h2>
 <p>When the hub binds, it writes a small JSON record under the project root's <code>.rtl-buddy/</code> directory:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">&quot;v&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41231</span><span class="p">,</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">&quot;tcp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1:53201&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span><span class="nt">&quot;server_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.5.0&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span><span class="nt">&quot;project_root&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span><span class="nt">&quot;started_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-19T12:34:56+00:00&quot;</span><span class="p">,</span>
-<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">  </span><span class="nt">&quot;http_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53202</span><span class="p">,</span>
-<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="w">  </span><span class="nt">&quot;active_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
-<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="p">{</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">&quot;v&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">&quot;pid&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">41231</span><span class="p">,</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span><span class="nt">&quot;tcp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;127.0.0.1:53201&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="nt">&quot;server_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.5.0&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span><span class="nt">&quot;project_root&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/path/to/project&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span><span class="nt">&quot;started_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-05-19T12:34:56+00:00&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">  </span><span class="nt">&quot;http_port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">53202</span><span class="p">,</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">  </span><span class="nt">&quot;active_model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ip_demo_tiny_npu&quot;</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="p">}</span>
 </code></pre></div>
 <p>The TCP listener address is the single <code>tcp</code> <code>host:port</code> string (there is no <code>listen_port</code> field). <code>v</code> is the discovery-schema version and <code>server_version</code> is the hub build. <code>http_port</code> is present only when the hub was started with <code>--serve-viewer</code>; <code>active_model</code> is present when the hub started with <code>--model NAME</code> or after a <code>GET /view.json?model=</code> switch (both optional keys are omitted when unset).</p>
 <p>Peers (the viewer SPA, the <code>rb wave</code> bridge, the nvim plugin) read this file to find the hub. The hub deletes the record on clean shutdown; a stale record after a crash is detected by <code>rb hub status</code> (PID not live) and the next <code>rb hub start</code> overwrites it.</p>
 <p>Override discovery resolution with the <code>RTL_BUDDY_HUB</code> environment variable when running outside a project tree — set it to the hub's <code>host:port</code> (the <code>tcp</code> value from <code>hub.json</code>, e.g. <code>RTL_BUDDY_HUB=127.0.0.1:53201</code>), <strong>not</strong> a path to a file.</p>
 <h2 id="configuration-rtl-buddyhubtoml">Configuration (<code>.rtl-buddy/hub.toml</code>)</h2>
 <p>Optional; sensible defaults apply when the file is absent. Two top-level sections:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">[hub]</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">listen_port</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># 0 = OS-assigned (default). Pin to a specific port to survive across restarts.</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">http_port</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># Same, for the viewer HTTP+WS layer (only used with --serve-viewer).</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">log_path</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/hub.log&quot;</span><span class="w">   </span><span class="c1"># Relative paths resolve from the project root.</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="k">[mapping]</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">tb_prefix</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.&quot;</span><span class="w">  </span><span class="c1"># Fallback for DUT-rooted views. When the loaded view.json carries tb_top (rtl-buddy-view v1.1, #99 / 6b), the resolver short-circuits to identity wave↔view mapping and tb_prefix is bypassed — the rendered TB tree already speaks the wave-side coordinate system.</span>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="n">view_json</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/view.json&quot;</span><span class="w">  </span><span class="c1"># Snapshot the resolver consumes. Defaults shown.</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="c1"># Optional pre-strip aliases — applied before tb_prefix is stripped.</span>
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="k">[[mapping.signal_aliases]]</span>
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="n">wave</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.legacy_dut.clk&quot;</span>
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="n">view</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.clk&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">[hub]</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">listen_port</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># 0 = OS-assigned (default). Pin to a specific port to survive across restarts.</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">http_port</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="w">          </span><span class="c1"># Same, for the viewer HTTP+WS layer (only used with --serve-viewer).</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">log_path</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/hub.log&quot;</span><span class="w">   </span><span class="c1"># Relative paths resolve from the project root.</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="k">[mapping]</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="n">tb_prefix</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.&quot;</span><span class="w">  </span><span class="c1"># Fallback for DUT-rooted views. When the loaded view.json carries tb_top (rtl-buddy-view v1.1, #99 / 6b), the resolver short-circuits to identity wave↔view mapping and tb_prefix is bypassed — the rendered TB tree already speaks the wave-side coordinate system.</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="n">view_json</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;.rtl-buddy/view.json&quot;</span><span class="w">  </span><span class="c1"># Snapshot the resolver consumes. Defaults shown.</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="c1"># Optional pre-strip aliases — applied before tb_prefix is stripped.</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="k">[[mapping.signal_aliases]]</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="n">wave</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.legacy_dut.clk&quot;</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="n">view</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.clk&quot;</span>
 </code></pre></div>
 <p>Unknown top-level sections fail validation (typo guard). Unknown keys <em>inside</em> known sections are tolerated for forward-compat. <code>rb hub config validate</code> runs the same loader and reports errors with file:line context.</p>
 <h2 id="peers-who-connects-to-the-hub">Peers (who connects to the hub)</h2>
@@ -1996,9 +2145,14 @@
 <td>Line-delimited JSON over TCP on <code>listen_port</code></td>
 <td>Auto-connects on startup (the managed setup calls <code>setup({ auto_connect = true })</code>).</td>
 </tr>
+<tr>
+<td><strong>graph pane</strong> (browser)</td>
+<td>WebSocket <code>/ws</code> on the hub's <code>http_port</code></td>
+<td>The page the hub itself serves at <code>GET /graph</code> — see <a href="#design-knowledge-graph-pane">Design knowledge graph pane</a>. Needs no viewer bundle.</td>
+</tr>
 </tbody>
 </table>
-<p>Each peer has a closed <code>Origin</code> enum value: <code>view</code> (the SPA), <code>wave</code> (the <code>rb wave</code> surfer bridge), <code>src</code> (editor adapters — the nvim plugin registers as <code>src</code>), <code>cli</code> (<code>rb hub send</code>), and <code>notebook</code> (the axi-profiler marimo notebook, added so it can peer over the event broker). The hub allows at most one client per origin; a second <code>hello</code> for an already-registered origin is refused unless it sets <code>takeover: true</code>, in which case the older peer is evicted (<code>bye</code>-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one.</p>
+<p>Each peer has a closed <code>Origin</code> enum value: <code>view</code> (the SPA), <code>wave</code> (the <code>rb wave</code> surfer bridge), <code>src</code> (editor adapters — the nvim plugin registers as <code>src</code>), <code>cli</code> (<code>rb hub send</code>), <code>notebook</code> (the axi-profiler marimo notebook, added so it can peer over the event broker), and <code>graph</code> (the design-knowledge-graph pane). The hub allows at most one client per origin; a second <code>hello</code> for an already-registered origin is refused unless it sets <code>takeover: true</code>, in which case the older peer is evicted (<code>bye</code>-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph pane has its own origin rather than sharing <code>view</code> precisely because of that rule: it is meant to be open <em>alongside</em> the schematic, since clicking a module in the graph selects it in the design view.</p>
 <h2 id="protocol">Protocol</h2>
 <p>Wire envelope is line-delimited JSON, one record per line, UTF-8. The full spec lives in <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy/rtl-buddy-view#19</a>; the JSON Schema enforcing it ships at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code>. Encoded and decoded by <code>rtl_buddy.hub.protocol</code>, which validates on both sides — unknown fields are caller bugs, not forward-compat points.</p>
 <p>State events (selection_changed, signal_selected, cursor_moved, …) are broadcast to every connected peer <strong>except</strong> the origin. Requests (<code>resolve_*</code>, <code>goto_declaration</code>, …) are routed to the peer whose origin owns the target coordinate system; if no peer is registered for that origin, the hub replies with <code>error{code: "not_connected"}</code>. The <code>view ↔ wave ↔ src</code> resolver lives in <code>rtl_buddy.hub.resolver</code> and consumes the <code>view.json</code> snapshot pointed at by <code>mapping.view_json</code>.</p>
@@ -2016,8 +2170,22 @@
 <li><strong>SPA:</strong> <code>view-pan INSTANCE_PATH</code>, <code>overlay NAME --on/--off</code> (<code>clock</code> / <code>reset</code> / <code>axi-perf</code> / <code>wave</code>), <code>capture --out PATH [--format png|svg] [--scale …]</code>.</li>
 <li><strong>Source:</strong> <code>open-source FILE:LINE[:COL]</code>.</li>
 <li><strong>Diagnostics:</strong> <code>diagnose SOURCE ITEM…</code> (each <code>ITEM</code> is <code>file:line:severity:code:message</code>; <code>--clear</code>, <code>--instance</code>).</li>
+<li><strong>Graph pane:</strong> <code>graph-focus NODE</code> — focus the <a href="#design-knowledge-graph-pane">design knowledge graph pane</a> on one <code>graph.json</code> node id (<code>module:fifo</code>, <code>test:verif/dma#smoke</code>, <code>covitem:dma#DMA-COV-1</code>, …). Broadcast, and cached by the hub, so sending it before the browser tab is open still lands: the focus is replayed to the pane when it registers.</li>
 <li><strong>State / resolve:</strong> <code>state</code> (snapshot of active model / selection / cursor / scope / peers), and <code>resolve {view-to-wave|wave-to-view|signal-to-view}</code>.</li>
 </ul>
+<h2 id="design-knowledge-graph-pane">Design knowledge graph pane</h2>
+<p><code>rb hub start --serve-viewer</code> also serves the <a href="../graph/">design knowledge graph</a> as an interactive page at <code>GET /graph</code>, next to the schematic rather than instead of it. Two routes:</p>
+<ul>
+<li><code>GET /graph.json</code> — <code>artefacts/graph/graph.json</code> joined with <code>artefacts/graph/results-overlay.json</code> <strong>in memory</strong>, using the same <code>annotate_graph()</code> join the query verbs use. <code>graph.json</code> on disk is never written: hash stability across regressions is why the overlay is a separate file to begin with. The body is the node-link envelope with each test node carrying its <code>results</code> entry, each node carrying the <code>category</code> column it renders in, plus a <code>graph.hub</code> block (where the two files were read from, node/link counts, per-tier and per-column counts, the column order, the overlay's status summary) so the page can render a header and a legend without a second round-trip. Read per request, so <code>rb graph build</code> / <code>rb graph results</code> in another terminal shows up on <strong>reload</strong>. Returns 404 with a JSON <code>error</code> naming <code>rb graph build</code> when there is no graph yet.</li>
+<li><code>GET /graph</code> — the page. One self-contained HTML document: no CDN, no external stylesheet, no web font, no build step, because the hub is routinely run on machines with no route off localhost. Nodes are laid out in <a href="../graph/#looking-at-the-graph">flow columns</a> (<code>spec</code> → <code>design</code> → one per verification flow) with a small force relaxation inside each, one colour per column, and test nodes get a pass/fail ring from the overlay. It is served even with no graph built — its empty state names <code>rb graph build</code>, which is more useful than a blank tab.</li>
+</ul>
+<p>Clicking a node sends the same envelopes the SPA sends, over the same <code>/ws</code>:</p>
+<ul>
+<li><strong><code>selection_changed</code></strong> for anything that resolves to a design-view instance path. An <code>instance</code> node's id already <em>is</em> the coordinate (<code>inst:&lt;top&gt;/&lt;dot.path&gt;</code> — the resolver's identity); a <code>module</code> node has no instance path of its own, so the pane picks the shallowest instance of it, which is what a person means by "show me this module".</li>
+<li><strong><code>open_source</code></strong> (routed to the <code>src</code> peer, i.e. nvim) for any node that knows its <code>file</code>, at its <code>line</code>.</li>
+</ul>
+<p>Both are individually toggleable in the pane's toolbar. The reverse direction works too: <code>rb hub send graph-focus NODE</code> centres and selects a node, and a <code>selection_changed</code> from the SPA or the editor highlights the matching instance node in the graph.</p>
+<p>When a graph exists, the index page also gets a <code>window.__RTL_BUDDY_GRAPH_URL__ = "/graph.json"</code> injection alongside <code>__RTL_BUDDY_VIEW_URL__</code>, so an SPA overlay can advertise the pane on presence of the global instead of probing the endpoint and handling a 404.</p>
 <h2 id="auto-start-on-macos-launchagent">Auto-start on macOS (LaunchAgent)</h2>
 <p>On macOS, <code>rb hub install-launchagent</code> writes <code>~/Library/LaunchAgents/com.rtl-buddy.hub.plist</code> (with <code>RunAtLoad</code> + <code>KeepAlive</code>) and <code>launchctl load</code>s it, so the hub starts at login and restarts if it dies. The agent runs <code>rb hub start --foreground</code> from the project directory and routes stdout/stderr to <code>.rtl-buddy/hub.log</code>. <code>rb hub uninstall-launchagent</code> unloads and removes the plist. On non-macOS platforms both commands error with <code>LaunchAgentUnsupportedError</code>.</p>
 <h2 id="axi-perf-overlay-and-notebook-spawning">AXI-perf overlay and notebook spawning</h2>
