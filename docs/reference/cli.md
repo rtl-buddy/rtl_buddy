@@ -29,10 +29,10 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │                                                              builder_mode            │
 │ --builder             -B                TEXT                 Override platform       │
 │                                                              default builder         │
-│ --extra-sim-timeout                     INTEGER              Seconds to add to       │
-│                                                              every test's            │
-│                                                              sim_timeout, overriding │
-│                                                              the builder's           │
+│ --extra-sim-timeout                     INTEGER              Seconds to add to every │
+│                                                              test's sim_timeout,     │
+│                                                              overriding the          │
+│                                                              builder's               │
 │                                                              extra-sim-timeout       │
 │ --early-stop          -E                [pre|comp|sim|post]  Run step to stop early  │
 │                                                              at                      │
