@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import re
 import shutil
 import subprocess
@@ -295,11 +296,20 @@ class RtlBuddyView:
                     f"hier: rtl-buddy-view not found or not executable: "
                     f"{self.executable}"
                 )
-        elif shutil.which(self.executable) is None:
-            raise FatalRtlBuddyError(
-                f"hier: '{self.executable}' not found on PATH; install rtl-buddy-view "
-                f"into the active venv or pass --tool to point at the binary"
-            )
+        else:
+            # rb is routinely invoked by absolute venv path with no
+            # activation (agents, cron, scripts) — PATH then knows
+            # nothing about the venv, but the viewer installed next to
+            # this interpreter is exactly the one that belongs to it.
+            sibling = Path(sys.executable).parent / self.executable
+            if sibling.is_file() and os.access(sibling, os.X_OK):
+                self.executable = str(sibling)
+            elif shutil.which(self.executable) is None:
+                raise FatalRtlBuddyError(
+                    f"hier: '{self.executable}' not found on PATH or next to "
+                    f"{sys.executable}; install rtl-buddy-view into the active "
+                    f"venv or pass --tool to point at the binary"
+                )
 
         if self.cdc_annotations is not None and not os.path.isfile(
             self.cdc_annotations
