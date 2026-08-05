@@ -162,6 +162,13 @@ class RtlBuddyView:
         # callers that run from the suite dir.
         self.test_suite_dir = test_suite_dir
 
+        # Set by callers that need the viewer's answer as a value rather
+        # than on the terminal (``RtlBuddyViewQuery(capture=True)``, used
+        # by ``rb mcp``). ``run()`` fills :attr:`stdout` / :attr:`stderr`.
+        self.capture = False
+        self.stdout: str | None = None
+        self.stderr: str | None = None
+
         artefact_root = Path(suite_dir) / "artefacts" / "hier" / model_cfg.name
         if test_cfg is not None:
             # Cache key for TB mode is (model, tb_name). Two tests
@@ -337,13 +344,29 @@ class RtlBuddyView:
                 # instead — a lookup miss ("instance path ... not
                 # found") is an interactive answer, not a diagnostic to
                 # bury in a log file.
-                stdout = subprocess.DEVNULL if self.output is not None else None
-                proc = run_managed_process(
-                    cmd,
-                    stdout=stdout,
-                    stderr=None if self._stream_stderr else logf,
-                    cwd=self.artefact_dir,
-                )
+                #
+                # ``capture`` overrides both: an in-process caller (the
+                # MCP server) needs the answer as a string, and under a
+                # stdio transport a passed-through stdout would be
+                # written straight into the JSON-RPC stream.
+                if self.capture:
+                    proc = run_managed_process(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        cwd=self.artefact_dir,
+                    )
+                    self.stdout = proc.stdout or ""
+                    self.stderr = proc.stderr or ""
+                    logf.write(self.stderr)
+                else:
+                    stdout = subprocess.DEVNULL if self.output is not None else None
+                    proc = run_managed_process(
+                        cmd,
+                        stdout=stdout,
+                        stderr=None if self._stream_stderr else logf,
+                        cwd=self.artefact_dir,
+                    )
 
         log_event(
             logger,
@@ -503,6 +526,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
         context: int | None = None,
         line_numbers: bool = True,
         executable: str = "rtl-buddy-view",
+        capture: bool = False,
     ):
         super().__init__(
             name,
@@ -511,6 +535,7 @@ class RtlBuddyViewQuery(RtlBuddyView):
             frontend=frontend,
             executable=executable,
         )
+        self.capture = capture
         if verb not in _QUERY_VERBS:
             raise FatalRtlBuddyError(
                 f"hier-query: unknown verb {verb!r}; "

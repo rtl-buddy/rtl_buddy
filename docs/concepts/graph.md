@@ -21,6 +21,11 @@ rb graph build                    # every model under design/, all available tie
 rb graph build --model blk_a      # one model's design tier (repeatable)
 rb graph build -c regression.yaml # the models that regression's suites run
 rb graph results                  # refresh the results overlay beside it
+
+rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"   # locate, with status
+rb graph path cocotb_random module:demo_tiny_alu          # how are these related?
+rb graph explain test:verif/demo_tiny_alu#flags           # one node, every edge
+rb mcp                                                    # the same, over MCP
 ```
 
 ## graph.json Envelope
@@ -226,6 +231,174 @@ annotate_graph(graph, overlay)                  # attach entries in memory, for 
 
 `rb --machine graph results` emits the standard [envelope](../agents.md#machine-mode). `payload` carries `overlay` (repo-relative), `graph` (the linkage block), `tests`, `with_results`, `statuses`, `missing`, `unmatched` and `problems`. Exit code 0 unless `--strict` turned one of the last three into a failure.
 
+## Querying the Graph
+
+Three verbs read the graph back. All three join the results overlay onto every node they return, so a structural question and a "did it pass" question are one command, not two.
+
+They are also **lock-free**: unlike the commands that write, they do not take the artefact lock, so you can query the graph while a regression is running in the same tree — which is exactly when you want to.
+
+```bash
+rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"  # match + neighbourhood
+rb graph path cocotb_random module:demo_tiny_alu         # how are these related?
+rb graph explain test:verif/demo_tiny_alu#flags          # one node in full
+```
+
+### `rb graph query`
+
+Keyword search, then a bounded neighbourhood expansion around every match. The expansion is what makes one round-trip enough: asking about a coverage item returns the item *and* the tests that cover it *and* their last status.
+
+On the project template, after `rb graph build` and `rb graph results`:
+
+```console
+$ rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"
+                Graph Query — which tests cover SAND-FUNC-FLAG-C-ADD
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┓
+┃ Node                 ┃ Type          ┃ Score ┃ Status ┃ Where               ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━┩
+│ covitem:demo_tiny_a… │ coverage_item │ 60    │ -      │ spec/demo_tiny_alu… │
+└──────────────────────┴───────────────┴───────┴────────┴─────────────────────┘
+
+covitem:demo_tiny_alu#SAND-FUNC-FLAG-C-ADD
+  <- declares spec:demo_tiny_alu
+  <- covers test:verif/demo_tiny_alu#flags (FAIL)
+  <- covers test:verif/demo_tiny_alu_cocotb#cocotb_flags
+```
+
+Two tests claim the item; one has a recorded verdict and one has never run. Both facts came out of one command, and neither `specs.yaml` nor `tests.yaml` was read.
+
+Matching is a **fixed keyword rubric, not a model** — an exact id beats an exact label beats a whole-word hit beats a substring, a match in the id beats the same match in a file path, and ties break on the node id. The graph exists to cost fewer tokens than reading the tree; spending an LLM call to search it would defeat the exercise. The same question over the same graph returns the same bytes on every machine.
+
+Words that name a node type (`tests`, `module`, `ports`, `coverage`, …) are pulled out of the search terms and become a **preference**, never a filter. "Which tests cover SAND-FUNC-FLAG-C-ADD" therefore scores on `sand-func-flag-c-add` alone — and still finds the coverage item, because that is where the tests hang off. A type word can promote a node that already matched; it can never conjure a match.
+
+| Flag | Effect |
+| --- | --- |
+| `--type` | Restrict to one node type (`module`, `test`, `coverage_item`, …) |
+| `--tier` | Restrict to one tier (`design`, `config`, `binding`) |
+| `--limit` | Maximum matches (default 10) |
+| `--depth` | Hops of expansion per match (default 1, maximum 3, `0` for the bare match) |
+| `--no-results` | Skip the overlay join — a purely structural answer |
+| `--graph` / `--overlay` | Read a graph / overlay from somewhere other than `artefacts/graph` |
+
+Expansion follows edges in **both** directions, because half the questions read an edge backwards: `covers` runs test → item, and "which tests cover this item" is the reverse.
+
+Exit code is 0 when at least one node matched and 1 when nothing did — a graceful "no", so a shell loop can branch on it.
+
+### `rb graph path`
+
+The shortest chain of edges between two nodes: how a test reaches a module, how a coverage item reaches its spec doc.
+
+```console
+$ rb graph path test:verif/demo_tiny_alu_cocotb#cocotb_random module:demo_tiny_alu
+2 hop(s):
+  test:verif/demo_tiny_alu_cocotb#cocotb_random
+    --binds_to--> py:verif/demo_tiny_alu_cocotb/test_alu_random.py
+    --binds_to--> module:demo_tiny_alu
+```
+
+**Undirected by default.** Edge direction in this graph encodes *role* (a suite declares a test, a test runs on a testbench), not reachability, so "how are these two related" has to be allowed to walk an edge backwards. Pass `--directed` when the direction is the question. `--max-paths` (default 3) caps how many equally-short paths are reported; enumeration is depth-first over sorted ids, so it is stable.
+
+Both endpoints accept a full node id or a bare name. A bare name that matches more than one node **fails with the candidates listed** rather than picking one — silently answering about the wrong `blk_a` is worse than asking again.
+
+### `rb graph explain`
+
+One node's attributes, every edge on it with the far endpoint already resolved (so no second lookup is needed to know what the peer is), the in/out degree per edge type, and the node's last regression result.
+
+Every node summary these verbs return carries a `cite` block wherever the source can be quoted: `file` and `line` from the node's tier, plus — for an instance node — the exact command that quotes it, built from the id:
+
+```json
+"cite": {
+  "command": "rb hier-query demo_cdc_open_top source-snippet demo_cdc_open_top.u_flag_sync -c design/demo_cdc_open/models.yaml",
+  "file": "design/demo_cdc_open/demo_cdc_open_top.sv",
+  "line": 66
+}
+```
+
+That is the "locate in the graph, cite from source" contract in [agent use](../agents.md) made mechanical: the payload hands over the second half instead of leaving it to be reconstructed. `-c` is filled in from the config tier's `maps_to` edge — without it the command would only run from that `models.yaml`'s own directory. Both it and `file` are repo-relative, so run the command from the project root (where `rb graph query` itself runs).
+
+### Machine mode
+
+All three verbs emit the standard [envelope](../agents.md#machine-mode). `payload` always carries `schema_version`, `graph`, `overlay` (or `null`) and `counts`; then `matches` for `query`, `paths` for `path`, and `node` / `attributes` / `degree` / `outgoing` / `incoming` for `explain`. An unresolvable node reference exits 2 with `payload.error` and `payload.candidates`.
+
+## The MCP Server
+
+`rb mcp` serves the same answers over the [Model Context Protocol](https://modelcontextprotocol.io) on stdio. It is a **second** agent surface, not a replacement: `--machine` is versioned by semver and works everywhere, while MCP adds discoverable tool schemas, removes the per-query shell-permission prompt, and makes rtl_buddy reachable from agent hosts that cannot invoke `rb` at all (IDE agents, web-hosted agents).
+
+```json
+{
+  "mcpServers": {
+    "rtl-buddy": {"command": "rb", "args": ["mcp"]}
+  }
+}
+```
+
+The SDK is an optional extra:
+
+```bash
+pip install 'rtl_buddy[mcp]'
+rb mcp --list-tools          # the tool schemas, without serving
+```
+
+Without the extra, `rb mcp` exits 2 with an install hint. Nothing else in rtl_buddy imports the SDK, so an install that never serves MCP does not pay for it.
+
+### No daemon required
+
+The server is spawned per agent session and holds no state: every call re-reads `artefacts/graph/graph.json` and the overlay, and the hierarchy tools shell out to `rtl-buddy-view` exactly as `rb hier-query` does. Requiring a running hub to answer "what instantiates X?" would be a regression against `rb hier-query` on a CI or dispatch node, and it would collide with the hub's dynamic port versus the static `.mcp.json` a host wants. Re-reading rather than caching also means an agent that runs `rb graph build` in one turn sees the new graph in the next, with no restart.
+
+### Stateless tools
+
+| Tool | CLI mirror |
+| --- | --- |
+| `graph_status` | — (what exists: graph, overlay, hub, node-type counts) |
+| `graph_query` | `rb graph query` |
+| `graph_path` | `rb graph path` |
+| `graph_explain` | `rb graph explain` |
+| `test_status` | `rb graph results` |
+| `find_module` | `rb hier-query <model> find-module` |
+| `instances_of` | `rb hier-query <model> instances-of` |
+| `port_connections` | `rb hier-query <model> port-connections` |
+| `source_snippet` | `rb hier-query <model> source-snippet` |
+
+Every result is the `--machine` payload **verbatim**, wrapped in a thin envelope:
+
+```json
+{
+  "tool": "graph_query",
+  "ok": true,
+  "meta": {"rtl_buddy_version": "6.24.0", "project_root": "/path/to/project", "command": "rb graph query"},
+  "payload": {"...": "identical to `rb --machine graph query`"}
+}
+```
+
+The two surfaces call the same functions on purpose: two agent-facing descriptions of one graph would drift within a release, and the payload is the contract both are versioned against. A bad question — unknown tool, missing graph, unknown model, ambiguous node — comes back as `ok: false` with a message (and `candidates` where they exist), never as a transport error.
+
+### Hub tools dial in
+
+When a live hub is discovered — `.rtl-buddy/hub.json`, the very record `rb hub send` reads, including its stale-PID check — five more tools appear in the listing and drive the session the user is actually looking at:
+
+| Tool | CLI mirror |
+| --- | --- |
+| `hub_state` | `rb hub send state` |
+| `hub_select` | `rb hub send select` |
+| `hub_open_source` | `rb hub send open-source` |
+| `hub_resolve` | `rb hub send resolve {view-to-wave,wave-to-view,signal-to-view}` |
+| `hub_diagnose` | `rb hub send diagnose` |
+
+Headless they are simply absent, so an agent on a CI node is never offered a tool that can only fail. The client is the same `rtl_buddy.hub.client.HubClient` every other peer uses, connecting as `origin: cli` and closing after each call — the hub's server-only invariant holds, because this is one more peer dialling in. Discovery happens once, at server start: an MCP host reads the tool list at session start, so a tool set that changed mid-session would not be seen anyway.
+
+### Python API
+
+The tool set is SDK-free and importable, which is what makes it testable on a machine without `mcp`:
+
+```python
+from rtl_buddy.mcp import build_toolset
+
+ts = build_toolset("/path/to/project")
+[spec.name for spec in ts.specs()]
+ts.call("graph_query", {"question": "which tests cover SAND-FUNC-FLAG-C-ADD"})
+```
+
+`rtl_buddy.mcp.server` is the only module that imports the SDK, and it supports both the 1.x decorator API and the 2.x constructor-callback API.
+
 ## Node Types
 
 Design tier (`rtl-buddy-view`):
@@ -350,6 +523,19 @@ print(stage.graph["links"][0])  # the contribution, ready to merge back in
 scan_python_source("verif/demo_tiny_alu_cocotb/_alu_common.py").accesses
 # {'a': 24, 'b': 25, 'clk': 18, ...} — signal name to first line
 ```
+
+The read side is importable too, and returns the same payloads the CLI and MCP surfaces emit:
+
+```python
+from rtl_buddy.graph import load_context, query_graph, query_path, explain
+
+ctx = load_context("/path/to/project")       # graph + the overlay beside it
+query_graph(ctx, "which tests cover SAND-FUNC-FLAG-C-ADD")["matches"]
+query_path(ctx, "cocotb_random", "module:demo_tiny_alu")["paths"]
+explain(ctx, "inst:demo_tiny_alu/demo_tiny_alu.u_alu")["node"]["cite"]["command"]
+```
+
+`load_context()` accepts a project root, a graph directory or `graph.json` itself, and raises `GraphQueryError` (a `FatalRtlBuddyError`) naming `rb graph build` when there is no graph. A missing overlay is never an error — pass `with_results=False` to skip loading one at all.
 
 ## Loading the Graph
 

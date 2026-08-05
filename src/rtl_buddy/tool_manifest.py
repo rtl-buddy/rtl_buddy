@@ -686,6 +686,21 @@ def _builtin_manifest() -> list[ToolSpec]:
             description="Python slang frontend — alternative parser for rb hier / synth / cdc",
         ),
         ToolSpec(
+            name="mcp",
+            binaries=("mcp",),
+            version_cmd=None,
+            version_regex=None,
+            minimum_version="1.2.0",
+            detection=(PythonPackageDetector("mcp"),),
+            install_hint={
+                "any": 'pip install "rtl_buddy[mcp]"  (only needed to serve '
+                "rb mcp; every tool it exposes is also reachable with --machine)",
+            },
+            used_by=("mcp",),
+            optional=True,
+            description="Model Context Protocol SDK — the stdio server behind rb mcp",
+        ),
+        ToolSpec(
             name="cocotb",
             binaries=("cocotb",),
             version_cmd=None,

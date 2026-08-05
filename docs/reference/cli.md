@@ -50,6 +50,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ hier-query         query the module hierarchy via rtl-buddy-view (find-module,       │
 │                    subtree, instances-of, port-connections, source-snippet); JSON on │
 │                    stdout                                                            │
+│ mcp                serve the design knowledge graph and hierarchy queries over the   │
+│                    Model Context Protocol (stdio); needs the 'mcp' extra             │
 │ wave               open waveform viewer for a test                                   │
 │ wave-fpv           open SymbiYosys counterexample VCD for a failed FPV verification  │
 │ nvim-install       install/update the unified rtl-buddy-nvim editor plugin (hub +    │
@@ -529,6 +531,10 @@ Usage: rtl-buddy graph [OPTIONS] COMMAND [ARGS]...
 │ build    extract every tier and merge them into artefacts/graph/graph.json           │
 │ results  refresh artefacts/graph/results-overlay.json — last status, seed and        │
 │          artefact paths per test node; graph.json is not touched                     │
+│ query    keyword search over graph.json with neighbourhood expansion and the results │
+│          overlay joined in                                                           │
+│ path     shortest chain of edges between two graph nodes                             │
+│ explain  one node's attributes, every edge on it, and its last result                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -617,6 +623,107 @@ Usage: rtl-buddy graph results [OPTIONS]
 │ --strict                   exit non-zero when an envelope could not be read, a test  │
 │                            node has no result, or a result matches no node           │
 │ --help                     Show this message and exit.                               │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph query
+
+```text
+Usage: rtl-buddy graph query [OPTIONS] QUESTION                                        
+                                                                                        
+ keyword search over graph.json with neighbourhood expansion and the results overlay    
+ joined in                                                                              
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    question      TEXT  what to look for — an identifier or a plain question, e.g.  │
+│                          "A-COV-1" or "which tests exercise blk_a"                   │
+│                          [required]                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --type                       TEXT     restrict to one node type (module, test,       │
+│                                       coverage_item, ...)                            │
+│ --tier                       TEXT     restrict to one tier (design|config|binding)   │
+│ --limit                      INTEGER  maximum matches to report [default: 10]        │
+│ --depth                      INTEGER  hops of neighbourhood expansion around each    │
+│                                       match (0 disables; maximum 3)                  │
+│                                       [default: 1]                                   │
+│ --results    --no-results             join the regression-results overlay onto every │
+│                                       node                                           │
+│                                       [default: results]                             │
+│ --graph                      TEXT     graph.json to query (default <project          │
+│                                       root>/artefacts/graph)                         │
+│ --overlay                    TEXT     results-overlay.json to join (default: beside  │
+│                                       graph.json)                                    │
+│ --help                                Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph path
+
+```text
+Usage: rtl-buddy graph path [OPTIONS] SOURCE TARGET                                    
+                                                                                        
+ shortest chain of edges between two graph nodes                                        
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    source      TEXT  start node id, or a bare unambiguous name [required]          │
+│ *    target      TEXT  end node id, or a bare unambiguous name [required]            │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --directed     --undirected             follow edge direction; undirected by default │
+│                                         because edge direction encodes role, not     │
+│                                         reachability                                 │
+│                                         [default: undirected]                        │
+│ --max-paths                    INTEGER  shortest paths to report [default: 3]        │
+│ --results      --no-results             join the regression-results overlay onto     │
+│                                         every node                                   │
+│                                         [default: results]                           │
+│ --graph                        TEXT     graph.json to query                          │
+│ --overlay                      TEXT     results-overlay.json to join                 │
+│ --help                                  Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## graph explain
+
+```text
+Usage: rtl-buddy graph explain [OPTIONS] NODE                                          
+                                                                                        
+ one node's attributes, every edge on it, and its last result                           
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    node      TEXT  node id, or a bare unambiguous name [required]                  │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --results    --no-results          join the regression-results overlay onto every    │
+│                                    node                                              │
+│                                    [default: results]                                │
+│ --graph                      TEXT  graph.json to query                               │
+│ --overlay                    TEXT  results-overlay.json to join                      │
+│ --help                             Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## mcp
+
+```text
+Usage: rtl-buddy mcp [OPTIONS]                                                         
+                                                                                        
+ serve the design knowledge graph and hierarchy queries over the Model Context Protocol 
+ (stdio); needs the 'mcp' extra                                                         
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --graph             TEXT  graph.json to serve (default <project                      │
+│                           root>/artefacts/graph)                                     │
+│ --overlay           TEXT  results-overlay.json to join                               │
+│ --root              TEXT  project root to serve; default is discovered from cwd,     │
+│                           which is what an agent host's spawn gives you              │
+│ --design-dir        TEXT  directory searched for models.yaml                         │
+│ --frontend          TEXT  viewer parser frontend (verible|slang)                     │
+│ --tool              TEXT  path to the rtl-buddy-view binary                          │
+│                           [default: rtl-buddy-view]                                  │
+│ --list-tools              print the tool schemas and exit instead of serving         │
+│ --help                    Show this message and exit.                                │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

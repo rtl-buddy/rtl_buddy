@@ -26,6 +26,12 @@ result envelopes and the artefact layout into
 ids, and :func:`~rtl_buddy.graph.results.load_overlay` /
 :func:`~rtl_buddy.graph.results.overlay_for_node` join the two back up.
 
+:mod:`rtl_buddy.graph.query` is the read side: the ``query`` / ``path`` /
+``explain`` verbs behind ``rb graph query`` and the ``rb mcp`` graph
+tools, with the overlay joined onto every node they return. Matching is
+deterministic keyword scoring — the graph exists to cost fewer tokens
+than reading the tree, so searching it must not spend a model call.
+
 The shared JSON envelope is documented in ``docs/concepts/graph.md``.
 """
 
@@ -59,6 +65,20 @@ from .config_tier import (
     write_graph_json,
     write_graph_meta,
 )
+from .query import (
+    DEFAULT_DEPTH,
+    DEFAULT_LIMIT,
+    DEFAULT_MAX_PATHS,
+    MAX_DEPTH,
+    QUERY_SCHEMA_VERSION,
+    GraphContext,
+    GraphIndex,
+    GraphQueryError,
+    explain,
+    load_context,
+    load_graph,
+    match_nodes,
+)
 from .merge import (
     MERGED_TIER,
     TIER_ORDER,
@@ -66,6 +86,13 @@ from .merge import (
     merge_graphs,
     stitch_points,
 )
+from .query import (
+    neighborhood,
+    node_summary,
+)
+from .query import path as query_path
+from .query import query as query_graph
+from .query import resolve_node, test_status
 from .results import (
     OVERLAY_FILETYPE,
     OVERLAY_SCHEMA_VERSION,
@@ -90,13 +117,21 @@ __all__ = [
     "OVERLAY_FILETYPE",
     "OVERLAY_SCHEMA_VERSION",
     "PY_NODE_PREFIX",
+    "QUERY_SCHEMA_VERSION",
     "PYTHON_MODULE_TYPE",
     "RESULTS_OVERLAY_NAME",
     "SCHEMA_VERSION",
     "TIER_ORDER",
     "VIEW_GRAPH_MIN_VERSION",
+    "DEFAULT_DEPTH",
+    "DEFAULT_LIMIT",
+    "DEFAULT_MAX_PATHS",
+    "MAX_DEPTH",
     "BindingStage",
     "ConfigTier",
+    "GraphContext",
+    "GraphIndex",
+    "GraphQueryError",
     "GraphBuild",
     "ResultsOverlay",
     "TierReport",
@@ -107,17 +142,27 @@ __all__ = [
     "collect_results",
     "dangling_targets",
     "default_graph_dir",
+    "explain",
     "extract_config_tier",
+    "load_context",
+    "load_graph",
     "load_overlay",
+    "match_nodes",
     "merge_graphs",
     "models_from_design_tree",
     "models_from_regression",
+    "neighborhood",
+    "node_summary",
     "overlay_for_node",
+    "query_graph",
+    "query_path",
     "refresh_results_overlay",
+    "resolve_node",
     "results_overlay_path",
     "scan_python_source",
     "serialize_graph",
     "stitch_points",
+    "test_status",
     "write_graph_json",
     "write_graph_meta",
     "write_overlay",
