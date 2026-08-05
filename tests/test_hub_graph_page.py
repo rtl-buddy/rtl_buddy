@@ -517,7 +517,7 @@ async def test_http_graph_page_served(hub_and_viewer):
     assert status == 200
     assert "text/html" in headers.get("Content-Type", "")
     assert f"{viewer.hub_host}:{viewer.hub_port}".encode("utf-8") in body
-    assert b"design knowledge graph" in body
+    assert b"RTL-Buddy Graph" in body
 
 
 @pytest.mark.asyncio

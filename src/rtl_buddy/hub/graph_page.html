@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>rtl-buddy — design knowledge graph</title>
+  <title>RTL-Buddy Graph</title>
   <!--
     Served by rtl_buddy.hub.graph_page at GET /graph (rtl_buddy#382).
 
@@ -107,6 +107,10 @@
     .link.hot { stroke: var(--edge-hot); stroke-width: 1.8; }
     .link.dim { opacity: .12; }
     .node circle.body { stroke: var(--bg); stroke-width: 1.2; cursor: pointer; }
+    /* A dangling target's ghost: hollow, dashed, in the column colour —
+       the CSS class is load-bearing because this rule must beat the
+       .body stroke above, which presentation attributes cannot. */
+    .node circle.body.dangling { stroke: var(--col-other); stroke-width: 1.4; stroke-dasharray: 3 2; }
     .node circle.ring { fill: none; stroke-width: 2.4; }
     .node text {
       fill: var(--fg); font-size: 11px; paint-order: stroke;
@@ -159,7 +163,7 @@
 </head>
 <body>
   <header>
-    <h1>design knowledge graph <small id="counts"></small></h1>
+    <h1>RTL-Buddy Graph <small id="counts"></small></h1>
     <div class="legend" id="legend"></div>
     <span class="grow"></span>
     <input type="search" id="search" placeholder="filter by id, label or file…" spellcheck="false">
@@ -174,7 +178,7 @@
 
   <main>
     <div id="canvas-wrap">
-      <svg id="canvas" aria-label="design knowledge graph">
+      <svg id="canvas" aria-label="RTL-Buddy Graph">
         <g id="scene">
           <g id="bands"></g>
           <g id="links"></g>
@@ -607,6 +611,7 @@
     // Column anchor (the "tiered" half) + weak vertical centring, then
     // damping. The x anchor is stiff: a node must stay in its tier's
     // band, which is what makes the picture readable at a glance.
+    var halfBand = (W / COLUMNS.length) * 0.42;
     for (i = 0; i < state.nodes.length; i++) {
       n = state.nodes[i];
       if (n.fixed) { n.vx = 0; n.vy = 0; continue; }
@@ -615,6 +620,11 @@
       n.vx *= 0.82; n.vy *= 0.82;
       n.x += Math.max(-24, Math.min(24, n.vx));
       n.y += Math.max(-24, Math.min(24, n.vy));
+      // The anchor spring alone loses to a well-connected node's link
+      // springs; the band promise above is only real with a hard clamp.
+      var bandC = colX[colOf(n)];
+      if (n.x < bandC - halfBand) { n.x = bandC - halfBand; n.vx = 0; }
+      else if (n.x > bandC + halfBand) { n.x = bandC + halfBand; n.vx = 0; }
     }
     state.ticks++;
   }
@@ -674,8 +684,8 @@
         }));
       }
       var body = el('circle', {
-        class: 'body', r: r, fill: n.dangling ? 'none' : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)'),
-        stroke: n.dangling ? 'var(--other)' : null
+        class: n.dangling ? 'body dangling' : 'body', r: r,
+        fill: n.dangling ? 'none' : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)')
       });
       g.appendChild(body);
       var label = el('text', { x: r + 5, y: 4 });
