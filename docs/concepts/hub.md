@@ -59,7 +59,7 @@ uv run rb hub stop                    # graceful shutdown via SIGTERM
 
 `--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/ws`) used by the browser SPA. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
 
-When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing, `/view.json` returns 404 and the SPA falls back to the empty state.
+When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, `/view.json` returns `409 no_active_model` (see [View errors](#view-errors)) and the SPA shows its "pick a model" placeholder.
 
 ### Picking a model at start time (`--model NAME`)
 
@@ -90,13 +90,26 @@ Once the hub is up, the SPA can change models without restarting:
   ```json
   {
     "models": [
-      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml"},
-      {"name": "ip_dtnpu_dma",     "models_file": "/abs/path/to/models.yaml"}
+      {"name": "ip_demo_tiny_npu", "models_file": "/abs/path/to/models.yaml",
+       "has_cdc": false, "view_status": "ok"},
+      {"name": "apb_intf", "models_file": "/abs/path/to/models.yaml",
+       "has_cdc": false, "view_status": "failed",
+       "error": "rb hub --model apb_intf: rtl-buddy-view exited with code 1; see …/hier.log for details."}
     ],
     "active": "ip_demo_tiny_npu"
   }
   ```
   The endpoint walks for `models.yaml` per request, so newly-edited files appear without a restart. When `--models-file PATH` was passed at start time, only that file is enumerated.
+
+  `view_status` is the model's **health**, so the picker can badge a model that can never elaborate instead of letting the user find out via an empty canvas (rtl-buddy-view#130):
+
+  | value | meaning |
+  | --- | --- |
+  | `ok` | a cached `.rtl-buddy/cache/view-<NAME>.json` exists, or this hub session generated one successfully |
+  | `failed` | this hub session tried to generate a view for the model and the generation failed; `error` carries the one-line summary |
+  | `never_built` | neither — nobody has asked for this model yet |
+
+  A `failed` entry that still has a cache file from an earlier build also carries `"stale_cache": true` — the cached tree is servable but no longer reflects the sources. Health is remembered **in memory** for the hub session; a restart resets every model to what the cache on disk says.
 - `GET /view.json?model=NAME` — build (or reuse) the per-model view.json at `.rtl-buddy/cache/view-<NAME>.json`, serve it, and promote `NAME` to the active model. `--models-file` constraints apply: `?model=` only honours entries in the pinned file. Per-model `asyncio.Lock` serialises concurrent same-model requests so a cold-cache race doesn't run rtl-buddy-view twice for the same model.
 - `GET /tests` — list every test the hub can serve (rtl-buddy-view #99 / 6b). Same per-request walk as `/models`; entries carry the resolved `(model, tb)` pair so the SPA's TB-mode picker can label options. Empty list signals "no tests advertised" — the SPA's DUT/TB toggle stays hidden. JSON shape:
   ```json
@@ -118,6 +131,36 @@ Once the hub is up, the SPA can change models without restarting:
   In TB-view mode (`?test=` switch) the payload carries `view_mode: "tb"` plus `test` + `tb` + `tests_file` fields (the `view_url` points at `/view.json?test=<NAME>`). v1.0 SPAs that don't know about `view_mode` ignore it and fall through to the legacy `model`-driven `switchModel` path — that's why the DUT-side envelope still carries the full set of legacy fields. Sent to every connected client (SPA tabs, nvim, `rb wave` bridge) so they can refresh view-scoped state.
 
 The active model is also recorded in `.rtl-buddy/hub.json` under `active_model` (optional field) and surfaced in `rb hub status` output.
+
+### View errors
+
+Every `GET /view.json` failure answers with `Content-Type: application/json` and one shape, so the SPA can render a "no view available" placeholder that says *why* instead of an empty canvas (rtl-buddy-view#130):
+
+```json
+{"error": {"kind": "…", "message": "…"}}
+```
+
+Branch on `kind`, never on the status code or the prose:
+
+| `kind` | status | extra keys | when |
+| --- | --- | --- | --- |
+| `view_generation_failed` | 500 | `model`, `log_path`, `log_tail` | rtl-buddy-view (or the filelist that feeds it) refused the model |
+| `unknown_model` | 404 | `model` | `?model=NAME` resolves to zero models, or to more than one `models.yaml` |
+| `no_active_model` | 409 | `models_url` | bare `GET /view.json` with nothing selected and no pre-staged `view.json` |
+| `no_project_root` | 400 | `model` | `?model=` on a hub started without a project root |
+
+`log_tail` is the last 40 lines of `log_path` (`artefacts/hier/<model>/hier.log`) as a list of strings, or `[]` when the log is unreadable. It is the actionable half: the recurring causes name themselves there — an interface-port top that needs `frontend: slang`, a vendor submodule nobody ran `git submodule update --init` on, a `-v` library entry the parser does not accept.
+
+```json
+{"error": {"kind": "view_generation_failed",
+           "model": "apb_intf",
+           "message": "rb hub --model apb_intf: rtl-buddy-view exited with code 1; see /abs/artefacts/hier/apb_intf/hier.log for details.",
+           "log_path": "/abs/artefacts/hier/apb_intf/hier.log",
+           "log_tail": ["$ rtl-buddy-view --top apb_intf …",
+                        "hierarchy: top module 'apb_intf' not found. Known modules: []"]}}
+```
+
+A failure is remembered for the hub session, so the bare `GET /view.json` replays the same body for the active model rather than answering `409` — the named-model and active-model request paths never disagree about what the hub can show.
 
 ## Discovery (`.rtl-buddy/hub.json`)
 
