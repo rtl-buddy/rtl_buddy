@@ -1,0 +1,998 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rtl-buddy — design knowledge graph</title>
+  <!--
+    Served by rtl_buddy.hub.graph_page at GET /graph (rtl_buddy#382).
+
+    Self-contained on purpose: no CDN, no web font, no external
+    stylesheet, no build step. The hub is routinely run on machines
+    with no route off localhost, and a viewer that needs one is a
+    viewer that does not open.
+  -->
+  <style>
+    :root {
+      color-scheme: dark light;
+      --bg:        #0f1115;
+      --panel:     #161a21;
+      --panel-2:   #1d222b;
+      --line:      #2a313d;
+      --fg:        #d8dee9;
+      --fg-dim:    #8b95a7;
+      --accent:    #6ea8fe;
+      --edge:      #39424f;
+      --edge-hot:  #6ea8fe;
+      --design:    #4c9aff;
+      --config:    #f0a742;
+      --binding:   #a78bfa;
+      --other:     #94a3b8;
+      --pass:      #3ec46d;
+      --fail:      #ef5350;
+      --warn:      #e0b33a;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:      #f7f8fa;
+        --panel:   #ffffff;
+        --panel-2: #eef1f5;
+        --line:    #d7dce4;
+        --fg:      #1d222b;
+        --fg-dim:  #5d6779;
+        --edge:    #b9c1cd;
+        --design:  #1f6fd0;
+        --config:  #b97407;
+        --binding: #7c53d6;
+        --other:   #6b7688;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    header {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      padding: .5rem .75rem; border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    header h1 {
+      font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em;
+      white-space: nowrap;
+    }
+    header h1 small { color: var(--fg-dim); font-weight: 400; }
+    .grow { flex: 1 1 auto; }
+    input[type="search"] {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: 4px;
+      padding: .25rem .5rem; min-width: 14rem;
+    }
+    input[type="search"]:focus { outline: 1px solid var(--accent); }
+    button {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: 4px;
+      padding: .25rem .55rem; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    label.chk { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; }
+    .legend { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
+    .swatch {
+      width: .7rem; height: .7rem; border-radius: 50%;
+      display: inline-block; flex: none;
+    }
+    main { flex: 1 1 auto; display: flex; min-height: 0; }
+    #canvas-wrap { flex: 1 1 auto; position: relative; min-width: 0; }
+    svg { width: 100%; height: 100%; display: block; cursor: grab; }
+    svg.panning { cursor: grabbing; }
+    .col-band { fill: var(--panel); opacity: .35; }
+    .col-label {
+      fill: var(--fg-dim); font-size: 13px; letter-spacing: .18em;
+      text-transform: uppercase; text-anchor: middle;
+    }
+    .link { stroke: var(--edge); stroke-width: 1; fill: none; }
+    .link.hot { stroke: var(--edge-hot); stroke-width: 1.8; }
+    .link.dim { opacity: .12; }
+    .node circle.body { stroke: var(--bg); stroke-width: 1.2; cursor: pointer; }
+    .node circle.ring { fill: none; stroke-width: 2.4; }
+    .node text {
+      fill: var(--fg); font-size: 11px; paint-order: stroke;
+      stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
+      pointer-events: none; user-select: none;
+    }
+    .node.dim { opacity: .16; }
+    .node.sel circle.body { stroke: var(--accent); stroke-width: 2.5; }
+    aside {
+      width: 22rem; flex: none; border-left: 1px solid var(--line);
+      background: var(--panel); overflow: auto; padding: .75rem;
+    }
+    aside h2 {
+      font-size: 12px; margin: 0 0 .5rem; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--fg-dim);
+    }
+    .kv { display: grid; grid-template-columns: 6.5rem 1fr; gap: .15rem .5rem; }
+    .kv dt { color: var(--fg-dim); }
+    .kv dd { margin: 0; overflow-wrap: anywhere; }
+    .pill {
+      display: inline-block; padding: 0 .4rem; border-radius: 999px;
+      border: 1px solid currentColor; font-size: 11px;
+    }
+    .edges { list-style: none; margin: .35rem 0 0; padding: 0; }
+    .edges li { padding: .1rem 0; overflow-wrap: anywhere; }
+    .edges a { color: var(--accent); text-decoration: none; cursor: pointer; }
+    .edges a:hover { text-decoration: underline; }
+    .muted { color: var(--fg-dim); }
+    hr { border: 0; border-top: 1px solid var(--line); margin: .75rem 0; }
+    footer {
+      border-top: 1px solid var(--line); background: var(--panel);
+      padding: .3rem .75rem; color: var(--fg-dim);
+      display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+    }
+    .dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
+    .dot.up { background: var(--pass); }
+    .dot.down { background: var(--fail); }
+    #empty {
+      position: absolute; inset: 0; display: none; place-items: center;
+      text-align: center; padding: 2rem;
+    }
+    #empty.show { display: grid; }
+    #empty code {
+      background: var(--panel-2); padding: .1rem .35rem; border-radius: 3px;
+    }
+  </style>
+  <script>
+    %HUB_INJECTION%
+  </script>
+</head>
+<body>
+  <header>
+    <h1>design knowledge graph <small id="counts"></small></h1>
+    <div class="legend" id="legend"></div>
+    <span class="grow"></span>
+    <input type="search" id="search" placeholder="filter by id, label or file…" spellcheck="false">
+    <label class="chk" title="Broadcast selection_changed when a node resolves to a design-view instance path.">
+      <input type="checkbox" id="opt-select" checked> select
+    </label>
+    <label class="chk" title="Request open_source from the src peer (nvim) when the node knows its file.">
+      <input type="checkbox" id="opt-open" checked> open source
+    </label>
+    <button id="reload" title="Re-fetch /graph.json (after rb graph build / rb graph results)">reload</button>
+  </header>
+
+  <main>
+    <div id="canvas-wrap">
+      <svg id="canvas" aria-label="design knowledge graph">
+        <g id="scene">
+          <g id="bands"></g>
+          <g id="links"></g>
+          <g id="nodes"></g>
+        </g>
+      </svg>
+      <div id="empty"><div id="empty-msg"></div></div>
+    </div>
+    <aside>
+      <h2>inspector</h2>
+      <div id="inspector"><p class="muted">Click a node.</p></div>
+    </aside>
+  </main>
+
+  <footer>
+    <span><span class="dot down" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
+    <span id="peers" class="muted"></span>
+    <span class="grow"></span>
+    <span id="msg" class="muted"></span>
+  </footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var GRAPH_URL = window.__RTL_BUDDY_GRAPH_URL__ || '/graph.json';
+
+  // Left-to-right column order. Mirrors rtl_buddy.graph.merge.TIER_ORDER
+  // so the picture reads in the direction the build produced it; an
+  // unknown tier lands in the trailing "other" column instead of being
+  // dropped.
+  var COLUMNS = ['design', 'config', 'binding', 'other'];
+  var TIER_COLOR = {
+    design: 'var(--design)', config: 'var(--config)',
+    binding: 'var(--binding)', other: 'var(--other)'
+  };
+  var STATUS_COLOR = {
+    PASS: 'var(--pass)', FAIL: 'var(--fail)', SKIP: 'var(--warn)',
+    NA: 'var(--warn)', UNKNOWN: 'var(--warn)'
+  };
+  // Node radius by type: the things a person navigates by are bigger
+  // than the things that hang off them.
+  var RADIUS = {
+    module: 9, instance: 7, test: 8, testbench: 7, suite: 8,
+    model: 8, spec_block: 8, coverage_item: 5, spec_doc: 6,
+    golden_model: 7, python_module: 7, port: 4, parameter: 4
+  };
+
+  var W = 2000, H = 1300;   // virtual layout extent
+  var els = {
+    scene: document.getElementById('scene'),
+    bands: document.getElementById('bands'),
+    links: document.getElementById('links'),
+    nodes: document.getElementById('nodes'),
+    svg: document.getElementById('canvas'),
+    counts: document.getElementById('counts'),
+    legend: document.getElementById('legend'),
+    search: document.getElementById('search'),
+    inspector: document.getElementById('inspector'),
+    peers: document.getElementById('peers'),
+    msg: document.getElementById('msg'),
+    wsDot: document.getElementById('ws-dot'),
+    wsStatus: document.getElementById('ws-status'),
+    empty: document.getElementById('empty'),
+    emptyMsg: document.getElementById('empty-msg'),
+    optSelect: document.getElementById('opt-select'),
+    optOpen: document.getElementById('opt-open')
+  };
+
+  var state = {
+    nodes: [], links: [], byId: Object.create(null),
+    out: Object.create(null), inc: Object.create(null),
+    hiddenTiers: Object.create(null), filter: '',
+    selected: null, hovered: null,
+    view: { x: 0, y: 0, k: 1 }, ticks: 0, raf: 0
+  };
+
+  // ---------------------------------------------------------------
+  // small helpers
+  // ---------------------------------------------------------------
+
+  function el(tag, attrs) {
+    var n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (var k in attrs) { if (attrs[k] != null) n.setAttribute(k, attrs[k]); }
+    return n;
+  }
+  function tierOf(node) {
+    var t = node && node.tier;
+    return COLUMNS.indexOf(t) >= 0 ? t : 'other';
+  }
+  function colOf(node) {
+    var i = COLUMNS.indexOf(tierOf(node));
+    return i < 0 ? COLUMNS.length - 1 : i;
+  }
+  function radiusOf(node) { return RADIUS[node.type] || 6; }
+  function statusOf(node) {
+    return node.results && node.results.status ? String(node.results.status) : null;
+  }
+  function labelOf(node) {
+    return node.label || String(node.id).replace(/^[a-z_]+:/, '');
+  }
+  function note(text) { els.msg.textContent = text || ''; }
+
+  function uuid() {
+    if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
+    var b = new Uint8Array(16);
+    (window.crypto || {}).getRandomValues
+      ? crypto.getRandomValues(b)
+      : (function () { for (var i = 0; i < 16; i++) { b[i] = Math.floor(Math.random() * 256); } })();
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    var h = []; for (var i = 0; i < 16; i++) { h.push((b[i] + 0x100).toString(16).slice(1)); }
+    return h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' +
+           h.slice(6, 8).join('') + '-' + h.slice(8, 10).join('') + '-' + h.slice(10).join('');
+  }
+
+  // ---------------------------------------------------------------
+  // hub WebSocket — same /ws the SPA uses, same envelope shapes
+  // ---------------------------------------------------------------
+
+  var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
+    catch (e) { scheduleReconnect(); return; }
+
+    ws.addEventListener('open', function () {
+      send({
+        v: 1, id: uuid(), origin: 'graph', kind: 'request', type: 'hello',
+        payload: {
+          client: 'graph', version: '1.0.0',
+          capabilities: ['graph_focus'],
+          // A refreshed tab supersedes the stale one, the same way the
+          // SPA's tab does. The graph pane has its own origin, so this
+          // never evicts the schematic view.
+          takeover: true
+        }
+      });
+    });
+    ws.addEventListener('message', function (ev) {
+      var env; try { env = JSON.parse(ev.data); } catch (e) { return; }
+      applyEnvelope(env);
+    });
+    ws.addEventListener('close', function () {
+      wsReady = false;
+      els.wsDot.className = 'dot down';
+      els.wsStatus.textContent = 'disconnected from /ws';
+      scheduleReconnect();
+    });
+    ws.addEventListener('error', function () { /* close handles it */ });
+  }
+
+  function scheduleReconnect() {
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
+  }
+
+  function send(env) {
+    if (!ws || ws.readyState !== 1) { return false; }
+    ws.send(JSON.stringify(env));
+    return true;
+  }
+
+  function emit(type, payload) {
+    return send({ v: 1, id: uuid(), origin: 'graph', kind: 'event', type: type, payload: payload });
+  }
+
+  function request(type, payload, onReply) {
+    var id = uuid();
+    if (onReply) { pending[id] = onReply; }
+    return send({ v: 1, id: id, origin: 'graph', kind: 'request', type: type, payload: payload });
+  }
+
+  function applyEnvelope(env) {
+    if (!env || typeof env !== 'object') { return; }
+    // Correlation is by echoed `id`: a response carries the request's
+    // own id (there is no separate in_reply_to field on the wire).
+    if ((env.kind === 'response' || env.kind === 'error') && pending[env.id]) {
+      var cb = pending[env.id]; delete pending[env.id];
+      cb(env);
+    }
+    switch (env.type) {
+      case 'welcome':
+        wsReady = true; retryMs = 500;
+        els.wsDot.className = 'dot up';
+        els.wsStatus.textContent = 'hub ' + (env.payload && env.payload.server_version || '');
+        setPeers(env.payload && env.payload.registered_clients);
+        break;
+      case 'peer_joined':
+      case 'bye':
+        // Cheap refresh: ask the hub who is connected rather than
+        // maintaining a shadow registry that can drift.
+        request('state_snapshot', {}, function (reply) {
+          if (reply.kind === 'response' && reply.payload) { setPeers(reply.payload.peers); }
+        });
+        break;
+      case 'graph_focus':
+        if (env.origin === 'graph') { break; }
+        focusById(env.payload && env.payload.node, { emit: false, announce: true });
+        break;
+      case 'selection_changed':
+        if (env.origin === 'graph') { break; }
+        var ip = env.payload && env.payload.instance_path;
+        if (Array.isArray(ip)) { ip = ip[0]; }
+        focusByInstancePath(ip);
+        break;
+      default:
+        break;
+    }
+    if (env.kind === 'error' && env.payload) {
+      note('hub error: ' + env.payload.code + ': ' + env.payload.message);
+    }
+  }
+
+  function setPeers(list) {
+    if (!Array.isArray(list)) { return; }
+    els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+  }
+
+  // ---------------------------------------------------------------
+  // graph loading + indexing
+  // ---------------------------------------------------------------
+
+  function load() {
+    note('loading ' + GRAPH_URL + '…');
+    fetch(GRAPH_URL, { cache: 'no-store' }).then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    }).then(function (res) {
+      if (!res.ok) { showEmpty(res.body && res.body.error); return; }
+      ingest(res.body);
+    }).catch(function (e) {
+      showEmpty('could not read ' + GRAPH_URL + ': ' + e);
+    });
+  }
+
+  function showEmpty(message) {
+    els.empty.classList.add('show');
+    els.emptyMsg.textContent = '';
+    var p = document.createElement('p');
+    p.textContent = message || 'no graph to show.';
+    var q = document.createElement('p');
+    q.className = 'muted';
+    q.appendChild(document.createTextNode('Build one with '));
+    var c = document.createElement('code'); c.textContent = 'rb graph build';
+    q.appendChild(c);
+    q.appendChild(document.createTextNode(', then press reload.'));
+    els.emptyMsg.appendChild(p); els.emptyMsg.appendChild(q);
+    note('');
+  }
+
+  function ingest(payload) {
+    els.empty.classList.remove('show');
+    state.nodes = (payload.nodes || []).filter(function (n) { return n && n.id; });
+    state.links = (payload.links || []).filter(function (l) {
+      return l && typeof l.source === 'string' && typeof l.target === 'string';
+    });
+    state.byId = Object.create(null);
+    state.out = Object.create(null);
+    state.inc = Object.create(null);
+    state.nodes.forEach(function (n) { state.byId[n.id] = n; });
+    state.links.forEach(function (l) {
+      // A link endpoint with no node of its own is a dangling target
+      // (graph.merge.dangling_targets) — still a real answer, so it is
+      // materialised as an attribute-less node instead of dropped.
+      [l.source, l.target].forEach(function (id) {
+        if (!state.byId[id]) {
+          var ghost = { id: id, type: 'dangling', label: id, dangling: true };
+          state.byId[id] = ghost; state.nodes.push(ghost);
+        }
+      });
+      (state.out[l.source] = state.out[l.source] || []).push(l);
+      (state.inc[l.target] = state.inc[l.target] || []).push(l);
+    });
+
+    var hub = (payload.graph && payload.graph.hub) || {};
+    renderHeader(hub);
+    renderLegend(hub.tiers || {});
+    layoutInit();
+    render();
+    fit();
+    startTicking();
+    note(state.nodes.length + ' nodes, ' + state.links.length + ' links');
+  }
+
+  function renderHeader(hub) {
+    var parts = [];
+    var c = hub.counts || {};
+    parts.push((c.nodes != null ? c.nodes : state.nodes.length) + ' nodes');
+    parts.push((c.links != null ? c.links : state.links.length) + ' links');
+    var s = hub.overlay_summary;
+    if (s && s.statuses) {
+      var st = Object.keys(s.statuses).sort().map(function (k) {
+        return s.statuses[k] + ' ' + k;
+      });
+      if (st.length) { parts.push(st.join(' / ')); }
+    } else if (hub.overlay_path == null) {
+      parts.push('no results overlay');
+    }
+    els.counts.textContent = '· ' + parts.join(' · ');
+  }
+
+  function renderLegend(tiers) {
+    els.legend.textContent = '';
+    COLUMNS.forEach(function (tier) {
+      var count = tiers[tier] || 0;
+      if (!count && tier === 'other') { return; }
+      var label = document.createElement('label');
+      label.className = 'chk';
+      var box = document.createElement('input');
+      box.type = 'checkbox'; box.checked = !state.hiddenTiers[tier];
+      box.addEventListener('change', function () {
+        state.hiddenTiers[tier] = !box.checked;
+        render();
+      });
+      var sw = document.createElement('span');
+      sw.className = 'swatch';
+      sw.style.background = TIER_COLOR[tier];
+      label.appendChild(box); label.appendChild(sw);
+      label.appendChild(document.createTextNode(tier + ' ' + count));
+      els.legend.appendChild(label);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // layout: tier columns + a small force relaxation
+  // ---------------------------------------------------------------
+
+  var colX = [];
+
+  function layoutInit() {
+    var used = {};
+    state.nodes.forEach(function (n) { used[colOf(n)] = true; });
+    var ncol = COLUMNS.length;
+    colX = [];
+    for (var i = 0; i < ncol; i++) { colX.push(((i + 0.5) / ncol) * W); }
+
+    var perCol = {};
+    state.nodes.forEach(function (n) {
+      var c = colOf(n);
+      perCol[c] = (perCol[c] || 0) + 1;
+    });
+    var seen = {};
+    state.nodes.forEach(function (n) {
+      var c = colOf(n);
+      var i = seen[c] = (seen[c] || 0);
+      seen[c] = i + 1;
+      var total = perCol[c] || 1;
+      // Deterministic seeding: a reload lands on the same picture, so a
+      // node the user just looked at is still where they left it.
+      n.x = colX[c] + ((i % 7) - 3) * 14;
+      n.y = ((i + 0.5) / total) * H;
+      n.vx = 0; n.vy = 0;
+      n.fixed = false;
+    });
+    state.ticks = 0;
+    void used;
+  }
+
+  var CELL = 70;
+
+  function tick() {
+    var i, n, m;
+    // Repulsion, restricted to a uniform grid neighbourhood. The
+    // all-pairs form is quadratic and a merged graph on a real project
+    // is thousands of nodes, so the grid is what keeps the relaxation
+    // interactive rather than a page freeze.
+    var grid = Object.create(null);
+    for (i = 0; i < state.nodes.length; i++) {
+      n = state.nodes[i];
+      var key = Math.floor(n.x / CELL) + ':' + Math.floor(n.y / CELL);
+      (grid[key] = grid[key] || []).push(n);
+    }
+    for (i = 0; i < state.nodes.length; i++) {
+      n = state.nodes[i];
+      var cx = Math.floor(n.x / CELL), cy = Math.floor(n.y / CELL);
+      for (var dx = -1; dx <= 1; dx++) {
+        for (var dy = -1; dy <= 1; dy++) {
+          var bucket = grid[(cx + dx) + ':' + (cy + dy)];
+          if (!bucket) { continue; }
+          for (var b = 0; b < bucket.length; b++) {
+            m = bucket[b];
+            if (m === n) { continue; }
+            var rx = n.x - m.x, ry = n.y - m.y;
+            var d2 = rx * rx + ry * ry;
+            if (d2 > CELL * CELL || d2 === 0) {
+              if (d2 === 0) { n.vx += (Math.random() - 0.5); n.vy += (Math.random() - 0.5); }
+              continue;
+            }
+            var d = Math.sqrt(d2);
+            var f = 900 / d2;
+            n.vx += (rx / d) * f; n.vy += (ry / d) * f;
+          }
+        }
+      }
+    }
+    // Springs along links.
+    for (i = 0; i < state.links.length; i++) {
+      var a = state.byId[state.links[i].source], z = state.byId[state.links[i].target];
+      if (!a || !z) { continue; }
+      var lx = z.x - a.x, ly = z.y - a.y;
+      var ld = Math.sqrt(lx * lx + ly * ly) || 0.001;
+      var force = (ld - 110) * 0.012;
+      var ux = (lx / ld) * force, uy = (ly / ld) * force;
+      a.vx += ux; a.vy += uy; z.vx -= ux; z.vy -= uy;
+    }
+    // Column anchor (the "tiered" half) + weak vertical centring, then
+    // damping. The x anchor is stiff: a node must stay in its tier's
+    // band, which is what makes the picture readable at a glance.
+    for (i = 0; i < state.nodes.length; i++) {
+      n = state.nodes[i];
+      if (n.fixed) { n.vx = 0; n.vy = 0; continue; }
+      n.vx += (colX[colOf(n)] - n.x) * 0.06;
+      n.vy += (H / 2 - n.y) * 0.0015;
+      n.vx *= 0.82; n.vy *= 0.82;
+      n.x += Math.max(-24, Math.min(24, n.vx));
+      n.y += Math.max(-24, Math.min(24, n.vy));
+    }
+    state.ticks++;
+  }
+
+  function startTicking() {
+    if (state.raf) { cancelAnimationFrame(state.raf); }
+    var step = function () {
+      var budget = state.ticks < 60 ? 3 : 1;
+      for (var i = 0; i < budget; i++) { tick(); }
+      position();
+      if (state.ticks < 260) { state.raf = requestAnimationFrame(step); }
+      else { state.raf = 0; }
+    };
+    state.raf = requestAnimationFrame(step);
+  }
+
+  // ---------------------------------------------------------------
+  // rendering
+  // ---------------------------------------------------------------
+
+  var gfx = { nodes: Object.create(null), links: [] };
+
+  function render() {
+    els.bands.textContent = '';
+    els.links.textContent = '';
+    els.nodes.textContent = '';
+    gfx = { nodes: Object.create(null), links: [] };
+
+    var ncol = COLUMNS.length;
+    for (var c = 0; c < ncol; c++) {
+      if (c % 2 === 0) {
+        els.bands.appendChild(el('rect', {
+          x: (c / ncol) * W, y: -H, width: W / ncol, height: 3 * H, class: 'col-band'
+        }));
+      }
+      var t = el('text', { x: colX[c], y: -30, class: 'col-label' });
+      t.textContent = COLUMNS[c];
+      els.bands.appendChild(t);
+    }
+
+    state.links.forEach(function (l) {
+      var a = state.byId[l.source], z = state.byId[l.target];
+      if (!a || !z) { return; }
+      var line = el('line', { class: 'link' });
+      line.__link = l; line.__a = a; line.__z = z;
+      els.links.appendChild(line);
+      gfx.links.push(line);
+    });
+
+    state.nodes.forEach(function (n) {
+      var g = el('g', { class: 'node' });
+      var r = radiusOf(n);
+      var status = statusOf(n);
+      if (status) {
+        g.appendChild(el('circle', {
+          class: 'ring', r: r + 3.5, stroke: STATUS_COLOR[status] || 'var(--warn)'
+        }));
+      }
+      var body = el('circle', {
+        class: 'body', r: r, fill: n.dangling ? 'none' : TIER_COLOR[tierOf(n)],
+        stroke: n.dangling ? 'var(--other)' : null
+      });
+      g.appendChild(body);
+      var label = el('text', { x: r + 5, y: 4 });
+      label.textContent = labelOf(n);
+      g.appendChild(label);
+      g.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        activate(n, { emit: true });
+      });
+      g.addEventListener('mouseenter', function () { state.hovered = n.id; applyClasses(); });
+      g.addEventListener('mouseleave', function () { state.hovered = null; applyClasses(); });
+      attachDrag(g, n);
+      els.nodes.appendChild(g);
+      gfx.nodes[n.id] = { g: g, label: label };
+    });
+
+    position();
+    applyClasses();
+  }
+
+  function position() {
+    for (var i = 0; i < gfx.links.length; i++) {
+      var line = gfx.links[i];
+      line.setAttribute('x1', line.__a.x); line.setAttribute('y1', line.__a.y);
+      line.setAttribute('x2', line.__z.x); line.setAttribute('y2', line.__z.y);
+    }
+    for (var id in gfx.nodes) {
+      var n = state.byId[id];
+      gfx.nodes[id].g.setAttribute('transform', 'translate(' + n.x + ',' + n.y + ')');
+    }
+  }
+
+  function matches(n) {
+    if (!state.filter) { return true; }
+    var f = state.filter;
+    return String(n.id).toLowerCase().indexOf(f) >= 0 ||
+           String(n.label || '').toLowerCase().indexOf(f) >= 0 ||
+           String(n.file || '').toLowerCase().indexOf(f) >= 0 ||
+           String(n.type || '').toLowerCase().indexOf(f) >= 0;
+  }
+
+  function neighbours(id) {
+    var set = Object.create(null); set[id] = true;
+    (state.out[id] || []).forEach(function (l) { set[l.target] = true; });
+    (state.inc[id] || []).forEach(function (l) { set[l.source] = true; });
+    return set;
+  }
+
+  function applyClasses() {
+    var focus = state.hovered || state.selected;
+    var near = focus ? neighbours(focus) : null;
+    for (var id in gfx.nodes) {
+      var n = state.byId[id];
+      var g = gfx.nodes[id].g;
+      var hidden = state.hiddenTiers[tierOf(n)];
+      var dim = hidden || !matches(n) || (near && !near[id]);
+      g.setAttribute('class', 'node' + (dim ? ' dim' : '') + (id === state.selected ? ' sel' : ''));
+      g.style.display = hidden && !state.filter ? 'none' : '';
+      // Labels are noise at a distance; show them for the nodes that
+      // matter right now plus the big structural ones.
+      var showLabel = !dim && (state.view.k > 0.55 || radiusOf(n) >= 8 || id === focus);
+      gfx.nodes[id].label.style.display = showLabel ? '' : 'none';
+    }
+    for (var i = 0; i < gfx.links.length; i++) {
+      var line = gfx.links[i];
+      var hot = focus && (line.__link.source === focus || line.__link.target === focus);
+      var off = state.hiddenTiers[tierOf(line.__a)] || state.hiddenTiers[tierOf(line.__z)];
+      line.setAttribute('class', 'link' + (hot ? ' hot' : (focus ? ' dim' : '')));
+      line.style.display = off ? 'none' : '';
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // pan / zoom / drag
+  // ---------------------------------------------------------------
+
+  function applyView() {
+    els.scene.setAttribute('transform',
+      'translate(' + state.view.x + ',' + state.view.y + ') scale(' + state.view.k + ')');
+  }
+
+  function fit() {
+    var rect = els.svg.getBoundingClientRect();
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    state.nodes.forEach(function (n) {
+      minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+    });
+    if (!isFinite(minX)) { return; }
+    var pad = 60;
+    var k = Math.min(
+      rect.width / Math.max(1, (maxX - minX) + pad * 2),
+      rect.height / Math.max(1, (maxY - minY) + pad * 2)
+    );
+    state.view.k = Math.max(0.08, Math.min(2.5, k));
+    state.view.x = rect.width / 2 - ((minX + maxX) / 2) * state.view.k;
+    state.view.y = rect.height / 2 - ((minY + maxY) / 2) * state.view.k;
+    applyView();
+  }
+
+  function centerOn(n) {
+    var rect = els.svg.getBoundingClientRect();
+    state.view.k = Math.max(state.view.k, 0.8);
+    state.view.x = rect.width / 2 - n.x * state.view.k;
+    state.view.y = rect.height / 2 - n.y * state.view.k;
+    applyView();
+    applyClasses();
+  }
+
+  els.svg.addEventListener('wheel', function (ev) {
+    ev.preventDefault();
+    var rect = els.svg.getBoundingClientRect();
+    var mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    var factor = Math.exp(-ev.deltaY * 0.0015);
+    var k = Math.max(0.05, Math.min(6, state.view.k * factor));
+    state.view.x = mx - (mx - state.view.x) * (k / state.view.k);
+    state.view.y = my - (my - state.view.y) * (k / state.view.k);
+    state.view.k = k;
+    applyView(); applyClasses();
+  }, { passive: false });
+
+  (function panning() {
+    var active = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    els.svg.addEventListener('pointerdown', function (ev) {
+      if (ev.target.closest && ev.target.closest('.node')) { return; }
+      active = true; sx = ev.clientX; sy = ev.clientY;
+      ox = state.view.x; oy = state.view.y;
+      els.svg.classList.add('panning');
+      els.svg.setPointerCapture(ev.pointerId);
+    });
+    els.svg.addEventListener('pointermove', function (ev) {
+      if (!active) { return; }
+      state.view.x = ox + (ev.clientX - sx);
+      state.view.y = oy + (ev.clientY - sy);
+      applyView();
+    });
+    var stop = function (ev) {
+      if (!active) { return; }
+      active = false; els.svg.classList.remove('panning');
+      try { els.svg.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    };
+    els.svg.addEventListener('pointerup', stop);
+    els.svg.addEventListener('pointercancel', stop);
+  })();
+
+  function attachDrag(g, n) {
+    var dragging = false, moved = false;
+    g.addEventListener('pointerdown', function (ev) {
+      ev.stopPropagation();
+      dragging = true; moved = false;
+      n.fixed = true;
+      g.setPointerCapture(ev.pointerId);
+    });
+    g.addEventListener('pointermove', function (ev) {
+      if (!dragging) { return; }
+      moved = true;
+      n.x += ev.movementX / state.view.k;
+      n.y += ev.movementY / state.view.k;
+      position();
+    });
+    var release = function (ev) {
+      if (!dragging) { return; }
+      dragging = false;
+      try { g.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+      if (moved) { n.fixed = false; state.ticks = 200; startTicking(); }
+    };
+    g.addEventListener('pointerup', release);
+    g.addEventListener('pointercancel', release);
+  }
+
+  els.svg.addEventListener('click', function () {
+    state.selected = null; renderInspector(null); applyClasses();
+  });
+
+  // ---------------------------------------------------------------
+  // selection → hub envelopes
+  // ---------------------------------------------------------------
+
+  // The design tier's instance ids carry the hub resolver's identity
+  // verbatim: `inst:<top>/<dot.path>`. An explicit `instance_path`
+  // attribute wins when the exporter provides one.
+  function instancePathFor(n) {
+    if (!n) { return null; }
+    if (typeof n.instance_path === 'string' && n.instance_path) { return n.instance_path; }
+    if (n.type === 'instance' && String(n.id).indexOf('inst:') === 0) {
+      var rest = String(n.id).slice(5);
+      var slash = rest.indexOf('/');
+      if (slash >= 0) { return rest.slice(slash + 1); }
+    }
+    if (n.type === 'module') {
+      // A module is not a coordinate the design view can select — its
+      // instances are. Pick the shallowest instance of it, which is the
+      // one a person means by "show me this module".
+      var best = null;
+      (state.inc[n.id] || []).forEach(function (l) {
+        if (l.type !== 'instance_of') { return; }
+        var p = instancePathFor(state.byId[l.source]);
+        if (p && (best === null || p.split('.').length < best.split('.').length)) { best = p; }
+      });
+      return best;
+    }
+    return null;
+  }
+
+  function activate(n, opts) {
+    opts = opts || {};
+    state.selected = n.id;
+    renderInspector(n);
+    applyClasses();
+    if (!opts.emit) { return; }
+    var did = [];
+    if (els.optSelect.checked) {
+      var ip = instancePathFor(n);
+      if (ip && emit('selection_changed', { instance_path: ip })) {
+        did.push('select ' + ip);
+      }
+    }
+    if (els.optOpen.checked && n.file) {
+      var payload = { file: String(n.file), line: n.line ? Number(n.line) : 1, col: 1 };
+      if (request('open_source', payload, function (reply) {
+        if (reply.kind === 'error') {
+          note('open_source: ' + reply.payload.code + ': ' + reply.payload.message);
+        }
+      })) {
+        did.push('open ' + payload.file + ':' + payload.line);
+      }
+    }
+    note(did.length ? did.join('  ·  ') : (wsReady ? 'nothing to send for this node' : 'hub not connected'));
+  }
+
+  function focusById(id, opts) {
+    opts = opts || {};
+    var n = id && state.byId[id];
+    if (!n) {
+      if (opts.announce) { note('graph-focus: no node ' + id + ' in this graph'); }
+      return false;
+    }
+    activate(n, { emit: !!opts.emit });
+    centerOn(n);
+    if (opts.announce) { note('focused ' + id); }
+    return true;
+  }
+
+  function focusByInstancePath(ip) {
+    if (typeof ip !== 'string' || !ip) { return; }
+    for (var i = 0; i < state.nodes.length; i++) {
+      var n = state.nodes[i];
+      if (n.type !== 'instance') { continue; }
+      if (instancePathFor(n) === ip) {
+        state.selected = n.id; renderInspector(n); applyClasses(); centerOn(n);
+        return;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // inspector
+  // ---------------------------------------------------------------
+
+  function row(dl, key, value) {
+    var dt = document.createElement('dt'); dt.textContent = key;
+    var dd = document.createElement('dd');
+    // Duck-typed rather than `instanceof Node`: values here are either a
+    // scalar out of the graph or an element we just built.
+    if (value && typeof value === 'object' && value.nodeType === 1) {
+      dd.appendChild(value);
+    } else {
+      dd.textContent = String(value);
+    }
+    dl.appendChild(dt); dl.appendChild(dd);
+  }
+
+  function renderInspector(n) {
+    els.inspector.textContent = '';
+    if (!n) {
+      var hint = document.createElement('p');
+      hint.className = 'muted';
+      hint.textContent = 'Click a node.';
+      els.inspector.appendChild(hint);
+      return;
+    }
+    var dl = document.createElement('dl');
+    dl.className = 'kv';
+    row(dl, 'id', n.id);
+    if (n.type) { row(dl, 'type', n.type); }
+    row(dl, 'tier', tierOf(n));
+    if (n.label && n.label !== n.id) { row(dl, 'label', n.label); }
+    if (n.file) { row(dl, 'file', n.file + (n.line ? ':' + n.line : '')); }
+    ['dir', 'width', 'toplevel', 'reglvl', 'cocotb', 'module', 'suite', 'test']
+      .forEach(function (k) { if (n[k] != null) { row(dl, k, n[k]); } });
+    els.inspector.appendChild(dl);
+
+    if (n.results) {
+      els.inspector.appendChild(document.createElement('hr'));
+      var h = document.createElement('h2'); h.textContent = 'last run';
+      els.inspector.appendChild(h);
+      var rl = document.createElement('dl'); rl.className = 'kv';
+      var pill = document.createElement('span');
+      pill.className = 'pill';
+      pill.style.color = STATUS_COLOR[n.results.status] || 'var(--warn)';
+      pill.textContent = n.results.status || 'UNKNOWN';
+      row(rl, 'status', pill);
+      ['desc', 'timestamp', 'randseed', 'run_id', 'source'].forEach(function (k) {
+        if (n.results[k] != null) { row(rl, k, n.results[k]); }
+      });
+      var art = n.results.artefacts || {};
+      Object.keys(art).sort().forEach(function (k) { row(rl, k, art[k]); });
+      els.inspector.appendChild(rl);
+    }
+
+    var edges = (state.out[n.id] || []).map(function (l) { return { dir: '→', l: l, peer: l.target }; })
+      .concat((state.inc[n.id] || []).map(function (l) { return { dir: '←', l: l, peer: l.source }; }));
+    els.inspector.appendChild(document.createElement('hr'));
+    var eh = document.createElement('h2');
+    eh.textContent = 'edges (' + edges.length + ')';
+    els.inspector.appendChild(eh);
+    var ul = document.createElement('ul'); ul.className = 'edges';
+    edges.forEach(function (e) {
+      var li = document.createElement('li');
+      var kind = document.createElement('span');
+      kind.className = 'muted';
+      kind.textContent = e.dir + ' ' + (e.l.type || 'edge') +
+        (e.l.confidence && e.l.confidence !== 'EXTRACTED' ? ' [' + e.l.confidence + '] ' : ' ');
+      var a = document.createElement('a');
+      a.textContent = e.peer;
+      a.addEventListener('click', function () { focusById(e.peer, { emit: false }); });
+      li.appendChild(kind); li.appendChild(a);
+      ul.appendChild(li);
+    });
+    els.inspector.appendChild(ul);
+  }
+
+  // ---------------------------------------------------------------
+  // wiring
+  // ---------------------------------------------------------------
+
+  els.search.addEventListener('input', function () {
+    state.filter = els.search.value.trim().toLowerCase();
+    applyClasses();
+  });
+  els.search.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter') { return; }
+    for (var i = 0; i < state.nodes.length; i++) {
+      if (matches(state.nodes[i])) { focusById(state.nodes[i].id, { emit: true }); return; }
+    }
+  });
+  document.getElementById('reload').addEventListener('click', load);
+  window.addEventListener('resize', applyClasses);
+
+  connect();
+  load();
+})();
+</script>
+</body>
+</html>

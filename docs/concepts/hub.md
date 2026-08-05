@@ -171,8 +171,9 @@ Unknown top-level sections fail validation (typo guard). Unknown keys *inside* k
 | **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Loaded from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
 | **`rb wave` bridge** (`tools/wave_hub_bridge.py`) | Line-delimited JSON over TCP on `listen_port` | Started by `rb wave`; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff. |
 | **nvim plugin** ([`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim), installed by `rb nvim-install`) | Line-delimited JSON over TCP on `listen_port` | Auto-connects on startup (the managed setup calls `setup({ auto_connect = true })`). |
+| **graph pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /graph` — see [Design knowledge graph pane](#design-knowledge-graph-pane). Needs no viewer bundle. |
 
-Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), and `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one.
+Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker), and `graph` (the design-knowledge-graph pane). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph pane has its own origin rather than sharing `view` precisely because of that rule: it is meant to be open *alongside* the schematic, since clicking a module in the graph selects it in the design view.
 
 ## Protocol
 
@@ -200,7 +201,24 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 - **SPA:** `view-pan INSTANCE_PATH`, `overlay NAME --on/--off` (`clock` / `reset` / `axi-perf` / `wave`), `capture --out PATH [--format png|svg] [--scale …]`.
 - **Source:** `open-source FILE:LINE[:COL]`.
 - **Diagnostics:** `diagnose SOURCE ITEM…` (each `ITEM` is `file:line:severity:code:message`; `--clear`, `--instance`).
+- **Graph pane:** `graph-focus NODE` — focus the [design knowledge graph pane](#design-knowledge-graph-pane) on one `graph.json` node id (`module:fifo`, `test:verif/dma#smoke`, `covitem:dma#DMA-COV-1`, …). Broadcast, and cached by the hub, so sending it before the browser tab is open still lands: the focus is replayed to the pane when it registers.
 - **State / resolve:** `state` (snapshot of active model / selection / cursor / scope / peers), and `resolve {view-to-wave|wave-to-view|signal-to-view}`.
+
+## Design knowledge graph pane
+
+`rb hub start --serve-viewer` also serves the [design knowledge graph](graph.md) as an interactive page at `GET /graph`, next to the schematic rather than instead of it. Two routes:
+
+- `GET /graph.json` — `artefacts/graph/graph.json` joined with `artefacts/graph/results-overlay.json` **in memory**, using the same `annotate_graph()` join the query verbs use. `graph.json` on disk is never written: hash stability across regressions is why the overlay is a separate file to begin with. The body is the node-link envelope with each test node carrying its `results` entry, plus a `graph.hub` block (where the two files were read from, node/link counts, per-tier counts, the overlay's status summary) so the page can render a header without a second round-trip. Read per request, so `rb graph build` / `rb graph results` in another terminal shows up on **reload**. Returns 404 with a JSON `error` naming `rb graph build` when there is no graph yet.
+- `GET /graph` — the page. One self-contained HTML document: no CDN, no external stylesheet, no web font, no build step, because the hub is routinely run on machines with no route off localhost. Nodes are laid out in tier columns (`design` → `config` → `binding`) with a small force relaxation inside each, coloured by tier, and test nodes get a pass/fail ring from the overlay. It is served even with no graph built — its empty state names `rb graph build`, which is more useful than a blank tab.
+
+Clicking a node sends the same envelopes the SPA sends, over the same `/ws`:
+
+- **`selection_changed`** for anything that resolves to a design-view instance path. An `instance` node's id already *is* the coordinate (`inst:<top>/<dot.path>` — the resolver's identity); a `module` node has no instance path of its own, so the pane picks the shallowest instance of it, which is what a person means by "show me this module".
+- **`open_source`** (routed to the `src` peer, i.e. nvim) for any node that knows its `file`, at its `line`.
+
+Both are individually toggleable in the pane's toolbar. The reverse direction works too: `rb hub send graph-focus NODE` centres and selects a node, and a `selection_changed` from the SPA or the editor highlights the matching instance node in the graph.
+
+When a graph exists, the index page also gets a `window.__RTL_BUDDY_GRAPH_URL__ = "/graph.json"` injection alongside `__RTL_BUDDY_VIEW_URL__`, so an SPA overlay can advertise the pane on presence of the global instead of probing the endpoint and handling a 404.
 
 ## Auto-start on macOS (LaunchAgent)
 

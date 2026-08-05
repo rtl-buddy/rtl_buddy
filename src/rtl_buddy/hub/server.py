@@ -53,6 +53,7 @@ from .resolver import Resolver
 from .state import (
     CursorTime,
     DiagnosticsBundle,
+    GraphFocus,
     HubState,
     Selection,
     SignalSelection,
@@ -72,6 +73,7 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "source_focused",
         "diagnostics_set",
         "wave_values_changed",
+        "graph_focus",
     }
 )
 """Event ``type`` strings that broadcast to all clients except origin.
@@ -589,6 +591,10 @@ class HubServer:
                 self.state.wave_scope = WaveScope(
                     wave_scope=env.payload["wave_scope"], origin=env.origin
                 )
+            elif env.type == "graph_focus":
+                self.state.graph_focus = GraphFocus(
+                    node=env.payload["node"], origin=env.origin
+                )
             elif env.type == "diagnostics_set":
                 source = env.payload["source"]
                 items = tuple(env.payload["items"])
@@ -994,6 +1000,18 @@ class HubServer:
                     type="scope_changed",
                     id=new_id(),
                     payload={"wave_scope": s.wave_scope.wave_scope},
+                ),
+            )
+
+        if s.graph_focus is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.graph_focus.origin,
+                    kind=Kind.EVENT,
+                    type="graph_focus",
+                    id=new_id(),
+                    payload={"node": s.graph_focus.node},
                 ),
             )
 

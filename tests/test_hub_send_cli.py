@@ -254,6 +254,34 @@ def test_send_open_rejects_bad_spec(threaded_hub: _ThreadedHub, discovery_root: 
     assert "expected file:line" in result.output.lower()
 
 
+def test_send_graph_focus_caches_the_node(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """``rb hub send graph-focus`` (#382) drives the hub's graph pane.
+
+    Asserted against the hub's cache rather than a connected pane
+    because the cache is what makes the verb useful before the browser
+    tab exists — the focus is replayed to the pane on registration.
+    """
+
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["graph-focus", "test:verif/fifo#smoke"])
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.graph_focus  # noqa: SLF001
+    assert cached is not None
+    assert cached.node == "test:verif/fifo#smoke"
+
+
+def test_send_graph_focus_rejects_blank_node(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["graph-focus", "   "])
+    assert result.exit_code != 0
+    assert "non-empty" in result.output.lower()
+
+
 def test_send_diagnose_pushes_items(threaded_hub: _ThreadedHub, discovery_root: Path):
     runner = CliRunner()
     result = runner.invoke(

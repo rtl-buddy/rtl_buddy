@@ -26,6 +26,9 @@ rb graph query "which tests cover SAND-FUNC-FLAG-C-ADD"   # locate, with status
 rb graph path cocotb_random module:demo_tiny_alu          # how are these related?
 rb graph explain test:verif/demo_tiny_alu#flags           # one node, every edge
 rb mcp                                                    # the same, over MCP
+
+rb hub start --serve-viewer                               # then open /graph
+rb hub send graph-focus test:verif/demo_tiny_alu#flags    # drive the pane
 ```
 
 ## graph.json Envelope
@@ -318,6 +321,43 @@ That is the "locate in the graph, cite from source" contract in [agent use](../a
 ### Machine mode
 
 All three verbs emit the standard [envelope](../agents.md#machine-mode). `payload` always carries `schema_version`, `graph`, `overlay` (or `null`) and `counts`; then `matches` for `query`, `paths` for `path`, and `node` / `attributes` / `degree` / `outgoing` / `incoming` for `explain`. An unresolvable node reference exits 2 with `payload.error` and `payload.candidates`.
+
+## Looking at the Graph
+
+Graphify ships a static per-directory `graph.html`. The hub can do better, because it is the process that already owns view↔wave↔src resolution and speaks `selection_changed` / `open_source` to every connected peer — so the graph is not a picture you look at, it is a picture you click through.
+
+```bash
+rb graph build
+rb hub start --serve-viewer          # prints the http_port
+# then open http://127.0.0.1:<http_port>/graph
+```
+
+The pane needs nothing but `rb graph build`: the design + config tiers are enough to render, Graphify is not required, and neither is a viewer bundle. Everything on the page is inline — no CDN, no external font, no build step — so it opens on a machine with no route off localhost.
+
+What it shows:
+
+- **Tier columns.** `design` → `config` → `binding`, left to right, the order [`merge.TIER_ORDER`](#merging) sorts by, with a small force relaxation inside each column and an unknown tier landing in a trailing `other` column. Colour follows the same axis.
+- **Pass/fail from the overlay.** Test nodes get a status ring straight from `results-overlay.json`, so a failing test is visible in the picture and its `desc`, seed, timestamp and artefact paths are one click away in the inspector. The join happens in memory — `graph.json` on disk is never rewritten (see [Results Overlay](#results-overlay)).
+- **Dangling targets.** A link into a tier that was never exported (`maps_to` → a module whose design tier was skipped) is drawn as a hollow node rather than dropped, matching what [`merge.dangling_targets`](#merging) records.
+
+What it does:
+
+| Click target | Envelope | Effect |
+|---|---|---|
+| `instance` node | `selection_changed {instance_path}` | The SPA pans/highlights that instance. The id *is* the coordinate: `inst:<top>/<dot.path>`. |
+| `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the design view can select, its instances are. |
+| any node with `file` | `open_source {file, line, col}` | The `src` peer (nvim) opens it. Test, coverage-item, spec-block and Python-module nodes all carry `file`/`line`. |
+
+Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol. From the other direction:
+
+```bash
+rb hub send graph-focus test:verif/dma#smoke
+rb hub send graph-focus module:dma_engine
+```
+
+centres and selects that node. The hub caches the focus and replays it on registration, so sending it *before* the tab is open works. A `selection_changed` arriving from the SPA or the editor highlights the matching instance node in the graph.
+
+Full details of the two routes (`GET /graph`, `GET /graph.json`) are in the [hub concept page](hub.md#design-knowledge-graph-pane).
 
 ## The MCP Server
 

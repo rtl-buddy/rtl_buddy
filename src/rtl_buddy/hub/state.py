@@ -64,6 +64,21 @@ class WaveScope:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphFocus:
+    """Last broadcast ``graph_focus`` payload + its origin.
+
+    Cached for the same reason a selection is: ``rb hub send graph-focus``
+    is most useful *before* the pane is open ("show me this node"), and
+    the replay on registration is what makes that ordering work — the
+    pane opens already focused instead of dropping the event that
+    preceded it.
+    """
+
+    node: str
+    origin: Origin
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticsBundle:
     """Last ``diagnostics_set`` payload for one producer ``source``.
 
@@ -91,6 +106,7 @@ class HubState:
     signal_selection: Optional[SignalSelection] = None
     cursor_time: Optional[CursorTime] = None
     wave_scope: Optional[WaveScope] = None
+    graph_focus: Optional[GraphFocus] = None
     diagnostics: dict[str, DiagnosticsBundle] = field(default_factory=dict)
 
     registered_clients: set[Origin] = field(default_factory=set)
@@ -113,6 +129,7 @@ class HubState:
         self.signal_selection = None
         self.cursor_time = None
         self.wave_scope = None
+        self.graph_focus = None
         self.diagnostics = {}
 
 
@@ -121,6 +138,7 @@ __all__ = [
     "SignalSelection",
     "CursorTime",
     "WaveScope",
+    "GraphFocus",
     "DiagnosticsBundle",
     "HubState",
 ]

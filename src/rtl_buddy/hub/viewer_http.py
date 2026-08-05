@@ -37,6 +37,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..logging_utils import log_event
+from . import graph_page
 from .event_broker import EventBroker
 
 
@@ -72,6 +73,11 @@ PLACEHOLDER_HTML = """<!doctype html>
   <p>
     Inspect <code>window.__RTL_BUDDY_HUB__</code> in DevTools, or watch
     the WebSocket round-trip below.
+  </p>
+  <p>
+    The design knowledge graph pane is served independently of the SPA
+    at <a href="/graph"><code>/graph</code></a> — it needs only
+    <code>rb graph build</code>, not a viewer bundle.
   </p>
   <p id="status">Connecting to <code>/ws</code>…</p>
   <script>
@@ -115,6 +121,7 @@ def render_index_html(
     bundle_index: Path | None,
     hub_addr: str,
     view_url: str | None = None,
+    graph_url: str | None = None,
 ) -> bytes:
     """Return the HTML body served at ``/`` with hub address injected.
 
@@ -127,6 +134,11 @@ def render_index_html(
     When ``view_url`` is provided, ``window.__RTL_BUDDY_VIEW_URL__`` is
     set alongside ``__RTL_BUDDY_HUB__`` so the SPA bootstrap can fetch
     the view.json without the user passing ``?view=`` in the URL.
+
+    ``graph_url`` does the same for the design knowledge graph (#382):
+    it is set only when this hub has a built ``graph.json`` to serve, so
+    an SPA overlay can advertise the graph pane on presence of the
+    global instead of probing the endpoint and handling a 404.
     """
 
     if bundle_index is not None and bundle_index.is_file():
@@ -137,6 +149,8 @@ def render_index_html(
     parts = [f"window.__RTL_BUDDY_HUB__ = {hub_addr!r};"]
     if view_url is not None:
         parts.append(f"window.__RTL_BUDDY_VIEW_URL__ = {view_url!r};")
+    if graph_url is not None:
+        parts.append(f"window.__RTL_BUDDY_GRAPH_URL__ = {graph_url!r};")
     preamble = "\n".join(parts)
 
     if "%HUB_INJECTION%" in html:
@@ -250,6 +264,17 @@ class ViewerServer:
     def _has_view_json(self) -> bool:
         return self.view_json_path is not None and self.view_json_path.is_file()
 
+    def _has_graph_json(self) -> bool:
+        """Whether ``rb graph build`` has produced a graph for this root.
+
+        Re-checked per request (one ``stat``) so a graph built while the
+        hub is running is advertised without a restart — the same
+        per-request-walk rule ``/models`` and ``/tests`` follow.
+        """
+        if self.project_root is None:
+            return False
+        return graph_page.graph_files_present(self.project_root)
+
     async def start(self) -> tuple[str, int]:
         """Bind the HTTP+WS listener; return ``(host, port)``."""
 
@@ -327,6 +352,9 @@ class ViewerServer:
                 bundle_index=self._bundle_index,
                 hub_addr=self.hub_address,
                 view_url="/view.json" if self._has_view_json() else None,
+                graph_url=(
+                    graph_page.GRAPH_JSON_ROUTE if self._has_graph_json() else None
+                ),
             )
             return _http_response(
                 connection, 200, body, content_type="text/html; charset=utf-8"
@@ -334,6 +362,12 @@ class ViewerServer:
 
         if path == "/healthz":
             return _http_response(connection, 200, b"ok\n", content_type="text/plain")
+
+        if path == graph_page.GRAPH_PAGE_ROUTE:
+            return self._handle_graph_page(connection)
+
+        if path == graph_page.GRAPH_JSON_ROUTE:
+            return await self._handle_graph_json(connection)
 
         if path == "/models":
             return await self._handle_models(connection)
@@ -381,6 +415,52 @@ class ViewerServer:
                 return static
 
         return _http_response(connection, 404, b"not found")
+
+    # ------------------------------------------------------------------
+    # /graph + /graph.json (issue #382)
+    # ------------------------------------------------------------------
+
+    def _handle_graph_page(self, connection: ServerConnection) -> Response:
+        """``GET /graph`` — the interactive design-knowledge-graph pane.
+
+        Always 200, even with no graph built: the page's own empty state
+        names ``rb graph build``, which is more useful than a 404 body
+        the browser renders as a blank tab. The page is static; all the
+        data arrives from ``GET /graph.json``.
+        """
+
+        return _http_response(
+            connection,
+            200,
+            graph_page.render_graph_html(hub_addr=self.hub_address),
+            content_type="text/html; charset=utf-8",
+        )
+
+    async def _handle_graph_json(self, connection: ServerConnection) -> Response:
+        """``GET /graph.json`` — the merged graph joined with the overlay.
+
+        Read off disk on every request rather than cached: the point of
+        the ``reload`` button is that ``rb graph build`` / ``rb graph
+        results`` in another terminal shows up here, and a cache keyed
+        on anything less than the file's own bytes would have to be
+        invalidated by exactly the events we cannot see.
+        """
+
+        if self.project_root is None:
+            return _http_response(
+                connection,
+                400,
+                json.dumps(
+                    {
+                        "error": "hub started without project_root; /graph.json requires it"
+                    }
+                ).encode("utf-8"),
+                content_type="application/json",
+            )
+        status, body = await asyncio.to_thread(
+            graph_page.graph_payload_bytes, self.project_root
+        )
+        return _http_response(connection, status, body, content_type="application/json")
 
     # ------------------------------------------------------------------
     # /models + /view.json?model= (issue #174)
@@ -1120,8 +1200,10 @@ def _http_response(
 
 _REASON_PHRASES = {
     200: "OK",
+    400: "Bad Request",
     403: "Forbidden",
     404: "Not Found",
+    500: "Internal Server Error",
 }
 
 

@@ -52,6 +52,14 @@ class Origin(str, Enum):
     SRC = "src"
     CLI = "cli"
     NOTEBOOK = "notebook"
+    GRAPH = "graph"
+    """The hub-served design-knowledge-graph pane (``GET /graph``).
+
+    Its own origin rather than a second ``view``: the graph pane and the
+    schematic SPA are meant to be open at the same time (clicking a
+    module in the graph *selects it in the design view*), and the hub
+    allows one client per origin — sharing ``view`` would make the two
+    panes evict each other."""
 
 
 class Kind(str, Enum):

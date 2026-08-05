@@ -1256,6 +1256,14 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │ cursor         Broadcast cursor_time_changed{t_fs}.                                  │
 │ scope          Broadcast scope_changed{wave_scope}.                                  │
 │ open           Broadcast source_focused{file, line, col}.                            │
+│ graph-focus    Broadcast graph_focus{node} — point the hub's design knowledge graph  │
+│                pane (http://127.0.0.1:<http_port>/graph) at one node of              │
+│                artefacts/graph/graph.json. NODE is a graph node id: 'module:fifo',   │
+│                'inst:top/top.u_fifo', 'test:verif/dma#smoke',                        │
+│                'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` returns and │
+│                docs/concepts/graph.md lists. The hub caches the focus and replays it │
+│                to the pane on connect, so sending this before the browser tab is     │
+│                open works.                                                           │
 │ diagnose       Push a diagnostics_set bundle for SOURCE. Each ITEM is                │
 │                <file>:<line>:<severity>:<code>:<message>. --clear sends an empty set │
 │                (clears any cached diagnostics from SOURCE). Use --instance to attach │
@@ -1369,6 +1377,26 @@ Usage: rtl-buddy hub send open [OPTIONS] SPEC
                                                                                         
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    spec      TEXT  file:line[:col], e.g. design/dma/dma.sv:42:7 [required]         │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## hub send graph-focus
+
+```text
+Usage: rtl-buddy hub send graph-focus [OPTIONS] NODE                                   
+                                                                                        
+ Broadcast graph_focus{node} — point the hub's design knowledge graph pane              
+ (http://127.0.0.1:<http_port>/graph) at one node of artefacts/graph/graph.json. NODE   
+ is a graph node id: 'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke',      
+ 'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` returns and                  
+ docs/concepts/graph.md lists. The hub caches the focus and replays it to the pane on   
+ connect, so sending this before the browser tab is open works.                         
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    node      TEXT  graph node id, e.g. test:verif/dma#smoke [required]             │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                          │
