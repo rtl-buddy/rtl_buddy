@@ -1,5 +1,5 @@
 ---
-description: The design knowledge graph — the shared graph.json contract, the node and edge vocabulary of each tier, and how rtl_buddy extracts the config tier from tests.yaml, models.yaml and specs.yaml.
+description: The design knowledge graph — the shared graph.json contract, the node and edge vocabulary of each tier, how rtl_buddy extracts the config tier from tests.yaml, models.yaml and specs.yaml, and the measured token cost of querying it against reading the tree.
 ---
 
 # Design Knowledge Graph
@@ -398,6 +398,75 @@ ts.call("graph_query", {"question": "which tests cover SAND-FUNC-FLAG-C-ADD"})
 ```
 
 `rtl_buddy.mcp.server` is the only module that imports the SDK, and it supports both the 1.x decorator API and the 2.x constructor-callback API.
+
+## Token Efficiency
+
+The point of the graph is that an agent should answer a question about the project without reading the project. Graphify's ~70x tokens-per-query claim is measured on software corpora, so we measured our own on RTL, with `scripts/graph_token_benchmark.py`.
+
+**On the project template the graph route costs about 3.5x _more_ tokens than grep-and-read.** That is the honest number, and the rest of this section is what it is made of, because the shortfall is not in the graph — it is in how the verbs hand it back.
+
+### Method
+
+Four questions an agent actually asks are answered twice: once through the **graph route** (`rb --machine graph query|path|explain` against `artefacts/graph/graph.json`) and once through the **raw route** (`grep`, `ls`, whole-file reads — what an agent does in a tree with no graph). Both answers are compared against a key hand-checked against the template sources; a route that answers wrong does not get to be the cheap one. All eight runs were correct, so the token numbers are comparable.
+
+The token proxy is `len(text) // 4`, applied to every byte crossing into the agent's context — the command it types plus the output it reads. No tokenizer is imported: a real BPE would pin the published number to one vendor's vocabulary, and the ratio between two routes is insensitive to the constant.
+
+Two costs are deliberately not charged to the graph route. `rb graph build` is an index — 3.3 s cold and 0.7 s cached on the template, paid once per source change and amortized over every question, like a `ctags` database. And `graph.json` itself (389 KiB, about 99 k tokens) is never read whole; that is what the verbs are for.
+
+`--machine` is the only surface measured because it is the only one an agent can use: the human rendering is a Rich table that does not survive a pipe (`rb graph query` prints nothing at all through one) and truncates long ids with an ellipsis where it does render.
+
+```bash
+uv run python scripts/graph_token_benchmark.py -p /path/to/rtl-buddy-project-template
+uv run python scripts/graph_token_benchmark.py -p ... --markdown   # the table below
+uv run python scripts/graph_token_benchmark.py -p ... --json       # every step, itemized
+```
+
+### Results
+
+Measured on [rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template) at `6507c3a` (clean), against a graph of 440 nodes and 821 links built from all three tiers by rtl_buddy `feat/design-graph` and rtl-buddy-view `feat/graph-export` (`6b57983`). "Answer" is the answer itself as compact JSON — the floor either route could hit. Ratio is raw / graph: above 1.00 the graph is cheaper.
+
+| Task | Answer | Raw tokens | Raw calls | Graph tokens | Graph calls | Ratio (raw / graph) | Both correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Trace a signal | 46 | 2979 | 7 | 10912 | 10 | 0.27x | yes |
+| Tests for a block | 66 | 1782 | 5 | 10053 | 12 | 0.18x | yes |
+| Traceability chain | 49 | 1675 | 5 | 2460 | 2 | 0.68x | yes |
+| Module interface | 35 | 800 | 2 | 2013 | 3 | 0.40x | yes |
+| **all four** | 196 | **7236** | 19 | **25438** | 27 | **0.28x** | |
+
+The tasks are: what drives `rst_b_n` in `demo_cdc_open_top` and which instances load it; which tests exercise `demo_tiny_alu` and at which `reglvl`; which tests, spec block, spec doc and golden model chain off coverage item `SAND-FUNC-FLAG-C-ADD`; and every port of `demo_tiny_alu` with its direction, plus its parameters.
+
+### Where the tokens went
+
+196 tokens of answer cost the graph route 25 438. Three payload effects account for nearly all of it, and none of them is a property of the graph.
+
+**Attributes are only reachable through `explain`.** A node summary carries `id`, `type`, `label`, `tier`, `file`, `line` and nothing type-specific, so reading one `reglvl` integer or one port `dir` string costs a whole `explain` call. Eleven of the graph route's 27 calls are exactly that: 9 449 tokens — 37% of the total — to fetch seven integers and four direction strings.
+
+**Every peer is repeated in full.** An `explain` payload embeds a complete node summary for each edge endpoint, including a `cite` block that, for anything but an instance node, only repeats `file`. `test:verif/demo_tiny_alu#basic` costs 1 191 tokens, most of it nine coverage-item summaries the question never asked about.
+
+**A module's ports are not a traversal.** No edge ties a `port:` node to its `module:` node — only the `owner` attribute does — so "the ports of `demo_tiny_alu`" is a substring search, and `port:demo_tiny_alu_subsys_compute.*` scores identically. Half the twenty nodes returned were noise.
+
+A fourth effect changes shape rather than size: the 25-neighbour budget in `query` is spent breadth-first, so at `--depth 2` from the model node all sixteen sibling coverage items arrive before the tests and the tests are truncated away. The traceability route uses `--depth 1` plus one `explain` for that reason — two calls that terminate beat one call that quietly drops the answer.
+
+### When the graph does win
+
+The raw route's cost is linear in the number of files that mention the thing; the graph route's is flat. On the template, `grep` narrows every question to between one and five small files, which is the best case a corpus can give it. The break-even, computed from the measured per-file cost of each raw route:
+
+| Task | Raw cost per file | Files read | Break-even |
+| --- | ---: | ---: | --- |
+| Trace a signal | 558 | 5 | ~19 files in the crossing |
+| Tests for a block | 434 | 4 | ~23 suites naming the block |
+| Traceability chain | 522 | 3 | ~5 files naming the item |
+| Module interface | 678 | 1 | never — one file holds the answer |
+
+Only the traceability chain crosses at a plausible project size today, and the module interface never crosses: a question whose answer lives inside a single file is a question for that file, and the graph's job there is to name the file and the lines — which it does, for 121 tokens of `sed`.
+
+The two numbers this table does not carry: the graph route's answers are node ids, machine-checkable and stable, while the raw route's are whatever the agent parsed out of SystemVerilog and YAML by eye; and the raw route only found the right files because the template names them after the block. Neither is worth a token count, and both favour the graph.
+
+### What this gates
+
+The measurement is the epic's success gate, and it says the graph tier is right and the read surface is not yet. Until the payload shape changes, the honest guidance — the one in `docs/agents.md` and in the bundled skill — is: use the graph for relational questions that span files (traceability, coverage, which test touches what) and for locating the file and lines to read; do not route a single-file question through it.
+
+Re-run the benchmark after any change to the query payloads; the script is the regression guard for this number, and `tests/test_graph_benchmark.py` keeps its route logic and hand-checked key honest in CI (correctness only — token counts are not asserted, since they depend on the project you point it at).
 
 ## Node Types
 

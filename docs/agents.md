@@ -21,7 +21,9 @@ The contract is two steps:
 1. **Locate** with `rb --machine graph query "<question>"`. Matching is deterministic keyword scoring — no model call — and every match arrives with its neighbourhood, so structural context and pass/fail status come back together.
 2. **Cite** with `rb hier-query <model> source-snippet <path>`. Every node the graph returns carries a `cite` block with its `file` and `line`, and instance nodes carry the exact `source-snippet` command that quotes them.
 
-Raw file reads are the fallback, not the default. Read a file when the graph has told you which file, and which lines.
+Raw file reads are the fallback for finding things, not the default: read a file once the graph has told you which file, and which lines.
+
+Where that rule stops: a question whose whole answer sits in one file — a module's port list, one instance's connections — is answered from that file, because walking the graph for it currently costs more tokens than reading it. The graph's job there is to name the file and the line range. The measurements behind that split, task by task, are in [Token Efficiency](concepts/graph.md#token-efficiency).
 
 ```bash
 rb --machine graph build                                    # once per source change
