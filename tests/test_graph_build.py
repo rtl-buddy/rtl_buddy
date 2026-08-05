@@ -1231,19 +1231,43 @@ def test_resolve_extractor_none_when_not_installed(monkeypatch):
 
 @pytest.mark.skipif(
     shutil.which(extract_mod.GRAPH_EXTRACT_BINARY) is None,
-    reason="rb-graph-extract not installed (uv sync --extra graph-extract)",
+    reason="rb-graph-extract not installed (uv sync --group graph-extract)",
+)
+def test_resolve_extractor_against_the_real_binary():
+    """Discovery for real, no stubs and no hand-fed strings: the manifest
+    detectors must find the installed tool, and the version regex must
+    parse the binary's actual ``--version`` output. Asserting the regex
+    only against a literal the author chose is exactly the assumption the
+    dead Graphify contract was built on — this is the test that a real
+    install keeps honest."""
+    choice = extract_mod.resolve_extractor()
+    assert choice is not None
+    assert choice.executable == extract_mod.GRAPH_EXTRACT_BINARY
+    # "unknown" would mean the tool was found but its --version output
+    # did not match the manifest regex — a fingerprint regression.
+    assert choice.version != "unknown"
+    assert choice.version[0].isdigit()
+
+
+@pytest.mark.skipif(
+    shutil.which(extract_mod.GRAPH_EXTRACT_BINARY) is None,
+    reason="rb-graph-extract not installed (uv sync --group graph-extract)",
 )
 def test_bundled_extractor_end_to_end(graph_project: Path, tmp_path: Path):
-    """The real rb-graph-extract binary, not a stub: binding tier builds,
-    its nodes stitch into the merge, the cross-check agrees, and the
-    fingerprint is keyed by the bundled tool's manifest name."""
+    """The real rb-graph-extract binary, not a stub, reached the same way
+    `rb graph build` reaches it — through resolve_extractor(): binding
+    tier builds, its nodes stitch into the merge, the cross-check agrees,
+    and the fingerprint carries the tool's manifest name and its real
+    probed version."""
+    choice = extract_mod.resolve_extractor()
+    assert choice is not None
     view, _ = _fake_view(tmp_path)
     build = build_graph(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        extract_executable=extract_mod.GRAPH_EXTRACT_BINARY,
-        extract_version="0.1.0",
+        extract_executable=choice.executable,
+        extract_version=choice.version,
     )
     binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
     assert binding.status == "built"
@@ -1251,7 +1275,7 @@ def test_bundled_extractor_end_to_end(graph_project: Path, tmp_path: Path):
     graph = json.loads(build.graph_path.read_text())
     assert "py:verif/blk_a/cocotb_blk_a.py" in _nodes(graph)
     meta = json.loads(build.meta_path.read_text())
-    assert meta["tools"][extract_mod.GRAPH_EXTRACT_TOOL] == "0.1.0"
+    assert meta["tools"][extract_mod.GRAPH_EXTRACT_TOOL] == choice.version
     assert meta["merge"]["extract_cross_check"]["status"] == "ok"
 
 

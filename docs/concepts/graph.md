@@ -118,7 +118,7 @@ So when the same id is claimed by more than one *file*, the testbench copies are
 
 The extractor is optional. Without one installed the merged graph still holds the design and config tiers and is fully queryable; the binding tier is reported as `skipped` with the reason. Only a tier that was asked for and *broke* — an unparseable model, an extractor crash — is `failed`, which is what makes the exit code non-zero. Per-item failures (one model of five) leave the exit code at 0 unless `--strict` is passed, and are always listed in `graph-meta.json`.
 
-The extractor is [rtl-buddy-graph-extract](https://github.com/rtl-buddy/rtl-buddy-graph-extract): stdlib-only, deterministic, installed with `uv sync --extra graph-extract` (resolved from git until its first PyPI release). The extract contract — verbs, envelope, node vocabulary — is owned by rtl-buddy and documented in that repo's `extract-contract.md`; it has no semantic/LLM pass and no coupling to any external tool. The extractor's version lands in the build fingerprint, so an upgrade invalidates the cached build.
+The extractor is [rtl-buddy-graph-extract](https://github.com/rtl-buddy/rtl-buddy-graph-extract): stdlib-only, deterministic, installed with `uv pip install git+https://github.com/rtl-buddy/rtl-buddy-graph-extract` (no PyPI release yet; the first is tracked in rtl-buddy-graph-extract#1). The extract contract — verbs, envelope, node vocabulary — is owned by rtl-buddy and documented in that repo's `extract-contract.md`; it has no semantic/LLM pass and no coupling to any external tool. The extractor's version lands in the build fingerprint, so an upgrade invalidates the cached build.
 
 ### Merging
 
