@@ -1846,8 +1846,8 @@
 <tr>
 <td><code>rb graph build</code></td>
 <td>Pluggable — curated</td>
-<td><a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a>, optional <code>graphify</code></td>
-<td>The design tier needs <code>rtl-buddy-view</code> with the <code>graph</code> verb (≥ 0.4.0); an older viewer fails that tier with an upgrade hint. Graphify is <strong>optional</strong> — without it the merged graph still carries the design + config tiers and the binding tier is reported as skipped. Gate both with <code>rb tool-check --explain rtl-buddy-view</code> / <code>--explain graphify</code>. See <a href="../concepts/graph/">Design Knowledge Graph</a>.</td>
+<td><a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a>, optional binding-tier extractor</td>
+<td>The design tier needs <code>rtl-buddy-view</code> with the <code>graph</code> verb (≥ 0.4.0); an older viewer fails that tier with an upgrade hint. The binding-tier extractor is <strong>optional</strong> — without one the merged graph still carries the design + config tiers and the binding tier is reported as skipped. The bundled <a href="https://github.com/rtl-buddy/rtl-buddy-graph-extract">rtl-buddy-graph-extract</a> installs with the <code>[graph-extract]</code> extra (<code>uv sync --extra graph-extract</code>; git-resolved until its first PyPI release). Gate with <code>rb tool-check --explain rtl-buddy-view</code> / <code>--explain rtl-buddy-graph-extract</code>. See <a href="../concepts/graph/">Design Knowledge Graph</a>.</td>
 </tr>
 <tr>
 <td><code>rb graph query</code>, <code>rb graph path</code>, <code>rb graph explain</code></td>
