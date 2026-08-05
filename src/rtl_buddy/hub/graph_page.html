@@ -89,6 +89,12 @@
       padding: .25rem .55rem; cursor: pointer;
     }
     button:hover { border-color: var(--accent); }
+    a.btn {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: 4px;
+      padding: .25rem .55rem; text-decoration: none; white-space: nowrap;
+    }
+    a.btn:hover { border-color: var(--accent); }
     label.chk { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; }
     .legend { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
     .swatch {
@@ -176,6 +182,8 @@
       <input type="checkbox" id="opt-open" checked> open in editor
     </label>
     <button id="reload" title="Re-fetch /graph.json (after rb graph build / rb graph results)">reload</button>
+    <a class="btn" href="/" target="_blank" rel="noopener"
+       title="Open the schematic design view in a new tab. Once it is open, clicking a node here highlights the instance there (the sync design view toggle).">design view ↗</a>
   </header>
 
   <main>
