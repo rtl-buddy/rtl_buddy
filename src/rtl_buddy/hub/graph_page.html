@@ -56,6 +56,7 @@
         --col-cdc-config:    #0e7490;
         --col-test-cocotb:   #557c0b;
         --col-other:         #6b7688;
+        --fail:              #c62828;
       }
     }
     * { box-sizing: border-box; }
@@ -139,6 +140,7 @@
     .edges a { color: var(--accent); text-decoration: none; cursor: pointer; }
     .edges a:hover { text-decoration: underline; }
     .muted { color: var(--fg-dim); }
+    .msg-error { color: var(--fail); font-weight: 600; }
     hr { border: 0; border-top: 1px solid var(--line); margin: .75rem 0; }
     footer {
       border-top: 1px solid var(--line); background: var(--panel);
@@ -300,7 +302,10 @@
   function labelOf(node) {
     return node.label || String(node.id).replace(/^[a-z_]+:/, '');
   }
-  function note(text) { els.msg.textContent = text || ''; }
+  function note(text, level) {
+    els.msg.textContent = text || '';
+    els.msg.className = level === 'error' ? 'msg-error' : 'muted';
+  }
 
   function uuid() {
     if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
@@ -409,7 +414,7 @@
         break;
     }
     if (env.kind === 'error' && env.payload) {
-      note('hub error: ' + env.payload.code + ': ' + env.payload.message);
+      note('hub error: ' + env.payload.code + ': ' + env.payload.message, 'error');
     }
   }
 
@@ -909,13 +914,15 @@
         if (reply.kind === 'error') {
           note(reply.payload.code === 'not_connected'
             ? 'no editor connected — start nvim with the rtl-buddy plugin (rb nvim-install), or untick "open in editor"'
-            : 'open_source: ' + reply.payload.code + ': ' + reply.payload.message);
+            : 'open_source: ' + reply.payload.code + ': ' + reply.payload.message, 'error');
         }
       })) {
         did.push('open ' + payload.file + ':' + payload.line);
       }
     }
-    note(did.length ? did.join('  ·  ') : (wsReady ? 'nothing to send for this node' : 'hub not connected'));
+    if (did.length) { note(did.join('  ·  ')); }
+    else if (wsReady) { note('nothing to send for this node'); }
+    else { note('hub not connected', 'error'); }
   }
 
   function focusById(id, opts) {
