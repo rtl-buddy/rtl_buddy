@@ -4,7 +4,7 @@
 #
 """The hub-served design-knowledge-graph pane (#382).
 
-Graphify ships a static per-directory ``graph.html``; the hub can do
+A static per-directory ``graph.html`` would be the lazy answer; the hub can do
 better, because it is the process that already owns view↔wave↔src
 coordinate resolution and speaks ``selection_changed`` / ``open_source``
 to every connected peer. This module is the two halves of that pane:

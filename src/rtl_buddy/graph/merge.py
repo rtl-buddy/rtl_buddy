@@ -10,12 +10,13 @@ node-link envelope, and the tiers are stitched together by *node id*:
 ``module:blk_a`` is a node the design tier owns. Merging is therefore a
 plain union — no name matching, no heuristics, no tool required.
 
-That last point is the reason this module exists at all. ``graphify
-merge-graphs`` would do the same job, but Graphify is an *optional*
+That last point is the reason this module exists at all. the extractor's
+``merge-graphs`` would do the same job, but the extractor is an *optional*
 dependency: without it the merged graph must still contain the design
 and config tiers and still be queryable. So the union lives here and
-runs always; ``graphify merge-graphs`` is used only as a cross-check
-when it happens to be installed (see :mod:`rtl_buddy.graph.graphify`).
+runs always; the extractor's ``merge-graphs`` is used only as a
+cross-check when it happens to be installed (see
+:mod:`rtl_buddy.graph.extract`).
 
 Both halves of the merge are deliberately lossless-by-content:
 
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 #: Tier order used when merging. Earlier tiers win attribute conflicts:
 #: the design tier is the authority on anything it can see (it parsed
-#: the RTL), the config tier on what YAML declares, and Graphify's
+#: the RTL), the config tier on what YAML declares, and the extractor's
 #: binding tier fills the gaps.
 TIER_ORDER = ("design", "config", "binding")
 
@@ -154,7 +155,7 @@ def merge_graphs(
     merged_generator = dict(generator)
     merged_generator["tier"] = MERGED_TIER
     # One tier may contribute more than one graph (the binding tier has
-    # two producers: Graphify, and rtl_buddy's post-merge binding stage),
+    # two producers: the extractor, and rtl_buddy's post-merge binding stage),
     # so name each tier once. `graph.tiers` below keeps both provenance
     # entries — that is where "who produced what" belongs.
     merged_generator["tiers"] = list(dict.fromkeys(tier for tier, _ in ordered))

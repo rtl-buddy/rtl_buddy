@@ -10,7 +10,7 @@ Three layers are covered here:
 * the scanner (:func:`~rtl_buddy.graph.binding.scan_python_source`) —
   pure, no project needed;
 * :func:`~rtl_buddy.graph.binding.bind_python` over a hand-built merged
-  graph, which is where the confidence rules and the Graphify hand-off
+  graph, which is where the confidence rules and the extractor hand-off
   live;
 * ``build_graph`` end to end on a real cocotb-shaped project, with
   ``rtl-buddy-view`` stubbed, mirroring the template's
@@ -402,7 +402,7 @@ def test_an_existing_python_node_id_is_reused_instead_of_synthesized(tmp_path: P
         "import cocotb\n\n@cocotb.test()\nasync def t(dut):\n    dut.a.value = 1\n",
     )
     nodes, links = _config_nodes()
-    # What Graphify contributes: its own id for the same file. The stage
+    # What the extractor contributes: its own id for the same file. The stage
     # matches on `file`, so it must bind to that node rather than invent
     # a second one for the same module.
     nodes = nodes + [
@@ -634,7 +634,7 @@ def _build(root: Path, view: Path, **kwargs):
         root,
         view_executable=str(view),
         view_version="0.4.0",
-        graphify_enabled=False,
+        extract_enabled=False,
         **kwargs,
     )
 
@@ -689,7 +689,7 @@ def test_binding_stage_is_recorded_in_the_meta_sidecar_and_its_own_file(
     assert meta["binding"]["python_modules"] == 2
 
     # The stage's own contribution is kept beside the merged file, apart
-    # from Graphify's `binding/graph.json`, so a surprise is traceable.
+    # from the extractor's `binding/graph.json`, so a surprise is traceable.
     own = build.graph_path.parent / "bind" / "graph.json"
     assert own.is_file()
     payload = json.loads(own.read_text())
@@ -710,14 +710,14 @@ def test_no_bind_leaves_the_merged_graph_without_binding_edges(
     assert not (build.graph_path.parent / "bind").exists()
 
 
-def test_editing_a_cocotb_module_invalidates_the_cache_without_graphify(
+def test_editing_a_cocotb_module_invalidates_the_cache_without_extractor(
     cocotb_project: Path, tmp_path: Path
 ):
     view = _fake_view(tmp_path)
     first = _build(cocotb_project, view)
     assert _build(cocotb_project, view).unchanged is True
 
-    # The stage reads verif Python whether or not Graphify is installed,
+    # The stage reads verif Python whether or not an extractor is installed,
     # so those files have to be in the fingerprint.
     module = cocotb_project / "verif" / "alu_cocotb" / "test_alu.py"
     module.write_text(module.read_text() + "    dut.zf.value = 0\n")
@@ -726,8 +726,8 @@ def test_editing_a_cocotb_module_invalidates_the_cache_without_graphify(
     assert second.fingerprint != first.fingerprint
 
 
-def _fake_graphify(tmp_path: Path) -> Path:
-    """Stub ``graphify`` claiming the cocotb module under its own id.
+def _fake_extractor(tmp_path: Path) -> Path:
+    """Stub extractor claiming the cocotb module under its own id.
 
     The point of the stub is the ``file`` attribute: that is the only
     thing the two tools agree on, and it is what the binding stage keys
@@ -738,7 +738,11 @@ def _fake_graphify(tmp_path: Path) -> Path:
         "multigraph": True,
         "graph": {
             "schema_version": 1,
-            "generator": {"tool": "graphify", "version": "1.2.3", "tier": "binding"},
+            "generator": {
+                "tool": "rb-graph-extract",
+                "version": "1.2.3",
+                "tier": "binding",
+            },
         },
         "nodes": [
             {
@@ -751,13 +755,13 @@ def _fake_graphify(tmp_path: Path) -> Path:
         ],
         "links": [],
     }
-    script = tmp_path / "graphify"
+    script = tmp_path / "extractor"
     script.write_text(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
         "argv = sys.argv[1:]\n"
         "if argv and argv[0] == '--version':\n"
-        "    print('graphify 1.2.3')\n"
+        "    print('rb-graph-extract 1.2.3')\n"
         "    sys.exit(0)\n"
         "out = argv[argv.index('--output') + 1]\n"
         "os.makedirs(os.path.dirname(out) or '.', exist_ok=True)\n"
@@ -776,21 +780,21 @@ def _fake_graphify(tmp_path: Path) -> Path:
     return script
 
 
-def test_graphify_and_the_binding_stage_share_one_node_per_file(
+def test_extractor_and_the_binding_stage_share_one_node_per_file(
     cocotb_project: Path, tmp_path: Path
 ):
-    gfy = _fake_graphify(tmp_path)
+    gfy = _fake_extractor(tmp_path)
     build = build_graph(
         cocotb_project,
         view_executable=str(_fake_view(tmp_path)),
         view_version="0.4.0",
-        graphify_executable=str(gfy),
-        graphify_version="1.2.3",
+        extract_executable=str(gfy),
+        extract_version="1.2.3",
     )
     graph = json.loads(build.graph_path.read_text())
     node_ids = {n["id"] for n in graph["nodes"]}
 
-    # Graphify's id is adopted; no second node for the same file.
+    # The extractor's id is adopted; no second node for the same file.
     assert "pymod:verif/alu_cocotb/test_alu.py" in node_ids
     assert PY_NODE_PREFIX + "verif/alu_cocotb/test_alu.py" not in node_ids
     assert build.binding["reused_node_ids"] == 1
@@ -802,7 +806,7 @@ def test_graphify_and_the_binding_stage_share_one_node_per_file(
     # The binding tier has two producers but is still one tier, and the
     # cross-check sees the stage's file too, so it must still agree.
     assert build.merge["tiers"].count("binding") == 1
-    assert build.merge["graphify_cross_check"]["status"] == "ok"
+    assert build.merge["extract_cross_check"]["status"] == "ok"
 
 
 def test_machine_envelope_carries_the_binding_block(
@@ -811,7 +815,7 @@ def test_machine_envelope_carries_the_binding_block(
     view = _fake_view(tmp_path)
     result = CliRunner().invoke(
         RtlBuddy(name="test_graph_binding").app,
-        ["--machine", "graph", "build", "--tool", str(view), "--no-graphify"],
+        ["--machine", "graph", "build", "--tool", str(view), "--no-extract"],
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)["payload"]
@@ -829,7 +833,7 @@ def test_no_bind_flag_is_wired_through(cocotb_project: Path, tmp_path: Path):
             "build",
             "--tool",
             str(view),
-            "--no-graphify",
+            "--no-extract",
             "--no-bind",
         ],
     )

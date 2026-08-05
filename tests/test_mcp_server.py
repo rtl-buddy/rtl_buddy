@@ -63,7 +63,7 @@ def mcp_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     rb = RtlBuddy(name="test_mcp_server")
     runner = CliRunner()
-    built = runner.invoke(rb.app, ["graph", "build", "--no-design", "--no-graphify"])
+    built = runner.invoke(rb.app, ["graph", "build", "--no-design", "--no-extract"])
     assert built.exit_code == 0, built.output
     rb._artifact_locks.release_all()
     return target

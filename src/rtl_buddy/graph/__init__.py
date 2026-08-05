@@ -9,7 +9,7 @@ are merged by node-id union. This package owns the **config tier**: the
 tests / testbenches / models / specs / coverage relationships that the
 YAML configs already encode explicitly. The design tier (modules,
 instances, ports) is produced by ``rtl-buddy-view``; the binding tier
-(Python-level call graph) by Graphify, topped up by
+(Python-level call graph) by the rb-graph-extract tool, topped up by
 :mod:`rtl_buddy.graph.binding` — the post-merge stage that ties cocotb
 tests to their Python modules, those modules to the DUT, and their
 ``dut.<name>`` accesses to design-tier ports.

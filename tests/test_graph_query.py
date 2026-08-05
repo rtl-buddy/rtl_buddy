@@ -87,10 +87,10 @@ def _runner() -> tuple[CliRunner, RtlBuddy]:
 
 
 def _build(project: Path, *extra: str) -> Path:
-    """Config-tier-only build; no viewer, no Graphify, so it runs anywhere."""
+    """Config-tier-only build; no viewer, no extractor, so it runs anywhere."""
     runner, rb = _runner()
     result = runner.invoke(
-        rb.app, ["graph", "build", "--no-design", "--no-graphify", *extra]
+        rb.app, ["graph", "build", "--no-design", "--no-extract", *extra]
     )
     assert result.exit_code == 0, result.output
     return project / "artefacts" / "graph" / "graph.json"
