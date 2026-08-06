@@ -17,7 +17,7 @@
       "description": "RFC 4122 UUID for request/response correlation and loop-prevention dedupe."
     },
     "origin": {
-      "enum": ["view", "wave", "src", "cli", "notebook", "graph"],
+      "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"],
       "description": "Conceptual originator of the message; the loop-prevention discriminator."
     },
     "kind": {
@@ -119,6 +119,41 @@
             "description": "Focus the design-knowledge-graph pane (`GET /graph`) on one node of `artefacts/graph/graph.json`. `node` is a graph node id — `module:<name>`, `inst:<top>/<dot.path>`, `test:<suite>#<name>`, and the rest of the vocabulary: design-tier ids in docs/graph-json-v1.md of this repo, config- and binding-tier ids in rtl_buddy's docs/concepts/graph.md. A node id the pane's loaded graph does not contain is a soft miss (the pane reports it and keeps its current focus), matching the unknown-overlay-name semantics of `view_overlay_set`.",
             "properties": {
               "node": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "cov_focus" } }, "required": ["type"] },
+      "then": {
+        "properties": {
+          "kind": { "const": "event" },
+          "payload": {
+            "type": "object",
+            "required": ["target"],
+            "additionalProperties": false,
+            "description": "Focus the coverage pane (`GET /cov`) on one target of the run's coverage model (`GET /cov.json`). Modelled on `graph_focus`: one required coordinate string plus optional narrowing hints, all resolved by the pane. `target` is prefixed — `file:<path>`, `module:<name>`, or `test:<suite>#<name>`; a bare string carrying no recognised prefix is read as a file path. A target the pane's loaded model does not contain is a soft miss (the pane reports it and keeps its current focus), matching the semantics of `graph_focus` and `view_overlay_set`. The hub caches the latest `cov_focus` and replays it to a pane that registers later, so a focus sent before the tab is open still lands.",
+            "properties": {
+              "target": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What to focus. `file:<path>` — path as `/cov.json` keys files (project-root-relative); an absolute path is accepted and resolved by the pane. `module:<name>` — a design module, focusing the files that define it. `test:<suite>#<name>` — a test, focusing its per-test attribution. Unprefixed strings are treated as `file:`."
+              },
+              "metric": {
+                "enum": ["line", "branch", "toggle", "expression", "cover"],
+                "description": "Optional: which coverage kind the pane should foreground for the target. Omitted means \"leave the pane's current metric selection alone\"."
+              },
+              "line": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Optional 1-based source line to scroll to. Only meaningful for a `file:` target (or a `module:` target that resolves to a single file); ignored otherwise rather than treated as an error."
+              },
+              "item": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Optional coverage item within the target — a branch/toggle/expression bin id as it appears in `/cov.json`, or an SVA cover point name. Unknown ids are a soft miss like an unknown `target`."
+              }
             }
           }
         }
@@ -726,14 +761,14 @@
                   "active_model":  { "type": ["string", "null"], "description": "Currently-active model name when the hub was started with --model NAME, else null." },
                   "selection":     { "type": ["object", "null"], "description": "Last selection_changed payload broadcast through the hub, plus the origin that produced it. Null when the hub has seen no selection yet.",
                                      "required": ["instance_path", "origin"], "additionalProperties": false,
-                                     "properties": { "instance_path": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph"] } } },
+                                     "properties": { "instance_path": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] } } },
                   "cursor_time":   { "type": ["object", "null"], "description": "Last cursor_time_changed payload + origin. Null when no cursor event has fired.",
                                      "required": ["t_fs", "origin"], "additionalProperties": false,
-                                     "properties": { "t_fs": { "type": "string", "pattern": "^[0-9]+$" }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph"] } } },
+                                     "properties": { "t_fs": { "type": "string", "pattern": "^[0-9]+$" }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] } } },
                   "wave_scope":    { "type": ["object", "null"], "description": "Last scope_changed payload + origin. Null when no scope event has fired.",
                                      "required": ["wave_scope", "origin"], "additionalProperties": false,
-                                     "properties": { "wave_scope": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph"] } } },
-                  "peers":         { "type": "array", "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph"] }, "uniqueItems": true,
+                                     "properties": { "wave_scope": { "type": "string", "minLength": 1 }, "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] } } },
+                  "peers":         { "type": "array", "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] }, "uniqueItems": true,
                                      "description": "Origins currently registered against the hub." },
                   "diagnostics_sources": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true,
                                            "description": "Names of producers with cached diagnostics_set bundles." }
@@ -750,13 +785,13 @@
       "then": {
         "properties": {
           "kind": { "const": "request" },
-          "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph"] },
+          "origin": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] },
           "payload": {
             "type": "object",
             "required": ["client", "version", "capabilities"],
             "additionalProperties": false,
             "properties": {
-              "client": { "enum": ["view", "wave", "src", "cli", "notebook", "graph"] },
+              "client": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] },
               "version": { "type": "string", "minLength": 1, "description": "Semver of the client implementation." },
               "capabilities": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
               "takeover": { "type": "boolean", "description": "When true, instructs the hub to disconnect any existing registration for the same client slot before accepting this hello. Used by browser tabs that find an older tab already attached: the new tab requests takeover, the old tab gets bye-broadcast and its socket closed. Optional; default false." }
@@ -778,7 +813,7 @@
               "server_version": { "type": "string", "minLength": 1 },
               "registered_clients": {
                 "type": "array",
-                "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph"] },
+                "items": { "enum": ["view", "wave", "src", "cli", "notebook", "graph", "cov"] },
                 "uniqueItems": true
               }
             }

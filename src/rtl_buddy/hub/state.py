@@ -79,6 +79,44 @@ class GraphFocus:
 
 
 @dataclass(frozen=True, slots=True)
+class CovFocus:
+    """Last broadcast ``cov_focus`` payload + its origin.
+
+    Cached for the same reason :class:`GraphFocus` is: ``rb hub send
+    cov-focus`` is at its most useful *before* the tab is open ("show me
+    what is cold in this block"), and the replay on registration is what
+    makes that ordering work.
+
+    The three optional narrowing hints ride along rather than being
+    dropped, so a replayed focus lands on the same line and metric the
+    original did — a replay that kept only ``target`` would silently
+    downgrade "this branch, on line 84" to "this file".
+    """
+
+    target: str
+    origin: Origin
+    metric: Optional[str] = None
+    line: Optional[int] = None
+    item: Optional[str] = None
+
+    def payload(self) -> dict[str, Any]:
+        """The on-wire payload, with unset hints omitted.
+
+        The schema is ``additionalProperties: false`` and every hint is
+        optional, so ``None`` has to be absent rather than null.
+        """
+
+        out: dict[str, Any] = {"target": self.target}
+        if self.metric is not None:
+            out["metric"] = self.metric
+        if self.line is not None:
+            out["line"] = self.line
+        if self.item is not None:
+            out["item"] = self.item
+        return out
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticsBundle:
     """Last ``diagnostics_set`` payload for one producer ``source``.
 
@@ -107,6 +145,7 @@ class HubState:
     cursor_time: Optional[CursorTime] = None
     wave_scope: Optional[WaveScope] = None
     graph_focus: Optional[GraphFocus] = None
+    cov_focus: Optional[CovFocus] = None
     diagnostics: dict[str, DiagnosticsBundle] = field(default_factory=dict)
 
     registered_clients: set[Origin] = field(default_factory=set)
@@ -130,6 +169,7 @@ class HubState:
         self.cursor_time = None
         self.wave_scope = None
         self.graph_focus = None
+        self.cov_focus = None
         self.diagnostics = {}
 
 
@@ -139,6 +179,7 @@ __all__ = [
     "CursorTime",
     "WaveScope",
     "GraphFocus",
+    "CovFocus",
     "DiagnosticsBundle",
     "HubState",
 ]

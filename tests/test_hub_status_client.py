@@ -125,6 +125,14 @@ def test_display_origins_includes_the_graph_pane():
     assert "graph" in DISPLAY_ORIGINS
 
 
+def test_display_origins_includes_the_cov_pane():
+    """Same rule, one pane later: the coverage pane is an app a user
+    opens and keeps open, so ``rb hub status`` has to be able to say
+    whether it is attached (rtl-buddy/rtl_buddy#400)."""
+
+    assert "cov" in DISPLAY_ORIGINS
+
+
 def test_display_origins_are_real_protocol_origins():
     """A typo here would print a peer that can never connect."""
     from rtl_buddy.hub.protocol import Origin

@@ -321,6 +321,7 @@ def test_vendored_schema_has_expected_types():
         "error",
         "diagnostics_set",
         "graph_focus",
+        "cov_focus",
     }
     assert types_seen == expected
 
