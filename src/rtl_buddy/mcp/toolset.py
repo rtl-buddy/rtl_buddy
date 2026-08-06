@@ -13,10 +13,11 @@ all it does is transcribe these specs onto the wire.
 Two groups of tools:
 
 * **stateless** — always present. They read
-  ``artefacts/graph/graph.json`` plus the results overlay, and shell out
-  to ``rtl-buddy-view`` for the hierarchy verbs. No hub, no daemon, no
-  session: identical behaviour in an IDE, on a CI runner, or on a
-  dispatch node.
+  ``artefacts/graph/graph.json`` plus the results overlay, read
+  ``cov_dir/manifest.json`` and its model for the coverage verbs, and
+  shell out to ``rtl-buddy-view`` for the hierarchy verbs. No hub, no
+  daemon, no session: identical behaviour in an IDE, on a CI runner, or
+  on a dispatch node.
 * **hub** — present only when a live hub is discovered. These drive the
   schematic/waveform session the user is looking at, which is the one
   thing no stateless server can offer. Discovery is
@@ -39,6 +40,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Callable
 
+from ..cov import query as cov_query
 from ..errors import FatalRtlBuddyError
 from ..graph import query as graph_query
 from ..logging_utils import log_event
@@ -52,6 +54,8 @@ STATELESS_TOOL_NAMES = (
     "graph_path",
     "graph_explain",
     "test_status",
+    "cov_summary",
+    "cov_module",
     "find_module",
     "instances_of",
     "port_connections",
@@ -65,9 +69,15 @@ HUB_TOOL_NAMES = (
     "hub_open_source",
     "hub_resolve",
     "hub_diagnose",
+    "cov_focus",
 )
 
 _SEVERITIES = ("error", "warning", "info", "hint")
+
+#: ``cov_focus.metric`` enum, mirroring the wire schema — the same
+#: literal ``rb hub send cov-focus`` spells, and for the same reason:
+#: the contract is the hub's schema, not this process's coverage model.
+_COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
 
 
 def _tool_version() -> str:
@@ -242,7 +252,10 @@ class Toolset:
             return self._envelope(
                 name, spec.command, ok=False, error=str(exc), **exc.details
             )
-        except graph_query.GraphQueryError as exc:
+        except (graph_query.GraphQueryError, cov_query.CovQueryError) as exc:
+            # Both carry near misses for a name that does not exist, and
+            # both must be caught above FatalRtlBuddyError (CovQueryError
+            # is one) or the candidates would be dropped.
             details = {"candidates": exc.candidates} if exc.candidates else {}
             return self._envelope(
                 name, spec.command, ok=False, error=str(exc), **details
@@ -362,6 +375,34 @@ class Toolset:
         ctx = self._context({"results": True})
         return graph_query.test_status(
             ctx, test=args.get("test"), status=args.get("status")
+        )
+
+    # ------------------------------------------------------------------
+    # coverage handlers
+    # ------------------------------------------------------------------
+
+    def _cov_context(self, args: dict) -> cov_query.CovContext:
+        """Load the manifest and model a coverage tool answers from.
+
+        Re-read per call, like the graph: an agent that runs a coverage
+        regression in one turn asks about it in the next, and the
+        alternative is answering from a run that no longer exists.
+        """
+        return cov_query.load_context(
+            self.project_root,
+            cov_dir=args.get("cov_dir"),
+            manifest=args.get("manifest"),
+        )
+
+    def _h_cov_summary(self, args: dict) -> dict:
+        return cov_query.summary_payload(
+            self._cov_context(args),
+            limit=int(args.get("limit", cov_query.DEFAULT_FILE_LIMIT)),
+        )
+
+    def _h_cov_module(self, args: dict) -> dict:
+        return cov_query.module_payload(
+            self._cov_context(args), str(_req(args, "module"))
         )
 
     # ------------------------------------------------------------------
@@ -565,6 +606,32 @@ class Toolset:
             items.append(item)
         return self._hub_emit("diagnostics_set", {"source": source, "items": items})
 
+    def _h_cov_focus(self, args: dict) -> dict:
+        # Optional keys are omitted rather than sent as null: the wire
+        # schema is additionalProperties:false with no nullable hints,
+        # so a null would be rejected by the hub, not ignored by it.
+        payload: dict[str, Any] = {"target": str(_req(args, "target")).strip()}
+        metric = args.get("metric")
+        if metric is not None:
+            if metric not in _COV_METRICS:
+                raise ToolError(
+                    f"cov_focus: metric must be one of "
+                    f"{'/'.join(_COV_METRICS)}, got {metric!r}"
+                )
+            payload["metric"] = metric
+        line = args.get("line")
+        if line is not None:
+            line = int(line)
+            if line < 1:
+                raise ToolError(f"cov_focus: 'line' is 1-based, got {line}")
+            payload["line"] = line
+        item = args.get("item")
+        if item is not None:
+            if not str(item).strip():
+                raise ToolError("cov_focus: 'item' must be non-empty")
+            payload["item"] = str(item)
+        return self._hub_emit("cov_focus", payload)
+
 
 def _req(args: dict, key: str):
     value = args.get(key)
@@ -610,6 +677,20 @@ _RESULTS_PROP = {
         "Join the regression-results overlay onto every node in the answer "
         "(default true). Set false for a pure structural answer."
     ),
+}
+
+_COV_DIR_PROP = {
+    "type": "string",
+    "description": (
+        "Coverage artefact directory to read. Default: the newest "
+        "cov_dir/manifest.json under the project root, which is the run "
+        "that finished last."
+    ),
+}
+
+_COV_MANIFEST_PROP = {
+    "type": "string",
+    "description": "A manifest.json to read directly, bypassing discovery.",
 }
 
 
@@ -806,6 +887,69 @@ def build_toolset(
                 }
             ),
             handler=ts._h_test_status,
+        )
+    )
+    register(
+        ToolSpec(
+            name="cov_summary",
+            title="Coverage of the last run",
+            command="rb cov summary",
+            description=(
+                "How covered the last coverage run is, read from artefacts "
+                "already on disk — no simulator runs. Returns run-level and "
+                "per-test line/branch/toggle/expression scalars, the coldest "
+                "files first, the module names the model knows, any SVA cover "
+                "points, and where every coverage artefact landed. Stateless: "
+                "a CI node answers this with no hub and no daemon. Start here "
+                "when the question is 'what is under-covered', then call "
+                "cov_module for the points."
+            ),
+            input_schema=_obj(
+                {
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Files to report, coldest first (default "
+                            f"{cov_query.DEFAULT_FILE_LIMIT}; 0 for all)."
+                        ),
+                        "minimum": 0,
+                    },
+                    "cov_dir": _COV_DIR_PROP,
+                    "manifest": _COV_MANIFEST_PROP,
+                }
+            ),
+            handler=ts._h_cov_summary,
+        )
+    )
+    register(
+        ToolSpec(
+            name="cov_module",
+            title="Coverage of one module",
+            command="rb cov module",
+            description=(
+                "Per-file, per-point coverage for one module's sources: every "
+                "line, branch, toggle and expression point with its hit count "
+                "and the tests behind it. A file included into several modules "
+                "reports only the points belonging to the module asked for. An "
+                "unknown name comes back as ok: false with 'candidates' — the "
+                "module vocabulary is the coverage model's (Verilator's "
+                "containing module), so check it against cov_summary.modules."
+            ),
+            input_schema=_obj(
+                {
+                    "module": {
+                        "type": "string",
+                        "description": (
+                            "Module name as the coverage model records it, "
+                            "e.g. one of cov_summary's 'modules'."
+                        ),
+                    },
+                    "cov_dir": _COV_DIR_PROP,
+                    "manifest": _COV_MANIFEST_PROP,
+                },
+                ["module"],
+            ),
+            handler=ts._h_cov_module,
         )
     )
     register(
@@ -1063,6 +1207,56 @@ def build_toolset(
                     ["source"],
                 ),
                 handler=ts._h_hub_diagnose,
+            )
+        )
+        register(
+            ToolSpec(
+                name="cov_focus",
+                title="Point the live coverage pane at a target",
+                command="rb hub send cov-focus",
+                description=(
+                    "Broadcast a coverage focus so the hub's /cov pane shows "
+                    "what you are talking about. Target is prefixed: "
+                    "'file:design/blk.sv', 'module:blk' or "
+                    "'test:verif/blk#basic' (an unprefixed string is read as a "
+                    "file path); metric foregrounds one coverage kind, line "
+                    "scrolls a file target, item names a branch/toggle/"
+                    "expression bin or an SVA cover point. Use the names "
+                    "cov_summary and cov_module return. A target the pane's "
+                    "model does not contain is a soft miss, and the hub "
+                    "replays the latest focus to a pane that connects later, "
+                    "so sending this before the tab is open works."
+                ),
+                input_schema=_obj(
+                    {
+                        "target": {
+                            "type": "string",
+                            "description": (
+                                "file:<path>, module:<name>, test:<suite>#<name>, "
+                                "or a bare path."
+                            ),
+                        },
+                        "metric": {
+                            "type": "string",
+                            "enum": list(_COV_METRICS),
+                            "description": "Coverage kind to foreground.",
+                        },
+                        "line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "1-based source line, for a file target.",
+                        },
+                        "item": {
+                            "type": "string",
+                            "description": (
+                                "Point within the target: a bin id as /cov.json "
+                                "spells it, or an SVA cover point name."
+                            ),
+                        },
+                    },
+                    ["target"],
+                ),
+                handler=ts._h_cov_focus,
             )
         )
 
