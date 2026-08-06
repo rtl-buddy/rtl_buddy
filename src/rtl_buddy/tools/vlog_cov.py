@@ -22,6 +22,8 @@ from collections import defaultdict
 
 from .. import tool_manifest as tm
 from ..config.root import RootConfig
+from ..cov.raw import COVER, parse_raw_records
+from ..cov.source_paths import SourcePathResolver
 from ..logging_utils import log_event
 from .artifact_paths import sanitize_artifact_component
 
@@ -145,9 +147,6 @@ class VlogCov:
         "functional": "user",
     }
 
-    # Raw record shape: C '<... \x01t\x02user ...>' <count>
-    _USER_RECORD_RE = re.compile(rb"C '([^']*?\x01t\x02user[^']*)' ([0-9]+)")
-
     def __init__(self, simulator_name, use_lcov=False, root_cfg=None):
         """
         Build a coverage helper for a simulator family.
@@ -216,111 +215,24 @@ class VlogCov:
                 decoded.append(candidate)
         return decoded
 
+    def _source_resolver(self, base_dir, source_roots=None):
+        """
+        Build the shared source-path resolver for this project (#399).
+
+        One resolver, one contract: ``source_roots`` are the
+        ``[run dir, suite root]`` hints, most specific first.
+        """
+        return SourcePathResolver(
+            self._get_repo_root(),
+            base_dir=base_dir,
+            source_roots=source_roots,
+        )
+
     def _resolve_source_path(self, sf_path, base_dir, source_roots=None):
         """
         Resolve a source-file path from LCOV/raw coverage to a real file in the repo.
         """
-        base_dir = Path(base_dir).resolve()
-        source_roots = (
-            []
-            if source_roots is None
-            else [Path(root).resolve() for root in source_roots if root is not None]
-        )
-
-        repo_root = self._get_repo_root()
-        repo_roots = [repo_root]
-
-        if os.path.isabs(sf_path):
-            resolved = Path(sf_path)
-            return resolved if resolved.exists() else resolved
-
-        normalized = sf_path.replace("\\", "/")
-        parts = [part for part in normalized.split("/") if part not in ("", ".")]
-        candidates = []
-        seen = set()
-
-        def add_candidate(candidate):
-            candidate = candidate.resolve()
-            key = str(candidate)
-            if key not in seen:
-                seen.add(key)
-                candidates.append(candidate)
-
-        basename_only = "/" not in normalized
-
-        if not basename_only:
-            for root in [base_dir] + source_roots + repo_roots:
-                add_candidate(root / normalized)
-
-        if not basename_only:
-            for idx in range(len(parts)):
-                suffix_parts = parts[idx:]
-                if len(suffix_parts) == 0:
-                    continue
-                suffix = Path(*suffix_parts)
-                for repo_root in repo_roots:
-                    add_candidate(repo_root / suffix)
-
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-
-        if len(parts) > 0:
-            basename = parts[-1]
-            source_root_matches = []
-            suffix_matches = []
-            basename_matches = []
-            normalized_suffix = "/" + "/".join(parts)
-            search_roots = source_roots + [
-                root for root in repo_roots if root not in source_roots
-            ]
-            ignored_dirs = {
-                "coverage_annotated",
-                "cov_annot",
-                "coverage_merge.html",
-                "logs",
-                "artefacts",
-            }
-            for search_root in search_roots:
-                for match in search_root.rglob(basename):
-                    match = match.resolve()
-                    if any(part in ignored_dirs for part in match.parts):
-                        continue
-                    if any(part.startswith("obj_dir") for part in match.parts):
-                        continue
-                    match_str = str(match).replace("\\", "/")
-                    if search_root in source_roots:
-                        source_root_matches.append(match)
-                    if match_str.endswith(normalized_suffix):
-                        suffix_matches.append(match)
-                    basename_matches.append(match)
-
-            deduped_source_root_matches = []
-            seen_source_matches = set()
-            for match in source_root_matches:
-                key = str(match)
-                if key not in seen_source_matches:
-                    seen_source_matches.add(key)
-                    deduped_source_root_matches.append(match)
-            if len(deduped_source_root_matches) == 1:
-                return deduped_source_root_matches[0]
-
-            if len(suffix_matches) == 1:
-                return suffix_matches[0]
-
-            deduped_basename_matches = []
-            seen_matches = set()
-            for match in basename_matches:
-                key = str(match)
-                if key not in seen_matches:
-                    seen_matches.add(key)
-                    deduped_basename_matches.append(match)
-            if len(deduped_basename_matches) == 1:
-                return deduped_basename_matches[0]
-
-        if len(candidates) > 0:
-            return candidates[0]
-        return base_dir / normalized
+        return self._source_resolver(base_dir, source_roots).resolve_path(sf_path)
 
     def _build_annotate_cwd(self, raw_path, temp_root, source_roots=None):
         """
@@ -386,106 +298,9 @@ class VlogCov:
         """
         Rewrite LCOV `SF:` entries to normalized repo-resolved paths.
         """
-        lcov_file = Path(lcov_path)
-        base_dir = lcov_file.parent.resolve()
-        source_roots = (
-            []
-            if source_roots is None
-            else [Path(root).resolve() for root in source_roots if root is not None]
+        self._source_resolver(Path(lcov_path).parent, source_roots).rewrite_info(
+            lcov_path, relative=False
         )
-
-        repo_root = self._get_repo_root()
-        repo_roots = [repo_root]
-
-        def resolve_sf_path(sf_path):
-            if os.path.isabs(sf_path):
-                resolved = Path(sf_path)
-                return str(resolved if resolved.exists() else resolved)
-
-            normalized = sf_path.replace("\\", "/")
-            parts = [part for part in normalized.split("/") if part not in ("", ".")]
-            candidates = []
-            seen = set()
-
-            def add_candidate(candidate):
-                candidate = candidate.resolve()
-                key = str(candidate)
-                if key not in seen:
-                    seen.add(key)
-                    candidates.append(candidate)
-
-            for root in [base_dir] + source_roots + repo_roots:
-                add_candidate(root / normalized)
-
-            # Try trimming leading relative path segments and matching the remaining
-            # repo-relative suffix from any discovered repo root.
-            for idx in range(len(parts)):
-                suffix_parts = parts[idx:]
-                if len(suffix_parts) == 0:
-                    continue
-                suffix = Path(*suffix_parts)
-                for repo_root in repo_roots:
-                    add_candidate(repo_root / suffix)
-
-            for candidate in candidates:
-                if candidate.exists():
-                    return str(candidate)
-
-            if len(parts) > 0:
-                basename = parts[-1]
-                source_root_matches = []
-                suffix_matches = []
-                basename_matches = []
-                normalized_suffix = "/" + "/".join(parts)
-                search_roots = source_roots + [
-                    root for root in repo_roots if root not in source_roots
-                ]
-                for search_root in search_roots:
-                    for match in search_root.rglob(basename):
-                        match = match.resolve()
-                        match_str = str(match).replace("\\", "/")
-                        if search_root in source_roots:
-                            source_root_matches.append(match)
-                        if match_str.endswith(normalized_suffix):
-                            suffix_matches.append(match)
-                        basename_matches.append(match)
-
-                deduped_source_root_matches = []
-                seen_source_matches = set()
-                for match in source_root_matches:
-                    key = str(match)
-                    if key not in seen_source_matches:
-                        seen_source_matches.add(key)
-                        deduped_source_root_matches.append(match)
-                if len(deduped_source_root_matches) == 1:
-                    return str(deduped_source_root_matches[0])
-
-                if len(suffix_matches) == 1:
-                    return str(suffix_matches[0])
-
-                deduped_basename_matches = []
-                seen_matches = set()
-                for match in basename_matches:
-                    key = str(match)
-                    if key not in seen_matches:
-                        seen_matches.add(key)
-                        deduped_basename_matches.append(match)
-                if len(deduped_basename_matches) == 1:
-                    return str(deduped_basename_matches[0])
-
-            return str(candidates[0])
-
-        out_lines = []
-        with lcov_file.open("r", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("SF:"):
-                    sf_path = line[3:].strip()
-                    sf_path = resolve_sf_path(sf_path)
-                    out_lines.append(f"SF:{sf_path}\n")
-                else:
-                    out_lines.append(line)
-        with lcov_file.open("w", encoding="utf-8") as f:
-            f.writelines(out_lines)
 
     def _line_has_branch_syntax(self, src_line):
         """
@@ -1271,7 +1086,10 @@ class VlogCov:
 
         Returns one record per counter as ``{name, file, line, module, hier,
         hits}``, or None when the database is unreadable or holds no user
-        points.
+        points. The database reader itself lives in
+        :mod:`rtl_buddy.cov.raw`, which parses every record type; this method
+        is the user-coverage projection of it that the run-level `covers`
+        payload has always reported.
 
         Verilator writes **one record per source cover point per containing
         module**, not one per instance: a point instantiated many times arrives
@@ -1286,30 +1104,17 @@ class VlogCov:
 
             C '\x01f\x02tb_top.sv\x01l\x0214\x01n\x0217\x01t\x02user\x01page\x02v_user/tb_top\x01o\x02APB_IF_WRITE\x01h\x02tb_top.APB_IF_WRITE' 3
 
-        The keys are `\x01<key>\x02<value>` pairs: `f` file, `l` line, `n`
-        column, `o` the coverage comment (the SVA label), `page` `v_user/<module>`,
-        `h` the hierarchy path. Unknown keys are ignored. This data survives only
-        in the raw database — `verilator_coverage --write-info` folds user points
-        into anonymous `DA:` records and drops the labels entirely.
+        This data survives only in the raw database —
+        `verilator_coverage --write-info` folds user points into anonymous
+        `DA:` records and drops the labels entirely.
         """
-        try:
-            raw_bytes = Path(raw_path).read_bytes()
-        except OSError:
-            return None
-
-        matches = self._USER_RECORD_RE.findall(raw_bytes)
-        if len(matches) == 0:
+        parsed = parse_raw_records(raw_path, metrics=[COVER])
+        if not parsed:
             return None
 
         records = []
-        for key_blob, count in matches:
-            keys = self._parse_record_keys(key_blob)
-            hier = keys.get("h")
-            name = keys.get("o")
-            if not name and hier:
-                # Verilator appends the label as the last hierarchy segment.
-                name = hier.rsplit(".", 1)[-1]
-            if not name:
+        for record in parsed:
+            if not record["name"]:
                 # Should not happen for a labeled `cover property`; the record is
                 # still reported (it counts toward the functional ratio) but a
                 # consumer cannot map it to a plan item, so make it diagnosable.
@@ -1319,55 +1124,20 @@ class VlogCov:
                     "coverage.cover_point.unnamed",
                     simulator=self.simulator_name,
                     raw_path=raw_path,
-                    file=keys.get("f"),
-                    line=keys.get("l"),
+                    file=record["file"],
+                    line=record["line"],
                 )
-            line = keys.get("l")
-            try:
-                line = int(line)
-            except (TypeError, ValueError):
-                line = None
             records.append(
                 {
-                    "name": name or None,
-                    "file": keys.get("f") or None,
-                    "line": line,
-                    "module": self._module_from_page(keys.get("page")),
-                    "hier": hier or None,
-                    "hits": int(count),
+                    "name": record["name"],
+                    "file": record["file"],
+                    "line": record["line"],
+                    "module": record["module"],
+                    "hier": record["hier"],
+                    "hits": record["hits"],
                 }
             )
         return records
-
-    @staticmethod
-    def _module_from_page(page):
-        """
-        Extract the containing module from a raw record's `page` key.
-
-        User-coverage pages are written as `v_user/<module>`; anything else is
-        passed through as-is rather than guessed at.
-        """
-        if not page:
-            return None
-        prefix = "v_user/"
-        return page[len(prefix) :] if page.startswith(prefix) else page
-
-    @staticmethod
-    def _parse_record_keys(key_blob):
-        r"""
-        Split a raw coverage comment key into its `\x01<key>\x02<value>` pairs.
-        """
-        keys = {}
-        for chunk in key_blob.split(b"\x01"):
-            if not chunk:
-                continue
-            key, sep, value = chunk.partition(b"\x02")
-            if not sep:
-                continue
-            keys[key.decode("utf-8", errors="replace")] = value.decode(
-                "utf-8", errors="replace"
-            )
-        return keys
 
     def _parse_raw_user_metric(self, raw_path):
         """
