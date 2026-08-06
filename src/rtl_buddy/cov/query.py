@@ -282,37 +282,46 @@ def module_names(ctx: CovContext) -> list[str]:
     return sorted((ctx.model.get("modules") or {}).keys())
 
 
-def module_payload(ctx: CovContext, module: str) -> dict:
-    """Per-file, per-point coverage for one module's sources.
+def resolve_module_name(model: dict, module: str, *, where=None) -> str:
+    """A user's module name -> the name the model spells it with.
 
-    Raises :class:`CovQueryError` with near misses when the module is
-    not in the model — an unknown name is a typo far more often than it
-    is a coverage hole, and the near-miss list is the cheaper fix.
+    Raises :class:`CovQueryError` with near misses when there is no such
+    module — an unknown name is a typo far more often than it is a
+    coverage hole, and the near-miss list is the cheaper fix.
     """
-    model = ctx.model
     modules = model.get("modules") or {}
-    resolved = module
-    if module not in modules:
-        lowered = {name.lower(): name for name in modules}
-        if module.lower() in lowered:
-            resolved = lowered[module.lower()]
-        else:
-            raise CovQueryError(
-                f"cov: no module {module!r} in {ctx.model_path}",
-                candidates=difflib.get_close_matches(
-                    module, sorted(modules), n=10, cutoff=0.4
-                )
-                or sorted(modules)[:10],
-            )
+    if module in modules:
+        return module
+    lowered = {name.lower(): name for name in modules}
+    if module.lower() in lowered:
+        return lowered[module.lower()]
+    raise CovQueryError(
+        f"cov: no module {module!r} in {where or 'the coverage model'}",
+        candidates=difflib.get_close_matches(module, sorted(modules), n=10, cutoff=0.4)
+        or sorted(modules)[:10],
+    )
 
-    paths = set(modules[resolved])
-    file_rows = [row for row in model.get("files", []) if row["path"] in paths]
 
+def module_coverage(model: dict, module: str) -> dict:
+    """One module's files, points, totals and per-test hit counts.
+
+    The join every module-scoped consumer needs: ``rb cov module``
+    prints it, and the graph's coverage overlay (#402) keys it to
+    ``module:<name>`` nodes. One implementation, so a module's ratio on
+    the graph pane cannot disagree with the same module's ratio in the
+    coverage verbs.
+
+    ``module`` must already be spelled the model's way — see
+    :func:`resolve_module_name`.
+    """
+    paths = set((model.get("modules") or {}).get(module, ()))
     totals = {metric: {"found": 0, "hit": 0, "ratio": None} for metric in METRICS}
     tests: dict[str, int] = {}
     files = []
-    for row in file_rows:
-        file_entry = _module_file(row, resolved, tests)
+    for row in model.get("files", []):
+        if row["path"] not in paths:
+            continue
+        file_entry = _module_file(row, module, tests)
         files.append(file_entry)
         for metric in METRICS:
             entry = file_entry["totals"][metric]
@@ -321,14 +330,26 @@ def module_payload(ctx: CovContext, module: str) -> dict:
     for metric in METRICS:
         entry = totals[metric]
         entry["ratio"] = None if entry["found"] == 0 else entry["hit"] / entry["found"]
+    return {
+        "module": module,
+        "totals": totals,
+        "files": files,
+        "tests": dict(sorted(tests.items())),
+    }
+
+
+def module_payload(ctx: CovContext, module: str) -> dict:
+    """Per-file, per-point coverage for one module's sources."""
+    resolved = resolve_module_name(ctx.model, module, where=ctx.model_path)
+    joined = module_coverage(ctx.model, resolved)
 
     payload = _run_block(ctx)
     payload.update(
         {
             "module": resolved,
-            "totals": totals,
-            "files": files,
-            "tests": sorted(tests),
+            "totals": joined["totals"],
+            "files": joined["files"],
+            "tests": sorted(joined["tests"]),
             "artefacts": artefacts_block(ctx),
         }
     )

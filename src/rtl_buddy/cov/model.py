@@ -380,20 +380,29 @@ def load_model(path) -> dict:
         return json.load(fh)
 
 
-def cover_records(model: dict) -> list[dict]:
-    """Observed SVA cover points, in the run-level payload's shape."""
+def cover_points(model: dict) -> list[dict]:
+    """Observed SVA cover points, attribution included.
+
+    :func:`cover_records` is this list with the per-test column dropped.
+    The graph's declared-vs-observed join (#402) needs that column —
+    "which spec item is exercised" is only half the answer without "by
+    which test" — so the walk lives here once rather than being repeated
+    against the model's file rows by every consumer that wants it.
+    """
     records = []
     for file_row in model.get("files", []):
         for point in file_row.get(COVER, []):
-            records.append(
-                {
-                    "name": point.get("name"),
-                    "file": file_row["path"],
-                    "line": point.get("line"),
-                    "module": point.get("module"),
-                    "hits": point.get("hits", 0),
-                }
-            )
+            record = {
+                "name": point.get("name"),
+                "file": file_row["path"],
+                "line": point.get("line"),
+                "module": point.get("module"),
+                "hits": point.get("hits", 0),
+            }
+            tests = point.get("tests")
+            if tests:
+                record["tests"] = dict(sorted(tests.items()))
+            records.append(record)
     return sorted(
         records,
         key=lambda r: (
@@ -403,3 +412,11 @@ def cover_records(model: dict) -> list[dict]:
             r["module"] or "",
         ),
     )
+
+
+def cover_records(model: dict) -> list[dict]:
+    """Observed SVA cover points, in the run-level payload's shape."""
+    return [
+        {key: value for key, value in record.items() if key != "tests"}
+        for record in cover_points(model)
+    ]
