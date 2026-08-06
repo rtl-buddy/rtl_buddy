@@ -25,7 +25,7 @@ from typing import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from rtl_buddy.hub import graph_page, landing_page, theme
+from rtl_buddy.hub import cov_page, graph_page, landing_page, theme
 from rtl_buddy.hub.server import HubServer
 from rtl_buddy.hub.viewer_http import PLACEHOLDER_HTML, ViewerServer
 
@@ -184,7 +184,7 @@ def test_asset_lookup_refuses_anything_not_shipped():
 
 
 def test_every_hub_page_links_the_favicon():
-    """Landing, graph pane, and the no-bundle placeholder."""
+    """Landing, graph pane, coverage pane, and the no-bundle placeholder."""
 
     for page in _hub_pages().values():
         assert theme.FAVICON_16 in page
@@ -215,7 +215,7 @@ _VAR_FALLBACK_RE = re.compile(
 )
 _HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}$")
 
-PAGE_NAMES = ("landing", "graph", "placeholder")
+PAGE_NAMES = ("landing", "graph", "cov", "placeholder")
 
 
 def _hub_pages() -> dict[str, str]:
@@ -226,6 +226,7 @@ def _hub_pages() -> dict[str, str]:
             "utf-8"
         ),
         "graph": graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8"),
+        "cov": cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8"),
         "placeholder": PLACEHOLDER_HTML,
     }
 

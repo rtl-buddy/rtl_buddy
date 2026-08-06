@@ -70,10 +70,9 @@ class AppCard:
 
 
 #: The hub's apps, in the order they appear on the landing and in every
-#: app switcher. Coverage is listed while it is still being built (#400)
-#: rather than hidden: the landing is where a user learns what the hub
-#: can do, and a greyed card with a "coming soon" badge says that more
-#: honestly than an app that appears one release later with no warning.
+#: app switcher. Every one of them is routable; a card is *muted* when
+#: the app has nothing to show yet, carrying the command that would give
+#: it something, rather than disappearing.
 APPS: tuple[AppCard, ...] = (
     AppCard(
         id="view",
@@ -101,10 +100,12 @@ APPS: tuple[AppCard, ...] = (
         id="cov",
         name="coverage",
         task="Inspect coverage",
-        why="Line, branch and toggle coverage per module, test and run.",
+        why=(
+            "Line, branch and toggle coverage per module, test and run — "
+            "annotated on the source, with the tests behind every point."
+        ),
         route="/cov",
         origin="cov",
-        status="planned",
     ),
 )
 
@@ -142,13 +143,10 @@ def build_state_payload(
     have not built a graph" is the useful message, and it is the one a
     hidden card cannot deliver.
 
-    A ``planned`` card is never advertised as available: the page gates
-    routability on ``status``, so ``status: "planned"`` plus
-    ``available: true`` would be a self-contradictory row (unroutable
-    card, "coming soon" badge, note suppressed). ``cov_available`` is
-    accepted here for forward-compatibility only — it takes effect in
-    Phase 2 (rtl-buddy/rtl_buddy#400), which flips the cov card's
-    ``status`` to ``"live"`` and wires this flag up as the
+    A ``planned`` card is never advertised as available — the page gates
+    routability on ``status``, so the two fields must not contradict.
+    No shipped card is planned any more: the cov card went live with the
+    pane (rtl-buddy/rtl_buddy#400), with ``cov_available`` as its
     data-presence half, the same shape as ``graph_present``.
     """
 
@@ -158,9 +156,15 @@ def build_state_payload(
     apps: list[dict] = []
     for card in APPS:
         note: str | None = None
-        if card.status == "planned":
+        if card.status == "planned":  # pragma: no cover - every shipped card is live
             available = False
-            note = "lands with `rb cov` (rtl-buddy/rtl_buddy#400)"
+        elif card.id == "cov":
+            available = cov_available
+            note = (
+                None
+                if cov_available
+                else "run a coverage flag (`rb regression --coverage-merge`) first"
+            )
         elif card.id == "view":
             available = view_available
             note = view_note

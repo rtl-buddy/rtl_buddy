@@ -77,28 +77,25 @@ def test_graph_freshness_is_reported():
     assert unbuilt["graph"]["built_at"] is None
 
 
-def test_cov_card_is_announced_but_not_routable_yet():
-    """Greyed with a "coming soon" badge rather than hidden: the landing
-    is where a user learns what the hub can do."""
+def test_cov_card_advertises_on_data_presence():
+    """The pane ships (rtl-buddy/rtl_buddy#400), so the card is live and
+    availability follows the artefacts — same rule as the graph's.
+
+    A hub with no coverage run keeps the card, muted, carrying the
+    command that would produce some: "the pane exists and you have not
+    collected coverage" is the useful message, and a hidden card cannot
+    deliver it.
+    """
 
     cov = _apps(landing_page.build_state_payload(hub_addr="h:1"))["cov"]
-    assert cov["status"] == "planned"
+    assert cov["status"] == "live"
     assert cov["available"] is False
-    assert "#400" in cov["note"]
-
-
-def test_planned_card_never_claims_available():
-    """The page gates routability on ``status``, so a planned card that
-    said ``available: true`` would be a contradiction the page renders
-    as an unroutable, note-less card with a "coming soon" badge. Phase 2
-    (#400) makes the card usable by flipping ``status`` to live and
-    wiring ``cov_available`` as the data-presence half — until then the
-    flag must not leak into the payload."""
+    assert "coverage" in cov["note"]
 
     ready = _apps(landing_page.build_state_payload(hub_addr="h:1", cov_available=True))
-    assert ready["cov"]["status"] == "planned"
-    assert ready["cov"]["available"] is False
-    assert "#400" in ready["cov"]["note"]
+    assert ready["cov"]["status"] == "live"
+    assert ready["cov"]["available"] is True
+    assert ready["cov"]["note"] is None
 
 
 def test_already_open_comes_from_the_peer_registry():
@@ -135,8 +132,8 @@ def test_every_card_names_a_real_origin_and_route():
     for app in payload["apps"]:
         assert app["route"].startswith("/")
         assert app["task"] and app["why"]
-        # ``cov`` joins the enum in Phase 0b (rtl-buddy-view#133); every
-        # shipped app must already be a real origin.
+        # Every shipped app is a real hub origin — that is what makes
+        # the "already open" badge possible at all.
         if app["status"] == "live":
             assert app["origin"] in known, app["origin"]
 

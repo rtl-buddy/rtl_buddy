@@ -1,0 +1,1134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rtl-buddy-cov</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
+  <!--
+    Served by rtl_buddy.hub.cov_page at GET /cov (rtl-buddy/rtl_buddy#400).
+
+    Offline on purpose: no CDN, no web font, no build step — the hub is
+    routinely run on machines with no route off localhost. The one
+    stylesheet link is same-origin (/hub/theme.css, served by this same
+    hub process, rtl-buddy/rtl_buddy#398); the block below repeats only
+    the tokens the page cannot render without, as a fallback for a sheet
+    that 404s (an old hub serving a new pane).
+
+    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
+    select :root, so they tie on specificity and document order decides
+    — a fallback placed after the link would permanently shadow the
+    sheet, including its @media (prefers-color-scheme: dark) block, and
+    every later palette edit would silently stop reaching this pane.
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:          #f8fafc;
+      --panel:       #ffffff;
+      --panel-2:     #f1f5f9;
+      --line:        #e2e8f0;
+      --line-strong: #cbd5e1;
+      --fg:          #1e293b;
+      --fg-muted:    #64748b;
+      --fg-faint:    #94a3b8;
+      --accent:      #2563eb;
+      --ok:          #16a34a;
+      --warn:        #b45309;
+      --err:         #dc2626;
+      /* Coverage ramp: the continuous fill is
+         hsl(pct * 1.2, 70%, var(--cov-l)), so --cov-l is the one token
+         that has to survive a missing sheet or every tint goes black. */
+      --cov-l:       82%;
+      --cov-none:    #e5e7eb;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --fs-base:  13px;
+      --fs-small: 11px;
+      --radius-1: 3px;
+      --radius-2: 4px;
+    }
+  </style>
+  <link rel="stylesheet" href="/hub/theme.css">
+  <style>
+    /* Page-local derivations of the shared tokens. Nothing here may
+       re-declare a sheet token: both blocks select :root, so a
+       re-declaration after the link would out-rank the sheet. */
+    :root {
+      --tint-s:   70%;    /* saturation of the coverage ramp */
+      --gutter:   3.2rem; /* line-number column */
+      --hitcol:   3.6rem; /* hit-count column */
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font: var(--fs-base)/1.45 var(--font-mono);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    header {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      padding: .5rem .75rem; border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    header h1 {
+      font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em;
+      white-space: nowrap;
+    }
+    header h1 small { color: var(--fg-muted); font-weight: 400; }
+    .grow { flex: 1 1 auto; }
+    input[type="search"], select {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: var(--radius-2);
+      padding: .25rem .5rem;
+    }
+    input[type="search"] { min-width: 12rem; }
+    input[type="search"]:focus, select:focus { outline: 1px solid var(--accent); }
+    button {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: var(--radius-2);
+      padding: .25rem .55rem; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    label.chk { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; }
+    nav.switcher { display: flex; gap: .35rem; align-items: center; }
+    nav.switcher a {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line-strong); border-radius: var(--radius-2);
+      padding: .25rem .55rem; text-decoration: none; white-space: nowrap;
+    }
+    nav.switcher a:hover { border-color: var(--accent); color: var(--accent); }
+
+    main { flex: 1 1 auto; display: flex; min-height: 0; }
+    aside {
+      width: 24rem; flex: none; border-right: 1px solid var(--line);
+      background: var(--panel); overflow: auto; padding: .6rem .5rem;
+    }
+    section#content { flex: 1 1 auto; min-width: 0; overflow: auto; position: relative; }
+    h2 {
+      font-size: 12px; margin: .8rem 0 .4rem; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--fg-muted);
+    }
+    h2:first-child { margin-top: 0; }
+    .muted { color: var(--fg-muted); }
+    .faint { color: var(--fg-faint); }
+    .msg-error { color: var(--err); font-weight: 600; }
+    .msg-warn { color: var(--warn); font-weight: 600; }
+
+    /* -- coverage ramp: one rule, both themes, driven by --h ---------- */
+    .tint { background: hsl(var(--h), var(--tint-s), var(--cov-l)); }
+    .tint.none { background: var(--cov-none); }
+
+    /* -- lists + tables ---------------------------------------------- */
+    ul.files { list-style: none; margin: 0; padding: 0; }
+    ul.files li {
+      display: grid; grid-template-columns: 1fr 4.5rem 3.2rem;
+      gap: .4rem; align-items: center; padding: .15rem .3rem;
+      border-radius: var(--radius-1); cursor: pointer;
+    }
+    ul.files li:hover { background: var(--panel-2); }
+    ul.files li.sel { background: var(--panel-2); outline: 1px solid var(--accent); }
+    ul.files li .path {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      direction: rtl; text-align: left;
+    }
+    .bar {
+      height: .55rem; border-radius: var(--radius-1);
+      background: var(--panel-2); overflow: hidden;
+    }
+    .bar > span { display: block; height: 100%; }
+    .pct { text-align: right; font-size: var(--fs-small); color: var(--fg-muted); }
+    table { border-collapse: collapse; width: 100%; font-size: var(--fs-small); }
+    table th {
+      text-align: right; font-weight: 600; color: var(--fg-muted);
+      padding: .15rem .35rem; border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; background: var(--panel);
+    }
+    table th:first-child, table td:first-child { text-align: left; }
+    table td { padding: .12rem .35rem; text-align: right; }
+    tr.row { cursor: pointer; }
+    tr.row:hover td { background: var(--panel-2); }
+    tr.row.sel td { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
+
+    /* -- dashboard ---------------------------------------------------- */
+    #dash { padding: .75rem; }
+    .cards { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .card {
+      border: 1px solid var(--line); border-radius: var(--radius-3, 6px);
+      background: var(--panel); padding: .5rem .6rem; min-width: 9rem;
+    }
+    .card .k { font-size: var(--fs-small); color: var(--fg-muted); text-transform: uppercase; letter-spacing: .08em; }
+    .card .v { font-size: 20px; font-weight: 600; }
+    .card .n { font-size: var(--fs-small); color: var(--fg-muted); }
+    dl.kv { display: grid; grid-template-columns: 8rem 1fr; gap: .1rem .5rem; margin: 0; }
+    dl.kv dt { color: var(--fg-muted); }
+    dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+    /* -- source annotation -------------------------------------------- */
+    #file-head {
+      position: sticky; top: 0; z-index: 2; background: var(--panel);
+      border-bottom: 1px solid var(--line); padding: .5rem .75rem;
+      display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap;
+    }
+    #file-head .path { font-weight: 600; }
+    .pill {
+      display: inline-block; padding: 0 .4rem; border-radius: 999px;
+      border: 1px solid var(--line-strong); font-size: var(--fs-small);
+      color: var(--fg-muted); white-space: nowrap;
+    }
+    .pill.hot { border-color: var(--accent); color: var(--accent); }
+    table#src { font-size: var(--fs-base); }
+    table#src td { text-align: left; padding: 0 .4rem; white-space: pre; }
+    table#src td.no {
+      width: var(--gutter); text-align: right; color: var(--fg-faint);
+      user-select: none; border-right: 1px solid var(--line);
+    }
+    table#src td.hits {
+      width: var(--hitcol); text-align: right; color: var(--fg-muted);
+      font-size: var(--fs-small); cursor: help;
+    }
+    table#src td.marks { width: 1%; white-space: nowrap; }
+    table#src td.code { width: 100%; overflow-wrap: normal; }
+    table#src tr.hot td.code { box-shadow: inset 0 0 0 1px var(--accent); }
+    .mark {
+      display: inline-block; margin-right: .15rem; padding: 0 .25rem;
+      border-radius: var(--radius-1); font-size: var(--fs-small);
+      border: 1px solid var(--line-strong); cursor: pointer;
+      color: var(--fg);
+    }
+    .mark.miss { border-color: var(--err); color: var(--err); font-weight: 600; }
+    .mark.sel { outline: 1px solid var(--accent); }
+    #point {
+      border-top: 1px solid var(--line); background: var(--panel);
+      padding: .4rem .75rem; font-size: var(--fs-small);
+    }
+
+    footer {
+      border-top: 1px solid var(--line); background: var(--panel);
+      padding: .3rem .75rem; color: var(--fg-muted);
+      display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+    }
+    /* Shared hub chrome: connection dot + one vocabulary
+       (connected / connecting… / offline) — docs/concepts/hub.md. */
+    .dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
+    .dot.connected { background: var(--ok); }
+    .dot.connecting { background: var(--warn); }
+    .dot.offline { background: var(--err); }
+
+    #empty {
+      position: absolute; inset: 0; display: none; place-items: center;
+      text-align: center; padding: 2rem;
+    }
+    #empty.show { display: grid; }
+    #empty code {
+      background: var(--panel-2); padding: .1rem .35rem; border-radius: var(--radius-1);
+    }
+  </style>
+  <script>
+    %HUB_INJECTION%
+  </script>
+</head>
+<body>
+  <header>
+    <h1>rtl-buddy-cov <small id="counts"></small></h1>
+    <label class="chk" title="Which coverage kind the file list, the bars and the gutter report. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
+      metric <select id="metric"></select>
+    </label>
+    <label class="chk" title="Restrict the file list and the tests table to one module's sources. A file included into several modules keeps only the points belonging to the module you pick.">
+      module <select id="module"><option value="">all</option></select>
+    </label>
+    <input type="search" id="search" placeholder="filter files by path…" spellcheck="false">
+    <label class="chk" title="Hide files that are fully covered for the selected metric.">
+      <input type="checkbox" id="opt-cold"> cold only
+    </label>
+    <span class="grow"></span>
+    <label class="chk" title="Clicking a line also broadcasts source_focused; the hub resolves it to a design-view instance and highlights it there. Does nothing when no viewer is connected.">
+      <input type="checkbox" id="opt-select" checked> sync design view
+    </label>
+    <label class="chk" title="Clicking a line also jumps your editor to it — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
+      <input type="checkbox" id="opt-open" checked> open in editor
+    </label>
+    <button id="reload" title="Re-fetch /cov.json (after another coverage run)">reload</button>
+    <nav class="switcher" aria-label="hub apps">
+      <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
+      <a href="/graph" target="_blank" rel="noopener"
+         title="Open the design knowledge graph in a new tab. Selecting a module here focuses it there.">graph ↗</a>
+      <a href="/view" target="_blank" rel="noopener"
+         title="Open the schematic design view in a new tab.">design view ↗</a>
+    </nav>
+  </header>
+
+  <main>
+    <aside>
+      <h2>files</h2>
+      <ul class="files" id="files"></ul>
+      <h2>tests</h2>
+      <div id="tests"><p class="muted">no per-test attribution in this run.</p></div>
+    </aside>
+    <section id="content">
+      <div id="dash"></div>
+      <div id="file" hidden>
+        <div id="file-head"></div>
+        <table id="src"><tbody id="src-body"></tbody></table>
+        <div id="point" hidden></div>
+      </div>
+      <div id="empty"><div id="empty-msg"></div></div>
+    </section>
+  </main>
+
+  <footer>
+    <span><span class="dot connecting" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
+    <span id="peers" class="muted"></span>
+    <span class="grow"></span>
+    <span id="msg" class="muted"></span>
+  </footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var COV_URL = window.__RTL_BUDDY_COV_URL__ || '/cov.json';
+  var SOURCE_URL = window.__RTL_BUDDY_COV_SOURCE_URL__ || '/cov/source';
+
+  // Metric order is authoritative from `hub.metrics` when served; this
+  // is the fallback for a payload from an older hub.
+  var METRICS = ['line', 'branch', 'toggle', 'expression', 'cover'];
+  var METRIC_INITIAL = {
+    line: 'L', branch: 'B', toggle: 'T', expression: 'E', cover: 'C'
+  };
+
+  var els = {
+    counts: document.getElementById('counts'),
+    metric: document.getElementById('metric'),
+    module: document.getElementById('module'),
+    search: document.getElementById('search'),
+    cold: document.getElementById('opt-cold'),
+    optSelect: document.getElementById('opt-select'),
+    optOpen: document.getElementById('opt-open'),
+    files: document.getElementById('files'),
+    tests: document.getElementById('tests'),
+    dash: document.getElementById('dash'),
+    file: document.getElementById('file'),
+    fileHead: document.getElementById('file-head'),
+    srcBody: document.getElementById('src-body'),
+    point: document.getElementById('point'),
+    empty: document.getElementById('empty'),
+    emptyMsg: document.getElementById('empty-msg'),
+    peers: document.getElementById('peers'),
+    msg: document.getElementById('msg'),
+    wsDot: document.getElementById('ws-dot'),
+    wsStatus: document.getElementById('ws-status')
+  };
+
+  var state = {
+    payload: null,
+    byPath: Object.create(null),
+    modules: Object.create(null),
+    metric: 'line',
+    module: '',
+    filter: '',
+    coldOnly: false,
+    file: null,        // selected file path
+    test: null,        // selected test name (attribution filter)
+    focusLine: null,   // line to scroll to / highlight in the file view
+    focusItem: null,   // point name to highlight in the file view
+    sources: Object.create(null),
+    pending: null      // cov_focus that arrived before the model did
+  };
+
+  // ---------------------------------------------------------------
+  // small helpers
+  // ---------------------------------------------------------------
+
+  function note(text, level) {
+    els.msg.textContent = text || '';
+    els.msg.className =
+      level === 'error' ? 'msg-error' : level === 'warn' ? 'msg-warn' : 'muted';
+  }
+  function clear(node) { while (node.firstChild) { node.removeChild(node.firstChild); } }
+  function elem(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) { n.className = cls; }
+    if (text != null) { n.textContent = String(text); }
+    return n;
+  }
+  function pct(ratio) {
+    return ratio == null ? '—' : (ratio * 100).toFixed(1) + '%';
+  }
+  // The shared ramp: hue 0 (red) at nothing covered, 120 (green) at all
+  // of it. Saturation and lightness come from the token sheet, which is
+  // what makes the same fill legible in both themes.
+  function tint(node, ratio) {
+    if (ratio == null) { node.classList.add('tint', 'none'); return node; }
+    node.classList.add('tint');
+    node.classList.remove('none');
+    node.style.setProperty('--h', String(Math.round(ratio * 120)));
+    return node;
+  }
+  function totalsOf(row, metric) {
+    return (row && row.totals && row.totals[metric]) || { found: 0, hit: 0, ratio: null };
+  }
+  function uuid() {
+    if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
+    var b = new Uint8Array(16);
+    (window.crypto || {}).getRandomValues
+      ? crypto.getRandomValues(b)
+      : (function () { for (var i = 0; i < 16; i++) { b[i] = Math.floor(Math.random() * 256); } })();
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    var h = []; for (var i = 0; i < 16; i++) { h.push((b[i] + 0x100).toString(16).slice(1)); }
+    return h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' +
+           h.slice(6, 8).join('') + '-' + h.slice(8, 10).join('') + '-' + h.slice(10).join('');
+  }
+
+  // ---------------------------------------------------------------
+  // hub WebSocket — same /ws the SPA and the graph pane use
+  // ---------------------------------------------------------------
+
+  var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
+    catch (e) { scheduleReconnect(); return; }
+
+    ws.addEventListener('open', function () {
+      send({
+        v: 1, id: uuid(), origin: 'cov', kind: 'request', type: 'hello',
+        payload: {
+          client: 'cov', version: '1.0.0',
+          capabilities: ['cov_focus'],
+          // A refreshed tab supersedes the stale one. The pane has its
+          // own origin, so this never evicts the schematic or the graph.
+          takeover: true
+        }
+      });
+    });
+    ws.addEventListener('message', function (ev) {
+      var env; try { env = JSON.parse(ev.data); } catch (e) { return; }
+      applyEnvelope(env);
+    });
+    ws.addEventListener('close', function () {
+      wsReady = false;
+      els.wsDot.className = 'dot offline';
+      els.wsStatus.textContent = 'offline';
+      els.wsStatus.title = 'lost /ws — retrying';
+      scheduleReconnect();
+    });
+    ws.addEventListener('error', function () { /* close handles it */ });
+  }
+
+  function scheduleReconnect() {
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
+  }
+
+  function send(env) {
+    if (!ws || ws.readyState !== 1) { return false; }
+    ws.send(JSON.stringify(env));
+    return true;
+  }
+  function emit(type, payload) {
+    return send({ v: 1, id: uuid(), origin: 'cov', kind: 'event', type: type, payload: payload });
+  }
+  function request(type, payload, onReply) {
+    var id = uuid();
+    if (onReply) { pending[id] = onReply; }
+    return send({ v: 1, id: id, origin: 'cov', kind: 'request', type: type, payload: payload });
+  }
+
+  function applyEnvelope(env) {
+    if (!env || typeof env !== 'object') { return; }
+    // Correlation is by echoed `id`: a response carries the request's
+    // own id (there is no separate in_reply_to field on the wire).
+    if ((env.kind === 'response' || env.kind === 'error') && pending[env.id]) {
+      var cb = pending[env.id]; delete pending[env.id];
+      cb(env);
+    }
+    switch (env.type) {
+      case 'welcome':
+        wsReady = true; retryMs = 500;
+        els.wsDot.className = 'dot connected';
+        els.wsStatus.textContent = 'connected';
+        els.wsStatus.title = 'hub ' + (env.payload && env.payload.server_version || '');
+        setPeers(env.payload && env.payload.registered_clients);
+        break;
+      case 'peer_joined':
+      case 'bye':
+        // Cheap refresh: ask the hub who is connected rather than
+        // maintaining a shadow registry that can drift.
+        request('state_snapshot', {}, function (reply) {
+          if (reply.kind === 'response' && reply.payload) { setPeers(reply.payload.peers); }
+        });
+        break;
+      case 'cov_focus':
+        if (env.origin === 'cov') { break; }
+        applyFocus(env.payload || {});
+        break;
+      case 'source_focused':
+        if (env.origin === 'cov') { break; }
+        // Exact: the editor's cursor is a file and a line, which is
+        // precisely how this model is keyed.
+        focusFile(env.payload && env.payload.file,
+                  { line: env.payload && env.payload.line, emit: false });
+        break;
+      case 'selection_changed':
+        if (env.origin === 'cov') { break; }
+        focusByInstancePath(env.payload && env.payload.instance_path);
+        break;
+      default:
+        break;
+    }
+    if (env.kind === 'error' && env.payload) {
+      note('hub error: ' + env.payload.code + ': ' + env.payload.message, 'error');
+    }
+  }
+
+  function setPeers(list) {
+    if (!Array.isArray(list)) { return; }
+    els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+  }
+
+  // ---------------------------------------------------------------
+  // loading
+  // ---------------------------------------------------------------
+
+  function load() {
+    note('loading ' + COV_URL + '…');
+    fetch(COV_URL, { cache: 'no-store' }).then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    }).then(function (res) {
+      if (!res.ok) { showEmpty(res.body && res.body.error); return; }
+      ingest(res.body);
+    }).catch(function (e) {
+      showEmpty('could not read ' + COV_URL + ': ' + e);
+    });
+  }
+
+  function showEmpty(message) {
+    els.empty.classList.add('show');
+    els.file.hidden = true;
+    clear(els.dash);
+    clear(els.emptyMsg);
+    // The one piece of artwork this pane carries: a small mascot on the
+    // "no data yet" panel, per the hub's identity-marks-only rule.
+    var art = document.createElement('img');
+    art.src = '/hub/assets/rtl-buddy-mascot-240.png';
+    art.width = 120; art.height = 120; art.alt = '';
+    els.emptyMsg.appendChild(art);
+    els.emptyMsg.appendChild(elem('p', null, message || 'no coverage to show.'));
+    var q = elem('p', 'muted');
+    q.appendChild(document.createTextNode('Produce some with '));
+    q.appendChild(elem('code', null, 'rb regression --coverage-merge'));
+    q.appendChild(document.createTextNode(' (or any coverage flag on '));
+    q.appendChild(elem('code', null, 'rb test'));
+    q.appendChild(document.createTextNode('), then press reload.'));
+    els.emptyMsg.appendChild(q);
+    note('');
+  }
+
+  function ingest(payload) {
+    els.empty.classList.remove('show');
+    state.payload = payload;
+    state.byPath = Object.create(null);
+    (payload.files || []).forEach(function (row) { state.byPath[row.path] = row; });
+    state.modules = Object.create(null);
+    (payload.modules || []).forEach(function (name) { state.modules[name] = true; });
+    (payload.files || []).forEach(function (row) {
+      (row.modules || []).forEach(function (name) { state.modules[name] = true; });
+    });
+    var hub = payload.hub || {};
+    if (Array.isArray(hub.metrics) && hub.metrics.length) { METRICS = hub.metrics; }
+    if (hub.source_route) { SOURCE_URL = hub.source_route; }
+    if (METRICS.indexOf(state.metric) < 0) { state.metric = METRICS[0]; }
+
+    renderMetricPicker();
+    renderModulePicker();
+    renderHeader();
+    renderFiles();
+    renderTests();
+    renderDashboard();
+    state.file = null;
+    els.file.hidden = true;
+    els.dash.hidden = false;
+
+    var counts = payload.counts || {};
+    note((counts.files || 0) + ' files, ' + (counts.tests || 0) + ' tests, ' +
+         (counts.modules || 0) + ' modules');
+    if (state.pending) {
+      var focus = state.pending; state.pending = null;
+      applyFocus(focus);
+    }
+  }
+
+  function renderHeader() {
+    var p = state.payload || {};
+    var totals = p.totals || {};
+    var parts = [];
+    METRICS.forEach(function (metric) {
+      var t = totals[metric];
+      if (!t || !t.found) { return; }
+      parts.push(METRIC_INITIAL[metric] + ' ' + pct(t.ratio));
+    });
+    if (p.simulator) { parts.push(p.simulator); }
+    els.counts.textContent = parts.length ? '· ' + parts.join(' · ') : '';
+    els.counts.title = p.manifest ? 'from ' + p.manifest : '';
+  }
+
+  function renderMetricPicker() {
+    clear(els.metric);
+    METRICS.forEach(function (metric) {
+      var opt = elem('option', null, metric);
+      opt.value = metric;
+      var t = (state.payload.totals || {})[metric] || {};
+      // A metric no record carried is kept but marked: "0 found" is a
+      // fact about the run (an .info-only fallback has no toggles), not
+      // a coverage hole, and hiding it would look like the latter.
+      if (!t.found) { opt.textContent = metric + ' (none)'; }
+      els.metric.appendChild(opt);
+    });
+    els.metric.value = state.metric;
+  }
+
+  function renderModulePicker() {
+    var current = state.module;
+    clear(els.module);
+    var all = elem('option', null, 'all');
+    all.value = '';
+    els.module.appendChild(all);
+    Object.keys(state.modules).sort().forEach(function (name) {
+      var opt = elem('option', null, name);
+      opt.value = name;
+      els.module.appendChild(opt);
+    });
+    els.module.value = state.modules[current] ? current : '';
+    state.module = els.module.value;
+  }
+
+  // ---------------------------------------------------------------
+  // file list
+  // ---------------------------------------------------------------
+
+  function visibleFiles() {
+    var rows = (state.payload && state.payload.files) || [];
+    return rows.filter(function (row) {
+      if (state.module && (row.modules || []).indexOf(state.module) < 0) { return false; }
+      if (state.filter && row.path.toLowerCase().indexOf(state.filter) < 0) { return false; }
+      if (state.coldOnly) {
+        var t = totalsOf(row, state.metric);
+        if (!t.found || t.hit >= t.found) { return false; }
+      }
+      return true;
+    });
+  }
+
+  function renderFiles() {
+    clear(els.files);
+    var rows = visibleFiles();
+    if (!rows.length) {
+      els.files.appendChild(elem('li', 'muted', 'no files match.'));
+      return;
+    }
+    rows.forEach(function (row) {
+      var t = totalsOf(row, state.metric);
+      var li = elem('li');
+      li.classList.toggle('sel', state.file === row.path);
+      // The path is rendered right-to-left so a long path truncates at
+      // its useless end: `…/rtl/fifo/fifo_wr.sv`, not `design/rtl/fi…`.
+      var path = elem('span', 'path', row.path);
+      path.title = row.path + (row.modules && row.modules.length
+        ? '  ·  ' + row.modules.join(', ') : '');
+      var bar = elem('span', 'bar');
+      var fill = elem('span');
+      tint(fill, t.ratio);
+      fill.style.width = (t.ratio == null ? 0 : t.ratio * 100) + '%';
+      bar.appendChild(fill);
+      var num = elem('span', 'pct', t.found ? t.hit + '/' + t.found : '—');
+      li.appendChild(path); li.appendChild(bar); li.appendChild(num);
+      li.addEventListener('click', function () { selectFile(row.path, {}); });
+      els.files.appendChild(li);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // tests table — the attribution the Coverview fork existed to render
+  // ---------------------------------------------------------------
+
+  function renderTests() {
+    clear(els.tests);
+    var rows = (state.payload && state.payload.tests) || [];
+    if (!rows.length) {
+      els.tests.appendChild(elem('p', 'muted', 'no per-test attribution in this run.'));
+      return;
+    }
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var htr = document.createElement('tr');
+    htr.appendChild(elem('th', null, 'test'));
+    METRICS.forEach(function (m) { htr.appendChild(elem('th', null, METRIC_INITIAL[m])); });
+    thead.appendChild(htr); table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    rows.forEach(function (row) {
+      var tr = elem('tr', 'row');
+      tr.classList.toggle('sel', state.test === row.name);
+      var name = elem('td', null, row.name);
+      name.title = row.suite ? 'from ' + row.suite : '';
+      tr.appendChild(name);
+      METRICS.forEach(function (m) {
+        var t = totalsOf(row, m);
+        var td = elem('td', null, t.found ? pct(t.ratio) : '—');
+        tr.appendChild(td);
+      });
+      tr.addEventListener('click', function () {
+        // Second click clears: the attribution filter is a lens, and a
+        // lens you cannot take off is a mode.
+        state.test = state.test === row.name ? null : row.name;
+        renderTests();
+        if (state.file) { renderFile(); }
+        note(state.test
+          ? 'attribution: showing what ' + state.test + ' hit'
+          : 'attribution: all tests');
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    els.tests.appendChild(table);
+  }
+
+  // ---------------------------------------------------------------
+  // dashboard
+  // ---------------------------------------------------------------
+
+  function renderDashboard() {
+    clear(els.dash);
+    var p = state.payload || {};
+    var cards = elem('div', 'cards');
+    METRICS.forEach(function (metric) {
+      var t = (p.totals || {})[metric];
+      if (!t) { return; }
+      var card = elem('div', 'card');
+      card.appendChild(elem('div', 'k', metric));
+      var v = elem('div', 'v', t.found ? pct(t.ratio) : '—');
+      card.appendChild(v);
+      card.appendChild(elem('div', 'n', t.found ? t.hit + ' / ' + t.found + ' points' : 'not collected'));
+      var bar = elem('div', 'bar');
+      var fill = elem('span');
+      tint(fill, t.ratio);
+      fill.style.width = (t.ratio == null ? 0 : t.ratio * 100) + '%';
+      bar.appendChild(fill);
+      card.appendChild(bar);
+      cards.appendChild(card);
+    });
+    els.dash.appendChild(cards);
+
+    els.dash.appendChild(elem('h2', null, 'run'));
+    var dl = elem('dl', 'kv');
+    [['manifest', p.manifest], ['generated', p.generated_at], ['command', p.run_command],
+     ['suite', p.suite], ['builder', p.builder], ['simulator', p.simulator],
+     ['merge mode', p.merge_mode], ['model', (p.hub || {}).model]
+    ].forEach(function (pair) {
+      if (pair[1] == null) { return; }
+      dl.appendChild(elem('dt', null, pair[0]));
+      dl.appendChild(elem('dd', null, pair[1]));
+    });
+    els.dash.appendChild(dl);
+
+    if ((p.covers || []).length) {
+      els.dash.appendChild(elem('h2', null, 'cover points'));
+      var table = document.createElement('table');
+      var thead = document.createElement('thead');
+      var htr = document.createElement('tr');
+      ['name', 'module', 'file', 'hits'].forEach(function (h) {
+        htr.appendChild(elem('th', null, h));
+      });
+      thead.appendChild(htr); table.appendChild(thead);
+      var tbody = document.createElement('tbody');
+      p.covers.forEach(function (row) {
+        var tr = elem('tr', 'row');
+        tr.appendChild(elem('td', null, row.name || '—'));
+        tr.appendChild(elem('td', null, row.module || '—'));
+        tr.appendChild(elem('td', null, row.file || '—'));
+        var hits = elem('td', null, row.hits);
+        if (!row.hits) { hits.className = 'msg-error'; }
+        tr.appendChild(hits);
+        tr.addEventListener('click', function () {
+          selectFile(row.file, { line: row.line, item: row.name, metric: 'cover' });
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      els.dash.appendChild(table);
+    }
+
+    els.dash.appendChild(elem('h2', null, 'coldest files'));
+    els.dash.appendChild(elem('p', 'muted',
+      'Pick one on the left — the list is ordered coldest first for the selected metric.'));
+  }
+
+  // ---------------------------------------------------------------
+  // per-file source annotation
+  // ---------------------------------------------------------------
+
+  function selectFile(path, opts) {
+    opts = opts || {};
+    var row = path && state.byPath[path];
+    if (!row) {
+      note('no coverage recorded for ' + path, 'warn');
+      return false;
+    }
+    state.file = path;
+    state.focusLine = opts.line || null;
+    state.focusItem = opts.item || null;
+    if (opts.metric && METRICS.indexOf(opts.metric) >= 0) {
+      state.metric = opts.metric;
+      els.metric.value = opts.metric;
+    }
+    renderFiles();
+    els.dash.hidden = true;
+    els.file.hidden = false;
+    ensureSource(path, function () { renderFile(); });
+    return true;
+  }
+
+  function ensureSource(path, done) {
+    if (state.sources[path] !== undefined) { done(); return; }
+    fetch(SOURCE_URL + '?path=' + encodeURIComponent(path), { cache: 'no-store' })
+      .then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+      })
+      .then(function (res) {
+        // A missing source is not a failure of the coverage read: the
+        // points are still worth showing, so the annotation degrades to
+        // line numbers with no text rather than to an error page.
+        state.sources[path] = res.ok && Array.isArray(res.body.lines)
+          ? res.body.lines : null;
+        if (!res.ok) { note((res.body && res.body.error) || ('no source for ' + path), 'warn'); }
+        done();
+      })
+      .catch(function (e) {
+        state.sources[path] = null;
+        note('could not read source for ' + path + ': ' + e, 'warn');
+        done();
+      });
+  }
+
+  function pointsByLine(row) {
+    var index = Object.create(null);
+    METRICS.forEach(function (metric) {
+      (row[metric] || []).forEach(function (point) {
+        if (metric === 'line' || point.line == null) { return; }
+        (index[point.line] = index[point.line] || []).push({ metric: metric, point: point });
+      });
+    });
+    return index;
+  }
+
+  function hitsFor(point) {
+    // With a test lens on, the number shown is that test's contribution
+    // — which is the whole question "what would I lose by dropping it".
+    if (!state.test) { return point.hits || 0; }
+    return ((point.tests || {})[state.test]) || 0;
+  }
+
+  function attribution(point) {
+    var tests = point.tests || {};
+    var names = Object.keys(tests).sort();
+    if (!names.length) { return 'no per-test attribution'; }
+    return names.map(function (n) { return n + ': ' + tests[n]; }).join('\n');
+  }
+
+  function renderFile() {
+    var row = state.byPath[state.file];
+    if (!row) { return; }
+    clear(els.fileHead);
+    var back = elem('button', null, '← overview');
+    back.title = 'Back to the run dashboard.';
+    back.addEventListener('click', showDashboard);
+    els.fileHead.appendChild(back);
+    els.fileHead.appendChild(elem('span', 'path', row.path));
+    (row.modules || []).forEach(function (name) {
+      var pill = elem('span', 'pill', name);
+      pill.title = 'Focus this module in the graph pane';
+      pill.addEventListener('click', function () { focusModuleElsewhere(name); });
+      els.fileHead.appendChild(pill);
+    });
+    METRICS.forEach(function (metric) {
+      var t = totalsOf(row, metric);
+      if (!t.found) { return; }
+      var pill = elem('span', 'pill' + (metric === state.metric ? ' hot' : ''),
+        METRIC_INITIAL[metric] + ' ' + t.hit + '/' + t.found + ' ' + pct(t.ratio));
+      pill.addEventListener('click', function () {
+        state.metric = metric; els.metric.value = metric;
+        renderFiles(); renderFile();
+      });
+      els.fileHead.appendChild(pill);
+    });
+    if (state.test) {
+      els.fileHead.appendChild(elem('span', 'pill hot', 'lens: ' + state.test));
+    }
+
+    var lines = state.sources[row.path];
+    var byLine = Object.create(null);
+    (row.line || []).forEach(function (point) {
+      if (point.line != null) { byLine[point.line] = point; }
+    });
+    var marks = pointsByLine(row);
+    var last = lines ? lines.length : 0;
+    Object.keys(byLine).concat(Object.keys(marks)).forEach(function (n) {
+      last = Math.max(last, parseInt(n, 10) || 0);
+    });
+
+    clear(els.srcBody);
+    var target = null;
+    for (var n = 1; n <= last; n++) {
+      var tr = elem('tr');
+      tr.dataset.line = String(n);
+      tr.appendChild(elem('td', 'no', n));
+
+      var point = byLine[n];
+      var hits = elem('td', 'hits');
+      if (point) {
+        var h = hitsFor(point);
+        hits.textContent = h;
+        hits.title = attribution(point);
+        tint(hits, h > 0 ? 1 : 0);
+      } else {
+        hits.textContent = '';
+      }
+      tr.appendChild(hits);
+
+      var cell = elem('td', 'marks');
+      (marks[n] || []).forEach(function (entry) {
+        var h = hitsFor(entry.point);
+        var mark = elem('span', 'mark' + (h > 0 ? '' : ' miss'),
+          METRIC_INITIAL[entry.metric] + (entry.point.name ? ' ' + entry.point.name : ''));
+        mark.title = entry.metric + ' · ' + (entry.point.name || '(unnamed)') +
+          (entry.point.module ? ' · ' + entry.point.module : '') +
+          ' · hits ' + h + '\n' + attribution(entry.point);
+        if (state.focusItem && entry.point.name === state.focusItem) {
+          mark.classList.add('sel');
+        }
+        mark.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          showPoint(entry.metric, entry.point);
+        });
+        cell.appendChild(mark);
+      });
+      tr.appendChild(cell);
+
+      var code = elem('td', 'code', lines && lines[n - 1] != null ? lines[n - 1] : '');
+      tr.appendChild(code);
+
+      (function (lineNo) {
+        tr.addEventListener('click', function () { activateLine(lineNo); });
+      })(n);
+      if (state.focusLine === n) { tr.classList.add('hot'); target = tr; }
+      els.srcBody.appendChild(tr);
+    }
+    els.point.hidden = true;
+    if (target) { target.scrollIntoView({ block: 'center' }); }
+  }
+
+  function showDashboard() {
+    state.file = null;
+    state.focusLine = null;
+    state.focusItem = null;
+    els.file.hidden = true;
+    els.dash.hidden = false;
+    renderFiles();
+  }
+
+  function showPoint(metric, point) {
+    clear(els.point);
+    els.point.hidden = false;
+    els.point.appendChild(elem('strong', null,
+      metric + ' · ' + (point.name || '(unnamed)') +
+      (point.module ? ' · ' + point.module : '') +
+      ' · line ' + point.line + ' · hits ' + (point.hits || 0)));
+    var tests = point.tests || {};
+    var names = Object.keys(tests).sort();
+    if (!names.length) {
+      els.point.appendChild(elem('div', 'muted', 'no per-test attribution'));
+      return;
+    }
+    var table = document.createElement('table');
+    var tbody = document.createElement('tbody');
+    names.forEach(function (name) {
+      var tr = elem('tr', 'row');
+      tr.appendChild(elem('td', null, name));
+      var td = elem('td', null, tests[name]);
+      if (!tests[name]) { td.className = 'faint'; }
+      tr.appendChild(td);
+      tr.addEventListener('click', function () {
+        state.test = state.test === name ? null : name;
+        renderTests(); renderFile();
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    els.point.appendChild(table);
+  }
+
+  // ---------------------------------------------------------------
+  // clicks → hub envelopes
+  // ---------------------------------------------------------------
+
+  function activateLine(line) {
+    state.focusLine = line;
+    Array.prototype.forEach.call(els.srcBody.children, function (tr) {
+      tr.classList.toggle('hot', tr.dataset.line === String(line));
+    });
+    var did = [];
+    if (els.optSelect.checked) {
+      // `source_focused`, not `selection_changed`: this pane knows files
+      // and modules, never instance paths. The hub's resolver turns a
+      // file+line into the instance(s) whose source range contains it
+      // and broadcasts the derived `selection_changed` itself, which is
+      // the only way to reach the schematic without inventing a
+      // coordinate the coverage model does not have.
+      if (emit('source_focused', { file: state.file, line: line, col: 1 })) {
+        did.push('focus ' + state.file + ':' + line);
+      }
+    }
+    if (els.optOpen.checked) {
+      var payload = { file: state.file, line: line, col: 1 };
+      if (request('open_source', payload, function (reply) {
+        if (reply.kind === 'error') {
+          note(reply.payload.code === 'not_connected'
+            ? 'no editor connected — start nvim with the rtl-buddy plugin (rb nvim-install), or untick "open in editor"'
+            : 'open_source: ' + reply.payload.code + ': ' + reply.payload.message, 'error');
+        }
+      })) {
+        did.push('open ' + payload.file + ':' + line);
+      }
+    }
+    if (did.length) { note(did.join('  ·  ')); }
+    else if (!wsReady) { note('hub not connected', 'error'); }
+  }
+
+  function focusModuleElsewhere(name) {
+    // The graph pane speaks node ids, and `module:<name>` is the id a
+    // design module carries there — so a module chip here lands on the
+    // same module there, and the graph pane's own module→instance rule
+    // takes it the rest of the way to the schematic.
+    if (emit('graph_focus', { node: 'module:' + name })) {
+      note('graph-focus module:' + name);
+    } else {
+      note('hub not connected', 'error');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // inbound focus
+  // ---------------------------------------------------------------
+
+  function focusFile(path, opts) {
+    opts = opts || {};
+    if (typeof path !== 'string' || !path) { return false; }
+    var row = state.byPath[path];
+    if (!row) {
+      // Absolute paths are accepted per the wire contract: the model
+      // keys files project-relative, so try a suffix match before
+      // calling it a miss.
+      var hit = Object.keys(state.byPath).filter(function (known) {
+        return path.endsWith('/' + known) || known.endsWith('/' + path);
+      });
+      if (hit.length !== 1) { return false; }
+      path = hit[0];
+    }
+    return selectFile(path, { line: opts.line, item: opts.item, metric: opts.metric });
+  }
+
+  function focusModule(name, opts) {
+    var rows = ((state.payload && state.payload.files) || []).filter(function (row) {
+      return (row.modules || []).indexOf(name) >= 0;
+    });
+    if (!rows.length) { return false; }
+    state.module = name;
+    els.module.value = name;
+    renderFiles();
+    return selectFile(rows[0].path, opts);
+  }
+
+  function focusTest(name) {
+    var known = ((state.payload && state.payload.tests) || []).some(function (row) {
+      return row.name === name;
+    });
+    if (!known) { return false; }
+    state.test = name;
+    renderTests();
+    if (state.file) { renderFile(); }
+    return true;
+  }
+
+  function applyFocus(payload) {
+    if (!state.payload) {
+      // The hub replays a cached focus on connect, which routinely wins
+      // the race against the model fetch; hold it rather than dropping it.
+      state.pending = payload;
+      return;
+    }
+    var target = payload && payload.target;
+    if (typeof target !== 'string' || !target) { return; }
+    var opts = { line: payload.line, item: payload.item, metric: payload.metric };
+    var ok;
+    if (target.indexOf('module:') === 0) {
+      ok = focusModule(target.slice(7), opts);
+    } else if (target.indexOf('test:') === 0) {
+      ok = focusTest(target.slice(5));
+    } else {
+      ok = focusFile(target.indexOf('file:') === 0 ? target.slice(5) : target, opts);
+    }
+    // A soft miss, like graph_focus: report it and keep the current
+    // focus rather than blanking the pane over a stale target.
+    note(ok ? 'focused ' + target : 'cov-focus: no ' + target + ' in this run',
+         ok ? null : 'warn');
+  }
+
+  function focusByInstancePath(ip) {
+    if (Array.isArray(ip)) { ip = ip[0]; }
+    if (typeof ip !== 'string' || !ip || !state.payload) { return; }
+    // A naming-convention heuristic, and a soft miss when it fails: the
+    // coverage model has modules, the design view has instances, and
+    // nothing in either says which module an instance is of. Stripping
+    // the usual instance prefixes off the leaf is right often enough to
+    // be worth the zero cost of being wrong (nothing happens).
+    var leaf = ip.split('.').pop();
+    var candidates = [leaf, leaf.replace(/^(u|i|inst|dut)_/, '')];
+    for (var i = 0; i < candidates.length; i++) {
+      if (state.modules[candidates[i]]) { focusModule(candidates[i], {}); return; }
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // wiring
+  // ---------------------------------------------------------------
+
+  els.metric.addEventListener('change', function () {
+    state.metric = els.metric.value;
+    renderFiles();
+    if (state.file) { renderFile(); }
+  });
+  els.module.addEventListener('change', function () {
+    state.module = els.module.value;
+    renderFiles();
+  });
+  els.search.addEventListener('input', function () {
+    state.filter = els.search.value.trim().toLowerCase();
+    renderFiles();
+  });
+  els.cold.addEventListener('change', function () {
+    state.coldOnly = els.cold.checked;
+    renderFiles();
+  });
+  document.getElementById('reload').addEventListener('click', function () {
+    state.sources = Object.create(null);
+    load();
+  });
+
+  connect();
+  load();
+})();
+</script>
+</body>
+</html>
