@@ -209,8 +209,13 @@ def coldest_first(file_rows, limit=None):
 # ---------------------------------------------------------------------------
 
 
-def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict:
-    """Run-level scalars, per-test scalars and the coldest files."""
+def _payload_around_files(ctx: CovContext, files: list) -> dict:
+    """Everything both payloads share, wrapped around a ``files`` list.
+
+    The summary and the detail differ only in the depth of ``files``, so
+    the caller builds that list and this builds the rest — the detail
+    used to call the summary and throw its file rows away.
+    """
     model = ctx.model
     payload = _run_block(ctx)
     payload.update(
@@ -225,10 +230,7 @@ def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict
                 }
                 for row in model.get("tests", [])
             ],
-            "files": [
-                _file_summary(row)
-                for row in coldest_first(model.get("files", []), limit)
-            ],
+            "files": files,
             "modules": sorted((model.get("modules") or {}).keys()),
             "artefacts": artefacts_block(ctx),
         }
@@ -237,6 +239,17 @@ def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict
     if covers:
         payload["covers"] = covers
     return payload
+
+
+def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict:
+    """Run-level scalars, per-test scalars and the coldest files."""
+    return _payload_around_files(
+        ctx,
+        [
+            _file_summary(row)
+            for row in coldest_first(ctx.model.get("files", []), limit)
+        ],
+    )
 
 
 def detail_payload(ctx: CovContext, *, limit: int | None = None) -> dict:
@@ -252,9 +265,7 @@ def detail_payload(ctx: CovContext, *, limit: int | None = None) -> dict:
     ordering — the only difference is the depth of ``files``.
     """
 
-    payload = summary_payload(ctx, limit=0)
-    payload["files"] = coldest_first(ctx.model.get("files", []), limit)
-    return payload
+    return _payload_around_files(ctx, coldest_first(ctx.model.get("files", []), limit))
 
 
 def module_names(ctx: CovContext) -> list[str]:
