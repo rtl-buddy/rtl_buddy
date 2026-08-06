@@ -26,6 +26,8 @@ uv sync --group dev
 
 `uv sync --group dev` installs the package plus the composite `dev` dependency group (lint, test, docs). The resulting environment lives in `.venv/`; `uv run <cmd>` and `./venv/bin/python -m rtl_buddy …` both reach it.
 
+One group is deliberately outside `dev`: `uv sync --group graph-extract` additionally installs the [rtl-buddy-graph-extract](https://github.com/rtl-buddy/rtl-buddy-graph-extract) binding-tier extractor (git-resolved until its first PyPI release), which un-skips the two real-binary graph tests (`test_resolve_extractor_against_the_real_binary`, `test_bundled_extractor_end_to_end`). It is an optional subprocess tool, not part of the baseline dev environment — CI installs it, a contributor only needs it when touching `rb graph build`'s binding tier.
+
 Verify the install:
 
 ```bash

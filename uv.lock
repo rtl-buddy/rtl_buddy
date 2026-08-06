@@ -1459,9 +1459,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-graph-extract = [
-    { name = "rtl-buddy-graph-extract" },
-]
 mcp = [
     { name = "mcp" },
 ]
@@ -1485,6 +1482,9 @@ docs = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
 ]
+graph-extract = [
+    { name = "rtl-buddy-graph-extract" },
+]
 lint = [
     { name = "ruff" },
 ]
@@ -1503,13 +1503,12 @@ requires-dist = [
     { name = "pyserde", extras = ["yaml"], specifier = ">=0.27.0" },
     { name = "pywellen", specifier = ">=0.20.0,<0.25" },
     { name = "rich", specifier = ">=14.0.0" },
-    { name = "rtl-buddy-graph-extract", marker = "extra == 'graph-extract'", git = "https://github.com/rtl-buddy/rtl-buddy-graph-extract" },
     { name = "rtl-buddy-xeno", extras = ["slang", "verible"], marker = "extra == 'mut'", specifier = ">=0.1.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.15" },
     { name = "typer", specifier = ">=0.19.2" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["graph-extract", "mcp", "mut"]
+provides-extras = ["mcp", "mut"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1527,6 +1526,7 @@ docs = [
     { name = "mkdocs", specifier = ">=1.6.0" },
     { name = "mkdocs-material", specifier = ">=9.5.0" },
 ]
+graph-extract = [{ name = "rtl-buddy-graph-extract", git = "https://github.com/rtl-buddy/rtl-buddy-graph-extract" }]
 lint = [{ name = "ruff", specifier = ">=0.11.0" }]
 test = [
     { name = "mcp", specifier = ">=1.2.0" },

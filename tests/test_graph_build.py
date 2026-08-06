@@ -28,6 +28,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from types import SimpleNamespace
@@ -1229,21 +1230,69 @@ def test_resolve_extractor_none_when_not_installed(monkeypatch):
     assert extract_mod.resolve_extractor() is None
 
 
+def test_graph_extract_is_an_unpublished_dependency_group():
+    """Groups stay out of wheel metadata; extras do not. The extractor
+    has no PyPI release, so advertising it as an extra ships a
+    dependency pip cannot resolve — exactly what v6.26.0 did. This is
+    the automated guard on that invariant, and the test that should
+    FAIL in the promotion PR (rtl-buddy-graph-extract#1), which is when
+    the extra becomes legal and gets its version floor."""
+    pyproject = tomllib.loads(
+        (Path(__file__).parent.parent / "pyproject.toml").read_text()
+    )
+    assert "graph-extract" not in pyproject["project"].get("optional-dependencies", {})
+    assert "graph-extract" in pyproject["dependency-groups"]
+
+
 @pytest.mark.skipif(
     shutil.which(extract_mod.GRAPH_EXTRACT_BINARY) is None,
-    reason="rb-graph-extract not installed (uv sync --extra graph-extract)",
+    reason="rb-graph-extract not installed (uv sync --group graph-extract)",
+)
+def test_resolve_extractor_against_the_real_binary():
+    """Discovery for real, no stubs and no hand-fed strings: the manifest
+    detectors must find the installed tool, and the version regex must
+    parse the binary's actual ``--version`` output. Asserting the regex
+    only against a literal the author chose is exactly the assumption the
+    dead Graphify contract was built on — this is the test that a real
+    install keeps honest."""
+    choice = extract_mod.resolve_extractor()
+    assert choice is not None
+    assert choice.executable == extract_mod.GRAPH_EXTRACT_BINARY
+    # The regex is only exercised when the version came from the PATH
+    # probe — check_tool() skips probe_version() for a python-metadata
+    # detection. The skipif guard makes PathDetector win today; this
+    # states that dependency instead of relying on it.
+    spec = next(
+        s
+        for s in extract_mod.get_manifest()
+        if s.name == extract_mod.GRAPH_EXTRACT_TOOL
+    )
+    assert extract_mod.check_tool(spec).kind == "path"
+    # "unknown" would mean the tool was found but its --version output
+    # did not match the manifest regex — a fingerprint regression.
+    assert choice.version != "unknown"
+    assert choice.version[0].isdigit()
+
+
+@pytest.mark.skipif(
+    shutil.which(extract_mod.GRAPH_EXTRACT_BINARY) is None,
+    reason="rb-graph-extract not installed (uv sync --group graph-extract)",
 )
 def test_bundled_extractor_end_to_end(graph_project: Path, tmp_path: Path):
-    """The real rb-graph-extract binary, not a stub: binding tier builds,
-    its nodes stitch into the merge, the cross-check agrees, and the
-    fingerprint is keyed by the bundled tool's manifest name."""
+    """The real rb-graph-extract binary, not a stub, reached the same way
+    `rb graph build` reaches it — through resolve_extractor(): binding
+    tier builds, its nodes stitch into the merge, the cross-check agrees,
+    and the fingerprint carries the tool's manifest name and its real
+    probed version."""
+    choice = extract_mod.resolve_extractor()
+    assert choice is not None
     view, _ = _fake_view(tmp_path)
     build = build_graph(
         graph_project,
         view_executable=str(view),
         view_version="0.4.0",
-        extract_executable=extract_mod.GRAPH_EXTRACT_BINARY,
-        extract_version="0.1.0",
+        extract_executable=choice.executable,
+        extract_version=choice.version,
     )
     binding = next(t for t in build.tiers if t.tier == BINDING_TIER)
     assert binding.status == "built"
@@ -1251,7 +1300,7 @@ def test_bundled_extractor_end_to_end(graph_project: Path, tmp_path: Path):
     graph = json.loads(build.graph_path.read_text())
     assert "py:verif/blk_a/cocotb_blk_a.py" in _nodes(graph)
     meta = json.loads(build.meta_path.read_text())
-    assert meta["tools"][extract_mod.GRAPH_EXTRACT_TOOL] == "0.1.0"
+    assert meta["tools"][extract_mod.GRAPH_EXTRACT_TOOL] == choice.version
     assert meta["merge"]["extract_cross_check"]["status"] == "ok"
 
 

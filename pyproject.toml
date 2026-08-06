@@ -77,24 +77,19 @@ mut = ["rtl-buddy-xeno[verible,slang] >= 0.1.0"]
 # 1.x decorator API and the 2.x constructor-callback API are supported
 # by `mcp/server.py:build_server`.
 mcp = ["mcp >= 1.2.0"]
-# The bundled binding-tier extractor for `rb graph build` (#391): the
-# clean-room implementation of the extract contract Graphify never
-# shipped installably. A subprocess tool, not a library import -- the
-# extra exists so one `uv sync --extra graph-extract` gives the graph
-# its binding tier. Resolved from git until the first PyPI release
-# (see [tool.uv.sources] below); drop the source pin when it lands.
-graph-extract = ["rtl-buddy-graph-extract"]
 
 [project.urls]
 Source = "https://github.com/rtl-buddy/rtl_buddy"
 Documentation = "https://rtl-buddy.github.io/rtl_buddy/"
 Tracker = "https://github.com/rtl-buddy/rtl_buddy/issues"
 
-# Development-time resolution for the graph-extract extra: no PyPI
-# release exists yet, so uv resolves it from git. This table is uv-only
-# metadata -- the published wheel keeps the bare name, which will not
-# resolve from PyPI until rtl-buddy-graph-extract ships there. Drop the
-# pin with the first release (tracked in rtl_buddy#391).
+# Development-time resolution for the graph-extract dependency group:
+# no PyPI release exists yet, so uv resolves it from git. This table is
+# uv-only metadata and the group below is unpublished, so nothing in the
+# wheel references a name PyPI cannot resolve. Promote the group to a
+# `[project.optional-dependencies]` extra (with a version floor) in the
+# same PR that the first rtl-buddy-graph-extract PyPI release lands
+# (tracked in rtl-buddy-graph-extract#1) and drop this pin.
 [tool.uv.sources]
 rtl-buddy-graph-extract = { git = "https://github.com/rtl-buddy/rtl-buddy-graph-extract" }
 
@@ -143,6 +138,22 @@ test = [
   # extra must not see red), but the skip must not be the CI outcome.
   "mcp>=1.2.0",
 ]
+# The bundled binding-tier extractor for `rb graph build` (#391): the
+# clean-room implementation of the extract contract. A subprocess tool,
+# not a library import. Deliberately a dependency GROUP and not a
+# `[project.optional-dependencies]` extra: no PyPI release of the
+# extractor exists yet, and groups stay out of published wheel
+# metadata, so the wheel never advertises `rtl_buddy[graph-extract]`
+# as something pip could satisfy (guarded by
+# test_graph_extract_is_an_unpublished_dependency_group, which is also
+# the reminder to flip this when the first PyPI release lands —
+# rtl-buddy-graph-extract#1). Downstream users install the tool with
+# `uv pip install git+https://github.com/rtl-buddy/rtl-buddy-graph-extract`
+# (same command as the tool-check install hint). Deliberately NOT in
+# the composite `dev` group below: an optional subprocess tool, not
+# part of the baseline dev env — the two real-binary tests skip
+# without it, and `uv sync --group graph-extract` opts in.
+graph-extract = ["rtl-buddy-graph-extract"]
 dev = [
   { include-group = "docs" },
   { include-group = "lint" },
