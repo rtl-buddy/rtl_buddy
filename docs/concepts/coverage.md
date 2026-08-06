@@ -104,6 +104,23 @@ In regression mode, use `--coverage-per-test` to package one Coverview dataset p
 rtl-buddy --builder-mode cov regression --coverage-coverview --coverage-per-test
 ```
 
+#### Status of Coverview packaging
+
+`--coverage-coverview` is an **optional export**, not the way to look at coverage. It is kept, not deprecated, and not removed — but it is no longer on the path anything else depends on.
+
+Why it stays:
+
+- It is the only route to a **self-contained archive** you can hand to someone with no rtl_buddy checkout — a sign-off attachment, a CI artefact, a mail to a customer. Nothing first-party replaces that.
+- Deleting it would break projects that already publish those zips from CI, for no gain: the packaging code is small and its inputs (the merged `.info`, the `.desc` files) are produced anyway.
+
+Why it is no longer the answer to "let me look at coverage":
+
+- Rendering the per-type attribution in it needs a **forked** Coverview checkout — our `covrby_*.desc` files render nowhere else.
+- The packaging path shells out to an **unpinned external `info-process` binary** that silently no-ops when absent, and that path has no CI coverage.
+- The [`/cov` pane](#looking-at-coverage-the-cov-pane) now renders the same per-type, per-test attribution first-party, offline, from the [coverage model](#the-coverage-model), and [`rb cov`](#reading-coverage-back-rb-cov) answers the same questions in a terminal or from an agent with nothing installed at all.
+
+If you are reaching for `--coverage-coverview` to *read* coverage, use `rb cov summary` / the `/cov` pane instead. Reach for it when you need a file to send someone.
+
 ## Directory-level coverage summary
 
 Add per-directory coverage breakdowns to the summary output using `--coverage-dir-summary`. Pass repo-relative directory prefixes; the flag may be repeated.
@@ -286,6 +303,12 @@ They are **stateless** tools, listed whether or not a hub is running: coverage a
 `rb hub start --serve-viewer` serves the same model as an interactive page at `GET /cov`: a dashboard of the run's scalars, a file list ranked coldest-first **for the metric you pick** (it opens on `toggle`), and **per-file source annotation** — a column per metric under a header of that file's totals, each line's points summarised in it, and the per-test attribution behind every one of them in a docked detail panel. Selecting a test turns it into a lens, so every number becomes that test's contribution.
 
 It is a hub peer, so it drives the rest: clicking a line broadcasts `source_focused` (which the hub resolves into a design-view selection) and opens the line in your editor; clicking a module chip focuses that module in the graph pane. `rb hub send cov-focus <target>` drives it from the other direction, and works before the browser tab is open. See [Coverage pane](hub.md#coverage-pane) for the routes and the wire types.
+
+## Coverage on the design graph
+
+`rb graph results` correlates what a suite **declared** it covers (`covers:` entries in `tests.yaml`, which the graph carries as `test --covers--> covitem:<block>#<id>` edges) with what this model **observed**, and writes the verdict into the results overlay: per spec item `exercised` / `declared-only` / `observed-but-undeclared`, per module a ratio, per test the scalars above.
+
+Nothing is re-run — the numbers are read out of `cov_dir/manifest.json` and the model it names. The `/graph` pane tints the design column with them and `rb graph explain` returns them. See [Coverage on the Graph](graph.md#coverage-on-the-graph).
 
 ## Full flag reference
 

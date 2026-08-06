@@ -622,14 +622,25 @@ Usage: rtl-buddy graph results [OPTIONS]
  per test node; graph.json is not touched                                               
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-│ --verif-dir          TEXT  directory searched for tests.yaml                         │
-│ --out-dir    -o      TEXT  output directory (default: <project                       │
-│                            root>/artefacts/graph)                                    │
-│ --graph              TEXT  graph.json to cross-check ids against (default:           │
-│                            <out-dir>/graph.json); read, never written                │
-│ --strict                   exit non-zero when an envelope could not be read, a test  │
-│                            node has no result, or a result matches no node           │
-│ --help                     Show this message and exit.                               │
+│ --verif-dir                          TEXT  directory searched for tests.yaml         │
+│ --out-dir       -o                   TEXT  output directory (default: <project       │
+│                                            root>/artefacts/graph)                    │
+│ --graph                              TEXT  graph.json to cross-check ids against     │
+│                                            (default: <out-dir>/graph.json); read,    │
+│                                            never written                             │
+│ --strict                                   exit non-zero when an envelope could not  │
+│                                            be read, a test node has no result, or a  │
+│                                            result matches no node                    │
+│ --coverage          --no-coverage          join the run's coverage model onto the    │
+│                                            graph's ids (read from                    │
+│                                            cov_dir/manifest.json; nothing is re-run) │
+│                                            [default: coverage]                       │
+│ --cov-dir                            TEXT  coverage artefact directory to join from  │
+│                                            (default: the newest cov_dir/ under the   │
+│                                            project)                                  │
+│ --cov-manifest                       TEXT  coverage manifest.json to join from,      │
+│                                            instead of discovery                      │
+│ --help                                     Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
