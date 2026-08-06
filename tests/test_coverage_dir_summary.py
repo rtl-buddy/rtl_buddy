@@ -129,11 +129,12 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
     )
 
     lcov_calls = []
-    monkeypatch.setattr(
-        reporter,
-        "_dir_summary_records",
-        lambda *args, **kwargs: lcov_calls.append((args, kwargs)) or [],
-    )
+
+    def _fake_dir_summary_records(*args, **kwargs):
+        lcov_calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(reporter, "_dir_summary_records", _fake_dir_summary_records)
 
     dataset_calls = {}
 
