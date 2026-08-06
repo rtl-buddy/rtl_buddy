@@ -147,6 +147,35 @@ def _line_ratio_text(coverage: dict | None) -> str:
     return "-" if ratio is None else f"{ratio * 100:.1f}%"
 
 
+def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
+    """`rb graph explain`'s coverage lines, or none at all (#402).
+
+    Machine mode returns the whole entry; the console gets the verdict
+    and the manifest behind it, because an answer that does not name the
+    run it came from can be mistaken for a fresher one than it is.
+    """
+    if not entry:
+        return []
+    if entry.get("kind") == "design":
+        head = f"  cov:    {_line_ratio_text(entry)} line ({entry.get('module')})"
+    else:
+        observed = entry.get("observed") or []
+        detail = ", ".join(
+            f"{record.get('name')} ×{record.get('hits', 0)} [{record.get('match')}]"
+            for record in observed
+        )
+        head = (
+            f"  cov:    {entry.get('status')} "
+            f"({entry.get('hits', 0)} hit(s)"
+            f"{'; ' + detail if detail else '; no cover point in the model'})"
+        )
+    lines = [head]
+    manifest = (run or {}).get("manifest")
+    if manifest:
+        lines.append(f"  from:   {manifest}")
+    return lines
+
+
 class RtlBuddy:
     """
     RTL Buddy Main Class
@@ -4212,7 +4241,7 @@ class RtlBuddy:
     ):
         """
         report one node's attributes, every edge on it with the far endpoint
-        resolved, and its last regression result
+        resolved, its last regression result and its coverage
         """
         root = str(discover_project_root(fallback_cwd=True))
         # Lock-free, as `graph query` is — see there.
@@ -4262,6 +4291,10 @@ class RtlBuddy:
                 f"({entry.get('timestamp', 'unknown time')})",
                 stream="stdout",
             )
+        for line in _explain_coverage_lines(
+            payload.get("coverage"), payload.get("coverage_run")
+        ):
+            emit_console_text(line, stream="stdout")
         rows = [
             {
                 "dir": edge["direction"],

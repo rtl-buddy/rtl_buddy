@@ -465,6 +465,44 @@ def test_explain_answers_the_question_the_issue_asks(cov_project: Path):
     assert "nodes" not in payload["coverage_run"]
 
 
+def test_explain_prints_the_verdict_and_names_the_run(cov_project: Path):
+    """The console gets the answer, and which run it is the answer for."""
+    runner, rb = _runner()
+    runner.invoke(
+        rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
+    )
+    runner.invoke(rb.app, ["graph", "results"])
+
+    exercised = runner.invoke(rb.app, ["graph", "explain", "covitem:blk_a#A-COV-1"])
+    declared = runner.invoke(rb.app, ["graph", "explain", "covitem:blk_a#SHARED-COV"])
+    module = runner.invoke(
+        rb.app, ["graph", "explain", "model:design/blk_a/models.yaml#blk_a"]
+    )
+
+    assert exercised.exit_code == 0, exercised.output
+    assert f"cov:    {STATUS_EXERCISED} (3 hit(s); cov_a_cov_1 " in exercised.output
+    assert "verif/blk_a/cov_dir/manifest.json" in exercised.output
+    # An item with no cover point in the model says so, rather than
+    # printing an empty parenthesis nobody can read a verdict out of.
+    assert f"cov:    {STATUS_DECLARED_ONLY} (0 hit(s)" in declared.output
+    assert "no cover point in the model" in declared.output
+    assert "cov:    50.0% line (blk_a)" in module.output
+
+
+def test_explain_says_nothing_about_coverage_when_there_is_none(cov_project: Path):
+    """A node the join knows nothing about grows no coverage lines."""
+    runner, rb = _runner()
+    runner.invoke(
+        rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
+    )
+    runner.invoke(rb.app, ["graph", "results"])
+
+    result = runner.invoke(rb.app, ["graph", "explain", "spec:blk_a"])
+
+    assert result.exit_code == 0, result.output
+    assert "cov:" not in result.output
+
+
 def test_test_status_carries_the_per_test_scalars(cov_project: Path):
     runner, rb = _runner()
     runner.invoke(

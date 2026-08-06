@@ -1395,7 +1395,8 @@
   });
   els.optHops.addEventListener('change', applyClasses);
   els.optCov.addEventListener('change', function () {
-    // Remembered for the session so a reload does not re-tick it.
+    // Remembered so a payload refresh does not re-tick a box the
+    // person just unticked. Not persisted: a new tab starts ticked.
     els.optCov.dataset.touched = '1';
     renderLegend(state.categories);
     render();
