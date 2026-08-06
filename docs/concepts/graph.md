@@ -378,7 +378,9 @@ What it does:
 | `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the design view can select, its instances are. |
 | any node with `file` | `open_source {file, line, col}` | The `src` peer (nvim) opens it. Test, coverage-item, spec-block and Python-module nodes all carry `file`/`line`. |
 
-Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol. From the other direction:
+Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol.
+
+Selecting or hovering a node highlights its neighbourhood and dims the rest. The **hops** selector in the toolbar sets how far that highlight reaches (default 1 = direct neighbours): the reachable set is a breadth-first walk over *both* edge directions — direction encodes role, not reachability, the same convention `rb graph path` uses — and an edge lights up when both its endpoints are inside the ball, so what you see is a coherent subgraph rather than a star. Two hops from a test reaches its testbench and coverage items and then the model and DUT they touch; three from a module usually spans config to spec. From the other direction:
 
 ```bash
 rb hub send graph-focus test:verif/dma#smoke
