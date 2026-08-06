@@ -41,7 +41,7 @@ rb --machine graph path cocotb_random module:demo_tiny_alu        # how related?
 
 ### MCP
 
-`rb mcp` serves the same verbs — plus `find_module`, `instances_of`, `port_connections`, `source_snippet` and, when a hub is running, the live-session tools — as MCP tools over stdio. It needs no daemon and is configured statically:
+`rb mcp` serves the same verbs — plus `cov_summary`, `cov_module`, `find_module`, `instances_of`, `port_connections`, `source_snippet` and, when a hub is running, the live-session tools — as MCP tools over stdio. It needs no daemon and is configured statically:
 
 ```json
 {"mcpServers": {"rtl-buddy": {"command": "rb", "args": ["mcp"]}}}
