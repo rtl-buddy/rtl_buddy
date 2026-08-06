@@ -4240,7 +4240,7 @@ class RtlBuddy:
     # rb cov — read verbs over coverage artefacts already on disk (#399)
     # ------------------------------------------------------------------
 
-    def _cov_context(self, command, *, cov_dir=None, manifest=None):
+    def _cov_context(self, verb, *, cov_dir=None, manifest=None):
         """Load the coverage manifest and model for a `rb cov` verb.
 
         Lock-free like the `rb graph` read verbs: nothing is written, and
@@ -4250,11 +4250,16 @@ class RtlBuddy:
         """
         root = str(discover_project_root(fallback_cwd=True))
         self._enter_command_context(command_root=root, list_only=True)
-        log_event(logger, logging.INFO, f"command.{command}", command=command)
+        log_event(
+            logger,
+            logging.INFO,
+            f"command.{verb.replace(' ', '_')}",
+            command=verb,
+        )
         try:
             return cov_query_mod.load_context(root, cov_dir=cov_dir, manifest=manifest)
         except cov_query_mod.CovQueryError as exc:
-            self._cov_query_failed(command.replace("_", " "), exc)
+            self._cov_query_failed(verb, exc)
 
     def _cov_query_failed(self, command: str, exc):
         """Report a coverage question that cannot be answered, then exit 2."""
@@ -4315,7 +4320,7 @@ class RtlBuddy:
         report a run's coverage from its artefacts: run-level and per-test
         scalars, the coldest files, and where every artefact landed
         """
-        ctx = self._cov_context("cov_summary", cov_dir=cov_dir, manifest=manifest)
+        ctx = self._cov_context("cov summary", cov_dir=cov_dir, manifest=manifest)
         payload = cov_query_mod.summary_payload(ctx, limit=limit)
 
         if self.machine:
@@ -4396,7 +4401,7 @@ class RtlBuddy:
         report per-file, per-point coverage for one module's sources, with the
         tests behind every point
         """
-        ctx = self._cov_context("cov_module", cov_dir=cov_dir, manifest=manifest)
+        ctx = self._cov_context("cov module", cov_dir=cov_dir, manifest=manifest)
         try:
             payload = cov_query_mod.module_payload(ctx, module)
         except cov_query_mod.CovQueryError as exc:
