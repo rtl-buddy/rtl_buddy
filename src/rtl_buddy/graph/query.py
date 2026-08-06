@@ -431,23 +431,28 @@ def score_node(node: dict, terms: list[str], type_hints: set[str]) -> int:
     """
     node_id = str(node.get("id", "")).lower()
     label = str(node.get("label", "")).lower()
+    # An indexed collision label (`tb_top(3)`) carries the design's real
+    # name in base_label; it scores at the same tiers as label, so the
+    # rubric is unchanged for the node class a name query most likely
+    # means.
+    base_label = str(node.get("base_label", "")).lower()
     file_path = str(node.get("file", "")).lower()
     id_tokens = _tokens_of(node_id)
-    label_tokens = _tokens_of(label)
+    label_tokens = _tokens_of(label) | _tokens_of(base_label)
 
     score = 0
     for term in terms:
         if term == node_id:
             score += 100
             continue
-        if label and term == label:
+        if (label and term == label) or (base_label and term == base_label):
             score += 60
             continue
         if term in label_tokens:
             score += 40
         elif term in id_tokens:
             score += 30
-        elif label and term in label:
+        elif (label and term in label) or (base_label and term in base_label):
             score += 20
         elif term in node_id:
             score += 12
@@ -506,7 +511,7 @@ def match_nodes(
 #: Node attributes lifted into every summary. Everything else stays in
 #: ``attributes`` on ``explain`` only — a query answer that repeated the
 #: whole node would cost the tokens the graph exists to save.
-_SUMMARY_KEYS = ("id", "type", "label", "tier", "file", "line")
+_SUMMARY_KEYS = ("id", "type", "label", "base_label", "tier", "file", "line")
 
 
 def cite_hint(node: dict, models_yaml: str | None = None) -> dict | None:
@@ -645,7 +650,10 @@ def resolve_node(ctx: GraphContext, ref: str) -> dict:
 
     candidates: list[dict] = []
     for node_id, node in ctx.index.nodes.items():
-        if str(node.get("label", "")).lower() == lowered:
+        if (
+            str(node.get("label", "")).lower() == lowered
+            or str(node.get("base_label", "")).lower() == lowered
+        ):
             candidates.append(node)
             continue
         tail = re.split(r"[#/]", node_id)[-1]

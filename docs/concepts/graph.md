@@ -112,7 +112,14 @@ Two testbenches are the same export when they resolve to the same model, suite, 
 
 `module:<name>` is a global id, but a SystemVerilog module name is only unique inside one elaboration, and the conventional name for a testbench top is `tb_top` — a project with eight suites has eight different modules called that. Unioned naively they become one node that instantiates every DUT in the project, and one `inst:tb_top/tb_top.i_dut` that is `instance_of` four different modules; both are statements the graph would be making that are false.
 
-So when the same id is claimed by more than one *file*, the testbench copies are qualified with the suite that owns them: `module:tb_top@verif/template`, `inst:tb_top/tb_top.i_dut@verif/template`. The node keeps its `label` (`tb_top`), so searching by name still finds all of them, and records `unqualified_id` / `qualified_by`. DUT ids are never qualified — they are the weld. Every qualification is listed in `graph-meta.json` under the design tier's `id_collisions`, and renaming the duplicated module makes it unnecessary.
+So when the same id is claimed by more than one *file*, the testbench copies are qualified with the suite that owns them — the full path from the project root: `module:tb_top@verif/template`, `inst:tb_top/tb_top.i_dut@verif/template`. Reusing a conventional top name across suites is a **supported pattern**, not something to rename away — the graph, not the project, is responsible for keeping the copies apart.
+
+Two things distinguish the copies:
+
+- **Ids** carry the suite path, as above, and each node records `unqualified_id` / `qualified_by`.
+- **Rendered labels** are indexed: the colliding module node and its root-scope instance are labelled `tb_top(0)` … `tb_top(N-1)`, deterministically — the index is keyed on the suite path (sorted), so it is stable across rebuilds and always identical for a module and its root instance. The original name stays in `base_label`, which query scoring and node resolution treat exactly like `label`: `tb_top` still matches at the exact-name tier, and `rb graph explain tb_top` still raises the matches-N-use-a-full-id error listing the qualified copies. Deeper nodes (ports, child instances) keep their own labels; they render nested under an indexed parent.
+
+DUT ids are never qualified — they are the weld. Every qualification is listed in `graph-meta.json` under the design tier's `id_collisions`, including the assigned `labels`; each entry's `qualified` list is sorted and deduped — the order the label index derives from.
 
 ### A missing tier is not a failed build
 
