@@ -993,11 +993,22 @@ def test_colliding_testbench_ids_are_qualified_by_suite(
     graph = json.loads(build.graph_path.read_text())
     nodes = _nodes(graph)
     assert "module:tb_top" not in nodes
-    for suite, dut in (("verif/blk_a", "blk_a"), ("verif/blk_b", "blk_b")):
+    # Indexed rendered labels, deterministic by suite path: blk_a sorts
+    # before blk_b, so it takes (0). Reusing `tb_top` across suites is a
+    # supported pattern — the graph, not the project, disambiguates.
+    for i, (suite, dut) in enumerate(
+        (("verif/blk_a", "blk_a"), ("verif/blk_b", "blk_b"))
+    ):
         module = nodes[f"module:tb_top@{suite}"]
         assert module["file"] == f"{suite}/tb_top.sv"
-        assert module["label"] == "tb_top"  # still findable by name
+        assert module["label"] == f"tb_top({i})"
+        assert module["base_label"] == "tb_top"  # still findable by name
         assert module["unqualified_id"] == "module:tb_top"
+        root_inst = nodes[f"inst:tb_top/tb_top@{suite}"]
+        assert root_inst["label"] == f"tb_top({i})"
+        # Deeper nodes keep their own labels — they render nested under
+        # an indexed parent.
+        assert nodes[f"inst:tb_top/tb_top.i_dut@{suite}"]["label"] == "i_dut"
         assert (
             f"inst:tb_top/tb_top.i_dut@{suite}",
             f"module:{dut}",
@@ -1011,8 +1022,8 @@ def test_colliding_testbench_ids_are_qualified_by_suite(
     assert not dangling_targets(graph)
 
     design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
-    collisions = {c["id"] for c in design.extra["id_collisions"]}
-    assert "module:tb_top" in collisions
+    by_id = {c["id"]: c for c in design.extra["id_collisions"]}
+    assert by_id["module:tb_top"]["labels"] == ["tb_top(0)", "tb_top(1)"]
     meta = json.loads(build.meta_path.read_text())
     assert meta["tiers"][DESIGN_TIER]["id_collisions"]
 

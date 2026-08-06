@@ -712,6 +712,52 @@ def _qualify_graph(
     return qualified, rename
 
 
+def _index_collision_labels(graphs: list[dict], collisions: dict[str, dict]) -> None:
+    """Give each colliding testbench top a rendered label of ``name(i)``.
+
+    Reusing a conventional top name (``tb_top``) across suites is a
+    supported pattern — the *ids* stay apart via the suite qualifier, but
+    N nodes all labelled ``tb_top`` are indistinguishable on the graph
+    pane. So the module node (and its root-scope instance) get a
+    deterministic short label ``tb_top(0)`` … ``tb_top(N-1)``, indexed by
+    sorting the qualified ids — which sort by suite path, so the index is
+    stable across rebuilds and identical for a module and its root
+    instance. The original name stays in ``base_label`` (and inside
+    ``unqualified_id``), and keyword search still matches: ``tb_top`` is
+    a substring of ``tb_top(3)``. Deeper nodes (ports, child instances)
+    keep their own labels — they render nested under an indexed parent.
+    """
+    index: dict[str, int] = {}
+    for entry in collisions.values():
+        entry["qualified"] = sorted(set(entry["qualified"]))
+        for i, qualified_id in enumerate(entry["qualified"]):
+            index[qualified_id] = i
+    labelled: dict[str, str] = {}
+    for graph in graphs:
+        for node in graph.get("nodes") or []:
+            node_id = node.get("id")
+            if node_id not in index:
+                continue
+            label = node.get("label")
+            unqualified = node.get("unqualified_id") or ""
+            is_module_self = (
+                node.get("type") == "module" and unqualified == f"module:{label}"
+            )
+            is_root_instance = (
+                node.get("type") == "instance"
+                and unqualified == f"inst:{label}/{label}"
+            )
+            if not (is_module_self or is_root_instance):
+                continue
+            node["base_label"] = label
+            node["label"] = f"{label}({index[node_id]})"
+            labelled[node_id] = node["label"]
+    for entry in collisions.values():
+        labels = [labelled[q] for q in entry["qualified"] if q in labelled]
+        if labels:
+            entry["labels"] = labels
+
+
 def _qualify_tb_graphs(
     model_graphs: list[dict],
     pairs: list[tuple[TestbenchTarget, dict]],
@@ -741,6 +787,7 @@ def _qualify_tb_graphs(
             )
             entry["qualified"].append(new_id)
     if collisions:
+        _index_collision_labels(graphs, collisions)
         report.extra["id_collisions"] = [collisions[k] for k in sorted(collisions)]
         log_event(
             logger,
