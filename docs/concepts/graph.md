@@ -335,7 +335,7 @@ A spec item id (`SAND-FUNC-OP-ADD`) and an SVA cover label (`cov_op_add`) are wr
 | `normalized` | Same, ignoring case and punctuation (`A_COV_1` ≡ `a-cov-1`). |
 | `affix` | Same after dropping a leading/trailing `cov`/`cvr`/`c` token from the **label**, and after taking the last dotted component. |
 
-Affixes are stripped from the observed label only, never from the declared id: an id is what a human wrote in `specs.yaml`, and stripping both sides would let `SHARED-COV` and `SHARED` collide as if they were one item. A `match` of `affix` on an item you did not expect is the signal that the correlation guessed — rename one side and it moves up the ladder.
+Affixes are stripped from the observed label only, never from the declared id: an id is what a human wrote in `specs.yaml`, and stripping both sides would let `SHARED-COV` and `SHARED` collide as if they were one item. A `match` of `affix` on an item you did not expect is the signal that the correlation guessed — rename one side and it moves up the ladder. Note that the bottom rung covers two loosenings at once, decoration stripping and the hierarchy tail, so `tb_top.A_COV_1` reports `affix` even though no `cov` token was dropped.
 
 An id declared by two blocks has two `covitem:` nodes, and `covers:` already fans out to both; the observation does too, so the two nodes never disagree.
 

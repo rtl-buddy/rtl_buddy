@@ -4294,7 +4294,10 @@ class RtlBuddy:
         for line in _explain_coverage_lines(
             payload.get("coverage"), payload.get("coverage_run")
         ):
-            emit_console_text(line, stream="stdout")
+            # The match rung is printed as `[affix]`, and an SVA label can
+            # itself carry brackets (`gen[0].cov_x`) — Rich would eat both
+            # as style tags, so this line is never markup.
+            emit_console_text(line, stream="stdout", markup=False)
         rows = [
             {
                 "dir": edge["direction"],

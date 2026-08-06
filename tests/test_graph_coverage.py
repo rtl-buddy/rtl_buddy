@@ -480,13 +480,53 @@ def test_explain_prints_the_verdict_and_names_the_run(cov_project: Path):
     )
 
     assert exercised.exit_code == 0, exercised.output
-    assert f"cov:    {STATUS_EXERCISED} (3 hit(s); cov_a_cov_1 " in exercised.output
+    # The rung the match came off is part of the answer, so it must
+    # survive the console — Rich would read `[affix]` as a style tag.
+    assert (
+        f"cov:    {STATUS_EXERCISED} (3 hit(s); cov_a_cov_1 ×3 [affix])"
+        in exercised.output
+    )
     assert "verif/blk_a/cov_dir/manifest.json" in exercised.output
     # An item with no cover point in the model says so, rather than
     # printing an empty parenthesis nobody can read a verdict out of.
     assert f"cov:    {STATUS_DECLARED_ONLY} (0 hit(s)" in declared.output
     assert "no cover point in the model" in declared.output
     assert "cov:    50.0% line (blk_a)" in module.output
+
+
+def test_explain_prints_a_bracketed_cover_label_verbatim(cov_project: Path):
+    """An SVA label from a generate block carries `[0]` in its name.
+
+    Rich would parse that as a style tag and either mangle the label or
+    fail the whole verb, so the coverage lines are printed as plain text.
+    """
+    raw = cov_project / "verif" / "blk_a" / "artefacts" / "t_basic" / "coverage.dat"
+    raw.write_text(
+        "# SystemC::Coverage-3\n"
+        + "".join(
+            _dat_record(
+                file=path,
+                line=line,
+                type_=type_,
+                name="gen[0].cov_a_cov_1" if name == "cov_a_cov_1" else name,
+                module=module,
+                hits=hits,
+            )
+            for path, line, type_, name, module, hits in _RECORDS
+        ),
+        encoding="utf-8",
+    )
+    _write_cov_artefacts(cov_project, raw)
+    runner, rb = _runner()
+    runner.invoke(
+        rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
+    )
+    runner.invoke(rb.app, ["graph", "results"])
+
+    result = runner.invoke(rb.app, ["graph", "explain", "covitem:blk_a#A-COV-1"])
+
+    assert result.exit_code == 0, result.output
+    assert "gen[0].cov_a_cov_1 ×3 [affix]" in result.output
 
 
 def test_explain_says_nothing_about_coverage_when_there_is_none(cov_project: Path):
