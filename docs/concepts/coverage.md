@@ -151,9 +151,133 @@ This data comes from the per-test raw databases, not from a merged artifact, so 
 
     Per-cover-point results are parsed out of Verilator's raw `coverage.dat`, the only place the labels survive — `verilator_coverage --write-info` folds user coverage into anonymous LCOV records and erases the names. On other simulator families (for example VCS) the field is simply absent from the payload. Absent means "not collected", not "no points covered"; do not treat a missing list as a coverage hole.
 
+## Coverage artefacts: `cov_dir/manifest.json`
+
+Every run that produces coverage writes one **manifest** beside its artefacts, at `<command root>/cov_dir/manifest.json`. It is the discovery contract: what this run produced, and where. Without it, finding last night's coverage meant knowing the suite basename, the merge mode and the directory the command happened to run from.
+
+The manifest is written whether or not you passed a merge flag, and whether or not Coverview packaging ran — the raw databases exist either way, and so does the question "what did this cover".
+
+```json
+{
+  "schema_version": 1,
+  "generator": "rtl-buddy 6.24.0",
+  "generated_at": "2026-08-06T11:04:12+08:00",
+  "command": "regression",
+  "suite": "verif/blk/regression.yaml",
+  "builder": "verilator",
+  "simulator_family": "verilator",
+  "merge_mode": "raw",
+  "cov_dir": "verif/blk/cov_dir",
+  "model": "verif/blk/cov_dir/coverage-model.json",
+  "totals": {"line": {"found": 412, "hit": 388, "ratio": 0.941}, "...": {}},
+  "merged":       {"info": "...", "raw": "...", "desc": "...", "html_dir": "..."},
+  "datasets":     {"line": "...", "branch": "...", "toggle": "...", "expression": "..."},
+  "descriptions": {"line": "...", "branch": "...", "toggle": "...", "expression": "..."},
+  "coverview":    {"zip": "...", "per_test_zip": "..."},
+  "tests": [
+    {"name": "basic", "suite": "verif/blk/tests.yaml",
+     "raw": "verif/blk/artefacts/basic/coverage.dat",
+     "info": "verif/blk/cov_dir/basic.coverage.info",
+     "html_dir": null, "coverview_zip": null}
+  ]
+}
+```
+
+Two rules the file keeps:
+
+- **Stable keys.** The `merged`, `datasets`, `descriptions`, `coverview` and `tests` blocks are always present. A value is `null` when that artefact was not produced — absent never means "not produced".
+- **Project-relative paths.** Every path is POSIX and relative to the project root, so a manifest survives being read from elsewhere, archived, or attached to a CI artefact. A path that genuinely lives outside the project (a scratch filesystem) is kept verbatim rather than turned into a `../..` chain nothing can join on.
+
+`merge_mode` is `"raw"`, `"info_process"` or `null`, naming what produced `merged.info`. `descriptions` are the per-type `.desc` attribution files `info-process` writes; they are indexed whether or not a Coverview archive was packaged.
+
+## The coverage model
+
+`cov_dir/coverage-model.json` is the structured half: per file, per point, per test. Its shape is simulator-agnostic — a file holds points, a point has hits and an attribution — even though Verilator's raw database plus its LCOV export is the only producer today.
+
+```json
+{
+  "schema_version": 1,
+  "simulator": "verilator",
+  "totals": {"line": {"found": 3, "hit": 3, "ratio": 1.0}, "...": {}},
+  "counts": {"files": 2, "tests": 2, "modules": 2},
+  "modules": {"blk": ["design/blk.sv"]},
+  "tests": [{"name": "basic", "suite": "...", "raw": "...", "info": "...",
+             "totals": {"...": {}}}],
+  "files": [
+    {
+      "path": "design/blk.sv",
+      "modules": ["blk"],
+      "totals": {"...": {}},
+      "line":       [{"line": 2, "hits": 7, "tests": {"basic": 0, "extra": 7}}],
+      "branch":     [{"line": 12, "column": 5, "name": "if", "module": "blk",
+                      "hits": 0, "tests": {"basic": 0}}],
+      "toggle":     [{"line": 2, "column": 9, "name": "q[0]", "module": "blk",
+                      "hits": 0, "tests": {"basic": 0}}],
+      "expression": [{"line": 3, "column": 1, "name": "a && b", "module": "blk",
+                      "hits": 4, "tests": {"basic": 4}}],
+      "cover":      [{"line": 4, "column": 1, "name": "BLK_WRITE", "module": "blk",
+                      "hits": 3, "tests": {"basic": 3}}]
+    }
+  ]
+}
+```
+
+Three properties are the point of it:
+
+- **Per point, not per percentage.** "Which lines are cold in this block" is a read, not a re-run.
+- **Attribution is unconditional.** Every point carries the per-test hit counts behind it — the same data Coverview's `.desc` files carry, except it is built whenever per-test artefacts exist rather than only when packaging an archive. That is what answers "which test covered this line", and its inverse, "what would I lose by dropping this test".
+- **Paths are project-relative**, via the one source-path resolver, so a model stays meaningful when the run directory is gone.
+
+Toggle and expression detail exists **only** in the raw database: `verilator_coverage --write-info` folds toggle, expression and user points into anonymous `DA:` records, erasing the signal names, the expression terms and the SVA labels alike. The model reads the raw `.dat` first for exactly that reason and falls back to the `.info` (line and branch only, no names) when a test's database is gone.
+
+Points are keyed on the line alone for line coverage — a source line is hit or it is not — and on `(line, column, name, module)` for everything else, because several toggle points share a line (one per bit), several branch arms share a line, and one cover property compiled into two modules is two points, not one.
+
+## Reading coverage back: `rb cov`
+
+`rb cov` operates on artefacts already on disk. No simulator runs; nothing is written. With no `--cov-dir` it reads the newest `cov_dir/manifest.json` under the project root.
+
+```bash
+rb cov summary                       # run + per-test scalars, coldest files first
+rb cov summary --limit 0             # every file
+rb cov module blk                    # uncovered points in one module, with their tests
+rb cov module blk --all              # every point, hit or not
+rb cov summary --cov-dir verif/blk/cov_dir
+```
+
+`rb cov module` takes the module name as the coverage model records it (Verilator's containing module, from the record's `page` key). An unknown name exits 2 and reports near misses rather than answering about a different module. A file included into several modules reports only the points belonging to the module asked for — reporting the whole file would attribute another block's misses to this one.
+
+### Machine artefacts
+
+Both verbs emit the standard [envelope](../agents.md#machine-mode). Every payload carries `schema_version`, `manifest`, `generated_at`, `run_command` (the `rb` command that produced the coverage — not the verb being run, which is already the envelope's `command`), `suite`, `builder`, `simulator`, `merge_mode`, `totals`, and an `artefacts` block:
+
+```json
+"artefacts": {
+  "manifest": "verif/blk/cov_dir/manifest.json",
+  "cov_dir": "verif/blk/cov_dir",
+  "model": "verif/blk/cov_dir/coverage-model.json",
+  "merged_info": "verif/blk/cov_dir/coverage_merged.info",
+  "merged_raw": "verif/blk/cov_dir/coverage_merged.dat",
+  "merged_desc": "verif/blk/cov_dir/coverage_merged.desc",
+  "html_dir": "verif/blk/coverage_merge.html",
+  "datasets": {"line": "...", "branch": "...", "toggle": "...", "expression": "..."},
+  "descriptions": {"line": "...", "branch": "...", "toggle": "...", "expression": "..."},
+  "coverview_zip": null,
+  "coverview_per_test_zip": null
+}
+```
+
+Then:
+
+- `cov summary` adds `counts`, `tests` (per-test `{name, suite, totals}`), `files` (coldest first, truncated to `--limit`), `modules`, and `covers` when the run recorded SVA cover points.
+- `cov module` adds `module`, `files` (each with its per-metric point lists) and `tests` (the tests that touched any of its points).
+
+The same `artefacts` block rides on `payload.coverage` of a `test` or `regression` run, so an orchestrator learns where the artefacts landed from the run itself, not from scraping `Merged LCOV: <path>` out of the summary lines. `payload.coverage.merged` gained an `expression` scalar alongside `line`/`branch`/`toggle`/`functional`; the `L/B/T/F` summary string is unchanged, since it is a display contract and expression detail belongs in the model where a consumer can act on it.
+
+An unanswerable question exits 2 with `payload.error` and, for an unknown module, `payload.candidates`.
+
 ## Full flag reference
 
-See the [CLI reference](../reference/cli.md) for the complete flag descriptions on `test` and `regression`.
+See the [CLI reference](../reference/cli.md) for the complete flag descriptions on `test`, `regression` and `cov`.
 
 ## Full schema
 
