@@ -989,7 +989,10 @@ class VlogSim:
                 timeout_sec=timeout,
             )
         # Added rather than substituted, so per-test sim_timeout values keep
-        # their meaning and only the builder-specific allowance moves.
+        # their meaning and only the builder-specific allowance moves. The
+        # ``is not None`` guard is unreachable while default_timeout is 60, and
+        # is kept so an allowance can never manufacture a timeout for a caller
+        # that deliberately had none.
         extra_timeout = self.root_cfg.resolve_extra_sim_timeout(self.rtl_builder_cfg)
         if extra_timeout and timeout is not None:
             timeout += extra_timeout

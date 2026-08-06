@@ -61,7 +61,7 @@ The pause ends on the first line that is not part of the banner. The banner's vo
 
 ### Extra simulation timeout per builder
 
-Detecting the banner cannot cover every case: the text is a vendor string, other license managers queue silently, and compilation has no `sim_timeout` to pause at all, so a queue wait during elaboration is bounded only by the dispatch job's time limit. `extra-sim-timeout` on a builder in `root_config.yaml` adds seconds to every test's `sim_timeout` under that builder:
+Detecting the banner cannot cover every case: the text is a vendor string, and other license managers queue without printing anything recognisable. `extra-sim-timeout` on a builder in `root_config.yaml` adds seconds to every test's `sim_timeout` under that builder:
 
 ```yaml
 cfg-rtl-builder:
@@ -69,7 +69,11 @@ cfg-rtl-builder:
     extra-sim-timeout: 900
 ```
 
-It is added to the test's own `sim_timeout` rather than replacing it, so per-test values keep their meaning. Keeping it per-builder is the point: a licensed simulator can wait, while a builder that never blocks keeps a tight timeout so a genuinely hung test still fails fast. `--extra-sim-timeout N` overrides every builder for one run, and `--extra-sim-timeout 0` turns a configured allowance off. When either applies, the resolved value is logged as `sim.timeout_extended`.
+It is added to the test's own `sim_timeout` rather than replacing it, so per-test values keep their meaning. Keeping it per-builder is the point: a licensed simulator can wait, while a builder that never blocks keeps a tight timeout so a genuinely hung test still fails fast. `--extra-sim-timeout N` overrides every builder for one run, and `--extra-sim-timeout 0` turns a configured allowance off. When either applies, the resolved value is logged as `sim.timeout_extended`. A negative value is rejected: on the CLI by `min=0`, and in `root_config.yaml` with a fatal config error, because it would shrink the timeout rather than extend it.
+
+This covers the simulation phase only. `compile()` sets no timeout, so a license-queue wait during elaboration is bounded by the dispatch job's own time limit rather than by anything here; `has_license_queue_marker` attributes such a compile after the fact so a slow build is not mistaken for an undersized reservation.
+
+Under `--dispatch slurm` or `--dispatch local-parallel`, both paths reach the dispatched job: a builder's `extra-sim-timeout` because the child re-reads `root_config.yaml`, and `--extra-sim-timeout` because it is forwarded in the job's argv.
 
 ### Regression levels
 

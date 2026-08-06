@@ -79,6 +79,16 @@ def test_resolve_extra_sim_timeout_prefers_cli_override():
     assert root.resolve_extra_sim_timeout(cfg) == 0
 
 
+def test_rtl_builder_negative_extra_sim_timeout_is_fatal():
+    """Rejected, not clamped: a negative value shrinks every test's timeout."""
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML + "extra-sim-timeout: -100\n",
+    )
+    with pytest.raises(FatalRtlBuddyError, match="negative extra-sim-timeout"):
+        cfg.get_extra_sim_timeout()
+
+
 def test_resolve_extra_sim_timeout_zero_when_neither_set():
     root = RootConfig.__new__(RootConfig)
     root.extra_sim_timeout_override = None

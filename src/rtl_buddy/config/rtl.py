@@ -109,8 +109,28 @@ class RtlBuilderConfig:
 
         Returns:
           seconds (int): Extra seconds, 0 when unset.
+        Raises:
+          FatalRtlBuddyError: The configured value is negative.
         """
-        return 0 if self.extra_sim_timeout is None else self.extra_sim_timeout
+        if self.extra_sim_timeout is None:
+            return 0
+        # Rejected rather than clamped: a negative value would *shrink* every
+        # test's timeout, and one below -sim_timeout reaches the process wait
+        # as a negative timeout, i.e. an instant timeout verdict on a sim that
+        # never ran. Silently clamping that to 0 would hide a config typo.
+        if self.extra_sim_timeout < 0:
+            log_event(
+                logger,
+                logging.ERROR,
+                "builder.extra_sim_timeout_negative",
+                builder=self.name,
+                seconds=self.extra_sim_timeout,
+            )
+            raise FatalRtlBuddyError(
+                f'Builder "{self.name}" has a negative extra-sim-timeout '
+                f"({self.extra_sim_timeout}); it must be >= 0"
+            )
+        return self.extra_sim_timeout
 
     def get_exe(self) -> str:
         """

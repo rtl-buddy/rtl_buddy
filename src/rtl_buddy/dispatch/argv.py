@@ -31,6 +31,13 @@ def _rb_argv(spec) -> list[str]:
         argv += ["-M", spec.builder_mode]
     if spec.builder_override is not None:
         argv += ["-B", spec.builder_override]
+    # A child re-reads root_config.yaml, so a builder's own extra-sim-timeout
+    # survives without help; the CLI override does not, and dropping it here
+    # silently ignores --extra-sim-timeout for every dispatched sim, including
+    # ``--extra-sim-timeout 0`` whose whole purpose is turning a configured
+    # allowance off. Build jobs never reach SIM and ignore it.
+    if spec.extra_sim_timeout is not None:
+        argv += ["--extra-sim-timeout", str(spec.extra_sim_timeout)]
     return argv
 
 
