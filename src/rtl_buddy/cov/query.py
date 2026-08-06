@@ -181,8 +181,13 @@ def _file_summary(file_row: dict) -> dict:
     }
 
 
-def _coldest(file_rows, limit):
-    """Files ordered coldest first: lowest line ratio, then most misses."""
+def coldest_first(file_rows, limit=None):
+    """Files ordered coldest first: lowest line ratio, then most misses.
+
+    Public because the ``/cov`` pane orders its file list the same way
+    the summary does — two orderings for "which file should I look at
+    first" would be one too many.
+    """
 
     def sort_key(row):
         totals = row.get("totals", {}).get("line", {})
@@ -221,7 +226,8 @@ def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict
                 for row in model.get("tests", [])
             ],
             "files": [
-                _file_summary(row) for row in _coldest(model.get("files", []), limit)
+                _file_summary(row)
+                for row in coldest_first(model.get("files", []), limit)
             ],
             "modules": sorted((model.get("modules") or {}).keys()),
             "artefacts": artefacts_block(ctx),
@@ -230,6 +236,24 @@ def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict
     covers = cover_records(model)
     if covers:
         payload["covers"] = covers
+    return payload
+
+
+def detail_payload(ctx: CovContext, *, limit: int | None = None) -> dict:
+    """:func:`summary_payload`, but with every file's points included.
+
+    The summary truncates its file list and reports only each file's
+    totals, because a terminal reading 40 000 points is a terminal
+    nobody reads. A pane is the other case: it renders the points, so
+    dropping them would force a second request per file and put the
+    "which tests hit this line" join on the client.
+
+    Same run block, same ``artefacts`` block, same coldest-first
+    ordering — the only difference is the depth of ``files``.
+    """
+
+    payload = summary_payload(ctx, limit=0)
+    payload["files"] = coldest_first(ctx.model.get("files", []), limit)
     return payload
 
 

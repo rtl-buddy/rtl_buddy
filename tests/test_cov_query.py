@@ -13,6 +13,7 @@ from rtl_buddy.cov.model import TestArtefacts, build_model, write_model
 from rtl_buddy.cov.query import (
     COV_QUERY_SCHEMA_VERSION,
     CovQueryError,
+    detail_payload,
     load_context,
     module_names,
     module_payload,
@@ -152,6 +153,25 @@ def test_summary_limit_truncates_the_file_list(project):
 
     assert [row["path"] for row in payload["files"]] == ["design/blk.sv"]
     assert payload["counts"]["files"] == 2
+
+
+def test_detail_payload_keeps_the_points_the_summary_folds_away(project):
+    """What the ``/cov`` pane reads: same run block, same ordering, same
+    ``artefacts`` — the only difference is the depth of ``files``."""
+
+    ctx = load_context(project)
+    summary = summary_payload(ctx, limit=0)
+    detail = detail_payload(ctx)
+
+    assert [row["path"] for row in detail["files"]] == [
+        row["path"] for row in summary["files"]
+    ]
+    assert detail["artefacts"] == summary["artefacts"]
+    assert detail["totals"] == summary["totals"]
+    # The summary reports each file's totals; the detail reports the
+    # points behind them, with their per-test attribution.
+    assert "line" not in summary["files"][0]
+    assert detail["files"][0]["line"][0]["tests"] == {"basic": 1}
 
 
 def test_summary_carries_observed_cover_points(project):
