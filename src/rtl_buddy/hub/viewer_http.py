@@ -107,7 +107,7 @@ PLACEHOLDER_HTML = """<!doctype html>
            margin: 4rem auto; padding: 0 1rem; line-height: 1.5;
            background: var(--bg, #f8fafc); color: var(--fg, #1e293b); }
     code { font-family: var(--font-mono, monospace);
-           background: var(--panel-2, #f3f4f6); padding: 0 .25rem;
+           background: var(--panel-2, #f1f5f9); padding: 0 .25rem;
            border-radius: var(--radius-1, 3px); }
     a { color: var(--accent, #2563eb); }
     h1 { font-size: 1.4rem; }

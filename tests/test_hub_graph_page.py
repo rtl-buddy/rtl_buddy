@@ -485,6 +485,10 @@ def test_page_links_the_shared_token_sheet_with_a_fallback():
         assert token in body, token
     # Light default (#398): the first surface value is the light one.
     assert "--bg:          #f8fafc;" in body
+    # ...and the fallback comes BEFORE the link, or it would out-rank the
+    # sheet at equal specificity and kill prefers-color-scheme: dark.
+    # tests/test_hub_theme.py checks this properly, for every hub page.
+    assert body.index("--bg:          #f8fafc;") < body.index('href="/hub/theme.css"')
 
 
 def test_page_carries_the_pieces_the_issue_asks_for():

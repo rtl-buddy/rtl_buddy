@@ -16,6 +16,7 @@ Three things can go wrong with a sheet like this and nothing else can:
 from __future__ import annotations
 
 import asyncio
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -176,15 +177,126 @@ def test_asset_lookup_refuses_anything_not_shipped():
 def test_every_hub_page_links_the_favicon():
     """Landing, graph pane, and the no-bundle placeholder."""
 
-    pages = [
-        landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8"),
-        graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8"),
-        PLACEHOLDER_HTML,
-    ]
-    for page in pages:
+    for page in _hub_pages().values():
         assert theme.FAVICON_16 in page
         assert theme.FAVICON_32 in page
         assert theme.THEME_CSS_ROUTE in page
+
+
+# ---------------------------------------------------------------------------
+# the inline fallbacks the pages carry
+# ---------------------------------------------------------------------------
+#
+# Every hub page repeats a few token values inline so a sheet that 404s
+# (an old hub serving a new pane) degrades to a plain page instead of an
+# unreadable one. Two ways that goes wrong, both silent in a screenshot
+# of the default theme:
+#
+#   * the fallback OUT-RANKS the sheet. `:root` ties with `:root`, so
+#     document order decides — a fallback after the link permanently
+#     shadows the sheet, dark media query and all.
+#   * the fallback goes STALE. It is a hand-written copy of the palette;
+#     nothing else notices when the sheet moves and it does not.
+
+_STYLE_RE = re.compile(r"<style>(?P<body>.*?)</style>", re.S)
+_PAGE_ROOT_BLOCK_RE = re.compile(r":root \{(?P<body>[^{}]*)\}")
+_PAGE_DECL_RE = re.compile(r"(?P<name>--[a-z0-9-]+)\s*:\s*(?P<value>[^;{}]+);")
+_VAR_FALLBACK_RE = re.compile(
+    r"var\(\s*(?P<name>--[a-z0-9-]+)\s*,\s*(?P<value>[^(),]+)\)"
+)
+_HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}$")
+
+PAGE_NAMES = ("landing", "graph", "placeholder")
+
+
+def _hub_pages() -> dict[str, str]:
+    """Every HTML document the hub itself serves, rendered."""
+
+    return {
+        "landing": landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode(
+            "utf-8"
+        ),
+        "graph": graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8"),
+        "placeholder": PLACEHOLDER_HTML,
+    }
+
+
+def _stylesheet_link() -> str:
+    return f'<link rel="stylesheet" href="{theme.THEME_CSS_ROUTE}">'
+
+
+def _css(fragment: str) -> str:
+    """The CSS in a fragment of HTML, comments stripped."""
+
+    css = "\n".join(m.group("body") for m in _STYLE_RE.finditer(fragment))
+    return re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+
+def _light_palette() -> dict[str, str]:
+    light, _dark = theme.parse_palettes(
+        theme.THEME_CSS.split(theme.GENERATED_MARKER)[0]
+    )
+    return {name: " ".join(value.split()) for name, value in light}
+
+
+@pytest.mark.parametrize("name", PAGE_NAMES)
+def test_inline_fallbacks_never_shadow_the_sheet(name: str):
+    """No ``:root`` block may re-declare a sheet token AFTER the link.
+
+    Both selectors are ``:root`` — equal specificity, so the later one
+    wins. An inline block placed after the link therefore beats
+    ``theme.css`` outright, including its
+    ``@media (prefers-color-scheme: dark)`` values, and dark mode dies
+    on that page while a ``data-theme`` attribute (higher specificity)
+    keeps working — which is exactly the failure a string-presence test
+    cannot see. Page-local tokens the sheet does not define (the graph
+    pane's ``--edge``) are fine after the link; they shadow nothing.
+    """
+
+    page = _hub_pages()[name]
+    link = _stylesheet_link()
+    assert link in page, name
+    shared = _light_palette()
+    for block in _PAGE_ROOT_BLOCK_RE.finditer(_css(page.split(link, 1)[1])):
+        for decl in _PAGE_DECL_RE.finditer(block.group("body")):
+            token = decl.group("name")
+            assert token not in shared, (
+                f"{name}: `{token}` is re-declared in a :root block after the "
+                f"{theme.THEME_CSS_ROUTE} link, so the inline value beats the "
+                "sheet and prefers-color-scheme dark never applies"
+            )
+
+
+@pytest.mark.parametrize("name", PAGE_NAMES)
+def test_inline_fallback_values_match_the_sheet(name: str):
+    """A fallback that has gone stale is worse than none: it is a second
+    palette nobody knows exists.
+
+    Exact for ``:root`` fallback blocks, which are wholesale copies of
+    the palette. For the ``var(--token, fallback)`` form only colours
+    are pinned — that form is also used for deliberate generic
+    degradations (``var(--font-sans, system-ui)``), which are not copies
+    and must not be forced to match.
+    """
+
+    page = _hub_pages()[name]
+    shared = _light_palette()
+    checked = 0
+    for block in _PAGE_ROOT_BLOCK_RE.finditer(_css(page)):
+        for decl in _PAGE_DECL_RE.finditer(block.group("body")):
+            token = decl.group("name")
+            if token not in shared:
+                continue
+            value = " ".join(decl.group("value").split())
+            assert value == shared[token], f"{name}: {token} is stale"
+            checked += 1
+    for var in _VAR_FALLBACK_RE.finditer(_css(page)):
+        token, value = var.group("name"), var.group("value").strip()
+        if token not in shared or not _HEX_RE.match(value):
+            continue
+        assert value == shared[token], f"{name}: var({token}) fallback is stale"
+        checked += 1
+    assert checked, f"{name}: no inline fallback found to check"
 
 
 # ---------------------------------------------------------------------------
