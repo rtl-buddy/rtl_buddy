@@ -26,6 +26,12 @@ result envelopes and the artefact layout into
 ids, and :func:`~rtl_buddy.graph.results.load_overlay` /
 :func:`~rtl_buddy.graph.results.overlay_for_node` join the two back up.
 
+:mod:`rtl_buddy.graph.coverage` rides in that same overlay: it joins the
+coverage model (#399) onto graph ids — per-module ratios on design
+nodes, per-test scalars on test nodes, and a declared-vs-observed
+verdict on every ``covitem:`` node — without ever re-running a
+coverage tool.
+
 :mod:`rtl_buddy.graph.query` is the read side: the ``query`` / ``path`` /
 ``explain`` verbs behind ``rb graph query`` and the ``rb mcp`` graph
 tools, with the overlay joined onto every node they return. Matching is
@@ -74,6 +80,17 @@ from .config_tier import (
     write_graph_json,
     write_graph_meta,
 )
+from .coverage import (
+    COVERAGE_SCHEMA_VERSION,
+    STATUS_DECLARED_ONLY,
+    STATUS_EXERCISED,
+    STATUS_OBSERVED_UNDECLARED,
+    CoverageJoin,
+    annotate_coverage,
+    coverage_block,
+    coverage_for_node,
+    join_coverage,
+)
 from .query import (
     DEFAULT_DEPTH,
     DEFAULT_LIMIT,
@@ -119,6 +136,7 @@ from .results import (
 __all__ = [
     "BINDING_TIER",
     "CONFIG_TIER",
+    "COVERAGE_SCHEMA_VERSION",
     "DEFAULT_FLOW",
     "DESIGN_TIER",
     "FLOW_CDC",
@@ -137,6 +155,9 @@ __all__ = [
     "PYTHON_MODULE_TYPE",
     "RESULTS_OVERLAY_NAME",
     "SCHEMA_VERSION",
+    "STATUS_DECLARED_ONLY",
+    "STATUS_EXERCISED",
+    "STATUS_OBSERVED_UNDECLARED",
     "TIER_ORDER",
     "VIEW_GRAPH_MIN_VERSION",
     "DEFAULT_DEPTH",
@@ -145,6 +166,7 @@ __all__ = [
     "MAX_DEPTH",
     "BindingStage",
     "ConfigTier",
+    "CoverageJoin",
     "GraphContext",
     "GraphIndex",
     "GraphQueryError",
@@ -152,15 +174,19 @@ __all__ = [
     "ResultsOverlay",
     "TestbenchTarget",
     "TierReport",
+    "annotate_coverage",
     "annotate_graph",
     "bind_python",
     "build_graph",
     "build_config_tier",
     "collect_results",
+    "coverage_block",
+    "coverage_for_node",
     "dangling_targets",
     "default_graph_dir",
     "explain",
     "extract_config_tier",
+    "join_coverage",
     "load_context",
     "load_graph",
     "load_overlay",
