@@ -282,6 +282,62 @@ def test_send_graph_focus_rejects_blank_node(
     assert "non-empty" in result.output.lower()
 
 
+def test_send_cov_focus_caches_the_focus(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """``rb hub send cov-focus`` (rtl-buddy/rtl_buddy#400) drives the
+    coverage pane, and the cache is what makes it useful before the tab
+    exists — the focus is replayed to the pane on registration."""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        send_app,
+        ["cov-focus", "file:design/blk.sv", "--metric", "branch", "--line", "42"],
+    )
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.cov_focus  # noqa: SLF001
+    assert cached is not None
+    assert cached.target == "file:design/blk.sv"
+    assert cached.metric == "branch"
+    assert cached.line == 42
+    assert cached.item is None
+
+
+def test_send_cov_focus_defaults_omit_the_hints(
+    threaded_hub: _ThreadedHub, discovery_root: Path
+):
+    """The wire schema is ``additionalProperties: false`` with no
+    nullable hints, so an unset option must be absent rather than null —
+    a null would be rejected by the encoder, not by the hub."""
+
+    runner = CliRunner()
+    result = runner.invoke(send_app, ["cov-focus", "module:blk"])
+    assert result.exit_code == 0, result.output
+    _drain_briefly()
+    cached = threaded_hub._server.state.cov_focus  # noqa: SLF001
+    assert cached.payload() == {"target": "module:blk"}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["cov-focus", "   "],
+        ["cov-focus", "module:blk", "--metric", "statement"],
+        ["cov-focus", "module:blk", "--line", "0"],
+        ["cov-focus", "module:blk", "--item", " "],
+    ],
+)
+def test_send_cov_focus_rejects_bad_arguments(
+    threaded_hub: _ThreadedHub, discovery_root: Path, argv: list[str]
+):
+    """Rejected in the CLI, where the message can name the flag, rather
+    than at the encoder, where it names a JSON pointer."""
+
+    result = CliRunner().invoke(send_app, argv)
+    assert result.exit_code != 0
+
+
 def test_send_diagnose_pushes_items(threaded_hub: _ThreadedHub, discovery_root: Path):
     runner = CliRunner()
     result = runner.invoke(
