@@ -760,19 +760,23 @@
 
   function neighbours(id) {
     // BFS to `depth` hops, both edge directions — direction encodes
-    // role, not reachability, same as `rb graph path`.
+    // role, not reachability, same as `rb graph path`. Nodes in hidden
+    // columns are not entered: expanding through an invisible node
+    // would light two islands with no visible edge between them.
     var set = Object.create(null); set[id] = true;
     var depth = parseInt(els.optHops.value, 10) || 1;
     var frontier = [id];
+    function visit(cand, next) {
+      if (set[cand]) { return; }
+      var n = state.byId[cand];
+      if (n && state.hiddenCols[categoryOf(n)]) { return; }
+      set[cand] = true; next.push(cand);
+    }
     for (var d = 0; d < depth && frontier.length; d++) {
       var next = [];
       frontier.forEach(function (nid) {
-        (state.out[nid] || []).forEach(function (l) {
-          if (!set[l.target]) { set[l.target] = true; next.push(l.target); }
-        });
-        (state.inc[nid] || []).forEach(function (l) {
-          if (!set[l.source]) { set[l.source] = true; next.push(l.source); }
-        });
+        (state.out[nid] || []).forEach(function (l) { visit(l.target, next); });
+        (state.inc[nid] || []).forEach(function (l) { visit(l.source, next); });
       });
       frontier = next;
     }
