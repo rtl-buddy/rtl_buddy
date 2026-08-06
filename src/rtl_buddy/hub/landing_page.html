@@ -9,13 +9,18 @@
 
     No build step and no route off localhost: the only external
     references are same-origin hub routes (/hub/theme.css, /hub/assets/*,
-    /hub/state.json). The inline <style> below is a fallback for the
+    /hub/state.json). The first inline <style> is a fallback for the
     handful of tokens this page cannot render without, so a sheet that
     fails to load degrades to a plain page instead of an unreadable one.
+
+    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
+    select :root, so they tie on specificity and document order decides
+    — a fallback placed after the link would permanently shadow the
+    sheet, including its @media (prefers-color-scheme: dark) block, and
+    every later palette edit would silently stop reaching this page.
   -->
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
-  <link rel="stylesheet" href="/hub/theme.css">
   <style>
     /* --- minimal fallback: only what an unstyled page cannot do without */
     :root {
@@ -30,7 +35,9 @@
       --radius-2: 4px; --radius-3: 6px;
       --shadow-1: 0 4px 12px rgba(15, 23, 42, .10);
     }
-
+  </style>
+  <link rel="stylesheet" href="/hub/theme.css">
+  <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {

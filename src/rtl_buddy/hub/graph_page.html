@@ -6,7 +6,6 @@
   <title>rtl-buddy-graph</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
-  <link rel="stylesheet" href="/hub/theme.css">
   <!--
     Served by rtl_buddy.hub.graph_page at GET /graph (rtl_buddy#382).
 
@@ -18,6 +17,12 @@
     off the machine; the block below repeats only the tokens the page
     cannot render without, as a fallback for a sheet that 404s (an old
     hub serving a new pane).
+
+    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
+    select :root, so they tie on specificity and document order decides
+    — a fallback placed after the link would permanently shadow the
+    sheet, including its @media (prefers-color-scheme: dark) block, and
+    every later palette edit would silently stop reaching this pane.
   -->
   <style>
     :root {
@@ -51,6 +56,9 @@
       --radius-1: 3px;
       --radius-2: 4px;
     }
+  </style>
+  <link rel="stylesheet" href="/hub/theme.css">
+  <style>
     /* Page-local derivations of the shared tokens. Edges are the one
        thing the graph needs that no other app does, so they are
        expressed here in terms of the sheet rather than tokenized. */
