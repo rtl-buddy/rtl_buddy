@@ -65,6 +65,10 @@ class TestArtefacts:
     source_roots: tuple[str, ...] = ()
 
 
+# Named for the RTL test it describes, not for pytest.
+TestArtefacts.__test__ = False
+
+
 @dataclass
 class _Point:
     line: int | None
