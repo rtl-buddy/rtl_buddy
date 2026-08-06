@@ -30,7 +30,10 @@ call to search it would defeat the exercise.
 written back into ``graph.json``. Every node in every payload here
 carries a ``results`` key when the overlay knows about it, which is what
 lets "which tests cover coverage-item X, and what is their last status"
-be one round-trip instead of two.
+be one round-trip instead of two. Since #402 the same overlay carries
+the coverage join, so a node also carries ``coverage`` when the run's
+coverage model has something to say about it — a module's ratio, or a
+coverage item's exercised / declared-only verdict.
 
 **Every answer is citable.** Nodes carry ``file``/``line`` from their
 tier, and instance nodes additionally carry the exact
@@ -53,6 +56,7 @@ from pathlib import Path
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .config_tier import GRAPH_JSON_NAME, default_graph_dir
+from .coverage import coverage_block, coverage_for_node
 from .merge import rel_path
 from .results import RESULTS_OVERLAY_NAME, load_overlay, overlay_for_node
 
@@ -355,6 +359,22 @@ class GraphContext:
     def results_for(self, node_id: str) -> dict | None:
         return overlay_for_node(self.overlay, node_id)
 
+    def coverage_for(self, node_id: str) -> dict | None:
+        return coverage_for_node(self.overlay, node_id)
+
+    def coverage(self) -> dict | None:
+        """The overlay's coverage block, minus its per-node maps.
+
+        The header a payload can afford to repeat: which manifest the
+        numbers came from, the run totals, and the declared-vs-observed
+        tally. The ``nodes`` map itself is joined per node instead — it
+        is as long as the graph.
+        """
+        block = coverage_block(self.overlay)
+        if block is None:
+            return None
+        return {k: v for k, v in block.items() if k not in ("nodes", "undeclared")}
+
 
 def load_context(
     project_root: str | os.PathLike,
@@ -563,6 +583,9 @@ def node_summary(ctx: GraphContext, node: dict, *, results: bool = True) -> dict
         entry = ctx.results_for(str(node.get("id", "")))
         if entry is not None:
             summary["results"] = entry
+        coverage = ctx.coverage_for(str(node.get("id", "")))
+        if coverage is not None:
+            summary["coverage"] = coverage
     return summary
 
 
@@ -871,7 +894,15 @@ def explain(
     results: bool = True,
     limit: int = 200,
 ) -> dict:
-    """``rb graph explain`` — one node, every edge on it, its last result."""
+    """``rb graph explain`` — one node, its edges, its result, its coverage.
+
+    ``coverage`` is what this node's row of the coverage join says: a
+    ratio for a module or instance, an exercised / declared-only
+    verdict with the observed cover points behind it for a
+    ``covitem:`` node, and ``None`` for everything else. ``coverage_run``
+    names the manifest those numbers came from, so an answer can never
+    be mistaken for a fresher run than it is.
+    """
     node = resolve_node(ctx, node_ref)
     node_id = str(node.get("id"))
 
@@ -913,6 +944,8 @@ def explain(
         "node": summary,
         "attributes": attributes,
         "results": summary.get("results"),
+        "coverage": summary.get("coverage"),
+        "coverage_run": ctx.coverage(),
         "degree": degree,
         "outgoing": outgoing[:limit],
         "incoming": incoming[:limit],
@@ -933,6 +966,12 @@ def test_status(
     without making the caller match a node first. ``test`` accepts a full
     ``test:<suite>#<name>`` id or a bare test name; ``status`` filters on
     the envelope verdict.
+
+    Each entry carries its ``coverage`` scalars when the run wrote a
+    coverage model (#402), and ``coverage_run`` names the manifest they
+    came from — "did it pass" and "what did it cover" are the same
+    question asked twice, and answering them in one payload is the
+    difference between one round-trip and two.
     """
     entries = list(((ctx.overlay or {}).get("tests") or {}).values())
     if test:
@@ -959,6 +998,8 @@ def test_status(
         "available": ctx.overlay is not None,
         "matched": len(entries),
         "statuses": counts,
+        "coverage_run": ctx.coverage(),
+        "with_coverage": sum(1 for entry in entries if entry.get("coverage")),
         "truncated": len(entries) > limit,
         "tests": entries[:limit],
     }
