@@ -59,6 +59,14 @@
       --tint-s:   70%;    /* saturation of the coverage ramp */
       --gutter:   3.2rem; /* line-number column */
       --hitcol:   3.6rem; /* hit-count column */
+      --markcol:  13rem;  /* hard cap on the marks column */
+      /* The two ends of the same ramp `.tint` uses, named so a bit cell
+         can paint one direction per half. Derived from --cov-l rather
+         than taken from the sheet's --cov-0/--cov-100 for the reason
+         the fallback block exists: --cov-l is the token the page
+         repeats, so these still track the theme when the sheet 404s. */
+      --tgl-hit:  hsl(120, var(--tint-s), var(--cov-l));
+      --tgl-miss: hsl(0,   var(--tint-s), var(--cov-l));
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -191,14 +199,70 @@
     table#src td.marks { width: 1%; white-space: nowrap; }
     table#src td.code { width: 100%; overflow-wrap: normal; }
     table#src tr.hot td.code { box-shadow: inset 0 0 0 1px var(--accent); }
+    /* The marks column is capped and clipped on purpose. One 32-bit bus
+       declaration is 64 toggle points on a single line; rendering a chip
+       each pushed the code column off the right of the screen. The cap
+       lives on an inner block because a max-width on a `td` is advisory
+       in auto table layout — as an inner block's it caps the column's
+       intrinsic contribution, so nothing in a cell can widen it. */
+    table#src td.marks .marks-in {
+      display: flex; gap: .15rem; align-items: center;
+      max-width: var(--markcol); overflow: hidden; white-space: nowrap;
+    }
     .mark {
       display: inline-block; margin-right: .15rem; padding: 0 .25rem;
       border-radius: var(--radius-1); font-size: var(--fs-small);
       border: 1px solid var(--line-strong); cursor: pointer;
-      color: var(--fg);
+      color: var(--fg); max-width: 12rem; overflow: hidden;
+      text-overflow: ellipsis;
     }
     .mark.miss { border-color: var(--err); color: var(--err); font-weight: 600; }
     .mark.sel { outline: 1px solid var(--accent); }
+    .mark.badge { font-variant-numeric: tabular-nums; }
+    .mark.badge.open { outline: 1px solid var(--accent); }
+
+    /* -- expansion row: the detail the marks column no longer carries -- */
+    table#src tr.expand > td {
+      white-space: normal; background: var(--panel-2);
+      border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+      padding: .35rem .6rem .45rem calc(var(--gutter) + .8rem);
+    }
+    .expand-head {
+      display: flex; gap: .5rem; align-items: baseline;
+      font-size: var(--fs-small); color: var(--fg-muted);
+    }
+    .expand-head button { padding: 0 .35rem; line-height: 1.2; }
+    /* A declaration line can carry a dozen signals; wrapping keeps the
+       expansion a few lines tall instead of a dozen. */
+    .tgs { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 1.6rem; }
+    .tg { margin: .3rem 0 0; }
+    .tg-head {
+      display: flex; gap: .4rem; align-items: baseline;
+      font-size: var(--fs-small);
+    }
+    .tg-name { font-weight: 600; color: var(--fg); }
+    .tg-range, .tg-sum { color: var(--fg-muted); }
+    .tg-rows { margin-top: .15rem; }
+    .tg-row { display: flex; gap: 1px; margin-bottom: 2px; }
+    /* One cell per bit, both directions in it: the top half is 0→1 and
+       the bottom half 1→0, each half either the ramp's covered end or
+       its uncovered end. A bit covered both ways therefore reads as one
+       solid block, and a half-toggled bit is visibly half. */
+    .bit {
+      width: .72rem; height: .72rem; flex: none; border-radius: 1px;
+      cursor: pointer;
+      --dir-up: var(--tgl-miss); --dir-down: var(--tgl-miss);
+      background: linear-gradient(to bottom,
+        var(--dir-up) 0 50%, var(--dir-down) 50% 100%);
+    }
+    .bit.up { --dir-up: var(--tgl-hit); }
+    .bit.down { --dir-down: var(--tgl-hit); }
+    .bit.absent { background: var(--cov-none); cursor: default; }
+    /* Byte boundary, so a wide bus is countable without a ruler. */
+    .bit.sep { margin-right: .3rem; }
+    .bit:hover { outline: 1px solid var(--fg-muted); }
+    .bit.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .tg-chips { margin-top: .35rem; }
     #point {
       border-top: 1px solid var(--line); background: var(--panel);
       padding: .4rem .75rem; font-size: var(--fs-small);
@@ -333,6 +397,7 @@
     test: null,        // selected test name (attribution filter)
     focusLine: null,   // line to scroll to / highlight in the file view
     focusItem: null,   // point name to highlight in the file view
+    expandedLine: null, // the one line whose detail row is open, if any
     sources: Object.create(null),
     pending: null      // cov_focus that arrived before the model did
   };
@@ -776,6 +841,9 @@
       note('no coverage recorded for ' + path, 'warn');
       return false;
     }
+    // A line number only means something within one file, so the open
+    // detail row does not survive a change of file.
+    if (state.file !== path) { state.expandedLine = null; }
     state.file = path;
     state.focusLine = opts.line || null;
     state.focusItem = opts.item || null;
@@ -823,6 +891,84 @@
     return index;
   }
 
+  // --- pure helpers, no DOM and no state -----------------------------
+  // tests/test_hub_cov_page.py slices the source between these markers
+  // and evaluates it in node, so nothing between them may close over
+  // anything defined outside.
+  // >>> toggle-grouping
+  // A verilator toggle point is `<base>[<bit>]:<dir>` — `clk:0->1`,
+  // `paddr[3]:1->0` — with the bit part absent for scalars. The base may
+  // itself contain brackets (`mem[1].data[0]`), so the bracket that
+  // indexes the bus is the LAST one before the colon, which is what the
+  // lazy first group buys.
+  var TOGGLE_NAME = /^(.*?)(?:\[(\d+)\])?:(0->1|1->0)$/;
+
+  function parseToggleName(name) {
+    var m = TOGGLE_NAME.exec(name == null ? '' : String(name));
+    if (!m) { return null; }
+    return { base: m[1], bit: m[2] == null ? null : parseInt(m[2], 10), dir: m[3] };
+  }
+
+  // Collapse a line's toggle points into one group per base signal, each
+  // carrying one cell per bit ordered MSB first (so the grid reads like
+  // the declaration: LSB on the right). `total` counts DIRECTIONS, since
+  // a direction is what a toggle point actually is.
+  function groupToggles(entries) {
+    var groups = [], byKey = Object.create(null);
+    (entries || []).forEach(function (entry) {
+      var point = (entry && entry.point) || {};
+      var parsed = parseToggleName(point.name);
+      // A name this pane cannot parse still has to be reachable, so it
+      // becomes its own one-cell group rather than being dropped.
+      if (!parsed) { parsed = { base: String(point.name || '(unnamed)'), bit: null, dir: '0->1' }; }
+      var key = (point.module || '') + ' ' + parsed.base;
+      var group = byKey[key];
+      if (!group) {
+        group = byKey[key] = {
+          base: parsed.base, module: point.module || '',
+          scalar: true, min: null, max: null, total: 0,
+          byBit: Object.create(null), cells: []
+        };
+        groups.push(group);
+      }
+      var bitKey = parsed.bit == null ? 's' : String(parsed.bit);
+      var cell = group.byBit[bitKey];
+      if (!cell) { cell = group.byBit[bitKey] = { bit: parsed.bit, up: null, down: null }; }
+      var slot = parsed.dir === '0->1' ? 'up' : 'down';
+      if (cell[slot]) { slot = slot === 'up' ? 'down' : 'up'; }
+      if (cell[slot]) { return; }
+      cell[slot] = point;
+      group.total += 1;
+      if (parsed.bit != null) {
+        group.scalar = false;
+        group.min = group.min == null ? parsed.bit : Math.min(group.min, parsed.bit);
+        group.max = group.max == null ? parsed.bit : Math.max(group.max, parsed.bit);
+      }
+    });
+    groups.forEach(function (group) {
+      if (group.scalar) {
+        group.cells = [group.byBit.s || { bit: null, up: null, down: null }];
+        return;
+      }
+      for (var b = group.max; b >= group.min; b--) {
+        // A bus with a hole in it (a point the database never emitted)
+        // keeps the bit's place, or every index right of the hole would
+        // silently shift.
+        group.cells.push(group.byBit[String(b)] || { bit: b, up: null, down: null, absent: true });
+      }
+    });
+    return groups;
+  }
+
+  // Rows of 32 bits, MSB row first, so a 64-bit bus is two readable
+  // rows rather than one line that scrolls.
+  function chunkBits(cells, per) {
+    var rows = [], i;
+    for (i = 0; i < cells.length; i += per) { rows.push(cells.slice(i, i + per)); }
+    return rows.length ? rows : [[]];
+  }
+  // <<< toggle-grouping
+
   function hitsFor(point) {
     // With a test lens on, the number shown is that test's contribution
     // — which is the whole question "what would I lose by dropping it".
@@ -835,6 +981,232 @@
     var names = Object.keys(tests).sort();
     if (!names.length) { return 'no per-test attribution'; }
     return names.map(function (n) { return n + ': ' + tests[n]; }).join('\n');
+  }
+
+  // ---------------------------------------------------------------
+  // the marks column and its expansion row
+  // ---------------------------------------------------------------
+
+  //: line number -> the entries of the file currently rendered, so the
+  //  expansion row can be built without re-walking the model.
+  var lineMarks = Object.create(null);
+
+  //: no · hits · marks · code — what an expansion row has to span.
+  var SRC_COLUMNS = 4;
+
+  // Toggle always collapses (a bus is dozens of points per line); other
+  // metrics collapse only when there is more than one of them, because a
+  // lone named chip never pushed anything off-screen and reads better.
+  function collapses(metric, list) {
+    return metric === 'toggle' || list.length > 1;
+  }
+
+  function byMetric(entries) {
+    var groups = Object.create(null), order = [];
+    entries.forEach(function (entry) {
+      if (!groups[entry.metric]) { groups[entry.metric] = []; order.push(entry.metric); }
+      groups[entry.metric].push(entry);
+    });
+    return { order: order, groups: groups };
+  }
+
+  function namedMark(entry) {
+    var h = hitsFor(entry.point);
+    var mark = elem('span', 'mark' + (h > 0 ? '' : ' miss'),
+      METRIC_INITIAL[entry.metric] + (entry.point.name ? ' ' + entry.point.name : ''));
+    mark.title = entry.metric + ' · ' + (entry.point.name || '(unnamed)') +
+      (entry.point.module ? ' · ' + entry.point.module : '') +
+      ' · hits ' + h + '\n' + attribution(entry.point);
+    if (state.focusItem && entry.point.name === state.focusItem) {
+      mark.classList.add('sel');
+    }
+    mark.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      showPoint(entry.metric, entry.point);
+    });
+    return mark;
+  }
+
+  function metricBadge(metric, list, lineNo) {
+    var hit = 0;
+    list.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
+    var badge = elem('span', 'mark badge' + (hit ? '' : ' miss'),
+      METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length);
+    tint(badge, list.length ? hit / list.length : null);
+    if (state.expandedLine === lineNo) { badge.classList.add('open'); }
+    badge.title = list.length + ' ' + metric + ' point' + (list.length === 1 ? '' : 's') +
+      ' on this line · ' + hit + ' hit' +
+      (state.test ? ' by ' + state.test : '') + '\nclick for the detail';
+    badge.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggleExpansion(lineNo);
+    });
+    return badge;
+  }
+
+  function renderMarks(box, lineNo, entries) {
+    var split = byMetric(entries);
+    split.order.forEach(function (metric) {
+      var list = split.groups[metric];
+      if (!collapses(metric, list)) {
+        list.forEach(function (entry) { box.appendChild(namedMark(entry)); });
+        return;
+      }
+      box.appendChild(metricBadge(metric, list, lineNo));
+    });
+  }
+
+  function bitCell(group, cell) {
+    var label = group.base + (cell.bit == null ? '' : '[' + cell.bit + ']');
+    var node = elem('span', 'bit');
+    if (cell.absent) {
+      node.classList.add('absent');
+      node.title = label + ' — no toggle point in this run';
+      return node;
+    }
+    var up = cell.up, down = cell.down;
+    var upHits = up ? hitsFor(up) : null;
+    var downHits = down ? hitsFor(down) : null;
+    if (upHits > 0) { node.classList.add('up'); }
+    if (downHits > 0) { node.classList.add('down'); }
+    node.title = label + ' — 0→1: ' + (up ? upHits + ' hits' : 'no point') +
+      ' · 1→0: ' + (down ? downHits + ' hits' : 'no point');
+    if (state.focusItem &&
+        ((up && up.name === state.focusItem) || (down && down.name === state.focusItem))) {
+      node.classList.add('sel');
+    }
+    // The uncovered direction is the one worth opening when only one of
+    // them is; otherwise 0→1, so the click is predictable.
+    var pick = up;
+    if (up && down && upHits > 0 && downHits === 0) { pick = down; }
+    else if (up && down && downHits > 0 && upHits === 0) { pick = up; }
+    else if (!up) { pick = down; }
+    node.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (pick) { showPoint('toggle', pick); }
+    });
+    return node;
+  }
+
+  function renderToggleGroup(group) {
+    var wrap = elem('div', 'tg');
+    var head = elem('div', 'tg-head');
+    var name = elem('span', 'tg-name', group.base);
+    name.title = group.module ? group.base + ' · ' + group.module : group.base;
+    head.appendChild(name);
+    if (!group.scalar) {
+      head.appendChild(elem('span', 'tg-range', '[' + group.max + ':' + group.min + ']'));
+    }
+    var covered = 0;
+    group.cells.forEach(function (cell) {
+      if (cell.up && hitsFor(cell.up) > 0) { covered += 1; }
+      if (cell.down && hitsFor(cell.down) > 0) { covered += 1; }
+    });
+    head.appendChild(elem('span', 'tg-sum', covered + '/' + group.total + ' dirs'));
+    wrap.appendChild(head);
+    var rows = elem('div', 'tg-rows');
+    chunkBits(group.cells, 32).forEach(function (cells) {
+      var row = elem('div', 'tg-row');
+      cells.forEach(function (cell, i) {
+        var node = bitCell(group, cell);
+        // Byte boundary: the gap goes after the cell whose index is a
+        // multiple of 8, never after the last cell in the row.
+        if (cell.bit != null && cell.bit % 8 === 0 && i < cells.length - 1) {
+          node.classList.add('sep');
+        }
+        row.appendChild(node);
+      });
+      rows.appendChild(row);
+    });
+    wrap.appendChild(rows);
+    return wrap;
+  }
+
+  function collapseExpansion() {
+    var open = els.srcBody.querySelector('tr.expand');
+    if (open) { open.parentNode.removeChild(open); }
+    Array.prototype.forEach.call(
+      els.srcBody.querySelectorAll('.mark.badge.open'),
+      function (badge) { badge.classList.remove('open'); }
+    );
+    state.expandedLine = null;
+  }
+
+  function expandLine(lineNo, opts) {
+    opts = opts || {};
+    collapseExpansion();
+    var host = els.srcBody.querySelector('tr[data-line="' + lineNo + '"]');
+    var entries = lineMarks[lineNo] || [];
+    if (!host || !entries.length) { return false; }
+    var split = byMetric(entries);
+    var collapsed = split.order.filter(function (metric) {
+      return collapses(metric, split.groups[metric]);
+    });
+    if (!collapsed.length) { return false; }
+
+    var tr = elem('tr', 'expand');
+    var td = elem('td');
+    td.colSpan = SRC_COLUMNS;
+    var head = elem('div', 'expand-head');
+    head.appendChild(elem('span', null, 'line ' + lineNo));
+    var close = elem('button', null, '×');
+    close.title = 'Close this detail row';
+    close.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      collapseExpansion();
+    });
+    head.appendChild(close);
+    td.appendChild(head);
+
+    collapsed.forEach(function (metric) {
+      if (metric === 'toggle') {
+        var grid = elem('div', 'tgs');
+        groupToggles(split.groups[metric]).forEach(function (group) {
+          grid.appendChild(renderToggleGroup(group));
+        });
+        td.appendChild(grid);
+        return;
+      }
+      // Everything that is not a toggle keeps the named chips — they are
+      // few per line, and the name IS the information.
+      var chips = elem('div', 'tg-chips');
+      split.groups[metric].forEach(function (entry) { chips.appendChild(namedMark(entry)); });
+      td.appendChild(chips);
+    });
+
+    tr.appendChild(td);
+    if (host.nextSibling) { els.srcBody.insertBefore(tr, host.nextSibling); }
+    else { els.srcBody.appendChild(tr); }
+    state.expandedLine = lineNo;
+    Array.prototype.forEach.call(host.querySelectorAll('.mark.badge'), function (badge) {
+      badge.classList.add('open');
+    });
+    if (opts.scroll) { tr.scrollIntoView({ block: 'center' }); }
+    return true;
+  }
+
+  function toggleExpansion(lineNo) {
+    if (state.expandedLine === lineNo) { collapseExpansion(); return; }
+    expandLine(lineNo, {});
+  }
+
+  // A cov_focus can name a point (`paddr[3]:0->1`) that now lives inside
+  // a collapsed badge; the line it sits on is the one to open.
+  function lineOfFocusItem() {
+    var found = null;
+    if (!state.focusItem) { return null; }
+    Object.keys(lineMarks).forEach(function (key) {
+      if (found != null) { return; }
+      var split = byMetric(lineMarks[key]);
+      split.order.forEach(function (metric) {
+        if (found != null || !collapses(metric, split.groups[metric])) { return; }
+        var hit = split.groups[metric].some(function (entry) {
+          return entry.point.name === state.focusItem;
+        });
+        if (hit) { found = parseInt(key, 10); }
+      });
+    });
+    return found;
   }
 
   function renderFile() {
@@ -873,6 +1245,11 @@
       if (point.line != null) { byLine[point.line] = point; }
     });
     var marks = pointsByLine(row);
+    lineMarks = marks;
+    // The rows are about to be thrown away, so the open slot is too —
+    // it is re-opened below once the line it belongs to exists again.
+    var reopen = state.expandedLine;
+    state.expandedLine = null;
     var last = lines ? lines.length : 0;
     Object.keys(byLine).concat(Object.keys(marks)).forEach(function (n) {
       last = Math.max(last, parseInt(n, 10) || 0);
@@ -898,22 +1275,9 @@
       tr.appendChild(hits);
 
       var cell = elem('td', 'marks');
-      (marks[n] || []).forEach(function (entry) {
-        var h = hitsFor(entry.point);
-        var mark = elem('span', 'mark' + (h > 0 ? '' : ' miss'),
-          METRIC_INITIAL[entry.metric] + (entry.point.name ? ' ' + entry.point.name : ''));
-        mark.title = entry.metric + ' · ' + (entry.point.name || '(unnamed)') +
-          (entry.point.module ? ' · ' + entry.point.module : '') +
-          ' · hits ' + h + '\n' + attribution(entry.point);
-        if (state.focusItem && entry.point.name === state.focusItem) {
-          mark.classList.add('sel');
-        }
-        mark.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-          showPoint(entry.metric, entry.point);
-        });
-        cell.appendChild(mark);
-      });
+      var box = elem('div', 'marks-in');
+      renderMarks(box, n, marks[n] || []);
+      cell.appendChild(box);
       tr.appendChild(cell);
 
       var code = elem('td', 'code', lines && lines[n - 1] != null ? lines[n - 1] : '');
@@ -927,12 +1291,16 @@
     }
     els.point.hidden = true;
     if (target) { target.scrollIntoView({ block: 'center' }); }
+    var open = lineOfFocusItem();
+    if (open == null) { open = reopen; }
+    if (open != null) { expandLine(open, { scroll: target == null }); }
   }
 
   function showDashboard() {
     state.file = null;
     state.focusLine = null;
     state.focusItem = null;
+    state.expandedLine = null;
     els.file.hidden = true;
     els.dash.hidden = false;
     renderFiles();
