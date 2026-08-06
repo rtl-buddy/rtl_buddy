@@ -8,6 +8,8 @@ coverage module handles rtl-buddy coverage result orchestration
 
 import os
 
+from ..cov import manifest as manifest_mod
+from ..cov import model as model_mod
 from .coverview import CoverviewPacker
 from .vlog_cov import CoverageMetrics, VlogCov, aggregate_cover_records
 
@@ -172,11 +174,17 @@ class CoverageReporter:
 
     @staticmethod
     def _metrics_payload(metrics):
-        """Structured line/branch/toggle/functional dict for a CoverageMetrics."""
+        """Structured per-metric dict for a CoverageMetrics.
+
+        Carries ``expression`` even though the display summary does not:
+        the scalar existed nowhere before (#399), while the per-signal
+        detail behind it lives in the coverage model.
+        """
         return {
             "line": metrics.line,
             "branch": metrics.branch,
             "toggle": metrics.toggle,
+            "expression": metrics.expression,
             "functional": metrics.functional,
         }
 
@@ -270,6 +278,143 @@ class CoverageReporter:
                 dataset_files, dir_summary_paths
             )
         )
+
+    # ------------------------------------------------------------------
+    # structured model + artefact manifest (#399)
+    # ------------------------------------------------------------------
+
+    def _test_artefacts(self, suite_results, *, outdir, suite_name, source_roots):
+        """Per-test coverage artefacts for the model builder.
+
+        Reads the mutated per-test coverage dicts rather than any merge
+        product, so the model — and with it the per-test attribution —
+        is built from whatever the run left on disk, under every merge
+        mode and under none.
+        """
+        suite_roots = self._normalize_source_roots(
+            outdir, source_roots=source_roots, suite_name=suite_name
+        )
+        entries = []
+        for suite_result in suite_results:
+            coverage = suite_result["results"].results.get("coverage")
+            if coverage is None:
+                continue
+            raw_paths = coverage.get("raw_paths") or []
+            raw = raw_paths[0] if len(raw_paths) > 0 else None
+            info = coverage.get("lcov_path")
+            if raw is None and info is None:
+                continue
+            hints = [] if raw is None else [os.path.dirname(raw)]
+            hints.extend(suite_roots)
+            entries.append(
+                model_mod.TestArtefacts(
+                    name=suite_result["test_name"],
+                    raw=raw,
+                    info=info,
+                    suite=suite_name,
+                    source_roots=tuple(hints),
+                )
+            )
+        return entries
+
+    def _test_manifest_rows(self, suite_results, suite_name):
+        """Per-test artefact rows for the manifest."""
+        rows = []
+        for suite_result in suite_results:
+            coverage = suite_result["results"].results.get("coverage")
+            if coverage is None:
+                continue
+            raw_paths = coverage.get("raw_paths") or []
+            rows.append(
+                {
+                    "name": suite_result["test_name"],
+                    "suite": suite_name,
+                    "raw": raw_paths[0] if len(raw_paths) > 0 else None,
+                    "info": coverage.get("lcov_path"),
+                    "html_dir": coverage.get("html_dir"),
+                    "coverview_zip": coverage.get("coverview_zip"),
+                }
+            )
+        return rows
+
+    def write_artefacts(
+        self,
+        suite_results,
+        *,
+        outdir,
+        suite_name,
+        command,
+        source_roots=None,
+        merge_mode=None,
+        merged=None,
+        datasets=None,
+        descriptions=None,
+        coverview=None,
+    ):
+        """Write the coverage model and manifest, returning the artefacts block.
+
+        Returns None when the run produced no coverage at all — there is
+        nothing to index, and an empty manifest would advertise coverage
+        that does not exist.
+        """
+        tests = self._test_artefacts(
+            suite_results,
+            outdir=outdir,
+            suite_name=suite_name,
+            source_roots=source_roots,
+        )
+        if len(tests) == 0:
+            return None
+
+        project_root = self.root_cfg.get_project_rootdir()
+        builder_cfg = self.root_cfg.get_rtl_builder_cfg()
+        simulator_family = builder_cfg.get_simulator_family()
+        cov_dir = self._cov_dir(outdir)
+        merged = merged or {}
+
+        model = model_mod.build_model(
+            tests,
+            project_root=project_root,
+            simulator=simulator_family,
+            merged_info=merged.get("info"),
+        )
+        if not model["files"] and not model["tests"]:
+            # Artefacts were named but none of them parsed into a single
+            # point — a simulator with no coverage support, or databases
+            # that have since been cleaned. A manifest here would
+            # advertise coverage that cannot be read.
+            return None
+        model_path = model_mod.write_model(model, cov_dir)
+        manifest = manifest_mod.build_manifest(
+            project_root=project_root,
+            cov_dir=cov_dir,
+            command=command,
+            suite=suite_name,
+            builder=builder_cfg.get_name(),
+            simulator_family=simulator_family,
+            merge_mode=merge_mode,
+            model_path=model_path,
+            totals=model["totals"],
+            merged=merged,
+            datasets=datasets,
+            descriptions=descriptions,
+            coverview=coverview,
+            tests=self._test_manifest_rows(suite_results, suite_name),
+        )
+        manifest_path = manifest_mod.write_manifest(manifest, cov_dir)
+        return {
+            "manifest": manifest_mod.project_relative(manifest_path, project_root),
+            "cov_dir": manifest["cov_dir"],
+            "model": manifest["model"],
+            "merged_info": manifest["merged"]["info"],
+            "merged_raw": manifest["merged"]["raw"],
+            "merged_desc": manifest["merged"]["desc"],
+            "html_dir": manifest["merged"]["html_dir"],
+            "datasets": manifest["datasets"],
+            "descriptions": manifest["descriptions"],
+            "coverview_zip": manifest["coverview"]["zip"],
+            "coverview_per_test_zip": manifest["coverview"]["per_test_zip"],
+        }
 
     def merge(
         self,
@@ -405,6 +550,12 @@ class CoverageReporter:
     ):
         """
         Merge per-test `.info` files with `info-process merge` and optionally emit HTML/Coverview.
+
+        Returns ``(metrics, coverview_zip, dataset_files, description_files)``.
+        The description files are the per-type ``.desc`` attribution
+        `info-process` writes alongside each merge; they are reported
+        whether or not a Coverview archive was packaged, since the
+        manifest indexes them either way.
         """
         cov = self._get_cov_tool()
         coverview = self._get_coverview_tool()
@@ -560,6 +711,10 @@ class CoverageReporter:
             )
             if merged_expression is not None:
                 merged_dataset_files["expression"] = merged_expression
+                # The expression `.info` records one `DA:` per term, so its
+                # line ratio *is* the expression ratio — the same reading
+                # the toggle dataset gets above.
+                metrics.expression, _ = cov._parse_lcov_summary(merged_expression)
                 if os.path.exists(merged_expression_desc):
                     rby_description_files["expression"] = merged_expression_desc
 
@@ -571,6 +726,11 @@ class CoverageReporter:
                 html_outdir=outdir,
             )
 
+        description_files = dict(rby_description_files)
+        description_files["line"] = (
+            merged_test_list if os.path.exists(merged_test_list) else None
+        )
+
         coverview_zip = None
         if coverview_output:
             cv = coverview.package_dataset_files(
@@ -578,11 +738,7 @@ class CoverageReporter:
                 dataset_files=merged_dataset_files,
                 outdir=cov_dir,
                 zip_name=f"coverview_{safe_dataset}.zip",
-                description_files={
-                    "line": merged_test_list
-                    if os.path.exists(merged_test_list)
-                    else None,
-                },
+                description_files={"line": description_files["line"]},
                 rby_description_files=rby_description_files,
                 zip_outdir=outdir,
                 metadata={
@@ -598,7 +754,7 @@ class CoverageReporter:
             if cv is not None:
                 coverview_zip = cv.zip_path
 
-        return metrics, coverview_zip, merged_dataset_files
+        return metrics, coverview_zip, merged_dataset_files, description_files
 
     def generate_per_test_coverview(
         self, reg_results, *, outdir, suite_name, source_roots=None
@@ -680,6 +836,7 @@ class CoverageReporter:
         coverage_merge_info_process=False,
         source_roots=None,
         dir_summary_paths=None,
+        command="regression",
     ):
         """
         Build coverage artifact summaries for merged or unmerged runs.
@@ -687,18 +844,39 @@ class CoverageReporter:
         Returns ``(metadata, coverage)`` where ``metadata`` is the list of
         human-display lines and ``coverage`` is the structured payload
         ``{"merged": {line,branch,toggle,functional}|None, "dir_summary": [...],
-        "covers": [{name,file,line,module,hits}]}`` for machine consumers.
-        ``coverage["merged"]`` is populated only when a merge actually happened.
+        "covers": [{name,file,line,module,hits}], "artefacts": {...}}`` for
+        machine consumers. ``coverage["merged"]`` is populated only when a merge
+        actually happened.
         ``coverage["covers"]`` is folded on ``(file, line, name, module)`` and is
         present whenever the run recorded user cover points, merge or not — the
         key is omitted entirely when it recorded none, matching how the per-test
         rows behave.
+
+        ``coverage["artefacts"]`` is the paths block (#399): every artefact the
+        run wrote, project-relative, plus the ``cov_dir/manifest.json`` that
+        indexes them and the structured model beside it. Written on every run
+        that produced coverage at all, including one with no merge flag — the
+        display lines used to be the only record of where anything landed.
         """
         metadata = []
         coverage = {"merged": None, "dir_summary": []}
         covers = self.collect_cover_records(suite_results)
         if covers:
             coverage["covers"] = covers
+        # Artefact paths accumulated across the branches below and handed to
+        # `write_artefacts` at the end, so one manifest describes the whole run
+        # whichever merge mode produced it.
+        merge_mode = None
+        merged_paths = {"info": None, "raw": None, "desc": None, "html_dir": None}
+        dataset_files = None
+        description_files = None
+        coverview_paths = {"zip": None, "per_test_zip": None}
+
+        def record_merged(merged_cov):
+            merged_paths["info"] = merged_cov.lcov_path
+            merged_paths["raw"] = merged_cov.merged_path
+            merged_paths["html_dir"] = merged_cov.html_dir
+
         if coverage_merge_raw:
             merged_cov = self.merge(
                 suite_results,
@@ -707,6 +885,8 @@ class CoverageReporter:
                 source_roots=source_roots,
             )
             if merged_cov is not None:
+                merge_mode = "raw"
+                record_merged(merged_cov)
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
                 coverage["merged"] = self._metrics_payload(merged_cov)
                 if merged_cov.lcov_path is not None:
@@ -737,6 +917,7 @@ class CoverageReporter:
                             },
                         )
                         if cv is not None and cv.zip_path is not None:
+                            coverview_paths["zip"] = cv.zip_path
                             metadata.append(f"Merged Coverview: {cv.zip_path}")
                 if merged_cov.html_dir is not None:
                     metadata.append(f"Merged HTML: {merged_cov.html_dir}")
@@ -748,6 +929,7 @@ class CoverageReporter:
                     source_roots=source_roots,
                 )
                 if cv is not None and cv.zip_path is not None:
+                    coverview_paths["per_test_zip"] = cv.zip_path
                     metadata.append(f"Per-Test Coverview: {cv.zip_path}")
         elif coverage_merge:
             merged_cov = self.merge(
@@ -758,6 +940,8 @@ class CoverageReporter:
             )
             merged_dataset_files = None
             if merged_cov is not None:
+                merge_mode = "raw"
+                record_merged(merged_cov)
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
                 coverage["merged"] = self._metrics_payload(merged_cov)
                 if merged_cov.lcov_path is not None:
@@ -780,13 +964,26 @@ class CoverageReporter:
                     source_roots=source_roots,
                 )
                 if merged_info is not None:
-                    _, coverview_zip, merged_dataset_files = merged_info
+                    (
+                        info_metrics,
+                        coverview_zip,
+                        merged_dataset_files,
+                        description_files,
+                    ) = merged_info
+                    dataset_files = merged_dataset_files
+                    merged_paths["desc"] = description_files.get("line")
+                    # The info-process merge rewrites `coverage_merged.info`
+                    # over the raw merge's; the manifest names the file that
+                    # is actually on disk when the run ends.
+                    if info_metrics.lcov_path is not None:
+                        merged_paths["info"] = info_metrics.lcov_path
                     records = self._dir_summary_records_from_dataset_files(
                         merged_dataset_files, dir_summary_paths
                     )
                     metadata.extend(self._dir_summary_lines(records))
                     coverage["dir_summary"] = records
                     if coverview_zip is not None:
+                        coverview_paths["zip"] = coverview_zip
                         metadata.append(f"Merged Coverview: {coverview_zip}")
             if coverage_coverview and coverage_per_test and reg_results is not None:
                 cv = self.generate_per_test_coverview(
@@ -796,6 +993,7 @@ class CoverageReporter:
                     source_roots=source_roots,
                 )
                 if cv is not None and cv.zip_path is not None:
+                    coverview_paths["per_test_zip"] = cv.zip_path
                     metadata.append(f"Per-Test Coverview: {cv.zip_path}")
         elif coverage_merge_info_process:
             merged_info = self.merge_info_process(
@@ -807,7 +1005,16 @@ class CoverageReporter:
                 source_roots=source_roots,
             )
             if merged_info is not None:
-                merged_cov, coverview_zip, merged_dataset_files = merged_info
+                (
+                    merged_cov,
+                    coverview_zip,
+                    merged_dataset_files,
+                    description_files,
+                ) = merged_info
+                merge_mode = "info_process"
+                dataset_files = merged_dataset_files
+                record_merged(merged_cov)
+                merged_paths["desc"] = description_files.get("line")
                 metadata.append(f"Merged Coverage: {merged_cov.summary_str()}")
                 coverage["merged"] = self._metrics_payload(merged_cov)
                 if merged_cov.lcov_path is not None:
@@ -825,6 +1032,7 @@ class CoverageReporter:
                 if merged_cov.html_dir is not None:
                     metadata.append(f"Merged HTML: {merged_cov.html_dir}")
                 if coverview_zip is not None:
+                    coverview_paths["zip"] = coverview_zip
                     metadata.append(f"Merged Coverview: {coverview_zip}")
         elif coverage_html or coverage_coverview or dir_summary_paths:
             if coverage_coverview and coverage_per_test and reg_results is not None:
@@ -835,6 +1043,7 @@ class CoverageReporter:
                     source_roots=source_roots,
                 )
                 if cv is not None and cv.zip_path is not None:
+                    coverview_paths["per_test_zip"] = cv.zip_path
                     metadata.append(f"Per-Test Coverview: {cv.zip_path}")
             html_reports = self.generate_per_test_artifacts(
                 suite_results,
@@ -857,4 +1066,20 @@ class CoverageReporter:
                     metadata.append(
                         f"Coverage Coverview {test_name_i}: {coverview_zip}"
                     )
+
+        artefacts = self.write_artefacts(
+            suite_results,
+            outdir=outdir,
+            suite_name=suite_name,
+            command=command,
+            source_roots=source_roots,
+            merge_mode=merge_mode,
+            merged=merged_paths,
+            datasets=dataset_files,
+            descriptions=description_files,
+            coverview=coverview_paths,
+        )
+        if artefacts is not None:
+            coverage["artefacts"] = artefacts
+            metadata.append(f"Coverage manifest: {artefacts['manifest']}")
         return metadata, coverage

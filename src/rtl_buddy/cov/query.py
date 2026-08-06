@@ -163,7 +163,9 @@ def _run_block(ctx: CovContext) -> dict:
         "schema_version": COV_QUERY_SCHEMA_VERSION,
         "manifest": manifest_mod.project_relative(ctx.manifest_path, ctx.project_root),
         "generated_at": document.get("generated_at"),
-        "command": document.get("command"),
+        # Not `command`: the machine envelope already spends that key on the
+        # verb being run, and `**payload` would collide with it.
+        "run_command": document.get("command"),
         "suite": document.get("suite"),
         "builder": document.get("builder"),
         "simulator": document.get("simulator_family") or ctx.model.get("simulator"),

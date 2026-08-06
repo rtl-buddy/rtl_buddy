@@ -295,6 +295,9 @@ def test_build_metadata_returns_structured_merged_coverage(tmp_path, monkeypatch
         "line": 0.92,
         "branch": 0.88,
         "toggle": 0.75,
+        # No expression points in the fake merge, so the scalar is null
+        # rather than 0.0 — "unsupported" stays distinct from "0% covered".
+        "expression": None,
         "functional": 1.0,
     }
     assert any("Merged Coverage:" in line for line in metadata)

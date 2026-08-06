@@ -27,6 +27,8 @@ from .config.model import ModelConfig, ModelConfigLoader
 from .config.pnr import PnrSuiteConfig
 from .config.power import PowerRegConfig, PowerSuiteConfig
 from .config.synth import SynthRegConfig, SynthSuiteConfig
+from .cov import query as cov_query_mod
+from .cov.raw import METRICS as cov_metrics
 from .docs_access import get_page, get_section, list_pages
 from .graph import build as graph_build_mod
 from .graph import extract as extract_mod
@@ -70,6 +72,7 @@ from .runner.result_io import (
     attach_telemetry_json,
     load_build_result_json,
     load_result_json,
+    refresh_result_json,
     write_build_result_json,
     write_result_json,
 )
@@ -298,6 +301,27 @@ class RtlBuddy:
             self.graph_app,
             name="graph",
             help="build the design knowledge graph",
+        )
+        self.cov_app = typer.Typer(
+            help=(
+                "read the coverage a run already produced: per-file, per-point "
+                "line/branch/toggle/expression coverage with per-test "
+                "attribution, from cov_dir/manifest.json — no simulator runs"
+            ),
+            no_args_is_help=True,
+        )
+        self.cov_app.command(
+            "summary",
+            help="run-level and per-test scalars, coldest files first",
+        )(self.do_cov_summary)
+        self.cov_app.command(
+            "module",
+            help="per-file, per-point coverage for one module's sources",
+        )(self.do_cov_module)
+        self.app.add_typer(
+            self.cov_app,
+            name="cov",
+            help="query coverage artefacts already on disk",
         )
         self.axi_profile_app.command(
             "run",
@@ -1213,8 +1237,10 @@ class RtlBuddy:
             coverage_merge_info_process=coverage_merge_info_process,
             source_roots=[str(ctx.command_root)],
             dir_summary_paths=dir_summary_paths,
+            command="test",
         )
         metadata.extend(cov_metadata)
+        self._refresh_result_side_cars(suite_results)
         # Render in both modes: in machine mode this emits the "summary" log
         # event (and plain text to stderr), leaving stdout for the envelope.
         self._render_test_summary(
@@ -1913,6 +1939,10 @@ class RtlBuddy:
                     results=res,
                     run_token=token,
                 )
+                # Remember where the envelope landed so coverage
+                # post-processing can re-persist it once the artefact
+                # paths exist (#399) — see _refresh_result_side_cars.
+                res.result_json_path = str(path)
             except Exception as exc:  # noqa: BLE001 - best-effort side-car:
                 # a run that passed must never be reported failed because
                 # its envelope could not be written (serialization and
@@ -1925,6 +1955,32 @@ class RtlBuddy:
                     test=test_cfg.get_name(),
                     run_id=run_id,
                     path=str(path),
+                    error=str(exc),
+                )
+
+    def _refresh_result_side_cars(self, suite_results):
+        """Re-persist result envelopes after coverage post-processing (#399).
+
+        `_record_run_results` writes the envelope as soon as the run ends,
+        which is before the LCOV export, the HTML tree and the Coverview
+        archive exist. The coverage dict is mutated in place afterwards, so
+        without this second write the durable record of a run names none of
+        its own coverage artefacts. Best-effort, like the first write.
+        """
+        for suite_result in suite_results:
+            res = suite_result.get("results")
+            path = getattr(res, "result_json_path", None)
+            if path is None:
+                continue
+            try:
+                refresh_result_json(path, res)
+            except Exception as exc:  # noqa: BLE001 - best-effort side-car
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "test.result_json_refresh_failed",
+                    test=suite_result.get("test_name"),
+                    path=path,
                     error=str(exc),
                 )
 
@@ -1982,12 +2038,15 @@ class RtlBuddy:
 
         `covers` counts as data on its own: user cover points are recorded
         without any `--coverage-merge*` flag, so gating only on `merged` would
-        drop them.
+        drop them. So does `artefacts` (#399): a run with no merge flag still
+        writes a model and a manifest, and the paths to them are the whole
+        point of the block.
         """
         if coverage and (
             coverage.get("merged")
             or coverage.get("dir_summary")
             or coverage.get("covers")
+            or coverage.get("artefacts")
         ):
             return coverage
         return None
@@ -3057,6 +3116,7 @@ class RtlBuddy:
                     coverage_merge_info_process=coverage_merge_info_process,
                     source_roots=[reg_result["test_suite_path"]],
                     dir_summary_paths=dir_summary_paths,
+                    command="regression",
                 )
                 metadata.extend(cov_metadata)
         else:
@@ -3077,9 +3137,11 @@ class RtlBuddy:
                 coverage_merge_info_process=coverage_merge_info_process,
                 source_roots=regression_source_roots,
                 dir_summary_paths=dir_summary_paths,
+                command="regression",
             )
             metadata.extend(cov_metadata)
 
+        self._refresh_result_side_cars(all_suite_results)
         # Render in both modes: in machine mode this emits the "summary" log
         # event (and plain text to stderr), leaving stdout for the envelope.
         self._render_regression_summary(reg_results, metadata=metadata)
@@ -4172,6 +4234,215 @@ class RtlBuddy:
             )
         else:
             emit_console_text("  (no edges)", stream="stdout")
+        raise typer.Exit(0)
+
+    # ------------------------------------------------------------------
+    # rb cov — read verbs over coverage artefacts already on disk (#399)
+    # ------------------------------------------------------------------
+
+    def _cov_context(self, command, *, cov_dir=None, manifest=None):
+        """Load the coverage manifest and model for a `rb cov` verb.
+
+        Lock-free like the `rb graph` read verbs: nothing is written, and
+        taking the exclusive artefact lock would make `rb cov summary`
+        fail while a regression is running in the same tree — which is
+        exactly when someone asks what the coverage looks like.
+        """
+        root = str(discover_project_root(fallback_cwd=True))
+        self._enter_command_context(command_root=root, list_only=True)
+        log_event(logger, logging.INFO, f"command.{command}", command=command)
+        try:
+            return cov_query_mod.load_context(root, cov_dir=cov_dir, manifest=manifest)
+        except cov_query_mod.CovQueryError as exc:
+            self._cov_query_failed(command.replace("_", " "), exc)
+
+    def _cov_query_failed(self, command: str, exc):
+        """Report a coverage question that cannot be answered, then exit 2."""
+        if self.machine:
+            self._emit_machine_result(
+                command, 2, error=str(exc), candidates=exc.candidates
+            )
+            raise typer.Exit(2)
+        if exc.candidates:
+            emit_console_text(str(exc), style="red", markup=False)
+            emit_console_text(
+                "did you mean: " + ", ".join(exc.candidates[:10]), style="yellow"
+            )
+            raise typer.Exit(2)
+        raise exc
+
+    @staticmethod
+    def _cov_pct(entry):
+        """Format one `{found, hit, ratio}` total as `hit/found (NN%)`."""
+        if not entry or not entry.get("found"):
+            return "-"
+        return f"{entry['hit']}/{entry['found']} ({entry['ratio'] * 100:.0f}%)"
+
+    def _cov_totals_columns(self):
+        return [("scope", "Scope")] + [
+            (metric, metric.capitalize()) for metric in cov_metrics
+        ]
+
+    def _cov_totals_row(self, scope, totals):
+        row = {"scope": scope}
+        for metric in cov_metrics:
+            row[metric] = self._cov_pct((totals or {}).get(metric))
+        return row
+
+    def do_cov_summary(
+        self,
+        limit: Annotated[
+            int,
+            typer.Option(
+                "--limit",
+                help="files to report, coldest first (0 for all)",
+            ),
+        ] = cov_query_mod.DEFAULT_FILE_LIMIT,
+        cov_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-dir",
+                help="coverage artefact directory to read",
+                show_default="newest cov_dir under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report a run's coverage from its artefacts: run-level and per-test
+        scalars, the coldest files, and where every artefact landed
+        """
+        ctx = self._cov_context("cov_summary", cov_dir=cov_dir, manifest=manifest)
+        payload = cov_query_mod.summary_payload(ctx, limit=limit)
+
+        if self.machine:
+            self._emit_machine_result("cov summary", 0, **payload)
+            raise typer.Exit(0)
+
+        emit_console_text(
+            f"{payload['run_command']} {payload.get('suite') or ''} — "
+            f"{payload['counts']['tests']} test(s), "
+            f"{payload['counts']['files']} file(s), "
+            f"generated {payload.get('generated_at') or 'unknown'}",
+            style="bold",
+            stream="stdout",
+            markup=False,
+        )
+        render_summary(
+            title="Coverage — Totals",
+            columns=self._cov_totals_columns(),
+            rows=[self._cov_totals_row("run", payload["totals"])]
+            + [
+                self._cov_totals_row(row["name"], row["totals"])
+                for row in payload["tests"]
+            ],
+            logger=logger,
+        )
+        if payload["files"]:
+            render_summary(
+                title="Coverage — Coldest Files",
+                columns=self._cov_totals_columns(),
+                rows=[
+                    self._cov_totals_row(row["path"], row["totals"])
+                    for row in payload["files"]
+                ],
+                logger=logger,
+            )
+        artefacts = payload["artefacts"]
+        emit_console_text(f"\nmanifest: {artefacts['manifest']}", stream="stdout")
+        emit_console_text(f"model:    {artefacts['model']}", stream="stdout")
+        for label, key in (
+            ("merged:  ", "merged_info"),
+            ("html:    ", "html_dir"),
+            ("coverview", "coverview_zip"),
+        ):
+            if artefacts.get(key):
+                emit_console_text(f"{label} {artefacts[key]}", stream="stdout")
+        raise typer.Exit(0)
+
+    def do_cov_module(
+        self,
+        module: Annotated[
+            str, typer.Argument(help="module name as the coverage model records it")
+        ],
+        cold: Annotated[
+            bool,
+            typer.Option(
+                "--cold/--all",
+                help="list only the points with no hits",
+            ),
+        ] = True,
+        limit: Annotated[
+            int,
+            typer.Option("--limit", help="points to list per metric (0 for all)"),
+        ] = 20,
+        cov_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-dir",
+                help="coverage artefact directory to read",
+                show_default="newest cov_dir under the project root",
+            ),
+        ] = None,
+        manifest: Annotated[
+            str | None,
+            typer.Option("--manifest", help="manifest.json to read directly"),
+        ] = None,
+    ):
+        """
+        report per-file, per-point coverage for one module's sources, with the
+        tests behind every point
+        """
+        ctx = self._cov_context("cov_module", cov_dir=cov_dir, manifest=manifest)
+        try:
+            payload = cov_query_mod.module_payload(ctx, module)
+        except cov_query_mod.CovQueryError as exc:
+            self._cov_query_failed("cov module", exc)
+
+        if self.machine:
+            self._emit_machine_result("cov module", 0, **payload)
+            raise typer.Exit(0)
+
+        render_summary(
+            title=f"Coverage — {payload['module']}",
+            columns=self._cov_totals_columns(),
+            rows=[self._cov_totals_row("module", payload["totals"])]
+            + [
+                self._cov_totals_row(row["path"], row["totals"])
+                for row in payload["files"]
+            ],
+            logger=logger,
+        )
+        for file_row in payload["files"]:
+            for metric in cov_metrics:
+                points = [
+                    point
+                    for point in file_row[metric]
+                    if not cold or point.get("hits", 0) == 0
+                ]
+                if not points:
+                    continue
+                shown = points if limit <= 0 else points[:limit]
+                emit_console_text(
+                    f"\n{file_row['path']} — {metric}"
+                    f"{' (uncovered)' if cold else ''}"
+                    f" {len(shown)}/{len(points)}",
+                    style="bold",
+                    stream="stdout",
+                    markup=False,
+                )
+                for point in shown:
+                    name = point.get("name")
+                    emit_console_text(
+                        f"  line {point.get('line')}"
+                        f"{f' {name}' if name else ''}"
+                        f"  hits={point.get('hits', 0)}",
+                        stream="stdout",
+                        markup=False,
+                    )
         raise typer.Exit(0)
 
     def do_cmd_mcp(

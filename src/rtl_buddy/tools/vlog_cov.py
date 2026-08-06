@@ -22,7 +22,7 @@ from collections import defaultdict
 
 from .. import tool_manifest as tm
 from ..config.root import RootConfig
-from ..cov.raw import COVER, parse_raw_records
+from ..cov.raw import COVER, EXPRESSION, parse_raw_records
 from ..cov.source_paths import SourcePathResolver
 from ..logging_utils import log_event
 from .artifact_paths import sanitize_artifact_component
@@ -99,6 +99,7 @@ class CoverageMetrics:
     line: float | None = None
     branch: float | None = None
     toggle: float | None = None
+    expression: float | None = None
     functional: float | None = None
     covers: list[dict] | None = None
     raw_paths: list[str] | None = None
@@ -109,6 +110,11 @@ class CoverageMetrics:
     def summary_str(self):
         """
         Return the one-line `L/B/T/F` coverage summary string.
+
+        Expression coverage is deliberately absent: this string is the
+        summary-table cell and a display contract, and expression detail
+        belongs in the structured payload (`to_dict`) and the coverage
+        model, where a consumer can act on it.
         """
         return (
             f"L:{_fmt_cov(self.line)} "
@@ -125,6 +131,7 @@ class CoverageMetrics:
             "line": self.line,
             "branch": self.branch,
             "toggle": self.toggle,
+            "expression": self.expression,
             "functional": self.functional,
             "covers": None if self.covers is None else list(self.covers),
             "summary": self.summary_str(),
@@ -410,6 +417,12 @@ class VlogCov:
         metrics.toggle = self._parse_verilator_metric(
             raw_path, "toggle", source_roots=source_roots
         )
+        # Expression coverage is read straight out of the raw database
+        # rather than through `--annotate`: `verilator_coverage --write-info`
+        # folds expression points into anonymous `DA:` records, so the .info
+        # cannot carry it, and the annotate route costs a subprocess for a
+        # ratio the database already states exactly (#399).
+        metrics.expression = self._ratio_from_raw_metric(raw_path, EXPRESSION)
         # Parse the raw user records once and derive both the scalar ratio and
         # the per-point list from them.
         user_records = self.parse_user_cover_records(raw_path)
@@ -848,6 +861,7 @@ class VlogCov:
             metrics.toggle = self._parse_verilator_metric(
                 merged_path, "toggle", source_roots=source_roots
             )
+            metrics.expression = self._ratio_from_raw_metric(merged_path, EXPRESSION)
             metrics.functional = self._parse_verilator_metric(
                 merged_path, "functional", source_roots=source_roots
             )
@@ -1148,6 +1162,18 @@ class VlogCov:
         Parse `t=user` counter records from `coverage.dat` to compute hit/total.
         """
         return self._ratio_from_user_records(self.parse_user_cover_records(raw_path))
+
+    @staticmethod
+    def _ratio_from_raw_metric(raw_path, metric):
+        """Hit/total for one canonical metric, straight from the raw database.
+
+        Returns None when the database is unreadable or records no point of
+        that kind, so "unsupported" stays distinguishable from "0% covered".
+        """
+        records = parse_raw_records(raw_path, metrics=[metric])
+        if not records:
+            return None
+        return sum(1 for r in records if r["hits"] > 0) / len(records)
 
     @staticmethod
     def _ratio_from_user_records(records):

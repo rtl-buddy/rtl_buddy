@@ -126,7 +126,7 @@ def test_summary_reports_totals_tests_and_artefact_paths(project):
     payload = summary_payload(load_context(project))
 
     assert payload["schema_version"] == COV_QUERY_SCHEMA_VERSION
-    assert payload["command"] == "regression"
+    assert payload["run_command"] == "regression"
     assert payload["merge_mode"] == "raw"
     assert payload["totals"]["line"] == {"found": 3, "hit": 2, "ratio": 2 / 3}
     assert [row["name"] for row in payload["tests"]] == ["basic"]
