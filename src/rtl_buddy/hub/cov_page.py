@@ -163,8 +163,11 @@ def read_source_lines(
     root = Path(project_root).resolve()
     if not requested:
         return 400, json.dumps({"error": "cov: source needs a ?path="}).encode("utf-8")
-    candidate = Path(requested)
-    target = (root / candidate).resolve() if not candidate.is_absolute() else candidate
+    # Resolve BEFORE the containment check, absolute request or not:
+    # ``relative_to`` is lexical, so an unresolved ``<root>/../secret``
+    # is prefixed by the root and would pass a check the filesystem then
+    # ignores. ``root / candidate`` is ``candidate`` when it is absolute.
+    target = (root / Path(requested)).resolve()
     try:
         target.relative_to(root)
     except ValueError:

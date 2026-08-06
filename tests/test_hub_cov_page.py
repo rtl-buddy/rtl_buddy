@@ -287,7 +287,16 @@ def test_source_lines_are_returned_one_per_line(covered_project: Path):
 
 @pytest.mark.parametrize(
     "requested",
-    ["../outside.sv", "design/../../outside.sv", "/etc/hosts"],
+    [
+        "../outside.sv",
+        "design/../../outside.sv",
+        "/etc/hosts",
+        # Absolute AND lexically prefixed by the root: containment is a
+        # string comparison, so this escapes unless the path is resolved
+        # first.
+        "{root}/../outside.sv",
+        "{root}/design/../../outside.sv",
+    ],
 )
 def test_source_refuses_paths_outside_the_project(
     covered_project: Path, requested: str
@@ -296,9 +305,21 @@ def test_source_refuses_paths_outside_the_project(
     tab is reachable by anything that can reach the port."""
 
     (covered_project.parent / "outside.sv").write_text("secret\n", encoding="utf-8")
+    requested = requested.format(root=covered_project)
     status, body = cov_page.read_source_lines(covered_project, requested)
     assert status == 403
     assert "outside the project root" in json.loads(body)["error"]
+    assert b"secret" not in body
+
+
+def test_source_accepts_an_absolute_path_inside_the_project(covered_project: Path):
+    """The wire schema advertises absolute targets; containment, not the
+    shape of the path, is what the route enforces."""
+
+    requested = str(covered_project / "design/blk.sv")
+    status, body = cov_page.read_source_lines(covered_project, requested)
+    assert status == 200
+    assert json.loads(body)["lines"][0].startswith("module blk")
 
 
 def test_source_missing_and_empty_requests(covered_project: Path):
