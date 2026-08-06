@@ -4,67 +4,65 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>rtl-buddy-graph</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
+  <link rel="stylesheet" href="/hub/theme.css">
   <!--
     Served by rtl_buddy.hub.graph_page at GET /graph (rtl_buddy#382).
 
-    Self-contained on purpose: no CDN, no web font, no external
-    stylesheet, no build step. The hub is routinely run on machines
-    with no route off localhost, and a viewer that needs one is a
-    viewer that does not open.
+    Offline on purpose: no CDN, no web font, no build step. The hub is
+    routinely run on machines with no route off localhost, and a viewer
+    that needs one is a viewer that does not open. The one stylesheet
+    link is same-origin — /hub/theme.css is served by this same hub
+    process (rtl-buddy/rtl_buddy#398), so the page still needs no route
+    off the machine; the block below repeats only the tokens the page
+    cannot render without, as a fallback for a sheet that 404s (an old
+    hub serving a new pane).
   -->
   <style>
     :root {
-      color-scheme: dark light;
-      --bg:        #0f1115;
-      --panel:     #161a21;
-      --panel-2:   #1d222b;
-      --line:      #2a313d;
-      --fg:        #d8dee9;
-      --fg-dim:    #8b95a7;
-      --accent:    #6ea8fe;
-      --edge:      #39424f;
-      --edge-hot:  #6ea8fe;
+      color-scheme: light dark;
+      --bg:          #f8fafc;
+      --panel:       #ffffff;
+      --panel-2:     #f1f5f9;
+      --line:        #e2e8f0;
+      --line-strong: #cbd5e1;
+      --fg:          #1e293b;
+      --fg-muted:    #64748b;
+      --accent:      #2563eb;
+      --ok:          #16a34a;
+      --warn:        #b45309;
+      --err:         #dc2626;
       /* One colour per column (see COLUMNS below). Eight hues, each
-         legible on both backgrounds: pink, blue, green, amber, violet,
+         legible on both surfaces: pink, blue, green, amber, violet,
          cyan, lime, slate. */
-      --col-spec:          #f472b6;
-      --col-design:        #4c9aff;
-      --col-test-config:   #34d399;
-      --col-syn-config:    #f0a742;
-      --col-formal-config: #a78bfa;
-      --col-cdc-config:    #22d3ee;
-      --col-test-cocotb:   #a3e635;
-      --col-other:         #94a3b8;
-      --pass:      #3ec46d;
-      --fail:      #ef5350;
-      --warn:      #e0b33a;
+      --col-spec:          #be185d;
+      --col-design:        #1f6fd0;
+      --col-test-config:   #0f7a52;
+      --col-syn-config:    #b97407;
+      --col-formal-config: #7c53d6;
+      --col-cdc-config:    #0e7490;
+      --col-test-cocotb:   #557c0b;
+      --col-other:         #6b7688;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --fs-base:  13px;
+      --fs-small: 11px;
+      --radius-1: 3px;
+      --radius-2: 4px;
     }
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg:      #f7f8fa;
-        --panel:   #ffffff;
-        --panel-2: #eef1f5;
-        --line:    #d7dce4;
-        --fg:      #1d222b;
-        --fg-dim:  #5d6779;
-        --edge:    #b9c1cd;
-        --col-spec:          #be185d;
-        --col-design:        #1f6fd0;
-        --col-test-config:   #0f7a52;
-        --col-syn-config:    #b97407;
-        --col-formal-config: #7c53d6;
-        --col-cdc-config:    #0e7490;
-        --col-test-cocotb:   #557c0b;
-        --col-other:         #6b7688;
-        --fail:              #c62828;
-        --warn:              #8a6a00;
-      }
+    /* Page-local derivations of the shared tokens. Edges are the one
+       thing the graph needs that no other app does, so they are
+       expressed here in terms of the sheet rather than tokenized. */
+    :root {
+      --edge:     var(--line-strong);
+      --edge-hot: var(--accent);
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
       background: var(--bg); color: var(--fg);
-      font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font: var(--fs-base)/1.45 var(--font-mono);
       display: flex; flex-direction: column; overflow: hidden;
     }
     header {
@@ -76,7 +74,7 @@
       font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em;
       white-space: nowrap;
     }
-    header h1 small { color: var(--fg-dim); font-weight: 400; }
+    header h1 small { color: var(--fg-muted); font-weight: 400; }
     .grow { flex: 1 1 auto; }
     input[type="search"] {
       background: var(--panel-2); color: var(--fg); font: inherit;
@@ -110,7 +108,7 @@
     svg.panning { cursor: grabbing; }
     .col-band { fill: var(--panel); opacity: .35; }
     .col-label {
-      fill: var(--fg-dim); font-size: 13px; letter-spacing: .18em;
+      fill: var(--fg-muted); font-size: 13px; letter-spacing: .18em;
       text-transform: uppercase; text-anchor: middle;
     }
     .link { stroke: var(--edge); stroke-width: 1; fill: none; }
@@ -135,10 +133,10 @@
     }
     aside h2 {
       font-size: 12px; margin: 0 0 .5rem; letter-spacing: .1em;
-      text-transform: uppercase; color: var(--fg-dim);
+      text-transform: uppercase; color: var(--fg-muted);
     }
     .kv { display: grid; grid-template-columns: 6.5rem 1fr; gap: .15rem .5rem; }
-    .kv dt { color: var(--fg-dim); }
+    .kv dt { color: var(--fg-muted); }
     .kv dd { margin: 0; overflow-wrap: anywhere; }
     .pill {
       display: inline-block; padding: 0 .4rem; border-radius: 999px;
@@ -148,18 +146,28 @@
     .edges li { padding: .1rem 0; overflow-wrap: anywhere; }
     .edges a { color: var(--accent); text-decoration: none; cursor: pointer; }
     .edges a:hover { text-decoration: underline; }
-    .muted { color: var(--fg-dim); }
-    .msg-error { color: var(--fail); font-weight: 600; }
+    .muted { color: var(--fg-muted); }
+    .msg-error { color: var(--err); font-weight: 600; }
     .msg-warn { color: var(--warn); font-weight: 600; }
     hr { border: 0; border-top: 1px solid var(--line); margin: .75rem 0; }
     footer {
       border-top: 1px solid var(--line); background: var(--panel);
-      padding: .3rem .75rem; color: var(--fg-dim);
+      padding: .3rem .75rem; color: var(--fg-muted);
       display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
     }
+    /* Shared hub chrome: connection dot + one vocabulary
+       (connected / connecting… / offline) — docs/concepts/hub.md. */
     .dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
-    .dot.up { background: var(--pass); }
-    .dot.down { background: var(--fail); }
+    .dot.connected { background: var(--ok); }
+    .dot.connecting { background: var(--warn); }
+    .dot.offline { background: var(--err); }
+    nav.switcher { display: flex; gap: .35rem; align-items: center; }
+    nav.switcher a {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line-strong); border-radius: var(--radius-2);
+      padding: .25rem .55rem; text-decoration: none; white-space: nowrap;
+    }
+    nav.switcher a:hover { border-color: var(--accent); color: var(--accent); }
     #empty {
       position: absolute; inset: 0; display: none; place-items: center;
       text-align: center; padding: 2rem;
@@ -194,8 +202,11 @@
     <button id="reload" title="Re-fetch /graph.json (after rb graph build / rb graph results)">reload</button>
     <button id="fix-view" disabled
        title="Enabled when the selected node is not in the design view's active model — click to switch the view to the model that contains it.">switch view model</button>
-    <a class="btn" href="/" target="_blank" rel="noopener"
-       title="Open the schematic design view in a new tab. Once it is open, clicking a node here highlights the instance there (the sync design view toggle).">design view ↗</a>
+    <nav class="switcher" aria-label="hub apps">
+      <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
+      <a href="/view" target="_blank" rel="noopener"
+         title="Open the schematic design view in a new tab. Once it is open, clicking a node here highlights the instance there (the sync design view toggle).">design view ↗</a>
+    </nav>
   </header>
 
   <main>
@@ -216,7 +227,7 @@
   </main>
 
   <footer>
-    <span><span class="dot down" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
+    <span><span class="dot connecting" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
     <span id="peers" class="muted"></span>
     <span class="grow"></span>
     <span id="msg" class="muted"></span>
@@ -256,7 +267,7 @@
     design: 'design', config: 'test-config', binding: 'test-cocotb'
   };
   var STATUS_COLOR = {
-    PASS: 'var(--pass)', FAIL: 'var(--fail)', SKIP: 'var(--warn)',
+    PASS: 'var(--ok)', FAIL: 'var(--err)', SKIP: 'var(--warn)',
     NA: 'var(--warn)', UNKNOWN: 'var(--warn)'
   };
   // Node radius by type: the things a person navigates by are bigger
@@ -379,8 +390,9 @@
     });
     ws.addEventListener('close', function () {
       wsReady = false;
-      els.wsDot.className = 'dot down';
-      els.wsStatus.textContent = 'disconnected from /ws';
+      els.wsDot.className = 'dot offline';
+      els.wsStatus.textContent = 'offline';
+      els.wsStatus.title = 'lost /ws — retrying';
       scheduleReconnect();
     });
     ws.addEventListener('error', function () { /* close handles it */ });
@@ -419,8 +431,9 @@
       case 'welcome':
         wsReady = true; retryMs = 500;
         refreshActiveModel();
-        els.wsDot.className = 'dot up';
-        els.wsStatus.textContent = 'hub ' + (env.payload && env.payload.server_version || '');
+        els.wsDot.className = 'dot connected';
+        els.wsStatus.textContent = 'connected';
+        els.wsStatus.title = 'hub ' + (env.payload && env.payload.server_version || '');
         setPeers(env.payload && env.payload.registered_clients);
         break;
       case 'peer_joined':
@@ -473,6 +486,12 @@
   function showEmpty(message) {
     els.empty.classList.add('show');
     els.emptyMsg.textContent = '';
+    // The one piece of artwork this pane carries: a small mascot on the
+    // "no data yet" panel, per the hub's identity-marks-only rule.
+    var art = document.createElement('img');
+    art.src = '/hub/assets/rtl-buddy-mascot-240.png';
+    art.width = 120; art.height = 120; art.alt = '';
+    els.emptyMsg.appendChild(art);
     var p = document.createElement('p');
     p.textContent = message || 'no graph to show.';
     var q = document.createElement('p');
