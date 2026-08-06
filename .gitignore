@@ -13,6 +13,11 @@ _build/
 # MkDocs build output
 site/
 rtl_buddy.log
+# rtl-buddy's own run artefacts and lock, when a verb is run in this
+# checkout. Root-anchored: a fixture tree may legitimately ship an
+# artefacts/ directory and must not be swallowed by this.
+/artefacts/
+/.rtl-buddy/
 
 # Coverage artifacts
 .coverage
