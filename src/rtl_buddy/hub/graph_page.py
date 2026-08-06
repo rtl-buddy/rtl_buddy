@@ -51,6 +51,13 @@ from ..graph.config_tier import (
 )
 from ..graph.build import QUALIFIER_SEP
 from ..graph.merge import rel_path
+from ..graph.coverage import (
+    STATUS_DECLARED_ONLY,
+    STATUS_EXERCISED,
+    STATUS_OBSERVED_UNDECLARED,
+    annotate_coverage,
+    coverage_block,
+)
 from ..graph.query import GraphQueryError, load_context
 from ..graph.results import annotate_graph
 from ..logging_utils import log_event
@@ -62,7 +69,8 @@ logger = logging.getLogger(__name__)
 #: Bumped when the ``GET /graph.json`` envelope changes incompatibly.
 #: Independent of the graph's own ``schema_version`` — this versions the
 #: ``graph.hub`` block the pane reads, not the node/edge vocabulary.
-PAGE_SCHEMA_VERSION = 2
+#: 3 adds ``graph.hub.coverage`` and the per-node ``coverage`` key.
+PAGE_SCHEMA_VERSION = 3
 
 #: Route serving the merged graph + overlay join.
 GRAPH_JSON_ROUTE = "/graph.json"
@@ -296,13 +304,19 @@ def build_graph_payload(
 
     The returned object is still NetworkX node-link JSON — the pane
     consumes the same envelope every other graph consumer does — with
-    three additions: each node that has a result carries it under
+    four additions: each node that has a result carries it under
     ``results`` (:func:`~rtl_buddy.graph.results.annotate_graph`), each
-    node carries the ``category`` column it renders in
+    node the coverage join knows carries it under ``coverage``
+    (:func:`~rtl_buddy.graph.coverage.annotate_coverage`), each node
+    carries the ``category`` column it renders in
     (:func:`categorize_nodes`), and ``graph.hub`` carries what the page
     needs to render a header without a second round-trip (where the two
-    files were read from, node/link counts, the overlay's summary,
-    per-tier and per-column counts).
+    files were read from, node/link counts, the overlay's summary, the
+    coverage run's header, per-tier and per-column counts).
+
+    Both joins are the ones the query verbs use, so the picture and the
+    answers can never disagree — and both are in-memory, so
+    ``graph.json`` on disk stays hash-stable.
 
     Raises :class:`~rtl_buddy.graph.query.GraphQueryError` when there is
     no graph to serve — its message already names ``rb graph build``,
@@ -317,6 +331,7 @@ def build_graph_payload(
     )
     payload = ctx.graph
     annotated = annotate_graph(payload, ctx.overlay)
+    covered = annotate_coverage(payload, ctx.overlay)
     categories = categorize_nodes(payload)
 
     tiers: dict[str, int] = {}
@@ -350,6 +365,7 @@ def build_graph_payload(
             "nodes": len(payload.get("nodes") or []),
             "links": len(payload.get("links") or []),
             "with_results": annotated,
+            "with_coverage": covered,
         },
         "tiers": dict(sorted(tiers.items())),
         "types": dict(sorted(types.items())),
@@ -358,8 +374,24 @@ def build_graph_payload(
         "columns": list(COLUMN_ORDER),
         "categories": {name: columns.get(name, 0) for name in COLUMN_ORDER},
         "overlay_summary": (ctx.overlay or {}).get("summary"),
+        # Header only: the per-node map is already joined onto the nodes,
+        # and repeating it here would double the body for no reader. The
+        # undeclared list has no node to hang off, so it does ride along.
+        "coverage": _coverage_header(coverage_block(ctx.overlay)),
+        "item_statuses": [
+            STATUS_EXERCISED,
+            STATUS_DECLARED_ONLY,
+            STATUS_OBSERVED_UNDECLARED,
+        ],
     }
     return payload
+
+
+def _coverage_header(block: dict | None) -> dict | None:
+    """The coverage block without its per-node map."""
+    if block is None:
+        return None
+    return {key: value for key, value in block.items() if key != "nodes"}
 
 
 def graph_payload_bytes(

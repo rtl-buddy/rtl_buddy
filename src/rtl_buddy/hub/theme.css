@@ -52,7 +52,8 @@
   --col-other:         #6b7688;
 
   /* -- coverage ramp (shared by schematic overlay, graph pane, cov app) */
-  /* continuous fill: hsl(pct * 1.2, 70%, var(--cov-l))                  */
+  /* continuous fill: hsl(pct * 1.2, var(--tint-s), var(--cov-l))        */
+  --tint-s:   70%;         /* saturation — the ramp's other free term */
   --cov-l:    82%;         /* the SPA's existing pastel ramp */
   --cov-none: #e5e7eb;     /* no-data */
   --cov-0:    hsl(0,   70%, 82%);
@@ -121,6 +122,7 @@
     --col-test-cocotb:   #a3e635;
     --col-other:         #94a3b8;
 
+    --tint-s:   70%;
     --cov-l:    38%;
     --cov-none: #2a313d;
     --cov-0:    hsl(0,   70%, 38%);
@@ -172,6 +174,7 @@
   --col-cdc-config:     #0e7490;
   --col-test-cocotb:    #557c0b;
   --col-other:          #6b7688;
+  --tint-s:             70%;
   --cov-l:              82%;
   --cov-none:           #e5e7eb;
   --cov-0:              hsl(0,   70%, 82%);
@@ -208,6 +211,7 @@
   --col-cdc-config:     #22d3ee;
   --col-test-cocotb:    #a3e635;
   --col-other:          #94a3b8;
+  --tint-s:             70%;
   --cov-l:              38%;
   --cov-none:           #2a313d;
   --cov-0:              hsl(0,   70%, 38%);

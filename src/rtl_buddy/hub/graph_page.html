@@ -49,6 +49,11 @@
       --col-cdc-config:    #0e7490;
       --col-test-cocotb:   #557c0b;
       --col-other:         #6b7688;
+      /* Coverage ramp, shared with the /cov app and the schematic
+         overlay: hsl(pct * 1.2, --tint-s, --cov-l). */
+      --tint-s:   70%;
+      --cov-l:    82%;
+      --cov-none: #e5e7eb;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --fs-base:  13px;
@@ -128,6 +133,22 @@
        .body stroke above, which presentation attributes cannot. */
     .node circle.body.dangling { stroke: var(--col-other); stroke-width: 1.4; stroke-dasharray: 3 2; }
     .node circle.ring { fill: none; stroke-width: 2.4; }
+    /* Coverage tint. The ramp lives in the token sheet so the graph
+       pane, the /cov app and the schematic overlay cannot drift apart;
+       only the hue is per node, and it is set inline from the ratio. */
+    .node circle.body.cov { fill: hsl(var(--h), var(--tint-s), var(--cov-l)); }
+    .node circle.body.cov.none { fill: var(--cov-none); }
+    .node text.badge {
+      fill: var(--fg-muted); font-size: 10px;
+      stroke: var(--bg); stroke-width: 3px; paint-order: stroke;
+      pointer-events: none; user-select: none;
+    }
+    .cov-swatch {
+      width: .7rem; height: .7rem; border-radius: 2px; flex: none;
+      display: inline-block; border: 1px solid var(--line-strong);
+      background: hsl(var(--h), var(--tint-s), var(--cov-l));
+    }
+    .cov-swatch.none { background: var(--cov-none); }
     .node text {
       fill: var(--fg); font-size: 11px; paint-order: stroke;
       stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
@@ -200,6 +221,10 @@
     </label>
     <label class="chk" title="Clicking a node also jumps your editor to its source file and line — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
       <input type="checkbox" id="opt-open" checked> open in editor
+    </label>
+    <label class="chk" id="opt-cov-wrap" hidden
+      title="Fill design nodes with their line-coverage ratio instead of their column colour, badge each test with the coverage it produced, and ring each spec coverage item by whether the run exercised it. Needs `rb graph results` after a coverage run.">
+      <input type="checkbox" id="opt-cov"> coverage
     </label>
     <label class="chk" title="How far the highlight reaches from the selected or hovered node: 1 = direct neighbours only, higher values follow the edges outward N hops.">
       hops <select id="opt-hops">
@@ -308,6 +333,8 @@
     optSelect: document.getElementById('opt-select'),
     optOpen: document.getElementById('opt-open'),
     optHops: document.getElementById('opt-hops'),
+    optCov: document.getElementById('opt-cov'),
+    optCovWrap: document.getElementById('opt-cov-wrap'),
     fixView: document.getElementById('fix-view')
   };
 
@@ -315,7 +342,7 @@
     nodes: [], links: [], byId: Object.create(null),
     out: Object.create(null), inc: Object.create(null),
     hiddenCols: Object.create(null), filter: '',
-    selected: null, hovered: null,
+    selected: null, hovered: null, coverage: null, categories: {},
     view: { x: 0, y: 0, k: 1 }, ticks: 0, raf: 0
   };
 
@@ -341,6 +368,49 @@
   function radiusOf(node) { return RADIUS[node.type] || 6; }
   function statusOf(node) {
     return node.results && node.results.status ? String(node.results.status) : null;
+  }
+  // ---- coverage -------------------------------------------------
+  // The overlay's coverage join (rtl-buddy/rtl_buddy#402): a design
+  // node carries a ratio, a `covitem:` node carries a verdict, and a
+  // test carries the scalars its own run produced.
+  var ITEM_COLOR = {
+    'exercised': 'var(--ok)',
+    'declared-only': 'var(--warn)',
+    'observed-but-undeclared': 'var(--err)'
+  };
+  function covOf(node) {
+    return node && node.coverage ? node.coverage : null;
+  }
+  function lineRatio(totals) {
+    var t = totals && totals.line;
+    return t && t.ratio != null ? t.ratio : null;
+  }
+  function designRatio(node) {
+    var c = covOf(node);
+    return c && c.kind === 'design' ? (c.ratio == null ? null : c.ratio) : null;
+  }
+  function testRatio(node) {
+    return node.results ? lineRatio(node.results.coverage &&
+      node.results.coverage.totals) : null;
+  }
+  function itemStatus(node) {
+    var c = covOf(node);
+    return c && c.kind === 'item' ? c.status : null;
+  }
+  function pct(ratio) {
+    return ratio == null ? '\u2014' : (ratio * 100).toFixed(1) + '%';
+  }
+  // Same formula as the /cov app and the schematic overlay: only the
+  // hue moves, saturation and lightness come from the token sheet, so
+  // one palette edit reaches all three.
+  function tintHue(el, ratio) {
+    if (ratio == null) { el.classList.add('none'); return el; }
+    el.classList.remove('none');
+    el.style.setProperty('--h', String(Math.round(ratio * 120)));
+    return el;
+  }
+  function coverageOn() {
+    return !!(state.coverage && els.optCov.checked);
   }
   function labelOf(node) {
     return node.label || String(node.id).replace(/^[a-z_]+:/, '');
@@ -540,8 +610,15 @@
 
     var hub = (payload.graph && payload.graph.hub) || {};
     if (Array.isArray(hub.columns) && hub.columns.length) { COLUMNS = hub.columns; }
+    state.coverage = hub.coverage || null;
+    // The control appears only when there is coverage to show, and
+    // arrives ticked: a run that produced coverage is a run whose
+    // coverage is the reason the pane was opened.
+    els.optCovWrap.hidden = !state.coverage;
+    if (state.coverage && !els.optCov.dataset.touched) { els.optCov.checked = true; }
     renderHeader(hub);
-    renderLegend(hub.categories || {});
+    state.categories = hub.categories || {};
+    renderLegend(state.categories);
     layoutInit();
     render();
     fit();
@@ -562,6 +639,15 @@
       if (st.length) { parts.push(st.join(' / ')); }
     } else if (hub.overlay_path == null) {
       parts.push('no results overlay');
+    }
+    var cs = hub.coverage && hub.coverage.summary;
+    if (cs) {
+      parts.push(pct((hub.coverage.totals && hub.coverage.totals.line || {}).ratio) +
+        ' line');
+      parts.push(cs.exercised + '/' + cs.items + ' items exercised');
+      if (cs['observed-but-undeclared']) {
+        parts.push(cs['observed-but-undeclared'] + ' undeclared');
+      }
     }
     els.counts.textContent = '· ' + parts.join(' · ');
   }
@@ -589,6 +675,22 @@
       label.appendChild(document.createTextNode(col + ' ' + count));
       els.legend.appendChild(label);
     });
+    if (!coverageOn()) { return; }
+    var ramp = document.createElement('span');
+    ramp.className = 'legend';
+    ramp.title = 'Design nodes are filled by line coverage; a coverage item is ' +
+      'ringed by whether the run exercised it.';
+    [['0%', 0], ['50%', 0.5], ['100%', 1], ['no data', null]].forEach(function (stop) {
+      var sw = document.createElement('span');
+      sw.className = 'cov-swatch';
+      tintHue(sw, stop[1]);
+      var wrap = document.createElement('span');
+      wrap.className = 'chk';
+      wrap.appendChild(sw);
+      wrap.appendChild(document.createTextNode(stop[0]));
+      ramp.appendChild(wrap);
+    });
+    els.legend.appendChild(ramp);
   }
 
   // ---------------------------------------------------------------
@@ -739,23 +841,44 @@
       gfx.links.push(line);
     });
 
+    var cov = coverageOn();
     state.nodes.forEach(function (n) {
       var g = el('g', { class: 'node' });
       var r = radiusOf(n);
       var status = statusOf(n);
-      if (status) {
-        g.appendChild(el('circle', {
-          class: 'ring', r: r + 3.5, stroke: STATUS_COLOR[status] || 'var(--warn)'
-        }));
+      // A test's ring is its last verdict; a coverage item's ring is
+      // whether the run exercised it. Both answer "how did this go",
+      // so they share the ring rather than competing for the fill.
+      var item = cov ? itemStatus(n) : null;
+      var ringColor = item
+        ? ITEM_COLOR[item]
+        : (status ? (STATUS_COLOR[status] || 'var(--warn)') : null);
+      if (ringColor) {
+        g.appendChild(el('circle', { class: 'ring', r: r + 3.5, stroke: ringColor }));
       }
+      // Coverage mode repaints the design column with the ramp; the
+      // column bands behind the nodes still carry the column identity,
+      // so nothing is lost by borrowing the fill.
+      var tinted = cov && categoryOf(n) === 'design' && !n.dangling;
       var body = el('circle', {
-        class: n.dangling ? 'body dangling' : 'body', r: r,
-        fill: n.dangling ? 'none' : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)')
+        class: (n.dangling ? 'body dangling' : 'body') + (tinted ? ' cov' : ''), r: r,
+        fill: (n.dangling || tinted)
+          ? null
+          : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)')
       });
+      if (tinted) { tintHue(body, designRatio(n)); }
       g.appendChild(body);
       var label = el('text', { x: r + 5, y: 4 });
       label.textContent = labelOf(n);
       g.appendChild(label);
+      // Only where there is a number: a badge reading "—" on every test
+      // that ran without coverage is nine labels saying nothing.
+      var ratio = n.type === 'test' ? testRatio(n) : (tinted ? designRatio(n) : null);
+      if (cov && ratio != null) {
+        var bt = el('text', { class: 'badge', x: r + 5, y: 15 });
+        bt.textContent = pct(ratio);
+        g.appendChild(bt);
+      }
       g.addEventListener('click', function (ev) {
         ev.stopPropagation();
         activate(n, { emit: true });
@@ -1164,8 +1287,13 @@
       });
       var art = n.results.artefacts || {};
       Object.keys(art).sort().forEach(function (k) { row(rl, k, art[k]); });
+      if (n.results.coverage && n.results.coverage.totals) {
+        row(rl, 'coverage', metricLine(n.results.coverage.totals));
+      }
       els.inspector.appendChild(rl);
     }
+
+    renderCoverage(n);
 
     var edges = (state.out[n.id] || []).map(function (l) { return { dir: '→', l: l, peer: l.target }; })
       .concat((state.inc[n.id] || []).map(function (l) { return { dir: '←', l: l, peer: l.source }; }));
@@ -1189,6 +1317,74 @@
     els.inspector.appendChild(ul);
   }
 
+  var METRIC_INITIAL = {
+    line: 'L', branch: 'B', toggle: 'T', expression: 'E', cover: 'C'
+  };
+
+  function metricLine(totals) {
+    return Object.keys(METRIC_INITIAL).filter(function (m) {
+      return totals[m] && totals[m].found;
+    }).map(function (m) {
+      return METRIC_INITIAL[m] + ' ' + pct(totals[m].ratio);
+    }).join('  ') || '\u2014';
+  }
+
+  // The declared-vs-observed answer, spelled out: which cover points a
+  // spec item correlated with (and off which rung of the match ladder),
+  // which tests declared they cover it, and how those tests did.
+  function renderCoverage(n) {
+    var c = covOf(n);
+    if (!c) { return; }
+    els.inspector.appendChild(document.createElement('hr'));
+    var h = document.createElement('h2');
+    h.textContent = c.kind === 'item' ? 'coverage item' : 'coverage';
+    els.inspector.appendChild(h);
+    var dl = document.createElement('dl'); dl.className = 'kv';
+    if (c.kind === 'design') {
+      row(dl, 'module', c.module);
+      row(dl, 'line', pct(c.ratio));
+      row(dl, 'metrics', metricLine(c.totals || {}));
+      if ((c.tests || []).length) { row(dl, 'tests', c.tests.join(', ')); }
+      (c.files || []).forEach(function (f, i) { row(dl, i ? '' : 'files', f); });
+      // Cover points in this module that no `covers:` entry claims —
+      // they have no node of their own to be selected, so the module
+      // they live in is where they can be seen at all.
+      ((state.coverage && state.coverage.undeclared) || [])
+        .filter(function (u) { return u.module === c.module; })
+        .forEach(function (u, i) {
+          row(dl, i ? '' : 'undeclared',
+            u.name + ':' + (u.line == null ? '?' : u.line) + ' \u00d7' + u.hits);
+        });
+    } else {
+      var pill = document.createElement('span');
+      pill.className = 'pill';
+      pill.style.color = ITEM_COLOR[c.status] || 'var(--warn)';
+      pill.textContent = c.status;
+      row(dl, 'status', pill);
+      row(dl, 'hits', c.hits);
+      if ((c.hit_by || []).length) { row(dl, 'hit by', c.hit_by.join(', ')); }
+      (c.declared_by || []).forEach(function (t, i) {
+        row(dl, i ? '' : 'declared by', t);
+      });
+      var st = c.declared_by_status || {};
+      var keys = Object.keys(st).sort();
+      if (keys.length) {
+        row(dl, 'their status', keys.map(function (k) {
+          return st[k] + ' ' + k;
+        }).join(', '));
+      }
+      (c.observed || []).forEach(function (o, i) {
+        row(dl, i ? '' : 'observed',
+          o.name + ' @ ' + (o.file || '?') + ':' + (o.line == null ? '?' : o.line) +
+          ' \u00d7' + o.hits + ' [' + o.match + ']');
+      });
+      if (!(c.observed || []).length) {
+        row(dl, 'observed', 'no cover point in the run\u2019s model');
+      }
+    }
+    els.inspector.appendChild(dl);
+  }
+
   // ---------------------------------------------------------------
   // wiring
   // ---------------------------------------------------------------
@@ -1198,6 +1394,13 @@
     applyClasses();
   });
   els.optHops.addEventListener('change', applyClasses);
+  els.optCov.addEventListener('change', function () {
+    // Remembered for the session so a reload does not re-tick it.
+    els.optCov.dataset.touched = '1';
+    renderLegend(state.categories);
+    render();
+    renderInspector(state.selected ? state.byId[state.selected] : null);
+  });
   els.search.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Enter') { return; }
     for (var i = 0; i < state.nodes.length; i++) {

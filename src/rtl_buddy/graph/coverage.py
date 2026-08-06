@@ -63,6 +63,7 @@ from ..cov.model import cover_points
 from ..cov.query import CovQueryError, load_context as load_cov_context, module_coverage
 from ..logging_utils import log_event
 from .build import QUALIFIER_SEP
+from .config_tier import MAPS_TO
 
 
 logger = logging.getLogger(__name__)
@@ -88,9 +89,10 @@ MATCH_TIERS = ("exact", "nocase", "normalized", "affix")
 #: ``.info``-only fallback carries at all.
 TINT_METRIC = "line"
 
-#: Node types the module ratio is attached to. Ports and parameters are
-#: deliberately excluded: a per-port tint says nothing a person can act
-#: on and would drown the columns it decorates.
+#: Node types the module ratio is attached to directly (a ``model:``
+#: node picks it up through its ``maps_to`` stitch instead). Ports and
+#: parameters are deliberately excluded: a per-port tint says nothing a
+#: person can act on and would drown the columns it decorates.
 _DESIGN_TYPES = frozenset({"module", "instance"})
 
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
@@ -177,10 +179,11 @@ def _module_nodes(graph: dict | None) -> dict[str, list[str]]:
     """Design module name -> the graph node ids that carry its coverage.
 
     A module id is suite-qualified when two files claimed the same name
-    (``module:blk_a␟verif/x``), and every instance of a module records
-    the module it instantiates — so one model module can tint several
-    nodes, and the mapping is built once here rather than re-derived by
-    each consumer.
+    (``module:blk_a␟verif/x``), every instance of a module records the
+    module it instantiates, and a ``model:`` node *is* its module under
+    another name (the ``maps_to`` stitch is an identity) — so one model
+    module can carry several nodes, and the mapping is built once here
+    rather than re-derived by each consumer.
     """
     by_module: dict[str, list[str]] = {}
     if not graph:
@@ -196,7 +199,15 @@ def _module_nodes(graph: dict | None) -> dict[str, list[str]]:
         if not name:
             continue
         by_module.setdefault(name, []).append(node_id)
-    return {name: sorted(ids) for name, ids in by_module.items()}
+    for link in graph.get("links") or []:
+        source, target = str(link.get("source", "")), str(link.get("target", ""))
+        if link.get("type") != MAPS_TO or not source.startswith("model:"):
+            continue
+        if not target.startswith("module:"):
+            continue
+        name = target[len("module:") :].split(QUALIFIER_SEP)[0]
+        by_module.setdefault(name, []).append(source)
+    return {name: sorted(set(ids)) for name, ids in by_module.items()}
 
 
 def _test_node_ids(entries: dict) -> tuple[dict, dict]:

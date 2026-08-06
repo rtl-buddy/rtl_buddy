@@ -38,8 +38,11 @@
       --warn:        #b45309;
       --err:         #dc2626;
       /* Coverage ramp: the continuous fill is
-         hsl(pct * 1.2, 70%, var(--cov-l)), so --cov-l is the one token
-         that has to survive a missing sheet or every tint goes black. */
+         hsl(pct * 1.2, var(--tint-s), var(--cov-l)), so these are the
+         tokens that have to survive a missing sheet or every tint goes
+         black. Shared with the graph pane since #402 — the saturation
+         used to be page-local here, which is one ramp in two places. */
+      --tint-s:      70%;
       --cov-l:       82%;
       --cov-none:    #e5e7eb;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -56,7 +59,6 @@
        re-declare a sheet token: both blocks select :root, so a
        re-declaration after the link would out-rank the sheet. */
     :root {
-      --tint-s:   70%;    /* saturation of the coverage ramp */
       --gutter:   3.2rem; /* line-number column */
       --markcol:  8rem;   /* hard cap on ONE metric column */
       /* The two ends of the same ramp `.tint` uses, named so a bit cell
