@@ -35,10 +35,12 @@ The hub is **server-only**: every external speaker connects *into* the hub. The 
 ```bash
 cd <project_root>
 uv run rb hub start                   # foreground TCP server only
-uv run rb hub start --serve-viewer    # also expose the viewer HTTP+WS endpoint
+uv run rb hub start --serve-viewer    # also expose the browser apps + WS endpoint
 uv run rb hub status                  # in another shell: who's connected
 uv run rb hub stop                    # graceful shutdown via SIGTERM
 ```
+
+With `--serve-viewer`, open `http://127.0.0.1:<http_port>/` — the [landing page](#apps-the-landing-page-and-hub-chrome) lists every app this hub can serve (design view, knowledge graph), says which one already has a tab attached, and shows the project state.
 
 `rb hub start` runs in the foreground by default; backgrounding is the caller's job (`nohup rb hub start &`, a process manager, or — on macOS — the bundled LaunchAgent: see [`rb hub install-launchagent`](#auto-start-on-macos-launchagent)). The server binds the OS-assigned port (TCP, and HTTP if `--serve-viewer` is set) unless `hub.toml` pins them; the resolved TCP address (and HTTP port, with `--serve-viewer`) is written to `.rtl-buddy/hub.json` so peers can discover it.
 
@@ -48,7 +50,7 @@ uv run rb hub stop                    # graceful shutdown via SIGTERM
 |---|---|
 | `rb hub start [--foreground/--daemon] [--serve-viewer] [--viewer-bundle PATH] [--listen-port N] [--http-port N] [--model NAME] [--models-file PATH] [--axi-perf-from PATH]` | Bind the TCP server (and optionally the viewer HTTP+WS layer), write `.rtl-buddy/hub.json`, run the asyncio loop. `--listen-port` / `--http-port` override `[hub].listen_port` / `[hub].http_port` from `hub.toml` (default 0 = OS-assigned). `--axi-perf-from` bakes an AXI-perf overlay into served views (see [AXI-perf overlay & notebook spawning](#axi-perf-overlay-and-notebook-spawning)). When a pinned port is already in use, the command prints a one-line error and exits 1 without a traceback. Exits cleanly on `SIGINT` / `SIGTERM` / `rb hub stop` and removes its discovery file. |
 | `rb hub stop` | Send `SIGTERM` to the PID in `.rtl-buddy/hub.json`. |
-| `rb hub status` | Print the current discovery record + liveness. Reports stale records (PID gone) so users know to clear them. |
+| `rb hub status` | Print the current discovery record + liveness, the landing (`hub_url`) and SPA (`viewer_url`) URLs, and which peers are connected. Reports stale records (PID gone) so users know to clear them. |
 | `rb hub log [--lines N] [--follow]` | Tail `.rtl-buddy/hub.log`. |
 | `rb hub install-launchagent` | (macOS) Install a LaunchAgent so the hub auto-starts at login. See [Auto-start on macOS](#auto-start-on-macos-launchagent). |
 | `rb hub uninstall-launchagent` | (macOS) Remove the LaunchAgent. |
@@ -57,9 +59,9 @@ uv run rb hub stop                    # graceful shutdown via SIGTERM
 
 `--daemon` is reserved; today it warns and runs in the foreground. Treat the explicit `--foreground` as load-bearing; future versions may detach when `--daemon` is given.
 
-`--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/ws`) used by the browser SPA. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
+`--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/view`, `/graph`, `/ws`) used by the browser apps. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
 
-When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, `/view.json` returns `409 no_active_model` (see [View errors](#view-errors)) and the SPA shows its "pick a model" placeholder.
+When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/view?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, `/view.json` returns `409 no_active_model` (see [View errors](#view-errors)) and the SPA shows its "pick a model" placeholder.
 
 ### Picking a model at start time (`--model NAME`)
 
@@ -207,14 +209,69 @@ view = "tb.dut.clk"
 
 Unknown top-level sections fail validation (typo guard). Unknown keys *inside* known sections are tolerated for forward-compat. `rb hub config validate` runs the same loader and reports errors with file:line context.
 
+## Apps, the landing page, and hub chrome
+
+The hub serves more than one browser app, so `GET /` is a **landing page** that names the tasks and routes to the app that does each one. The schematic SPA moved to `/view` in [rtl-buddy/rtl_buddy#398](https://github.com/rtl-buddy/rtl_buddy/issues/398) (it used to be `/`); `rb hub start --serve-viewer` prints both URLs, and `rb hub status` reports `hub_url` alongside `viewer_url`.
+
+| Route | Serves |
+|---|---|
+| `/` | The landing page: task cards, live hub state, "already open" warnings. |
+| `/view` (`/index.html` is an alias) | The rtl-buddy-view SPA (or the placeholder page when no bundle is installed). |
+| `/graph` | The [design knowledge graph pane](#design-knowledge-graph-pane). |
+| `/hub/state.json` | The landing page's data: hub identity, active model, connected peers, per-app availability, graph freshness. |
+| `/hub/theme.css` | The shared design tokens (below). |
+| `/hub/assets/<name>` | The vendored brand marks (favicon, chip logo, mascot). |
+
+Cards advertise on **data presence**, the same rule `__RTL_BUDDY_GRAPH_URL__` follows: an app with nothing to show keeps its card, muted, carrying the command that would give it something (`rb graph build`) rather than disappearing. An app whose origin already has a connected peer is badged **already open** — the hub allows one client per origin and a second tab supersedes the first, so the warning belongs before the click.
+
+The landing page is deliberately **not** a hub peer: it polls `/hub/state.json` instead of opening `/ws`. A tab that only lists the apps must never hold an origin, or it would be the thing that evicted the app you had open.
+
+### Design tokens (`/hub/theme.css`)
+
+One sheet, served same-origin, is the source of surfaces (`--bg` / `--panel` / `--panel-2` / `--line` / `--line-strong`), text tiers (`--fg` / `--fg-muted` / `--fg-faint`), one accent family (`--accent` / `--accent-contrast`), status colours and banner tints (`--ok` / `--warn` / `--err` / `--info` + `--ok-bg` / `--warn-bg` / `--err-bg`), the eight graph column hues (`--col-*`), the coverage ramp (`--cov-0` / `--cov-50` / `--cov-100` / `--cov-none` + `--cov-l` for the continuous `hsl(pct * 1.2, 70%, var(--cov-l))` fill), type (`--font-mono` / `--font-sans`, `--fs-base` 13px / `--fs-small` 11px), shape (`--radius-1/2/3`) and elevation (`--shadow-1/2`).
+
+- **Light is the default.** Dark arrives via `@media (prefers-color-scheme: dark)`; `:root[data-theme="light"|"dark"]` wins in *both* directions for an app that pins a theme.
+- Those two `[data-theme]` blocks are **generated** from the other two by `python -m rtl_buddy.hub.theme`, and `tests/test_hub_theme.py` fails when the checked-in file is not what the generator writes — three hand-maintained copies of one palette is three chances to drift. Edit the palette in `:root` or the dark media query, re-run the generator, commit.
+- **Type rule: mono for data** (ids, paths, signals, numbers, machine values); sans is permitted for chrome and prose.
+- Brand tokens (`--brand-ink`, `--brand-green`, `--brand-red`) are for identity marks only. They are never the interactive accent and never a status colour — the brand green is a saturated yellow-green that fails as text on white, which is why `--ok` stays its own green.
+- Linking the sheet does not break the panes' offline rule: it is served by the same hub process, so a machine with no route off localhost still renders everything. Each pane keeps a short inline fallback for the tokens it cannot render without, in case an older hub serves a newer pane.
+
+Artwork is deliberately minimal: a favicon on every hub page, a ~40px chip logo beside the landing wordmark, and at most one small (~120px) mascot on an empty-state panel. No hero images, no per-card art, no watermarks. The marks are vendored into `src/rtl_buddy/hub/assets/` (the art repo is private and panes must stay same-origin) at a few kB each.
+
+### Hub chrome contract
+
+Every hub app implements the same two strips, so moving between them costs nothing:
+
+**Top bar**
+
+| Position | Content |
+|---|---|
+| left | App identity — the app's name, and what it is showing (counts, active model). |
+| centre | App-specific controls (search, toggles, reload). |
+| right | App switcher: `⌂ hub` back to the landing, then the sibling apps. |
+
+**Bottom status strip**
+
+| Position | Content |
+|---|---|
+| left | Connection dot + status word. **One vocabulary: `connected` / `connecting…` / `offline`.** The dot is `--ok` / `--warn` / `--err` respectively. |
+| middle | Peer list — who else is attached to this hub right now. |
+| right | Message area, using the shared severity tokens (`--err` for errors, `--warn` for warnings, `--fg-muted` for notes). |
+
+Detail that does not fit the vocabulary (the hub's `server_version`, the reason a socket dropped) belongs in the element's `title`, not in the status word — a strip that says four different things for "connected" is a strip nobody reads.
+
 ## Peers (who connects to the hub)
 
 | Peer | Transport | How it connects |
 |---|---|---|
-| **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Loaded from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
+| **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Served at `/view` from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
 | **`rb wave` bridge** (`tools/wave_hub_bridge.py`) | Line-delimited JSON over TCP on `listen_port` | Started by `rb wave`; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff. |
 | **nvim plugin** ([`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim), installed by `rb nvim-install`) | Line-delimited JSON over TCP on `listen_port` | Auto-connects on startup (the managed setup calls `setup({ auto_connect = true })`). |
 | **graph pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /graph` — see [Design knowledge graph pane](#design-knowledge-graph-pane). Needs no viewer bundle. |
+
+The **landing page** at `/` is not in this table on purpose: it polls `/hub/state.json` and never registers an origin, so it cannot evict an app you have open.
+
+`rb hub status` lists every origin a user can have open — `view`, `wave`, `src`, `graph` — as `CONNECTED` or `not connected`. `cli` is excluded (it is the status query itself) and so is `notebook` (it peers for one marimo session rather than being an app you keep open).
 
 Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker), and `graph` (the design-knowledge-graph pane). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph pane has its own origin rather than sharing `view` precisely because of that rule: it is meant to be open *alongside* the schematic, since clicking a module in the graph selects it in the design view.
 
@@ -252,7 +309,7 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 `rb hub start --serve-viewer` also serves the [design knowledge graph](graph.md) as an interactive page at `GET /graph`, next to the schematic rather than instead of it. Two routes:
 
 - `GET /graph.json` — `artefacts/graph/graph.json` joined with `artefacts/graph/results-overlay.json` **in memory**, using the same `annotate_graph()` join the query verbs use. `graph.json` on disk is never written: hash stability across regressions is why the overlay is a separate file to begin with. The body is the node-link envelope with each test node carrying its `results` entry, each node carrying the `category` column it renders in, plus a `graph.hub` block (where the two files were read from, node/link counts, per-tier and per-column counts, the column order, the overlay's status summary) so the page can render a header and a legend without a second round-trip. Read per request, so `rb graph build` / `rb graph results` in another terminal shows up on **reload**. Returns 404 with a JSON `error` naming `rb graph build` when there is no graph yet.
-- `GET /graph` — the page. One self-contained HTML document: no CDN, no external stylesheet, no web font, no build step, because the hub is routinely run on machines with no route off localhost. Nodes are laid out in [flow columns](graph.md#looking-at-the-graph) (`spec` → `design` → one per verification flow) with a small force relaxation inside each, one colour per column, and test nodes get a pass/fail ring from the overlay. It is served even with no graph built — its empty state names `rb graph build`, which is more useful than a blank tab.
+- `GET /graph` — the page. One HTML document with no build step, no CDN and no web font, because the hub is routinely run on machines with no route off localhost; its only external references are same-origin hub routes (`/hub/theme.css`, `/hub/assets/*`), and it carries an inline fallback for the tokens it cannot render without. Nodes are laid out in [flow columns](graph.md#looking-at-the-graph) (`spec` → `design` → one per verification flow) with a small force relaxation inside each, one colour per column, and test nodes get a pass/fail ring from the overlay. It is served even with no graph built — its empty state names `rb graph build`, which is more useful than a blank tab.
 
 Clicking a node sends the same envelopes the SPA sends, over the same `/ws`:
 
