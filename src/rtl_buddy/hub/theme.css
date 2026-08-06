@@ -1,0 +1,218 @@
+/* rtl-buddy hub theme — single source of design tokens for every hub app
+ * (landing, view SPA, graph pane, cov pane). Served same-origin by the hub
+ * at /hub/theme.css, so consuming it keeps a pane self-contained in the
+ * sense that matters: no route off localhost.
+ *
+ * LIGHT is the default; dark activates on prefers-color-scheme: dark or an
+ * explicit data-theme attribute (the attribute wins in both directions).
+ *
+ * Type rule: mono for data (ids, paths, signals, numbers, machine values),
+ * sans permitted for chrome and prose.
+ *
+ * DRAFT — reconciled from the 2026-08-06 audits of graph_page.html and the
+ * rtl-buddy-view viewer SPA.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* -- surfaces ------------------------------------------------------- */
+  --bg:          #f8fafc;   /* page */
+  --panel:       #ffffff;   /* header / footer / sidebar */
+  --panel-2:     #f1f5f9;   /* inputs, chips, subtle fills */
+  --line:        #e2e8f0;   /* dividers */
+  --line-strong: #cbd5e1;   /* control borders, idle edges */
+
+  /* -- text ----------------------------------------------------------- */
+  --fg:          #1e293b;   /* primary */
+  --fg-muted:    #64748b;   /* secondary / labels */
+  --fg-faint:    #94a3b8;   /* disabled / placeholders */
+
+  /* -- accent (one family; the SPA's indigo retires) ------------------ */
+  --accent:          #2563eb;  /* interactive: links, focus, selection */
+  --accent-contrast: #ffffff;  /* text on accent-filled controls */
+
+  /* -- status --------------------------------------------------------- */
+  --ok:      #16a34a;
+  --warn:    #b45309;
+  --err:     #dc2626;
+  --info:    #0ea5e9;
+  --ok-bg:   #dcfce7;  /* banner tints */
+  --warn-bg: #fef3c7;
+  --err-bg:  #fee2e2;
+
+  /* -- graph column hues (8, legible on both surfaces) ---------------- */
+  --col-spec:          #be185d;
+  --col-design:        #1f6fd0;
+  --col-test-config:   #0f7a52;
+  --col-syn-config:    #b97407;
+  --col-formal-config: #7c53d6;
+  --col-cdc-config:    #0e7490;
+  --col-test-cocotb:   #557c0b;
+  --col-other:         #6b7688;
+
+  /* -- coverage ramp (shared by schematic overlay, graph pane, cov app) */
+  /* continuous fill: hsl(pct * 1.2, 70%, var(--cov-l))                  */
+  --cov-l:    82%;         /* the SPA's existing pastel ramp */
+  --cov-none: #e5e7eb;     /* no-data */
+  --cov-0:    hsl(0,   70%, 82%);
+  --cov-50:   hsl(60,  70%, 82%);
+  --cov-100:  hsl(120, 70%, 82%);
+
+  /* -- brand (rtl-buddy-art: chip logo + series-3 mascot) -------------- */
+  /* Identity marks ONLY — the wordmark, the logo glyph, the favicon.
+   * Never the interactive accent (that stays --accent) and never mixed
+   * into status colours (--ok stays its own green: the brand green is a
+   * saturated yellow-green that fails as text on white).
+   * Artwork usage is minimal by decree: favicon on every page, a ~40px
+   * logo beside the landing wordmark, and at most a small (~120px)
+   * mascot in empty states. No heroes, no card art, no watermarks. */
+  --brand-ink:   #16232c;   /* logo chip / mascot outline charcoal */
+  --brand-green: #4fb201;   /* logo check + pins (mascot nodes #6ab117) */
+  --brand-red:   #e81603;   /* mascot cable */
+
+  /* -- type ----------------------------------------------------------- */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --fs-base:  13px;        /* hub panes body / SPA data size */
+  --fs-small: 11px;        /* pills, node labels, fine print */
+  --fs-head:  13px;        /* h1 in app headers: same size, weight 600 */
+
+  /* -- shape ---------------------------------------------------------- */
+  --radius-1: 3px;         /* inline code, small tags */
+  --radius-2: 4px;         /* buttons, inputs, bars */
+  --radius-3: 6px;         /* cards, popovers, toasts */
+  /* pills: 999px; dots: 50% — idiomatic, not tokenized */
+
+  /* -- elevation (slate-900 base at both themes) ----------------------- */
+  --shadow-1: 0 4px 12px rgba(15, 23, 42, .10);
+  --shadow-2: 0 8px 20px rgba(15, 23, 42, .18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:          #0f1115;
+    --panel:       #161a21;
+    --panel-2:     #1d222b;
+    --line:        #2a313d;
+    --line-strong: #39424f;
+
+    --fg:          #d8dee9;
+    --fg-muted:    #8b95a7;
+    --fg-faint:    #5d6779;
+
+    --accent:          #6ea8fe;
+    --accent-contrast: #0f1115;
+
+    --ok:      #3ec46d;
+    --warn:    #e0b33a;
+    --err:     #ef5350;
+    --info:    #38bdf8;
+    --ok-bg:   #12351f;
+    --warn-bg: #3a2f10;
+    --err-bg:  #3b1a1a;
+
+    --col-spec:          #f472b6;
+    --col-design:        #4c9aff;
+    --col-test-config:   #34d399;
+    --col-syn-config:    #f0a742;
+    --col-formal-config: #a78bfa;
+    --col-cdc-config:    #22d3ee;
+    --col-test-cocotb:   #a3e635;
+    --col-other:         #94a3b8;
+
+    --cov-l:    38%;
+    --cov-none: #2a313d;
+    --cov-0:    hsl(0,   70%, 38%);
+    --cov-50:   hsl(60,  70%, 38%);
+    --cov-100:  hsl(120, 70%, 38%);
+
+    --shadow-1: 0 4px 12px rgba(15, 23, 42, .35);
+    --shadow-2: 0 8px 20px rgba(15, 23, 42, .45);
+  }
+}
+
+/* explicit override beats the media query, both directions:
+ * :root[data-theme="light"] { ...light values... }
+ * :root[data-theme="dark"]  { ...dark values...  }
+ * (generated, not hand-maintained, so the three blocks cannot drift)
+ */
+
+/* ==== generated below this line — `python -m rtl_buddy.hub.theme` rewrites it ==== */
+/* An app that pins its theme (a ?theme= param, a toggle, a host
+ * page) sets data-theme on <html>; these two blocks make that
+ * attribute win in BOTH directions — a light pin has to beat the
+ * dark media query, a dark pin has to beat the :root defaults.
+ * Generated from the two blocks above so the palette exists once. */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg:                 #f8fafc;
+  --panel:              #ffffff;
+  --panel-2:            #f1f5f9;
+  --line:               #e2e8f0;
+  --line-strong:        #cbd5e1;
+  --fg:                 #1e293b;
+  --fg-muted:           #64748b;
+  --fg-faint:           #94a3b8;
+  --accent:             #2563eb;
+  --accent-contrast:    #ffffff;
+  --ok:                 #16a34a;
+  --warn:               #b45309;
+  --err:                #dc2626;
+  --info:               #0ea5e9;
+  --ok-bg:              #dcfce7;
+  --warn-bg:            #fef3c7;
+  --err-bg:             #fee2e2;
+  --col-spec:           #be185d;
+  --col-design:         #1f6fd0;
+  --col-test-config:    #0f7a52;
+  --col-syn-config:     #b97407;
+  --col-formal-config:  #7c53d6;
+  --col-cdc-config:     #0e7490;
+  --col-test-cocotb:    #557c0b;
+  --col-other:          #6b7688;
+  --cov-l:              82%;
+  --cov-none:           #e5e7eb;
+  --cov-0:              hsl(0,   70%, 82%);
+  --cov-50:             hsl(60,  70%, 82%);
+  --cov-100:            hsl(120, 70%, 82%);
+  --shadow-1:           0 4px 12px rgba(15, 23, 42, .10);
+  --shadow-2:           0 8px 20px rgba(15, 23, 42, .18);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:                 #0f1115;
+  --panel:              #161a21;
+  --panel-2:            #1d222b;
+  --line:               #2a313d;
+  --line-strong:        #39424f;
+  --fg:                 #d8dee9;
+  --fg-muted:           #8b95a7;
+  --fg-faint:           #5d6779;
+  --accent:             #6ea8fe;
+  --accent-contrast:    #0f1115;
+  --ok:                 #3ec46d;
+  --warn:               #e0b33a;
+  --err:                #ef5350;
+  --info:               #38bdf8;
+  --ok-bg:              #12351f;
+  --warn-bg:            #3a2f10;
+  --err-bg:             #3b1a1a;
+  --col-spec:           #f472b6;
+  --col-design:         #4c9aff;
+  --col-test-config:    #34d399;
+  --col-syn-config:     #f0a742;
+  --col-formal-config:  #a78bfa;
+  --col-cdc-config:     #22d3ee;
+  --col-test-cocotb:    #a3e635;
+  --col-other:          #94a3b8;
+  --cov-l:              38%;
+  --cov-none:           #2a313d;
+  --cov-0:              hsl(0,   70%, 38%);
+  --cov-50:             hsl(60,  70%, 38%);
+  --cov-100:            hsl(120, 70%, 38%);
+  --shadow-1:           0 4px 12px rgba(15, 23, 42, .35);
+  --shadow-2:           0 8px 20px rgba(15, 23, 42, .45);
+}

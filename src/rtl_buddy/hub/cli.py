@@ -336,7 +336,12 @@ def cmd_status() -> None:
     emit_console_text(f"  pid            : {record.pid}")
     emit_console_text(f"  tcp            : {record.tcp}")
     if record.http_port is not None:
-        emit_console_text(f"  viewer_url     : http://127.0.0.1:{record.http_port}/")
+        # Two URLs since #398 split them: ``/`` is the landing that lists
+        # every app, ``/view`` is the schematic SPA that used to be ``/``.
+        emit_console_text(f"  hub_url        : http://127.0.0.1:{record.http_port}/")
+        emit_console_text(
+            f"  viewer_url     : http://127.0.0.1:{record.http_port}/view"
+        )
     if record.active_model is not None:
         emit_console_text(f"  active_model   : {record.active_model}")
     emit_console_text(f"  server_version : {record.server_version}")
