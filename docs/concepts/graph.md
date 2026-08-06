@@ -385,7 +385,9 @@ What it does:
 | `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the design view can select, its instances are. |
 | any node with `file` | `open_source {file, line, col}` | The `src` peer (nvim) opens it. Test, coverage-item, spec-block and Python-module nodes all carry `file`/`line`. |
 
-Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol. From the other direction:
+Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol.
+
+A selection can land outside the design view's *active model* — clicking `module:blk_b` while the view shows `blk_a` highlights nothing there. The pane detects this (reconfirming against a fresh `state_snapshot`, since the SPA's picker can move without telling it) and arms the **switch view model** button in the toolbar, greyed out until then. Clicking it issues the same `GET /view.json?model=NAME` the SPA's own picker uses — the hub builds that model's view if needed, activates it, broadcasts `view_changed` — and then re-sends the selection so the freshly switched view lands on the node that was clicked. From the other direction:
 
 ```bash
 rb hub send graph-focus test:verif/dma#smoke
@@ -393,6 +395,8 @@ rb hub send graph-focus module:dma_engine
 ```
 
 centres and selects that node. The hub caches the focus and replays it on registration, so sending it *before* the tab is open works. A `selection_changed` arriving from the SPA or the editor highlights the matching instance node in the graph.
+
+Selecting or hovering a node highlights its neighbourhood and dims the rest. The **hops** selector in the toolbar sets how far that highlight reaches; the default 1 is direct neighbours only. The reachable set is a breadth-first walk over *both* edge directions — direction encodes role, not reachability, the same convention `rb graph path` uses. The walk does not enter a hidden column, and an edge lights up when both its endpoints are inside the ball, so what you see is a coherent subgraph rather than a star. Two hops from a test reaches its testbench and coverage items and then the model and DUT they touch; three from a module usually spans config to spec.
 
 Full details of the two routes (`GET /graph`, `GET /graph.json`) are in the [hub concept page](hub.md#design-knowledge-graph-pane).
 

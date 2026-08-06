@@ -90,6 +90,8 @@
       padding: .25rem .55rem; cursor: pointer;
     }
     button:hover { border-color: var(--accent); }
+    button:disabled { opacity: .45; cursor: default; }
+    button:disabled:hover { border-color: var(--line); }
     a.btn {
       background: var(--panel-2); color: var(--fg); font: inherit;
       border: 1px solid var(--line); border-radius: 4px;
@@ -183,7 +185,15 @@
     <label class="chk" title="Clicking a node also jumps your editor to its source file and line — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
       <input type="checkbox" id="opt-open" checked> open in editor
     </label>
+    <label class="chk" title="How far the highlight reaches from the selected or hovered node: 1 = direct neighbours only, higher values follow the edges outward N hops.">
+      hops <select id="opt-hops">
+        <option>1</option><option>2</option><option>3</option>
+        <option>4</option><option>5</option>
+      </select>
+    </label>
     <button id="reload" title="Re-fetch /graph.json (after rb graph build / rb graph results)">reload</button>
+    <button id="fix-view" disabled
+       title="Enabled when the selected node is not in the design view's active model — click to switch the view to the model that contains it.">switch view model</button>
     <a class="btn" href="/" target="_blank" rel="noopener"
        title="Open the schematic design view in a new tab. Once it is open, clicking a node here highlights the instance there (the sync design view toggle).">design view ↗</a>
   </header>
@@ -275,7 +285,9 @@
     empty: document.getElementById('empty'),
     emptyMsg: document.getElementById('empty-msg'),
     optSelect: document.getElementById('opt-select'),
-    optOpen: document.getElementById('opt-open')
+    optOpen: document.getElementById('opt-open'),
+    optHops: document.getElementById('opt-hops'),
+    fixView: document.getElementById('fix-view')
   };
 
   var state = {
@@ -752,9 +764,27 @@
   }
 
   function neighbours(id) {
+    // BFS to `depth` hops, both edge directions — direction encodes
+    // role, not reachability, same as `rb graph path`. Nodes in hidden
+    // columns are not entered: expanding through an invisible node
+    // would light two islands with no visible edge between them.
     var set = Object.create(null); set[id] = true;
-    (state.out[id] || []).forEach(function (l) { set[l.target] = true; });
-    (state.inc[id] || []).forEach(function (l) { set[l.source] = true; });
+    var depth = parseInt(els.optHops.value, 10) || 1;
+    var frontier = [id];
+    function visit(cand, next) {
+      if (set[cand]) { return; }
+      var n = state.byId[cand];
+      if (n && state.hiddenCols[categoryOf(n)]) { return; }
+      set[cand] = true; next.push(cand);
+    }
+    for (var d = 0; d < depth && frontier.length; d++) {
+      var next = [];
+      frontier.forEach(function (nid) {
+        (state.out[nid] || []).forEach(function (l) { visit(l.target, next); });
+        (state.inc[nid] || []).forEach(function (l) { visit(l.source, next); });
+      });
+      frontier = next;
+    }
     return set;
   }
 
@@ -775,7 +805,10 @@
     }
     for (var i = 0; i < gfx.links.length; i++) {
       var line = gfx.links[i];
-      var hot = focus && (line.__link.source === focus || line.__link.target === focus);
+      // An edge is hot when it lies inside the highlighted N-hop ball —
+      // both endpoints reached — so the lit subgraph is coherent rather
+      // than a star around the focus.
+      var hot = near && near[line.__link.source] && near[line.__link.target];
       var off = state.hiddenCols[categoryOf(line.__a)] || state.hiddenCols[categoryOf(line.__z)];
       line.setAttribute('class', 'link' + (hot ? ' hot' : (focus ? ' dim' : '')));
       line.style.display = off ? 'none' : '';
@@ -918,18 +951,75 @@
   // highlights nothing there — which reads as "the view is stuck".
   // The cached model can be stale (the SPA picker switches without
   // telling us), so reconfirm before accusing the click.
+  //
+  // The fix is one hub request away (`GET /view.json?model=` builds and
+  // activates, and the hub broadcasts `view_changed` to the SPA), so
+  // the warning arms the `switch view model` button instead of telling
+  // the user to go find the SPA's model picker.
+  var crossModel = null;
+  function setCrossModel(target) {
+    crossModel = target;
+    if (target) {
+      els.fixView.disabled = false;
+      els.fixView.textContent = 'view → ' + target.model;
+      els.fixView.title = 'Switch the design view to model ' + target.model +
+        ' (builds its view.json if needed), then re-highlight ' + target.ip + '.';
+    } else {
+      els.fixView.disabled = true;
+      els.fixView.textContent = 'switch view model';
+      els.fixView.title = 'Enabled when the selected node is not in the design ' +
+        "view's active model — click to switch the view to the model that contains it.";
+    }
+  }
+
   function maybeWarnCrossModel(ip) {
     var root = ip.split('.')[0];
-    if (!activeModel || root === activeModel) { return; }
+    if (!activeModel || root === activeModel) { setCrossModel(null); return; }
     request('state_snapshot', {}, function (reply) {
       if (reply.kind !== 'response') { return; }
       activeModel = reply.payload.active_model;
       if (activeModel && root !== activeModel) {
+        setCrossModel({ model: root, ip: ip });
         note('selected ' + ip + ' — not in the active design-view model (' + activeModel +
-             '); switch the model picker in the design view to see it', 'warn');
+             '); click “view → ' + root + '” above to switch', 'warn');
+      } else {
+        setCrossModel(null);
       }
     });
   }
+
+  els.fixView.addEventListener('click', function () {
+    if (!crossModel) { return; }
+    var target = crossModel;
+    els.fixView.disabled = true;
+    els.fixView.textContent = 'switching…';
+    fetch('/view.json?model=' + encodeURIComponent(target.model))
+      .then(function (resp) {
+        if (!resp.ok) {
+          // The hub answers failures with a structured envelope
+          // (view_generation_failed & co) — surface its detail.
+          return resp.json().then(
+            function (body) {
+              throw new Error((body && body.error && body.error.detail) ||
+                              'HTTP ' + resp.status);
+            },
+            function () { throw new Error('HTTP ' + resp.status); }
+          );
+        }
+      })
+      .then(function () {
+        activeModel = target.model;
+        // Re-send the selection so the freshly switched view lands on
+        // the node the user actually clicked.
+        emit('selection_changed', { instance_path: target.ip });
+        note('design view switched to ' + target.model);
+        setCrossModel(null);
+      })
+      .catch(function (err) {
+        note('design view switch failed: ' + err.message, 'error');
+        setCrossModel(target); // re-arm for a retry
+      });
+  });
 
   function activate(n, opts) {
     opts = opts || {};
@@ -943,6 +1033,10 @@
       if (ip && emit('selection_changed', { instance_path: ip })) {
         did.push('select ' + ip);
         maybeWarnCrossModel(ip);
+      } else {
+        // No instance to select — a stale "view → X" would fix the
+        // wrong click.
+        setCrossModel(null);
       }
     }
     if (els.optOpen.checked && n.file) {
@@ -1074,6 +1168,7 @@
     state.filter = els.search.value.trim().toLowerCase();
     applyClasses();
   });
+  els.optHops.addEventListener('change', applyClasses);
   els.search.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Enter') { return; }
     for (var i = 0; i < state.nodes.length; i++) {
