@@ -21,12 +21,22 @@ the graph pane. Five surfaces, in the order a user meets them:
    schema-valid, broadcast to peers, and replayed to a pane that
    connects after the fact, which is what makes "send it before the tab
    is open" work.
+
+The page is static HTML plus one inline script, so what can be asserted
+server-side is its *structure*: the markup and the code are in the body
+this module returns. Where the behaviour is genuinely a function —
+grouping toggle points into per-signal bit grids — the function is
+sliced out of the page between markers and exercised in ``node``, which
+is the only rig the repo has and needs none of a DOM.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
+import shutil
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -406,6 +416,197 @@ def test_page_carries_the_pieces_the_issue_asks_for():
     # one bit of artwork the artwork budget allows a pane.
     assert "rb regression --coverage-merge" in body
     assert theme.MASCOT_240 in body
+
+
+# ---------------------------------------------------------------------------
+# the marks column, its badges and the bit grid
+# ---------------------------------------------------------------------------
+
+
+def _page_js() -> str:
+    """The page's inline script — the last ``<script>`` in the body."""
+
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    return body.split("<script>")[-1].split("</script>")[0]
+
+
+def _toggle_grouping_js() -> str:
+    """The pure helpers, sliced out of the page by their markers.
+
+    Nothing between the markers may touch the DOM or close over page
+    state, which is exactly what evaluating them in bare ``node``
+    enforces.
+    """
+
+    match = re.search(
+        r"// >>> toggle-grouping\n(.*?)// <<< toggle-grouping", _page_js(), re.S
+    )
+    assert match, "the toggle-grouping markers moved"
+    return match.group(1)
+
+
+def _node(script: str) -> str:
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - depends on the dev machine
+        pytest.skip("node not installed")
+    done = subprocess.run(
+        [node, "-e", script], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def test_page_javascript_parses(tmp_path: Path):
+    """A page that ships a syntax error renders a blank tab and says
+    nothing about why, so the parse is worth a test of its own."""
+
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - depends on the dev machine
+        pytest.skip("node not installed")
+    script = tmp_path / "cov_page.js"
+    script.write_text(_page_js(), encoding="utf-8")
+    done = subprocess.run(
+        [node, "--check", str(script)], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+
+
+def test_marks_column_collapses_to_one_badge_per_metric():
+    """One 32-bit bus declaration is 64 toggle points on a line. A chip
+    each pushed the code column off the right of the screen, which is
+    the bug this collapse fixes."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    # Toggle always collapses; another metric only when there is more
+    # than one of it, because a lone named chip never pushed anything.
+    assert "function collapses(metric, list)" in js
+    assert "return metric === 'toggle' || list.length > 1;" in js
+    assert "function metricBadge(metric, list, lineNo)" in js
+    assert "METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length" in js
+    assert "function namedMark(entry)" in js
+    # The cap is on an inner block, not the cell: a max-width on a `td`
+    # is advisory in auto table layout.
+    assert "--markcol:  13rem;" in body
+    assert "table#src td.marks .marks-in {" in body
+    assert "max-width: var(--markcol); overflow: hidden;" in body
+
+
+def test_expansion_row_is_one_full_width_slot():
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert "expandedLine: null," in js
+    assert "function toggleExpansion(lineNo)" in js
+    assert "if (state.expandedLine === lineNo) { collapseExpansion(); return; }" in js
+    assert "function collapseExpansion()" in js
+    # Full width, inserted directly under its line — the detail may never
+    # widen the marks column it came out of.
+    assert "var SRC_COLUMNS = 4;" in js
+    assert "td.colSpan = SRC_COLUMNS;" in js
+    assert "els.srcBody.insertBefore(tr, host.nextSibling)" in js
+    assert "table#src tr.expand > td {" in body
+
+
+def test_bit_grid_encodes_both_directions_in_one_cell():
+    """Top half is 0→1, bottom half 1→0, each half an end of the ramp
+    the rest of the page already uses — no new colours."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert "--tgl-hit:  hsl(120, var(--tint-s), var(--cov-l));" in body
+    assert "--tgl-miss: hsl(0,   var(--tint-s), var(--cov-l));" in body
+    assert "--dir-up: var(--tgl-miss); --dir-down: var(--tgl-miss);" in body
+    assert "background: linear-gradient(to bottom," in body
+    assert ".bit.up { --dir-up: var(--tgl-hit); }" in body
+    assert ".bit.down { --dir-down: var(--tgl-hit); }" in body
+    # The focused cell reuses the page's one selection treatment.
+    assert ".bit.sel { outline: 2px solid var(--accent); outline-offset: 1px; }" in body
+    # A cell is per-bit, tooltipped with both directions under the
+    # active lens, and clickable through to the per-test attribution.
+    assert "' — 0→1: '" in js
+    assert "' · 1→0: '" in js
+    assert "showPoint('toggle', pick)" in js
+    # …and a per-signal summary, so a grid is scannable without counting.
+    assert "covered + '/' + group.total + ' dirs'" in js
+
+
+def test_focus_item_opens_the_line_and_selects_the_bit():
+    """``cov_focus {item: "paddr[3]:0->1"}`` names a point that now
+    lives inside a collapsed badge."""
+
+    js = _page_js()
+    assert "function lineOfFocusItem()" in js
+    assert "entry.point.name === state.focusItem" in js
+    assert "node.classList.add('sel');" in js
+    assert "expandLine(open, { scroll: target == null });" in js
+
+
+def test_toggle_grouping_is_per_signal_msb_first():
+    """The grouping is the one piece of real logic here, so it runs."""
+
+    out = _node(
+        _toggle_grouping_js()
+        + """
+        var names = ['clk:0->1', 'clk:1->0',
+                     'paddr[0]:0->1', 'paddr[1]:1->0',
+                     'paddr[3]:0->1', 'paddr[3]:1->0',
+                     'mem[1].d[2]:0->1'];
+        var groups = groupToggles(names.map(function (name) {
+          return { metric: 'toggle', point: { name: name, module: 'blk' } };
+        }));
+        console.log(JSON.stringify(groups.map(function (g) {
+          return {
+            base: g.base, scalar: g.scalar, max: g.max, min: g.min, total: g.total,
+            cells: g.cells.map(function (c) {
+              return [c.bit, !!c.up, !!c.down, !!c.absent];
+            })
+          };
+        })));
+        """
+    )
+    groups = json.loads(out)
+    assert [g["base"] for g in groups] == ["clk", "paddr", "mem[1].d"]
+
+    scalar, bus, nested = groups
+    # A scalar is a one-cell grid on the same scheme.
+    assert scalar["scalar"] is True and scalar["total"] == 2
+    assert scalar["cells"] == [[None, True, True, False]]
+    # MSB first, so the grid reads like the declaration — and bit 2,
+    # which the database never emitted, keeps its place rather than
+    # letting every index right of it shift.
+    assert bus["max"] == 3 and bus["min"] == 0 and bus["total"] == 4
+    assert bus["cells"] == [
+        [3, True, True, False],
+        [2, False, False, True],
+        [1, False, True, False],
+        [0, True, False, False],
+    ]
+    # The bracket that indexes the bus is the LAST one before the colon.
+    assert nested["base"] == "mem[1].d" and nested["cells"] == [[2, True, False, False]]
+
+
+def test_toggle_grouping_keeps_names_it_cannot_parse():
+    """A point this pane cannot parse still has to be reachable."""
+
+    out = _node(
+        _toggle_grouping_js()
+        + """
+        var groups = groupToggles([
+          { metric: 'toggle', point: { name: 'not_a_toggle_point' } },
+          { metric: 'toggle', point: { name: null } }
+        ]);
+        console.log(JSON.stringify(groups.map(function (g) {
+          return [g.base, g.scalar, g.total];
+        })));
+        console.log(JSON.stringify(chunkBits([9, 8, 7, 6, 5], 2)));
+        console.log(JSON.stringify(parseToggleName('paddr[12]:1->0')));
+        """
+    )
+    bad, chunks, parsed = out.strip().splitlines()
+    assert json.loads(bad) == [["not_a_toggle_point", True, 1], ["(unnamed)", True, 1]]
+    # Rows of 32 in the page; the chunker itself is size-agnostic.
+    assert json.loads(chunks) == [[9, 8], [7, 6], [5]]
+    assert json.loads(parsed) == {"base": "paddr", "bit": 12, "dir": "1->0"}
 
 
 # ---------------------------------------------------------------------------
