@@ -46,6 +46,8 @@ class RtlBuilderConfig:
       opts (dict[str, RtlBuilderConfigOpts]): Command-line options for the builder, keyed by mode.
       wave_format (str | None): Optional post-sim waveform handling for `rb
         wave`. ``fst-postproc`` converts a VCD dump to FST via ``vcd2fst``.
+      extra_sim_timeout (int | None): Seconds added to every test's
+        ``sim_timeout`` under this builder.
     """
 
     name: str
@@ -56,6 +58,7 @@ class RtlBuilderConfig:
     opts: dict[str, RtlBuilderConfigOpts] = field(rename="builder-opts")
     simulator_family: str | None = field(rename="simulator-family", default=None)
     wave_format: str | None = field(rename="wave-format", default=None)
+    extra_sim_timeout: int | None = field(rename="extra-sim-timeout", default=None)
 
     def get_name(self) -> str:
         """
@@ -93,6 +96,41 @@ class RtlBuilderConfig:
           wave_format (str | None): e.g. ``"fst-postproc"``, or None.
         """
         return self.wave_format
+
+    def get_extra_sim_timeout(self) -> int:
+        """
+        Seconds this builder adds to every test's simulation timeout.
+
+        For builders that queue for a license seat, or are otherwise slower
+        than the per-test ``sim_timeout`` assumes, without making that
+        allowance apply to builders that do not need it: a tight timeout is
+        worth keeping wherever nothing legitimately blocks, so a hung test
+        still fails fast there.
+
+        Returns:
+          seconds (int): Extra seconds, 0 when unset.
+        Raises:
+          FatalRtlBuddyError: The configured value is negative.
+        """
+        if self.extra_sim_timeout is None:
+            return 0
+        # Rejected rather than clamped: a negative value would *shrink* every
+        # test's timeout, and one below -sim_timeout reaches the process wait
+        # as a negative timeout, i.e. an instant timeout verdict on a sim that
+        # never ran. Silently clamping that to 0 would hide a config typo.
+        if self.extra_sim_timeout < 0:
+            log_event(
+                logger,
+                logging.ERROR,
+                "builder.extra_sim_timeout_negative",
+                builder=self.name,
+                seconds=self.extra_sim_timeout,
+            )
+            raise FatalRtlBuddyError(
+                f'Builder "{self.name}" has a negative extra-sim-timeout '
+                f"({self.extra_sim_timeout}); it must be >= 0"
+            )
+        return self.extra_sim_timeout
 
     def get_exe(self) -> str:
         """

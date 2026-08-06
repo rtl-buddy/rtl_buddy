@@ -42,6 +42,16 @@ cfg-rtl-builder:
       reg:
         compile-time: "--binary -sv -o simv"
         run-time: "+verilator+rand+reset+2"
+  - name: "vcs"
+    builder: "vcs"
+    builder-simv: "simv"
+    sim-rand-seed: 31310
+    sim-rand-seed-prefix: "+ntb_random_seed="
+    extra-sim-timeout: 900         # optional: added to every test's sim_timeout here
+    builder-opts:
+      reg:
+        compile-time: "-sverilog -full64 -licqueue"
+        run-time: "+vcs+lic+wait"
   - name: "icarus"
     builder: "iverilog"           # iverilog + vvp; family inferred as "icarus"
     builder-simv: "simv"
@@ -178,7 +188,7 @@ cfg-dispatch:                 # optional; parallel execution for regression/rand
 - Platform is selected by matching `uname` output against `cfg-platforms[].unames`.
 - `--builder` overrides the platform-selected builder for the current run.
 - `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
-- `cfg-rtl-builder` defines the named simulator builders. `builder` is the compiler executable (bare name on `PATH` or a path). `simulator-family` is optional and drives backend-specific handling (coverage, assertions, Icarus's two-phase `iverilog`→`vvp` flow); when omitted it is inferred from the executable name (`verilator*`→`verilator`, `iverilog*`/`icarus*`→`icarus`, `vcs*`→`vcs`). `wave-format` is optional and only affects `rb wave`: `fst-postproc` runs `vcd2fst` (GTKWave) on a VCD dump to produce a sibling FST before opening Surfer — useful for Icarus, which dumps VCD; if `vcd2fst` is absent the VCD is opened directly (Surfer reads VCD natively). See [Verilator vs Icarus](../concepts/simulators.md) for the capability split.
+- `cfg-rtl-builder` defines the named simulator builders. `builder` is the compiler executable (bare name on `PATH` or a path). `simulator-family` is optional and drives backend-specific handling (coverage, assertions, Icarus's two-phase `iverilog`→`vvp` flow); when omitted it is inferred from the executable name (`verilator*`→`verilator`, `iverilog*`/`icarus*`→`icarus`, `vcs*`→`vcs`). `wave-format` is optional and only affects `rb wave`: `fst-postproc` runs `vcd2fst` (GTKWave) on a VCD dump to produce a sibling FST before opening Surfer — useful for Icarus, which dumps VCD; if `vcd2fst` is absent the VCD is opened directly (Surfer reads VCD natively). `extra-sim-timeout` is optional: seconds added to every test's `sim_timeout` under that builder, for builders that queue for a license seat or are otherwise slower than the per-test value assumes. It is per-builder so a tight timeout survives where nothing legitimately blocks and a hung test still fails fast; `--extra-sim-timeout` overrides it for one run. See [Verilator vs Icarus](../concepts/simulators.md) for the capability split.
 - `cfg-coverage` is keyed by simulator family (e.g. `verilator`). `use-lcov: true` enables `.info` export and LCOV HTML generation when `--coverage-html` is used.
 - `cfg-coverview` is keyed by simulator family. `generate-tables` sets the coverage type for Coverview tables. `config` is a dict of inline Coverview JSON configuration values.
 - `cfg-surfer` configures the Surfer waveform viewer used by `rb wave`. `path` is a bare executable name (resolved via PATH) or a relative/absolute path to the binary. `editor-cmd` supports `%f` (file path) and `%l` (line number) placeholders. `editor-terminal` controls how the editor is launched: `tmux` opens a new tmux window, `iterm2` and `terminal` use AppleScript, empty string runs the command directly (suitable for GUI editors like VS Code). `editor-sock` is an optional Unix socket path that enables nvim remote reuse: rtl-buddy launches nvim with `--listen <sock>` on first use and reconnects for subsequent events. `ctrl-sock` is an optional Unix socket for the wave control server, which lets nvim send signals to Surfer — press `<Space>wa` (or your `<leader>wa`) on a signal name to add it to the waveform view. Install the nvim plugin first with `rb nvim-install`.

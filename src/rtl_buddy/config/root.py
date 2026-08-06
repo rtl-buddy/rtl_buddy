@@ -166,13 +166,21 @@ class RootConfig:
       name (str): Unique root identifier.
       root_cfg_path (str): Path of the root config.
       builder_override (str): Name of builder configuration to override all others.
+      extra_sim_timeout_override (int | None): ``--extra-sim-timeout`` value,
+        overriding each builder's ``extra-sim-timeout``.
       rtl_builder_cfgs (dict[str, BuilderConfig]): Dictionary of available builder configurations, keyed by name.
       verible_cfgs (dict[str, VeribleConfig]): Dictionary of available verible configurations, keyed by name.
       platform_cfg (PlatformConfig): PlatformConfig selected based on current system.
       reg_cfg (RegConfig | None): RegConfig.
     """
 
-    def __init__(self, name, builder_override=None, start_dir=None):
+    def __init__(
+        self,
+        name,
+        builder_override=None,
+        start_dir=None,
+        extra_sim_timeout_override=None,
+    ):
         """
         Constructor.
 
@@ -183,6 +191,9 @@ class RootConfig:
             for ``root_config.yaml``. Defaults to the current working
             directory; command code should pass the command root so
             discovery doesn't depend on invocation cwd.
+          extra_sim_timeout_override (int | None): Optional
+            ``--extra-sim-timeout`` value, overriding every builder's
+            ``extra-sim-timeout``.
         """
 
         self.name = name
@@ -196,6 +207,7 @@ class RootConfig:
         )
 
         self.builder_override = builder_override
+        self.extra_sim_timeout_override = extra_sim_timeout_override
 
         self.rtl_builder_cfgs = dict()
         self.verible_cfgs = dict()
@@ -494,6 +506,23 @@ class RootConfig:
         if self.builder_override is None and test_builder_name is not None:
             return self.get_rtl_builder_cfg_by_name(test_builder_name)
         return self.get_rtl_builder_cfg()
+
+    def resolve_extra_sim_timeout(self, rtl_builder_cfg):
+        """
+        Seconds to add to a test's simulation timeout under this builder.
+
+        Precedence: ``--extra-sim-timeout`` overrides every builder;
+        otherwise the builder's own ``extra-sim-timeout`` applies; otherwise
+        nothing is added.
+
+        Args:
+          rtl_builder_cfg (RtlBuilderConfig): The builder in effect for the test.
+        Returns:
+          seconds (int): Extra seconds, 0 when neither is set.
+        """
+        if self.extra_sim_timeout_override is not None:
+            return self.extra_sim_timeout_override
+        return rtl_builder_cfg.get_extra_sim_timeout()
 
     def get_rtl_reg_cfg(self):
         """

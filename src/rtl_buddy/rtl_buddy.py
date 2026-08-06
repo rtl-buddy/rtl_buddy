@@ -627,6 +627,15 @@ class RtlBuddy:
                 help="Override platform default builder",
             ),
         ] = None,
+        extra_sim_timeout: Annotated[
+            int | None,
+            typer.Option(
+                "--extra-sim-timeout",
+                min=0,
+                help="Seconds to add to every test's sim_timeout, "
+                "overriding the builder's extra-sim-timeout",
+            ),
+        ] = None,
         run_depth: Annotated[
             RunDepth,
             typer.Option(
@@ -678,6 +687,7 @@ class RtlBuddy:
         # walking up from the command root, not the invocation cwd.
         self.rtl_builder_mode = rtl_builder_mode
         self._builder_override = builder_override
+        self._extra_sim_timeout_override = extra_sim_timeout
         self.run_depth = run_depth
         self._pending_invoked_subcommand = ctx.invoked_subcommand
 
@@ -768,6 +778,7 @@ class RtlBuddy:
                 name=self.name + "/root_config",
                 builder_override=self._builder_override,
                 start_dir=ctx.command_root,
+                extra_sim_timeout_override=self._extra_sim_timeout_override,
             )
             # Project-local env defaults (.rtl-buddy/.env): applied as
             # soon as the project root is known, before any tool config
@@ -2311,6 +2322,7 @@ class RtlBuddy:
                     replay_run_id=replay_run_id,
                     builder_mode=self.rtl_builder_mode,
                     builder_override=self._builder_override,
+                    extra_sim_timeout=self._extra_sim_timeout_override,
                     share_build=True,
                     # Named after the backend that will write it: `slurm-*`
                     # from sbatch --output, `local-parallel-*` from the pool's
@@ -2446,6 +2458,7 @@ class RtlBuddy:
             start_level=start_level,
             builder_mode=self.rtl_builder_mode,
             builder_override=self._builder_override,
+            extra_sim_timeout=self._extra_sim_timeout_override,
             log_path=dispatch_root / f"build-{os.getpid()}.log",
             plan_path=plan_path,
             # Where the build job records which configs compiled; the head

@@ -39,6 +39,7 @@ class BuildJobSpec:
     start_level: int | None = None
     builder_mode: str = "reg"
     builder_override: str | None = None
+    extra_sim_timeout: int | None = None
     log_path: Path | None = None
     # Dispatch plan manifest (absolute) written by the head after a single
     # sweep expansion; the build job compiles exactly its entries instead
@@ -70,6 +71,7 @@ class TestJobSpec:
     replay_run_id: int | None = None
     builder_mode: str = "reg"
     builder_override: str | None = None
+    extra_sim_timeout: int | None = None
     share_build: bool = True
     log_path: Path | None = None
     # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
