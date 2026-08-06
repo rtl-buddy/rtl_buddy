@@ -788,6 +788,14 @@ class CoverageReporter:
                     coverage["dir_summary"] = records
                     if coverview_zip is not None:
                         metadata.append(f"Merged Coverview: {coverview_zip}")
+                elif merged_cov is not None:
+                    # Coverview unavailable — fall back to the LCOV-based
+                    # summary rather than dropping the requested output (#403)
+                    records = self._dir_summary_records(
+                        merged_cov.lcov_path, dir_summary_paths
+                    )
+                    metadata.extend(self._dir_summary_lines(records))
+                    coverage["dir_summary"] = records
             if coverage_coverview and coverage_per_test and reg_results is not None:
                 cv = self.generate_per_test_coverview(
                     reg_results,
