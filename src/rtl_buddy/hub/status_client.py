@@ -90,7 +90,13 @@ def query_registered_origins_sync(
 
 
 # Origins users of ``rb hub status`` care about. ``cli`` is excluded
-# because it represents the status query itself; the remaining three
-# are the v1 production peers (viewer SPA, ``rb wave`` bridge, editor
-# adapter — nvim today, more later — registers as ``src``).
-DISPLAY_ORIGINS: Sequence[str] = ("view", "wave", "src")
+# because it represents the status query itself; the rest are the
+# production peers (viewer SPA, ``rb wave`` bridge, editor adapter —
+# nvim today, more later — registers as ``src``, and the hub-served
+# graph pane).
+#
+# ``notebook`` is deliberately absent: it peers over the event broker
+# for one marimo session rather than being an app a user opens and
+# keeps open, so listing it would put a permanent "not connected" line
+# in front of every user who has never run the AXI profiler.
+DISPLAY_ORIGINS: Sequence[str] = ("view", "wave", "src", "graph")
