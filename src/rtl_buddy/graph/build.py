@@ -712,6 +712,22 @@ def _qualify_graph(
     return qualified, rename
 
 
+def _collision_base_name(original: str) -> str | None:
+    """The module name behind a collision entry that gets an indexed label.
+
+    ``module:X`` and ``inst:X/X`` (the root scope of X's own elaboration)
+    both resolve to ``X``; anything else — ports, child instances — is
+    not label-indexed and returns None.
+    """
+    if original.startswith("module:"):
+        return original[len("module:") :]
+    if original.startswith("inst:"):
+        root, _, rest = original[len("inst:") :].partition("/")
+        if rest == root:
+            return root
+    return None
+
+
 def _index_collision_labels(graphs: list[dict], collisions: dict[str, dict]) -> None:
     """Give each colliding testbench top a rendered label of ``name(i)``.
 
@@ -719,26 +735,45 @@ def _index_collision_labels(graphs: list[dict], collisions: dict[str, dict]) -> 
     supported pattern — the *ids* stay apart via the suite qualifier, but
     N nodes all labelled ``tb_top`` are indistinguishable on the graph
     pane. So the module node (and its root-scope instance) get a
-    deterministic short label ``tb_top(0)`` … ``tb_top(N-1)``, indexed by
-    sorting the qualified ids — which sort by suite path, so the index is
-    stable across rebuilds and identical for a module and its root
-    instance. The original name stays in ``base_label`` (and inside
-    ``unqualified_id``), and keyword search still matches: ``tb_top`` is
-    a substring of ``tb_top(3)``. Deeper nodes (ports, child instances)
-    keep their own labels — they render nested under an indexed parent.
+    deterministic short label ``tb_top(0)`` … ``tb_top(N-1)``.
+
+    The index is keyed on (base name, qualifier) and derived from the
+    **union** of the ``module:X`` and ``inst:X/X`` entries' qualifiers —
+    not per entry — because the two entries can carry different suite
+    sets (a suite where ``X`` is a module but not the elaboration top
+    joins the module entry only), and indexing them independently could
+    render one suite as ``tb_top(2)`` on the module and ``tb_top(1)`` on
+    its root instance. Keying on the qualifier makes the guarantee
+    structural. Sorting by qualifier = sorting by suite path, so the
+    index is stable across rebuilds.
+
+    The original name stays in ``base_label`` (and inside
+    ``unqualified_id``); query scoring and node resolution treat
+    ``base_label`` like ``label``, so ``tb_top`` still matches at the
+    exact-name tier. Deeper nodes (ports, child instances) keep their
+    own labels — they render nested under an indexed parent.
     """
-    index: dict[str, int] = {}
-    for entry in collisions.values():
-        entry["qualified"] = sorted(set(entry["qualified"]))
-        for i, qualified_id in enumerate(entry["qualified"]):
-            index[qualified_id] = i
+    base_qualifiers: dict[str, set[str]] = {}
+    for original, entry in collisions.items():
+        base = _collision_base_name(original)
+        if base is None:
+            continue
+        for qualified_id in entry["qualified"]:
+            _, sep, qualifier = qualified_id.rpartition(QUALIFIER_SEP)
+            if sep and qualifier:
+                base_qualifiers.setdefault(base, set()).add(qualifier)
+    index = {
+        base: {q: i for i, q in enumerate(sorted(qualifiers))}
+        for base, qualifiers in base_qualifiers.items()
+    }
     labelled: dict[str, str] = {}
     for graph in graphs:
         for node in graph.get("nodes") or []:
             node_id = node.get("id")
-            if node_id not in index:
-                continue
             label = node.get("label")
+            qualifier = node.get("qualified_by")
+            if not node_id or not label or not qualifier:
+                continue
             unqualified = node.get("unqualified_id") or ""
             is_module_self = (
                 node.get("type") == "module" and unqualified == f"module:{label}"
@@ -749,8 +784,11 @@ def _index_collision_labels(graphs: list[dict], collisions: dict[str, dict]) -> 
             )
             if not (is_module_self or is_root_instance):
                 continue
+            i = index.get(label, {}).get(qualifier)
+            if i is None:
+                continue
             node["base_label"] = label
-            node["label"] = f"{label}({index[node_id]})"
+            node["label"] = f"{label}({i})"
             labelled[node_id] = node["label"]
     for entry in collisions.values():
         labels = [labelled[q] for q in entry["qualified"] if q in labelled]
@@ -787,6 +825,12 @@ def _qualify_tb_graphs(
             )
             entry["qualified"].append(new_id)
     if collisions:
+        for entry in collisions.values():
+            # Sorted + deduped is a *stated* property of the meta payload
+            # (docs/concepts/graph.md): it is what the label index derives
+            # from, so it is established here where the entry is built,
+            # not as a labelling side effect.
+            entry["qualified"] = sorted(set(entry["qualified"]))
         _index_collision_labels(graphs, collisions)
         report.extra["id_collisions"] = [collisions[k] for k in sorted(collisions)]
         log_event(

@@ -1024,6 +1024,12 @@ def test_colliding_testbench_ids_are_qualified_by_suite(
     design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
     by_id = {c["id"]: c for c in design.extra["id_collisions"]}
     assert by_id["module:tb_top"]["labels"] == ["tb_top(0)", "tb_top(1)"]
+    # `qualified` is sorted and deduped — a stated property of the meta
+    # payload, since it is what the label index derives from.
+    assert by_id["module:tb_top"]["qualified"] == [
+        "module:tb_top@verif/blk_a",
+        "module:tb_top@verif/blk_b",
+    ]
     meta = json.loads(build.meta_path.read_text())
     assert meta["tiers"][DESIGN_TIER]["id_collisions"]
 

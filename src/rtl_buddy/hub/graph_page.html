@@ -1021,8 +1021,8 @@
     if (n.tier) { row(dl, 'tier', n.tier); }
     if (n.label && n.label !== n.id) { row(dl, 'label', n.label); }
     if (n.file) { row(dl, 'file', n.file + (n.line ? ':' + n.line : '')); }
-    ['dir', 'width', 'toplevel', 'flow', 'reglvl', 'cocotb', 'kind', 'tool',
-     'module', 'suite', 'test', 'qualified_by']
+    ['base_label', 'dir', 'width', 'toplevel', 'flow', 'reglvl', 'cocotb',
+     'kind', 'tool', 'module', 'suite', 'test', 'qualified_by']
       .forEach(function (k) { if (n[k] != null) { row(dl, k, n[k]); } });
     els.inspector.appendChild(dl);
 

@@ -464,6 +464,66 @@ def test_an_ambiguous_name_fails_with_its_candidates(graph_project: Path):
     assert "spec:blk_a" in excinfo.value.candidates
 
 
+def _collision_ctx(tmp_path: Path) -> graph_query.GraphContext:
+    """A minimal context holding two suite-qualified tb_top copies with
+    indexed labels, the shape `_index_collision_labels` emits."""
+    graph = {
+        "nodes": [
+            {
+                "id": f"module:tb_top@verif/blk_{s}",
+                "type": "module",
+                "label": f"tb_top({i})",
+                "base_label": "tb_top",
+                "unqualified_id": "module:tb_top",
+                "qualified_by": f"verif/blk_{s}",
+            }
+            for i, s in enumerate("ab")
+        ],
+        "links": [],
+    }
+    return graph_query.GraphContext(
+        project_root=tmp_path,
+        graph_path=tmp_path / "graph.json",
+        graph=graph,
+        index=graph_query.GraphIndex.build(graph),
+    )
+
+
+def test_indexed_collision_labels_score_at_the_exact_name_tier():
+    """`tb_top(0)` tokenizes away from `tb_top`; base_label restores the
+    exact-label tier so the rubric is unchanged for the node class a
+    name query most likely means."""
+    indexed = {
+        "id": "module:tb_top@verif/blk_a",
+        "type": "module",
+        "label": "tb_top(0)",
+        "base_label": "tb_top",
+    }
+    plain = dict(indexed, label="tb_top")
+    del plain["base_label"]
+    assert graph_query.score_node(indexed, ["tb_top"], set()) == graph_query.score_node(
+        plain, ["tb_top"], set()
+    )
+
+
+def test_a_base_label_name_still_resolves_ambiguously_with_candidates(
+    tmp_path: Path,
+):
+    """`rb graph explain tb_top` on a collision must keep raising the
+    matches-N-use-a-full-id error — asking again beats answering about
+    the wrong copy — not fall through to the fuzzy did-you-mean path."""
+    ctx = _collision_ctx(tmp_path)
+
+    with pytest.raises(GraphQueryError) as excinfo:
+        resolve_node(ctx, "tb_top")
+
+    assert "matches 2 nodes" in str(excinfo.value)
+    assert excinfo.value.candidates == [
+        "module:tb_top@verif/blk_a",
+        "module:tb_top@verif/blk_b",
+    ]
+
+
 def test_an_unknown_name_fails_with_near_misses(graph_project: Path):
     _build(graph_project)
     ctx = load_context(graph_project)

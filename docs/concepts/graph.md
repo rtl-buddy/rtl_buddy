@@ -117,9 +117,9 @@ So when the same id is claimed by more than one *file*, the testbench copies are
 Two things distinguish the copies:
 
 - **Ids** carry the suite path, as above, and each node records `unqualified_id` / `qualified_by`.
-- **Rendered labels** are indexed: the colliding module node and its root-scope instance are labelled `tb_top(0)` … `tb_top(N-1)`, deterministically (sorted by suite path, so the index is stable across rebuilds). The original name stays in `base_label`, and keyword search still finds every copy — `tb_top` matches inside `tb_top(3)`. Deeper nodes (ports, child instances) keep their own labels; they render nested under an indexed parent.
+- **Rendered labels** are indexed: the colliding module node and its root-scope instance are labelled `tb_top(0)` … `tb_top(N-1)`, deterministically — the index is keyed on the suite path (sorted), so it is stable across rebuilds and always identical for a module and its root instance. The original name stays in `base_label`, which query scoring and node resolution treat exactly like `label`: `tb_top` still matches at the exact-name tier, and `rb graph explain tb_top` still raises the matches-N-use-a-full-id error listing the qualified copies. Deeper nodes (ports, child instances) keep their own labels; they render nested under an indexed parent.
 
-DUT ids are never qualified — they are the weld. Every qualification is listed in `graph-meta.json` under the design tier's `id_collisions`, including the assigned `labels`.
+DUT ids are never qualified — they are the weld. Every qualification is listed in `graph-meta.json` under the design tier's `id_collisions`, including the assigned `labels`; each entry's `qualified` list is sorted and deduped — the order the label index derives from.
 
 ### A missing tier is not a failed build
 
