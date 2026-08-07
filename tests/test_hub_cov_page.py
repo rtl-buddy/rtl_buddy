@@ -477,20 +477,60 @@ def test_page_javascript_parses(tmp_path: Path):
     assert done.returncode == 0, done.stderr
 
 
-def test_the_annotation_column_shows_one_metric_the_selected_one():
-    """The column is the metric picker's subject, not a summary of
-    everything: four metrics' badges on every row put four columns of
-    information where the reader wanted one."""
+def test_every_metric_gets_a_column():
+    """L B T E C, always, in the run's own metric order. Which coverage
+    a line has is a property of the line, not of what the picker
+    happens to be ranking on."""
 
     js = _page_js()
-    assert "function renderMarks(box, lineNo, entries)" in js
-    assert "if (state.metric === 'line') { return; }" in js
-    assert "return entry.metric === state.metric;" in js
-    assert "box.appendChild(metricBadge(state.metric, list, lineNo));" in js
-    # …and the detail panel behind the badge shows the same one metric.
-    assert "var entries = selectedOn(lineNo);" in js
-    assert "if (state.metric === 'toggle') {" in js
-    assert "function selectedOn(lineNo)" in js
+    assert "METRICS.forEach(function (metric) {" in js
+    assert "cell.dataset.metric = metric;" in js
+    assert "function renderCell(box, lineNo, metric)" in js
+    assert "function entriesOn(lineNo, metric)" in js
+    # The `L` column is the hit-count gutter, keeping its count, its
+    # tint and its click — it just gained a header.
+    assert "if (metric === 'line') {" in js
+    assert "tint(cell, h > 0 ? 1 : 0);" in js
+    assert "bindCellClick(cell, n, 'line');" in js
+    # An empty cell is the common case and stays empty.
+    assert "if (!list.length) { return; }" in js
+    # Nothing about the source view reads the picker any more.
+    assert (
+        "state.metric"
+        not in js[js.index("function renderCell") : js.index("function bitCell")]
+    )
+
+
+def test_the_source_table_heads_each_column_with_the_file_totals():
+    """The numbers that were pills in the file header, moved to sit
+    directly above the columns they describe — printing the same five
+    numbers twice on one screen is how a reader learns to trust
+    neither."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert '<thead id="src-head">' in body
+    assert "function renderSrcHead(row)" in js
+    assert "METRIC_INITIAL[metric] + ' ' +" in js
+    assert "(t.found ? Math.round(t.ratio * 100) + '%' : '—')" in js
+    assert "elem('div', 'mh-num', t.hit + '/' + t.found)" in js
+    # Without a lens the header IS the model's own numbers, so it agrees
+    # with `rb cov summary`; with one it is recounted through the lens,
+    # so it agrees with the cells underneath it.
+    assert "function fileTotals(row, metric)" in js
+    assert "if (!state.test || !t.found) { return t; }" in js
+    assert "var t = fileTotals(row, metric);" in js
+    # Sticky, so it survives scrolling the source it heads (the shared
+    # `table th` rule already sticks; this block only sizes it).
+    assert "position: sticky; top: 0;" in body
+    assert "table#src thead th {" in body
+    # Clicking a header is the other way to set the ranking metric —
+    # the file-header pills that used to do it are gone.
+    assert "th.addEventListener('click', function () { setMetric(metric); });" in js
+    assert "function setMetric(metric)" in js
+    assert "table#src thead th.mh:hover, table#src thead th.mh.sort" in body
+    assert "els.fileHead.appendChild(pill);" in js  # module pills stay
+    assert "METRIC_INITIAL[metric] + ' ' + t.hit + '/' + t.found + ' ' + pct" not in js
 
 
 def test_the_annotation_column_collapses_to_one_badge():
@@ -505,11 +545,14 @@ def test_the_annotation_column_collapses_to_one_badge():
     assert "function collapses(metric, list)" in js
     assert "return metric === 'toggle' || list.length > 1;" in js
     assert "function metricBadge(metric, list, lineNo)" in js
-    assert "METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length" in js
+    # The metric is the column now, so the badge is the fraction alone
+    # and the chip is the name alone.
+    assert "hit + '/' + list.length);" in js
     assert "function namedMark(entry)" in js
-    # The cap is on an inner block, not the cell: a max-width on a `td`
-    # is advisory in auto table layout.
-    assert "--markcol:  13rem;" in body
+    assert "entry.point.name || '(unnamed)');" in js
+    # The cap is per column and on an inner block, not the cell: a
+    # max-width on a `td` is advisory in auto table layout.
+    assert "--markcol:  8rem;" in body
     assert "table#src td.marks .marks-in {" in body
     assert "max-width: var(--markcol); overflow: hidden;" in body
 
@@ -528,23 +571,28 @@ def test_the_pane_opens_on_toggle():
     # A reload must not undo a metric the user picked.
     assert "if (!state.metric || METRICS.indexOf(state.metric) < 0) {" in js
     assert "metric: null," in js
-    # The dropdown says it drives everything, not just the bars.
-    assert "One metric drives the whole pane" in body
-    assert "Opens on toggle" in body
+    # …and the dropdown says what it drives, which is the file list.
+    assert "Which metric the FILE LIST is ranked and barred on" in body
+    assert "The source view itself always shows all five." in body
 
 
-def test_a_focus_item_switches_to_the_metric_it_belongs_to():
-    """The column shows one metric, so a focused point in another one
-    would highlight nothing."""
+def test_a_focus_item_needs_no_metric_hint():
+    """Every metric has a column, so the point's own name says which
+    one it is in — a `cov_focus` carrying only `item` still lands, and
+    it must not have to move the picker to do it."""
 
     js = _page_js()
-    assert "function metricOfItem(row, item)" in js
-    # `line` points have no names, so nothing can name one.
-    assert "if (found || metric === 'line') { return; }" in js
+    assert "function focusedCell()" in js
+    assert "found = { line: parseInt(key, 10), metric: entry.metric };" in js
+    # A lone named point is its own chip, already carrying the
+    # selection: there is no panel behind it to open.
     assert (
-        "var itemMetric = state.focusItem && metricOfItem(row, state.focusItem);" in js
+        "if (found && !collapses(found.metric, entriesOn(found.line, found.metric))) {"
+        in js
     )
-    assert "if (itemMetric && itemMetric !== state.metric) {" in js
+    assert "openDetail(open, metric, { scroll: target == null });" in js
+    # The picker is not consulted, and not moved.
+    assert "metricOfItem" not in js
 
 
 def test_detail_panel_is_docked_outside_the_code_scroller():
@@ -555,9 +603,9 @@ def test_detail_panel_is_docked_outside_the_code_scroller():
     js = _page_js()
     body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert "expandedLine: null," in js
-    assert "function toggleDetail(lineNo)" in js
+    assert "function toggleDetail(lineNo, metric)" in js
     assert (
-        "if (state.expandedLine === lineNo && state.expandedKind === 'marks') {" in js
+        "if (state.expandedLine === lineNo && state.expandedMetric === metric) {" in js
     )
     assert "function closeDetail()" in js
     # The file view scrolls its code area, not itself, and the panel
@@ -590,23 +638,22 @@ def test_the_hit_count_column_opens_the_same_panel():
     js = _page_js()
     body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert "function openLineDetail(lineNo, opts)" in js
-    assert "function toggleLineDetail(lineNo)" in js
-    # One slot, two kinds: a badge panel and a line panel on the same
-    # line are different content, so "click again to close" needs both.
-    assert "expandedKind: null," in js
-    assert "state.expandedKind === 'line'" in js
-    assert "state.expandedKind === 'marks'" in js
+    # One slot, five columns: `T` and `B` on the same line are different
+    # content, so "click again to close" needs the (line, metric) pair.
+    assert "expandedMetric: null," in js
+    assert "if (metric === 'line') { openLineDetail(lineNo, {}); }" in js
     assert "bindDetailToRow(host, lineNo, 'line', opts);" in js
     assert "showPoint('line', point);" in js
     # The cell is clickable and says so, and its click is NOT the row's:
     # inspecting attribution must not drive the editor and the schematic.
     assert "table#src td.hits.act { cursor: pointer; }" in body
-    assert "hits.classList.add('act');" in js
-    assert "toggleLineDetail(lineNo);" in js
+    assert "cell.classList.add('act');" in js
+    assert "function bindCellClick(node, lineNo, metric)" in js
     handler = js[
-        js.index("hits.addEventListener") : js.index("toggleLineDetail(lineNo);")
+        js.index("function bindCellClick") : js.index("function bindDetailToRow")
     ]
     assert "ev.stopPropagation();" in handler
+    assert "toggleDetail(lineNo, metric);" in handler
 
 
 def test_the_tests_table_pins_a_merged_row():
@@ -684,20 +731,21 @@ def test_focus_item_opens_the_line_and_selects_the_bit():
     lives inside a collapsed badge."""
 
     js = _page_js()
-    assert "function lineOfFocusItem()" in js
-    assert "entry.point.name === state.focusItem" in js
+    assert "function focusedCell()" in js
+    assert "entry.point.name !== state.focusItem" in js
     assert "node.classList.add('sel');" in js
-    assert "openDetail(open, { scroll: target == null });" in js
+    assert "openDetail(open, metric, { scroll: target == null });" in js
     # A lens change re-renders the rows; the panel is re-opened against
-    # the new ones rather than closing under the user, in whichever of
-    # the two kinds it was showing.
+    # the new ones rather than closing under the user, on whichever
+    # column it was showing.
     assert "var reopen = state.expandedLine;" in js
-    assert "var reopenKind = state.expandedKind;" in js
-    assert "if (open == null) { open = reopen; kind = reopenKind || 'marks'; }" in js
+    assert "var reopenMetric = state.expandedMetric;" in js
+    assert "var open = cell ? cell.line : reopen;" in js
+    assert "var metric = cell ? cell.metric : reopenMetric;" in js
     # …but a different file has different line numbers.
     assert (
         "if (state.file !== path) { state.expandedLine = null; "
-        "state.expandedKind = null; }"
+        "state.expandedMetric = null; }"
     ) in js
 
 
@@ -713,9 +761,10 @@ def test_file_list_reranks_on_the_selected_metric():
     # and the ranking cannot disagree about what is on screen.
     assert "return coldestFirst(rows.filter(function (row) {" in js
     assert "}), state.metric);" in js
-    # The dropdown says what it now does.
-    assert "the file list's bars and its ranking" in body
+    # The dropdown says what it now does, and what it no longer does.
+    assert "Which metric the FILE LIST is ranked and barred on" in body
     assert "files with no points of that kind last" in body
+    assert "The source view itself always shows all five." in body
 
 
 def test_file_ordering_matches_the_builders_rule():

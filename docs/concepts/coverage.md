@@ -277,7 +277,7 @@ An unanswerable question exits 2 with `payload.error` and, for an unknown module
 
 ## Looking at coverage: the `/cov` pane
 
-`rb hub start --serve-viewer` serves the same model as an interactive page at `GET /cov`: a dashboard of the run's scalars, a file list ranked coldest-first **for the metric you pick** (it opens on `toggle`), and **per-file source annotation** — line hits in the gutter, that metric's points on each line summarised beside them, and the per-test attribution behind every one of them in a docked detail panel. Selecting a test turns it into a lens, so every number becomes that test's contribution.
+`rb hub start --serve-viewer` serves the same model as an interactive page at `GET /cov`: a dashboard of the run's scalars, a file list ranked coldest-first **for the metric you pick** (it opens on `toggle`), and **per-file source annotation** — a column per metric under a header of that file's totals, each line's points summarised in it, and the per-test attribution behind every one of them in a docked detail panel. Selecting a test turns it into a lens, so every number becomes that test's contribution.
 
 It is a hub peer, so it drives the rest: clicking a line broadcasts `source_focused` (which the hub resolves into a design-view selection) and opens the line in your editor; clicking a module chip focuses that module in the graph pane. `rb hub send cov-focus <target>` drives it from the other direction, and works before the browser tab is open. See [Coverage pane](hub.md#coverage-pane) for the routes and the wire types.
 

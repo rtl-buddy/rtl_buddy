@@ -58,8 +58,7 @@
     :root {
       --tint-s:   70%;    /* saturation of the coverage ramp */
       --gutter:   3.2rem; /* line-number column */
-      --hitcol:   3.6rem; /* hit-count column */
-      --markcol:  13rem;  /* hard cap on the marks column */
+      --markcol:  8rem;   /* hard cap on ONE metric column */
       /* The two ends of the same ramp `.tint` uses, named so a bit cell
          can paint one direction per half. Derived from --cov-l rather
          than taken from the sheet's --cov-0/--cov-100 for the reason
@@ -208,26 +207,43 @@
       width: var(--gutter); text-align: right; color: var(--fg-faint);
       user-select: none; border-right: 1px solid var(--line);
     }
-    table#src td.hits {
-      width: var(--hitcol); text-align: right; color: var(--fg-muted);
-      font-size: var(--fs-small);
-    }
-    /* Hover is the peek (the title lists the per-test hits), the click
-       is the read — same docked panel a marks badge opens. */
-    table#src td.hits.act { cursor: pointer; }
+
     table#src td.marks { width: 1%; white-space: nowrap; }
     table#src td.code { width: 100%; overflow-wrap: normal; }
     table#src tr.hot td.code { box-shadow: inset 0 0 0 1px var(--accent); }
-    /* The annotation column carries the SELECTED metric only, and is
-       capped and clipped on purpose. One 32-bit bus declaration is 64
-       toggle points on a single line; rendering a chip each pushed the
-       code column off the right of the screen. The cap lives on an
-       inner block because a max-width on a `td` is advisory in auto
-       table layout — as an inner block's it caps the column's intrinsic
+    /* Every metric gets a column, and every column is capped and
+       clipped on purpose. One 32-bit bus declaration is 64 toggle
+       points on a single line; rendering a chip each pushed the code
+       column off the right of the screen. The cap lives on an inner
+       block because a max-width on a `td` is advisory in auto table
+       layout — as an inner block's it caps the column's intrinsic
        contribution, so nothing in a cell can widen it. */
+    table#src td.marks { text-align: right; padding: 0 .3rem; }
     table#src td.marks .marks-in {
-      display: flex; gap: .15rem; align-items: center;
+      display: flex; gap: .15rem; align-items: center; justify-content: flex-end;
       max-width: var(--markcol); overflow: hidden; white-space: nowrap;
+    }
+    /* The `L` column is a count, not a badge. Hover is the peek (the
+       title lists the per-test hits), the click is the read — the same
+       docked panel every other column's badge opens. */
+    table#src td.hits {
+      color: var(--fg-muted); font-size: var(--fs-small); padding: 0 .35rem;
+    }
+    table#src td.hits.act { cursor: pointer; }
+
+    /* -- the source table's own header: per-file totals, per column --- */
+    table#src thead th {
+      font-size: var(--fs-small); font-weight: 600; line-height: 1.2;
+      padding: .1rem .3rem .15rem; vertical-align: top; white-space: nowrap;
+      border-bottom: 1px solid var(--line-strong);
+    }
+    table#src thead th.no { width: var(--gutter); }
+    table#src thead th.mh { text-align: right; cursor: pointer; width: 1%; }
+    table#src thead th.mh:hover, table#src thead th.mh.sort { color: var(--accent); }
+    table#src thead th.mh .mh-num { font-weight: 400; color: var(--fg-faint); }
+    table#src thead th.mh.sort .mh-num { color: var(--accent); }
+    table#src thead th.code {
+      text-align: left; font-weight: 400; color: var(--fg-faint);
     }
     .mark {
       display: inline-block; margin-right: .15rem; padding: 0 .25rem;
@@ -331,7 +347,7 @@
 <body>
   <header>
     <h1>rtl-buddy-cov <small id="counts"></small></h1>
-    <label class="chk" title="One metric drives the whole pane: the file list's bars and its ranking (coldest first, files with no points of that kind last), and the annotation column beside the source. Opens on toggle, where the holes usually are. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
+    <label class="chk" title="Which metric the FILE LIST is ranked and barred on — coldest first, files with no points of that kind last — and which the cold-only filter reads. It opens on toggle, where the holes usually are, and clicking a column header in the source view sets it too. The source view itself always shows all five. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
       metric <select id="metric"></select>
     </label>
     <label class="chk" title="Restrict the file list and the tests table to one module's sources. A file included into several modules keeps only the points belonging to the module you pick.">
@@ -369,7 +385,9 @@
       <div id="dash"></div>
       <div id="file" hidden>
         <div id="file-head"></div>
-        <div id="src-scroll"><table id="src"><tbody id="src-body"></tbody></table></div>
+        <div id="src-scroll"><table id="src">
+          <thead id="src-head"></thead><tbody id="src-body"></tbody>
+        </table></div>
         <!--
           Docked, i.e. OUTSIDE #src-scroll: the detail of a line near the
           bottom of a long file used to open below that line, inside the
@@ -428,6 +446,7 @@
     dash: document.getElementById('dash'),
     file: document.getElementById('file'),
     fileHead: document.getElementById('file-head'),
+    srcHead: document.getElementById('src-head'),
     srcBody: document.getElementById('src-body'),
     srcScroll: document.getElementById('src-scroll'),
     detail: document.getElementById('detail'),
@@ -455,7 +474,7 @@
     focusLine: null,   // line to scroll to / highlight in the file view
     focusItem: null,   // point name to highlight in the file view
     expandedLine: null, // the line the docked detail panel is showing
-    expandedKind: null, // 'marks' (the badges) or 'line' (the hit count)
+    expandedMetric: null, // which of that line's columns it is showing
     sources: Object.create(null),
     pending: null      // cov_focus that arrived before the model did
   };
@@ -987,22 +1006,13 @@
     }
     // A line number only means something within one file, so the open
     // detail panel does not survive a change of file.
-    if (state.file !== path) { state.expandedLine = null; state.expandedKind = null; }
+    if (state.file !== path) { state.expandedLine = null; state.expandedMetric = null; }
     state.file = path;
     state.focusLine = opts.line || null;
     state.focusItem = opts.item || null;
     if (opts.metric && METRICS.indexOf(opts.metric) >= 0) {
       state.metric = opts.metric;
       els.metric.value = opts.metric;
-    }
-    // An item names a point, and a point belongs to a metric. The
-    // annotation column shows one metric now, so landing on any other
-    // one would highlight nothing — the item is the more specific of
-    // the two hints, so it wins over `metric` and over the current pick.
-    var itemMetric = state.focusItem && metricOfItem(row, state.focusItem);
-    if (itemMetric && itemMetric !== state.metric) {
-      state.metric = itemMetric;
-      els.metric.value = itemMetric;
     }
     renderFiles();
     els.dash.hidden = true;
@@ -1122,18 +1132,6 @@
   }
   // <<< toggle-grouping
 
-  function metricOfItem(row, item) {
-    var found = null;
-    METRICS.forEach(function (metric) {
-      // `line` points have no names, so nothing can name one.
-      if (found || metric === 'line') { return; }
-      (row[metric] || []).forEach(function (point) {
-        if (!found && point.name === item) { found = metric; }
-      });
-    });
-    return found;
-  }
-
   function hitsFor(point) {
     // With a test lens on, the number shown is that test's contribution
     // — which is the whole question "what would I lose by dropping it".
@@ -1166,18 +1164,20 @@
     return metric === 'toggle' || list.length > 1;
   }
 
-  //: the points of the selected metric on one line, which is all the
-  //  annotation column and the detail panel ever show.
-  function selectedOn(lineNo) {
+  //: one line's points of one metric — one cell's worth.
+  function entriesOn(lineNo, metric) {
     return (lineMarks[lineNo] || []).filter(function (entry) {
-      return entry.metric === state.metric;
+      return entry.metric === metric;
     });
   }
 
+  // The metric is the column (or the panel's header pill), so the chip
+  // carries the name alone — the initial in front of it was the same
+  // letter repeated down the whole column.
   function namedMark(entry) {
     var h = hitsFor(entry.point);
     var mark = elem('span', 'mark' + (h > 0 ? '' : ' miss'),
-      METRIC_INITIAL[entry.metric] + (entry.point.name ? ' ' + entry.point.name : ''));
+      entry.point.name || '(unnamed)');
     mark.title = entry.metric + ' · ' + (entry.point.name || '(unnamed)') +
       (entry.point.module ? ' · ' + entry.point.module : '') +
       ' · hits ' + h + '\n' + attribution(entry.point);
@@ -1196,9 +1196,9 @@
     var hit = 0;
     list.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
     var badge = elem('span', 'mark badge' + (hit ? '' : ' miss'),
-      METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length);
+      hit + '/' + list.length);
     tint(badge, list.length ? hit / list.length : null);
-    if (state.expandedLine === lineNo && state.expandedKind === 'marks') {
+    if (state.expandedLine === lineNo && state.expandedMetric === metric) {
       badge.classList.add('open');
     }
     badge.title = list.length + ' ' + metric + ' point' + (list.length === 1 ? '' : 's') +
@@ -1206,26 +1206,22 @@
       (state.test ? ' by ' + state.test : '') + '\nclick for the detail panel';
     badge.addEventListener('click', function (ev) {
       ev.stopPropagation();
-      toggleDetail(lineNo);
+      toggleDetail(lineNo, metric);
     });
     return badge;
   }
 
-  // One column, one metric: the picker's subject. Rendering every
-  // metric's badges on every row put four columns of information where
-  // the reader wanted one, and `line` is already the gutter to the left
-  // — repeating it here would be the same number twice.
-  function renderMarks(box, lineNo, entries) {
-    if (state.metric === 'line') { return; }
-    var list = entries.filter(function (entry) {
-      return entry.metric === state.metric;
-    });
+  // One cell: this line's points of one metric, as a badge or — when
+  // there is a single named one — as its name. Empty when the line has
+  // none, which is most cells on most lines.
+  function renderCell(box, lineNo, metric) {
+    var list = entriesOn(lineNo, metric);
     if (!list.length) { return; }
-    if (!collapses(state.metric, list)) {
+    if (!collapses(metric, list)) {
       list.forEach(function (entry) { box.appendChild(namedMark(entry)); });
       return;
     }
-    box.appendChild(metricBadge(state.metric, list, lineNo));
+    box.appendChild(metricBadge(metric, list, lineNo));
   }
 
   // Exactly one point's attribution is on show at a time, so exactly
@@ -1339,35 +1335,44 @@
       function (tr) { tr.classList.remove('open'); }
     );
     state.expandedLine = null;
-    state.expandedKind = null;
+    state.expandedMetric = null;
   }
 
   // The row the panel belongs to keeps its place in the code, and is
   // pulled back into what the panel left of the code area.
-  function bindDetailToRow(host, lineNo, kind, opts) {
+  // Inspecting a cell must not also drive the editor and the
+  // schematic, which is what the row's own click does.
+  function bindCellClick(node, lineNo, metric) {
+    node.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggleDetail(lineNo, metric);
+    });
+  }
+
+  function bindDetailToRow(host, lineNo, metric, opts) {
     els.detail.hidden = false;
     state.expandedLine = lineNo;
-    state.expandedKind = kind;
+    state.expandedMetric = metric;
     host.classList.add('open');
     host.scrollIntoView({ block: opts.scroll ? 'center' : 'nearest' });
   }
 
-  function openDetail(lineNo, opts) {
+  function openDetail(lineNo, metric, opts) {
     opts = opts || {};
     closeDetail();
     var host = els.srcBody.querySelector('tr[data-line="' + lineNo + '"]');
-    var entries = selectedOn(lineNo);
-    if (!host || !entries.length || !collapses(state.metric, entries)) { return false; }
+    var entries = entriesOn(lineNo, metric);
+    if (!host || !entries.length || !collapses(metric, entries)) { return false; }
 
     detailWhere(lineNo);
     var hit = 0;
     entries.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
     els.detailHead.appendChild(elem('span', 'pill',
-      METRIC_INITIAL[state.metric] + ' ' + hit + '/' + entries.length));
+      METRIC_INITIAL[metric] + ' ' + hit + '/' + entries.length));
     if (state.test) { els.detailHead.appendChild(lensPill()); }
     appendDetailClose();
 
-    if (state.metric === 'toggle') {
+    if (metric === 'toggle') {
       var grid = elem('div', 'tgs');
       groupToggles(entries).forEach(function (group) {
         grid.appendChild(renderToggleGroup(group));
@@ -1381,19 +1386,23 @@
       els.detailBody.appendChild(chips);
     }
 
-    bindDetailToRow(host, lineNo, 'marks', opts);
-    Array.prototype.forEach.call(host.querySelectorAll('.mark.badge'), function (badge) {
-      badge.classList.add('open');
-    });
+    bindDetailToRow(host, lineNo, metric, opts);
+    var cell = host.querySelector('td.marks[data-metric="' + metric + '"]');
+    Array.prototype.forEach.call((cell || host).querySelectorAll('.mark.badge'),
+      function (badge) { badge.classList.add('open'); });
     return true;
   }
 
-  function toggleDetail(lineNo) {
-    if (state.expandedLine === lineNo && state.expandedKind === 'marks') {
+  // One panel, and a line has up to five things to show in it, so the
+  // slot is a (line, metric) pair — "click the same badge again" has to
+  // tell `T` on line 19 from `B` on line 19.
+  function toggleDetail(lineNo, metric) {
+    if (state.expandedLine === lineNo && state.expandedMetric === metric) {
       closeDetail();
       return;
     }
-    openDetail(lineNo, {});
+    if (metric === 'line') { openLineDetail(lineNo, {}); }
+    else { openDetail(lineNo, metric, {}); }
   }
 
   // The hit-count column opens the same panel as a badge does — the
@@ -1414,28 +1423,79 @@
     return true;
   }
 
-  function toggleLineDetail(lineNo) {
-    if (state.expandedLine === lineNo && state.expandedKind === 'line') {
-      closeDetail();
-      return;
-    }
-    openLineDetail(lineNo, {});
-  }
-
   // A cov_focus can name a point (`paddr[3]:0->1`) that now lives inside
   // a collapsed badge; the line it sits on is the one to open.
-  function lineOfFocusItem() {
+  // Which cell a focused item lives in. Every metric has a column now,
+  // so a `cov_focus` item needs no `metric` hint to land — the point's
+  // own name says which column it is in.
+  function focusedCell() {
     var found = null;
     if (!state.focusItem) { return null; }
     Object.keys(lineMarks).forEach(function (key) {
-      if (found != null) { return; }
-      var list = selectedOn(key);
-      if (!collapses(state.metric, list)) { return; }
-      if (list.some(function (entry) { return entry.point.name === state.focusItem; })) {
-        found = parseInt(key, 10);
-      }
+      if (found) { return; }
+      (lineMarks[key] || []).forEach(function (entry) {
+        if (found || entry.point.name !== state.focusItem) { return; }
+        found = { line: parseInt(key, 10), metric: entry.metric };
+      });
     });
+    // A lone named point is its own chip in the cell, already carrying
+    // the selection — there is no panel behind it to open.
+    if (found && !collapses(found.metric, entriesOn(found.line, found.metric))) {
+      return null;
+    }
     return found;
+  }
+
+  // The ranking metric, from the picker or from a click on a column
+  // header — the only thing the picker still drives is the file list.
+  function setMetric(metric) {
+    if (METRICS.indexOf(metric) < 0 || state.metric === metric) { return; }
+    state.metric = metric;
+    els.metric.value = metric;
+    renderFiles();
+    if (state.file) { renderFile(); }
+  }
+
+  // A file's totals for one metric. Without a lens these are the
+  // model's own numbers, so the header agrees with `rb cov summary`;
+  // with one they are recounted through it, so the header agrees with
+  // the cells underneath it — which is the whole point of a lens.
+  function fileTotals(row, metric) {
+    var t = totalsOf(row, metric);
+    if (!state.test || !t.found) { return t; }
+    var hit = 0;
+    (row[metric] || []).forEach(function (point) {
+      if (hitsFor(point) > 0) { hit += 1; }
+    });
+    return { found: t.found, hit: hit, ratio: hit / t.found };
+  }
+
+  function renderSrcHead(row) {
+    clear(els.srcHead);
+    var tr = document.createElement('tr');
+    tr.appendChild(elem('th', 'no'));
+    METRICS.forEach(function (metric) {
+      var t = fileTotals(row, metric);
+      var th = elem('th', 'mh' + (metric === state.metric ? ' sort' : ''));
+      th.dataset.metric = metric;
+      // Two lines, because five columns of `L 41/55 75%` would push the
+      // code as far right as the per-point chips once did.
+      // Whole percent, not the dashboard's one decimal: five columns of
+      // `100.0%` is 5% of the window spent on a digit nobody reads here.
+      th.appendChild(elem('div', 'mh-top',
+        METRIC_INITIAL[metric] + ' ' +
+        (t.found ? Math.round(t.ratio * 100) + '%' : '—')));
+      if (t.found) { th.appendChild(elem('div', 'mh-num', t.hit + '/' + t.found)); }
+      th.title = metric + (t.found
+        ? ': ' + t.hit + ' of ' + t.found + ' points in this file hit' +
+          (state.test ? ' by ' + state.test : '')
+        : ': no points in this file') +
+        '\nclick to rank the file list on ' + metric;
+      th.addEventListener('click', function () { setMetric(metric); });
+      tr.appendChild(th);
+    });
+    tr.appendChild(elem('th', 'code', 'source'));
+    els.srcHead.appendChild(tr);
   }
 
   function renderFile() {
@@ -1453,17 +1513,10 @@
       pill.addEventListener('click', function () { focusModuleElsewhere(name); });
       els.fileHead.appendChild(pill);
     });
-    METRICS.forEach(function (metric) {
-      var t = totalsOf(row, metric);
-      if (!t.found) { return; }
-      var pill = elem('span', 'pill' + (metric === state.metric ? ' hot' : ''),
-        METRIC_INITIAL[metric] + ' ' + t.hit + '/' + t.found + ' ' + pct(t.ratio));
-      pill.addEventListener('click', function () {
-        state.metric = metric; els.metric.value = metric;
-        renderFiles(); renderFile();
-      });
-      els.fileHead.appendChild(pill);
-    });
+    // The per-metric totals used to be pills here. They are the source
+    // table's own header row now, directly above the columns they
+    // describe, and printing the same five numbers twice on one screen
+    // is how a reader learns to trust neither.
     if (state.test) { els.fileHead.appendChild(lensPill()); }
 
     var lines = state.sources[row.path];
@@ -1477,13 +1530,14 @@
     // The rows are about to be thrown away, so the panel's line
     // highlight is too — it is re-opened below against the new rows.
     var reopen = state.expandedLine;
-    var reopenKind = state.expandedKind;
+    var reopenMetric = state.expandedMetric;
     state.expandedLine = null;
     var last = lines ? lines.length : 0;
     Object.keys(byLine).concat(Object.keys(marks)).forEach(function (n) {
       last = Math.max(last, parseInt(n, 10) || 0);
     });
 
+    renderSrcHead(row);
     clear(els.srcBody);
     var target = null;
     for (var n = 1; n <= last; n++) {
@@ -1491,32 +1545,33 @@
       tr.dataset.line = String(n);
       tr.appendChild(elem('td', 'no', n));
 
-      var point = byLine[n];
-      var hits = elem('td', 'hits');
-      if (point) {
-        var h = hitsFor(point);
-        hits.textContent = h;
-        hits.title = attribution(point) + '\nclick for the detail panel';
-        tint(hits, h > 0 ? 1 : 0);
-        hits.classList.add('act');
-        (function (lineNo) {
-          hits.addEventListener('click', function (ev) {
-            // Never the row's own click: inspecting attribution must not
-            // also drive the editor and the schematic.
-            ev.stopPropagation();
-            toggleLineDetail(lineNo);
-          });
-        })(n);
-      } else {
-        hits.textContent = '';
-      }
-      tr.appendChild(hits);
-
-      var cell = elem('td', 'marks');
-      var box = elem('div', 'marks-in');
-      renderMarks(box, n, marks[n] || []);
-      cell.appendChild(box);
-      tr.appendChild(cell);
+      // One column per metric, always, in the order the run reports
+      // them: which coverage a line has is a property of the line, not
+      // of what the picker happens to be ranking on.
+      METRICS.forEach(function (metric) {
+        var cell = elem('td', 'marks' + (metric === 'line' ? ' hits' : ''));
+        cell.dataset.metric = metric;
+        if (metric === 'line') {
+          // The `L` column IS the hit-count gutter: a count, not a
+          // badge, because "how many times did this line run" is the
+          // one number the annotation has always led with.
+          var point = byLine[n];
+          if (point) {
+            var h = hitsFor(point);
+            cell.textContent = h;
+            cell.title = attribution(point) + '\nclick for the detail panel';
+            tint(cell, h > 0 ? 1 : 0);
+            cell.classList.add('act');
+            bindCellClick(cell, n, 'line');
+          }
+          tr.appendChild(cell);
+          return;
+        }
+        var box = elem('div', 'marks-in');
+        renderCell(box, n, metric);
+        cell.appendChild(box);
+        tr.appendChild(cell);
+      });
 
       var code = elem('td', 'code', lines && lines[n - 1] != null ? lines[n - 1] : '');
       tr.appendChild(code);
@@ -1531,12 +1586,12 @@
     if (target) { target.scrollIntoView({ block: 'center' }); }
     // A focused point wins over whatever was open, and otherwise the
     // panel survives a re-render (a lens change must not close it).
-    var open = lineOfFocusItem();
-    var kind = 'marks';
-    if (open == null) { open = reopen; kind = reopenKind || 'marks'; }
-    if (open == null) { return; }
-    if (kind === 'line') { openLineDetail(open, { scroll: target == null }); }
-    else { openDetail(open, { scroll: target == null }); }
+    var cell = focusedCell();
+    var open = cell ? cell.line : reopen;
+    var metric = cell ? cell.metric : reopenMetric;
+    if (open == null || !metric) { return; }
+    if (metric === 'line') { openLineDetail(open, { scroll: target == null }); }
+    else { openDetail(open, metric, { scroll: target == null }); }
   }
 
   function showDashboard() {
