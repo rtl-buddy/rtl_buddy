@@ -196,7 +196,11 @@
       color: var(--fg-muted); white-space: nowrap;
     }
     .pill.hot { border-color: var(--accent); color: var(--accent); }
+    /* A clickable pill answers on hover the way the buttons and the
+       switcher links do, so "this does something" is visible before
+       the click rather than after it. */
     .pill.act { cursor: pointer; }
+    .pill.act:hover { border-color: var(--accent); color: var(--accent); }
     /* Pinned first row of the tests table: the merged view is a
        destination, not one of the tests. */
     tr.row.all-tests td { border-bottom: 1px solid var(--line-strong); }
@@ -350,7 +354,7 @@
     <label class="chk" title="Which metric the FILE LIST is ranked and barred on — coldest first, files with no points of that kind last — and which the cold-only filter reads. It opens on toggle, where the holes usually are, and clicking a column header in the source view sets it too. The source view itself always shows all five. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
       metric <select id="metric"></select>
     </label>
-    <label class="chk" title="Restrict the file list and the tests table to one module's sources. A file included into several modules keeps only the points belonging to the module you pick.">
+    <label class="chk" title="Restrict the file list and the tests table to one module's sources. A file included into several modules keeps only the points belonging to the module you pick. These are the ELABORATED names the simulator compiled (ip_async_fifo__DB13), because that is what the coverage model is keyed on and two parameterisations of one module are two entries here; the source name is what the module chips in the file header show.">
       module <select id="module"><option value="">all</option></select>
     </label>
     <input type="search" id="search" placeholder="filter files by path…" spellcheck="false">
@@ -750,6 +754,64 @@
     els.metric.value = state.metric;
   }
 
+  // --- pure helpers, no DOM and no state -----------------------------
+  // >>> module-names
+  // The coverage model keys modules on the name the SIMULATOR
+  // elaborated — verilator appends a mangled parameterisation suffix,
+  // so `ip_async_fifo` compiled once is `ip_async_fifo__DB13` and
+  // compiled twice is `ip_cdc_handshake__W13` and `ip_cdc_handshake__Wc`.
+  // The design graph keys on the SOURCE name (`module:ip_async_fifo`),
+  // which is also the name a person reads in `design/common/*.sv`. One
+  // trailing `__<alnum>` group is the entire difference between the two
+  // vocabularies, so it is stripped exactly once, and only when a
+  // non-empty base survives — `__A8` on its own is a whole name, not a
+  // suffix.
+  //
+  // The python end of this wire is rtl_buddy/graph/coverage.py
+  // (`_design_entries`), which today joins model module names onto
+  // `module:<name>` graph ids by plain equality and reports the
+  // leftovers in `summary.unmatched_modules` — i.e. every parameterised
+  // module misses there for the same reason the pill used to miss here.
+  // If that side grows the rule, it must be THIS rule; if it changes,
+  // this changes with it.
+  function baseModuleName(name) {
+    var text = String(name == null ? '' : name);
+    var base = text.replace(/__[A-Za-z0-9]+$/, '');
+    return base || text;
+  }
+
+  // The elaborated names of one file, collapsed onto the source names a
+  // reader recognises: two parameterisations of one module are one chip
+  // that remembers both, in first-seen order.
+  function moduleChips(names) {
+    var chips = [], byBase = Object.create(null);
+    (names || []).forEach(function (name) {
+      var base = baseModuleName(name);
+      var chip = byBase[base];
+      if (!chip) { chip = byBase[base] = { base: base, names: [] }; chips.push(chip); }
+      if (chip.names.indexOf(name) < 0) { chip.names.push(name); }
+    });
+    return chips;
+  }
+
+  // Which elaborated module a sender's `module:<name>` means, or null.
+  // Exact first, so a project whose module really is called `a__b`
+  // still wins over any stripped near-miss; stripped equality second,
+  // so a sender speaking the graph's source vocabulary lands. Ties go
+  // to the first name given, which is why callers pass a sorted list.
+  function resolveModuleName(known, name) {
+    var wanted = String(name == null ? '' : name);
+    if (!wanted) { return null; }
+    var names = known || [];
+    if (names.indexOf(wanted) >= 0) { return wanted; }
+    var base = baseModuleName(wanted);
+    for (var i = 0; i < names.length; i++) {
+      if (baseModuleName(names[i]) === base) { return names[i]; }
+    }
+    return null;
+  }
+  // <<< module-names
+
   function renderModulePicker() {
     var current = state.module;
     clear(els.module);
@@ -973,7 +1035,11 @@
       p.covers.forEach(function (row) {
         var tr = elem('tr', 'row');
         tr.appendChild(elem('td', null, row.name || '—'));
-        tr.appendChild(elem('td', null, row.module || '—'));
+        var mod = elem('td', null, row.module ? baseModuleName(row.module) : '—');
+        if (row.module && baseModuleName(row.module) !== row.module) {
+          mod.title = 'elaborated as ' + row.module;
+        }
+        tr.appendChild(mod);
         tr.appendChild(elem('td', null, row.file || '—'));
         var hits = elem('td', null, row.hits);
         if (!row.hits) { hits.className = 'msg-error'; }
@@ -1507,10 +1573,17 @@
     back.addEventListener('click', showDashboard);
     els.fileHead.appendChild(back);
     els.fileHead.appendChild(elem('span', 'path', row.path));
-    (row.modules || []).forEach(function (name) {
-      var pill = elem('span', 'pill', name);
-      pill.title = 'Focus this module in the graph pane';
-      pill.addEventListener('click', function () { focusModuleElsewhere(name); });
+    // The chip reads in the design's vocabulary — the name in the file
+    // you are looking at — and carries the elaborated names it stands
+    // for in its tooltip; the graph is sent the source name, which is
+    // the only one it has a node for.
+    moduleChips(row.modules).forEach(function (chip) {
+      var pill = elem('span', 'pill act', chip.base);
+      var elaborated = chip.names.length > 1 || chip.names[0] !== chip.base
+        ? 'elaborated as ' + chip.names.join(', ') + '\n' : '';
+      pill.title = elaborated + 'click to focus module:' + chip.base +
+        ' in the graph pane';
+      pill.addEventListener('click', function () { focusModuleElsewhere(chip.base); });
       els.fileHead.appendChild(pill);
     });
     // The per-metric totals used to be pills here. They are the source
@@ -1625,9 +1698,15 @@
     var parts = [];
     if (metric !== 'line') { parts.push(metric); }
     if (point.name) { parts.push(point.name); }
-    if (point.module) { parts.push(point.module); }
+    // Displayed text is design vocabulary, tooltips carry the model's
+    // own key — the same split the file header's module chips make.
+    if (point.module) { parts.push(baseModuleName(point.module)); }
     parts.push('line ' + point.line, 'hits ' + (point.hits || 0));
-    els.point.appendChild(elem('strong', null, parts.join(' · ')));
+    var head = elem('strong', null, parts.join(' · '));
+    if (point.module && baseModuleName(point.module) !== point.module) {
+      head.title = 'elaborated as ' + point.module;
+    }
+    els.point.appendChild(head);
     var tests = point.tests || {};
     var names = Object.keys(tests).sort();
     if (!names.length) {
@@ -1688,11 +1767,15 @@
     else if (!wsReady) { note('hub not connected', 'error'); }
   }
 
-  function focusModuleElsewhere(name) {
+  function focusModuleElsewhere(base) {
     // The graph pane speaks node ids, and `module:<name>` is the id a
     // design module carries there — so a module chip here lands on the
     // same module there, and the graph pane's own module→instance rule
-    // takes it the rest of the way to the schematic.
+    // takes it the rest of the way to the schematic. The name sent is
+    // the SOURCE name (`baseModuleName`): the graph is built from the
+    // source, so `module:ip_async_fifo__DB13` is a node nothing has,
+    // and a graph_focus miss is silent — the click looked broken.
+    var name = baseModuleName(base);
     if (emit('graph_focus', { node: 'module:' + name })) {
       note('graph-focus module:' + name);
     } else {
@@ -1721,13 +1804,20 @@
     return selectFile(path, { line: opts.line, item: opts.item, metric: opts.metric });
   }
 
+  // A sender may name the module either way round: the graph and the
+  // editor speak the source name, `rb cov` and this pane's own dropdown
+  // speak the elaborated one. Resolve to the elaborated name the model
+  // is keyed on before anything is filtered on it.
   function focusModule(name, opts) {
+    var known = Object.keys(state.modules).sort();
+    var resolved = resolveModuleName(known, name);
+    if (resolved === null) { return false; }
     var rows = ((state.payload && state.payload.files) || []).filter(function (row) {
-      return (row.modules || []).indexOf(name) >= 0;
+      return (row.modules || []).indexOf(resolved) >= 0;
     });
     if (!rows.length) { return false; }
-    state.module = name;
-    els.module.value = name;
+    state.module = resolved;
+    els.module.value = resolved;
     renderFiles();
     return selectFile(rows[0].path, opts);
   }
@@ -1777,8 +1867,14 @@
     // be worth the zero cost of being wrong (nothing happens).
     var leaf = ip.split('.').pop();
     var candidates = [leaf, leaf.replace(/^(u|i|inst|dut)_/, '')];
+    var known = Object.keys(state.modules).sort();
     for (var i = 0; i < candidates.length; i++) {
-      if (state.modules[candidates[i]]) { focusModule(candidates[i], {}); return; }
+      // An instance name is a source-vocabulary name, so it is resolved
+      // the same way an inbound `module:` target is.
+      if (resolveModuleName(known, candidates[i]) !== null) {
+        focusModule(candidates[i], {});
+        return;
+      }
     }
   }
 

@@ -451,6 +451,10 @@ def _file_ordering_js() -> str:
     return _marked_js("file-ordering")
 
 
+def _module_names_js() -> str:
+    return _marked_js("module-names")
+
+
 def _node(script: str) -> str:
     node = shutil.which("node")
     if node is None:  # pragma: no cover - depends on the dev machine
@@ -883,6 +887,172 @@ def test_toggle_grouping_keeps_names_it_cannot_parse():
     # Rows of 32 in the page; the chunker itself is size-agnostic.
     assert json.loads(chunks) == [[9, 8], [7, 6], [5]]
     assert json.loads(parsed) == {"base": "paddr", "bit": 12, "dir": "1->0"}
+
+
+# ---------------------------------------------------------------------------
+# elaborated module names vs the design's own vocabulary
+# ---------------------------------------------------------------------------
+
+
+def test_the_parameterisation_suffix_is_stripped_once():
+    """Verilator's elaborated name (``ip_async_fifo__DB13``) is what the
+    coverage model is keyed on; ``module:ip_async_fifo`` is what the
+    graph has a node for. One trailing ``__<alnum>`` group is the whole
+    difference, and stripping more than one would eat a real name."""
+
+    out = _node(
+        _module_names_js()
+        + """
+        var names = [
+          'ip_async_fifo__DB13', 'apb_intf__A8', 'demo_tiny_alu_subsys_top__Az1',
+          'demo_tiny_alu', 'ip_cdc_sync', 'ip_cdc_sync__W4',
+          'axi__lite__W8', 'axi__lite', '__A8', '', 'a__', 'blk__'
+        ];
+        console.log(JSON.stringify(names.map(baseModuleName)));
+        console.log(JSON.stringify([baseModuleName(null), baseModuleName(undefined)]));
+        """
+    )
+    stripped, nullish = out.strip().splitlines()
+    assert json.loads(stripped) == [
+        "ip_async_fifo",
+        "apb_intf",
+        "demo_tiny_alu_subsys_top",
+        # No suffix, no change.
+        "demo_tiny_alu",
+        "ip_cdc_sync",
+        "ip_cdc_sync",
+        # A legitimate double underscore mid-name survives: exactly one
+        # group comes off, so `axi__lite__W8` is `axi__lite` and not `axi`.
+        "axi__lite",
+        # …but a real name that ENDS in one is indistinguishable from a
+        # parameterisation and is stripped. That is the known risk of the
+        # rule, pinned here so a change to it is deliberate.
+        "axi",
+        # Nothing survives, so nothing is stripped: `__A8` is a whole name.
+        "__A8",
+        "",
+        # A trailing `__` is not a suffix — there are no alnums in it.
+        "a__",
+        "blk__",
+    ]
+    assert json.loads(nullish) == ["", ""]
+
+
+def test_two_parameterisations_of_one_module_are_one_chip():
+    """``design/common/ip_cdc_handshake.sv`` really does elaborate twice
+    in the template project. Two chips reading the same word would look
+    like a rendering bug, so they collapse and the chip remembers both."""
+
+    out = _node(
+        _module_names_js()
+        + """
+        console.log(JSON.stringify(moduleChips(
+          ['ip_cdc_handshake__W13', 'ip_cdc_handshake__Wc'])));
+        console.log(JSON.stringify(moduleChips(
+          ['ip_cdc_sync', 'ip_cdc_sync__W4'])));
+        console.log(JSON.stringify(moduleChips(['tb_top', 'EndHook'])));
+        console.log(JSON.stringify([moduleChips([]), moduleChips(null)]));
+        """
+    )
+    twice, mixed, plain, empty = out.strip().splitlines()
+    assert json.loads(twice) == [
+        {
+            "base": "ip_cdc_handshake",
+            "names": ["ip_cdc_handshake__W13", "ip_cdc_handshake__Wc"],
+        }
+    ]
+    assert json.loads(mixed) == [
+        {"base": "ip_cdc_sync", "names": ["ip_cdc_sync", "ip_cdc_sync__W4"]}
+    ]
+    # First-seen order, so the header cannot reshuffle between renders.
+    assert json.loads(plain) == [
+        {"base": "tb_top", "names": ["tb_top"]},
+        {"base": "EndHook", "names": ["EndHook"]},
+    ]
+    assert json.loads(empty) == [[], []]
+
+
+def test_inbound_module_targets_match_either_vocabulary():
+    """`cov_focus target: "module:ip_async_fifo"` comes from a sender
+    that speaks the graph's source names; the dropdown and `rb cov`
+    speak the model's elaborated ones. Exact wins, stripped follows."""
+
+    out = _node(
+        _module_names_js()
+        + """
+        var known = ['apb_intf__A8', 'axi__lite', 'demo_tiny_alu',
+                     'ip_async_fifo__DB13', 'ip_cdc_sync', 'ip_cdc_sync__W4'];
+        function r(name) { return resolveModuleName(known, name); }
+        console.log(JSON.stringify([
+          r('ip_async_fifo'), r('ip_async_fifo__DB13'), r('apb_intf'),
+          r('demo_tiny_alu'), r('ip_cdc_sync'), r('ip_cdc_sync__W4'),
+          r('axi__lite'), r('nope'), r(''), r(null),
+          resolveModuleName([], 'ip_async_fifo')
+        ]));
+        """
+    )
+    got = json.loads(out.strip())
+    assert got == [
+        # The source name lands on the one elaboration that carries it.
+        "ip_async_fifo__DB13",
+        # The elaborated name is still accepted verbatim.
+        "ip_async_fifo__DB13",
+        "apb_intf__A8",
+        "demo_tiny_alu",
+        # `ip_cdc_sync` is BOTH a model key and the base of
+        # `ip_cdc_sync__W4`; exact-first is what stops it landing on the
+        # parameterised twin.
+        "ip_cdc_sync",
+        "ip_cdc_sync__W4",
+        # A name that really contains `__` matches itself exactly rather
+        # than being stripped to `axi` and missing.
+        "axi__lite",
+        None,
+        None,
+        None,
+        None,
+    ]
+
+
+def test_the_module_chip_is_clickable_and_reads_as_source():
+    """The bug: the chip emitted `module:ip_async_fifo__DB13`, which no
+    graph has a node for, and graph_focus misses are silent — so the
+    click did nothing and the chip did not even look clickable."""
+
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    # Affordance, on the class the page already uses for clickable pills.
+    assert ".pill.act { cursor: pointer; }" in body
+    assert (
+        ".pill.act:hover { border-color: var(--accent); color: var(--accent); }" in body
+    )
+    assert "elem('span', 'pill act', chip.base)" in js
+    # The chip is built from the collapsing helper, not from the raw list.
+    assert "moduleChips(row.modules).forEach(function (chip) {" in js
+    assert "focusModuleElsewhere(chip.base)" in js
+    # …and the elaborated names live in the tooltip.
+    assert "'elaborated as ' + chip.names.join(', ')" in js
+    # The wire carries the source name.
+    assert "emit('graph_focus', { node: 'module:' + name })" in js
+    assert "var name = baseModuleName(base);" in js
+    # The dropdown deliberately keeps the model's own keys, and says so.
+    assert "These are the ELABORATED names the simulator compiled" in body
+    # The other surfaces that print a module name follow the chip's rule.
+    assert "parts.push(baseModuleName(point.module));" in js
+    assert "elem('td', null, row.module ? baseModuleName(row.module) : '—')" in js
+
+
+def test_inbound_focus_resolves_before_it_filters():
+    """`focusModule` sets the dropdown, which is keyed on elaborated
+    names — so the resolution has to happen first, not after."""
+
+    js = _page_js()
+    assert "var resolved = resolveModuleName(known, name);" in js
+    assert "if (resolved === null) { return false; }" in js
+    assert "state.module = resolved;" in js
+    assert "return (row.modules || []).indexOf(resolved) >= 0;" in js
+    # The instance-path heuristic speaks source names too.
+    assert "if (resolveModuleName(known, candidates[i]) !== null) {" in js
 
 
 # ---------------------------------------------------------------------------
