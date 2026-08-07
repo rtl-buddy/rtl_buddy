@@ -1394,7 +1394,8 @@ def test_a_local_segment_without_a_sha_still_labels_the_version():
           versionLabel('1.0+local'),
           versionLabel('1.0+d20260806'),
           versionLabel('1.0+gitlab'),
-          versionLabel('1.0+')
+          versionLabel('1.0+'),
+          versionLabel('1.0+gabc')
         ]));
         """
     )
@@ -1403,6 +1404,9 @@ def test_a_local_segment_without_a_sha_still_labels_the_version():
         "1.0",
         # `gitlab` starts with a g but `itlab` is not hex — no SHA here.
         "1.0",
+        "1.0",
+        # fewer than 4 hex digits is not a SHA — pinned in lockstep with
+        # the SPA copy (rtl-buddy-view viewer/src/buildInfo.js).
         "1.0",
     ]
 

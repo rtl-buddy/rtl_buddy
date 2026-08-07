@@ -576,7 +576,7 @@
     var base = plus < 0 ? text : text.slice(0, plus);
     if (!base) { return null; }
     var local = plus < 0 ? '' : text.slice(plus + 1);
-    var found = /(^|\.)g([0-9a-fA-F]+)/.exec(local);
+    var found = /(^|[.\-_])g([0-9a-fA-F]{4,})(?=$|[.\-_])/.exec(local);
     return found ? base + ' @ ' + found[2].slice(0, 9) : base;
   }
   // <<< version-label
