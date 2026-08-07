@@ -38,7 +38,9 @@ from rtl_buddy.graph.coverage import (
     STATUS_DECLARED_ONLY,
     STATUS_EXERCISED,
     STATUS_OBSERVED_UNDECLARED,
+    _design_entries,
     annotate_coverage,
+    base_module_name,
     coverage_for_node,
     join_coverage,
 )
@@ -77,37 +79,51 @@ def _dat_record(*, file, line, type_, name, module, col=1, hits=1):
 #: cover that fired and an `A-COV-2` that did not, blk_b fully covered
 #: with a cover point no `covers:` entry claims.
 _RECORDS = (
-    ("../../../../" + _BLK_A, 1, "line", "", "blk_a", 1),
-    ("../../../../" + _BLK_A, 2, "line", "", "blk_a", 0),
-    ("../../../../" + _BLK_A, 4, "user", "cov_a_cov_1", "blk_a", 3),
-    ("../../../../" + _BLK_A, 6, "user", "A-COV-2", "blk_a", 0),
-    ("../../../../" + _BLK_B, 3, "user", "stray_cover", "blk_b", 7),
-    ("../../../../" + _BLK_B, 5, "line", "", "blk_b", 2),
+    (_BLK_A, 1, "line", "", "blk_a", 1),
+    (_BLK_A, 2, "line", "", "blk_a", 0),
+    (_BLK_A, 4, "user", "cov_a_cov_1", "blk_a", 3),
+    (_BLK_A, 6, "user", "A-COV-2", "blk_a", 0),
+    (_BLK_B, 3, "user", "stray_cover", "blk_b", 7),
+    (_BLK_B, 5, "line", "", "blk_b", 2),
+)
+
+#: The same run as :data:`_RECORDS`, recorded the way verilator records
+#: a *parameterised* design: the module name it writes is the one it
+#: ELABORATED, so blk_a compiled twice is `blk_a__W1` and `blk_a__Wc`,
+#: and blk_b compiled plain and parameterised is `blk_b` and `blk_b__W4`.
+#: Line points carry no module at all and so are the file's, recorded
+#: once per elaboration and merged by line — which is exactly the pair
+#: that a naive per-elaboration sum would count twice.
+_ELABORATED_RECORDS = (
+    (_BLK_A, 1, "line", "", "blk_a__W1", 1),
+    (_BLK_A, 2, "line", "", "blk_a__W1", 0),
+    (_BLK_A, 1, "line", "", "blk_a__Wc", 1),
+    (_BLK_A, 2, "line", "", "blk_a__Wc", 0),
+    (_BLK_A, 4, "user", "cov_a_cov_1", "blk_a__W1", 3),
+    (_BLK_A, 4, "user", "cov_a_cov_1", "blk_a__Wc", 0),
+    (_BLK_B, 5, "line", "", "blk_b", 2),
+    (_BLK_B, 6, "line", "", "blk_b__W4", 0),
 )
 
 
-@pytest.fixture
-def cov_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """The config-tier fixture, plus one test run with coverage on disk."""
-    project = tmp_path / "project"
-    shutil.copytree(_FIXTURES / "graph_config_tier", project)
-    shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", project)
-    for name in ("blk_a", "blk_b"):
-        (project / "design" / name / f"{name}.sv").write_text(
-            f"module {name} (input logic clk);\nendmodule\n"
-        )
-
+def _write_run(project: Path, records) -> Path:
+    """One test run's raw database and result, where the fixture wants it."""
     run_dir = project / "verif" / "blk_a" / "artefacts" / "t_basic"
-    run_dir.mkdir(parents=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "test.log").write_text("PASS\n")
     raw = run_dir / "coverage.dat"
     raw.write_text(
         "# SystemC::Coverage-3\n"
         + "".join(
             _dat_record(
-                file=path, line=line, type_=type_, name=name, module=module, hits=hits
+                file="../../../../" + path,
+                line=line,
+                type_=type_,
+                name=name,
+                module=module,
+                hits=hits,
             )
-            for path, line, type_, name, module, hits in _RECORDS
+            for path, line, type_, name, module, hits in records
         ),
         encoding="utf-8",
     )
@@ -118,8 +134,33 @@ def cov_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         results=_TestResults(name="t", results={"result": "PASS", "desc": "ok"}),
         run_token="tok-1",
     )
+    return raw
 
-    _write_cov_artefacts(project, raw)
+
+def _cov_tree(tmp_path: Path, records) -> Path:
+    """The config-tier fixture, plus one test run with coverage on disk."""
+    project = tmp_path / "project"
+    shutil.copytree(_FIXTURES / "graph_config_tier", project)
+    shutil.copy(_FIXTURES / "minimal_project" / "root_config.yaml", project)
+    for name in ("blk_a", "blk_b"):
+        (project / "design" / name / f"{name}.sv").write_text(
+            f"module {name} (input logic clk);\nendmodule\n"
+        )
+    _write_cov_artefacts(project, _write_run(project, records))
+    return project
+
+
+@pytest.fixture
+def cov_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    project = _cov_tree(tmp_path, _RECORDS)
+    monkeypatch.chdir(project)
+    return project
+
+
+@pytest.fixture
+def elaborated_cov_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """:func:`cov_project`, with the simulator's parameterised names."""
+    project = _cov_tree(tmp_path, _ELABORATED_RECORDS)
     monkeypatch.chdir(project)
     return project
 
@@ -372,6 +413,120 @@ def test_a_config_only_graph_still_reaches_the_design_through_its_model(
 
     assert join.block["nodes"]["model:design/blk_a/models.yaml#blk_a"]["ratio"] == 0.5
     assert join.block["summary"]["unmatched_modules"] == []
+
+
+# ---------------------------------------------------------------------------
+# Elaborated model names vs source graph names
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "elaborated,base",
+    [
+        ("ip_async_fifo__DB13", "ip_async_fifo"),
+        ("ip_cdc_handshake__Wc", "ip_cdc_handshake"),
+        ("apb_intf__A8", "apb_intf"),
+        # Only the LAST group goes, and only one of them.
+        ("demo_tiny_alu_subsys_top__Az1", "demo_tiny_alu_subsys_top"),
+        ("a__b__c", "a__b"),
+        # Nothing survives, so nothing is stripped: these are whole names.
+        ("__A8", "__A8"),
+        ("ip_cdc_sync", "ip_cdc_sync"),
+        # The suffix is alphanumeric; a trailing `__` with punctuation in
+        # it is not one.
+        ("blk__a-1", "blk__a-1"),
+    ],
+)
+def test_base_module_name_strips_one_parameterisation_suffix(elaborated, base):
+    """The python end of `cov_page.html`'s `module-names` block."""
+    assert base_module_name(elaborated) == base
+
+
+def test_parameterised_modules_join_onto_the_source_named_nodes(
+    elaborated_cov_project: Path,
+):
+    """`blk_a__W1` is `module:blk_a` — the simulator's name for the
+    graph's, and the whole reason the tint used to miss."""
+    join = _join(elaborated_cov_project, graph=_design_graph(elaborated_cov_project))
+    nodes = join.block["nodes"]
+
+    assert join.block["summary"]["unmatched_modules"] == []
+    assert nodes["module:blk_a"]["module"] == "blk_a"
+    assert nodes["module:blk_a"]["ratio"] == 0.5
+    # ...and every node that *is* that module comes with it.
+    assert nodes["inst:blk_a/blk_a"]["ratio"] == 0.5
+    assert nodes["model:design/blk_a/models.yaml#blk_a"]["ratio"] == 0.5
+
+
+def test_several_elaborations_aggregate_onto_the_one_node(
+    elaborated_cov_project: Path,
+):
+    """Two parameterisations, one node, one set of numbers — and the
+    file's module-less line points counted once, not once per
+    elaboration."""
+    nodes = _join(
+        elaborated_cov_project, graph=_design_graph(elaborated_cov_project)
+    ).block["nodes"]
+    entry = nodes["module:blk_a"]
+
+    assert entry["elaborations"] == ["blk_a__W1", "blk_a__Wc"]
+    # Both elaborations recorded both line points; there are two, not four.
+    assert entry["totals"]["line"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    # A cover property, by contrast, IS a point per elaboration.
+    assert entry["totals"]["cover"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert entry["files"] == [_BLK_A]
+    assert entry["tests"] == ["t_basic"]
+
+
+def test_a_plain_elaboration_shares_the_node_with_its_parameterised_twin(
+    elaborated_cov_project: Path,
+):
+    """`blk_b` and `blk_b__W4` are one module in the source and so one
+    node — the `ip_cdc_sync` / `ip_cdc_sync__W4` shape."""
+    nodes = _join(
+        elaborated_cov_project, graph=_design_graph(elaborated_cov_project)
+    ).block["nodes"]
+
+    assert nodes["module:blk_b"]["elaborations"] == ["blk_b", "blk_b__W4"]
+    assert nodes["module:blk_b"]["totals"]["line"] == {
+        "found": 2,
+        "hit": 1,
+        "ratio": 0.5,
+    }
+
+
+def test_an_exact_name_beats_a_stripped_one():
+    """A project whose module really is called `axi__lite` keeps its own
+    node: exact first, stripped second. Without that order its coverage
+    would land on `axi`, which is a different module."""
+    model = {"modules": {"axi": [], "axi__lite": []}, "files": []}
+    graph = {
+        "nodes": [
+            {"id": "module:axi", "type": "module"},
+            {"id": "module:axi__lite", "type": "module"},
+        ],
+        "links": [],
+    }
+
+    attached, unmatched = _design_entries(model, graph)
+
+    assert unmatched == []
+    assert attached["module:axi"]["elaborations"] == ["axi"]
+    assert attached["module:axi__lite"]["elaborations"] == ["axi__lite"]
+
+
+def test_a_stripped_name_that_matches_nothing_stays_unmatched():
+    """Stripping is a second chance, not a licence: a module the graph
+    has no node for is still reported, under the ELABORATED name the
+    coverage model spells it with."""
+    model = {"modules": {"tb_top__A1": [], "blk_a__W1": []}, "files": []}
+    graph = {"nodes": [{"id": "module:blk_a", "type": "module"}], "links": []}
+
+    attached, unmatched = _design_entries(model, graph)
+
+    assert unmatched == ["tb_top__A1"]
+    assert attached["module:tb_top__A1"]["module"] == "tb_top__A1"
+    assert attached["module:blk_a"]["elaborations"] == ["blk_a__W1"]
 
 
 def test_the_module_ratio_is_the_one_rb_cov_module_reports(cov_project: Path):

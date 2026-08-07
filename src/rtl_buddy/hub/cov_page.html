@@ -791,12 +791,11 @@
   // suffix.
   //
   // The python end of this wire is rtl_buddy/graph/coverage.py
-  // (`_design_entries`), which today joins model module names onto
-  // `module:<name>` graph ids by plain equality and reports the
-  // leftovers in `summary.unmatched_modules` — i.e. every parameterised
-  // module misses there for the same reason the pill used to miss here.
-  // If that side grows the rule, it must be THIS rule; if it changes,
-  // this changes with it.
+  // (`base_module_name` / `_resolve_module_node`, used by
+  // `_design_entries` to join model module names onto `module:<name>`
+  // graph ids and to report the leftovers in
+  // `summary.unmatched_modules`). It is THIS rule, exact-first and
+  // stripped-second; if one side changes, the other changes with it.
   function baseModuleName(name) {
     var text = String(name == null ? '' : name);
     var base = text.replace(/__[A-Za-z0-9]+$/, '');

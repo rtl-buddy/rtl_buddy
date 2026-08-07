@@ -284,7 +284,8 @@ The overlay grows a `coverage` block and a `coverage` key on each test entry:
     },
     "nodes": {
       "module:demo_tiny_alu": {
-        "kind": "design", "module": "demo_tiny_alu", "ratio": 0.88,
+        "kind": "design", "module": "demo_tiny_alu",
+        "elaborations": ["demo_tiny_alu"], "ratio": 0.88,
         "totals": {"...": {}}, "files": ["design/demo_tiny_alu/demo_tiny_alu.sv"],
         "tests": ["basic", "random"]
       },
@@ -343,9 +344,26 @@ An id declared by two blocks has two `covitem:` nodes, and `covers:` already fan
 
 Module coverage reaches every node that *is* that module: `module:<name>` (including its suite-qualified form), every `instance` node whose `module` attribute names it, and the `model:` node that `maps_to` it — the `maps_to` stitch is an identity, so a model node is its module under another name. Ports and parameters are deliberately left out: a per-port tint says nothing anyone can act on.
 
-A module the graph has no node for still gets an entry, keyed by the `module:<name>` id the design tier would have emitted, and is listed in `summary.unmatched_modules`. Coverage that exists is never silently dropped.
+#### Elaborated names vs source names
 
-The ratio itself is `rb cov module`'s — one implementation, so the tint on the pane cannot contradict the number in the verb.
+The two sides do not spell modules the same way. The coverage model keys on the name the **simulator elaborated** — verilator appends a mangled parameterisation suffix, so one `ip_async_fifo` in the source is `ip_async_fifo__DB13` in the model, and an `ip_cdc_handshake` instantiated with two parameter sets is `ip_cdc_handshake__W13` *and* `ip_cdc_handshake__Wc`. The graph keys on the **source** name, `module:ip_cdc_handshake`, which is what you read in the file.
+
+One trailing `__<alnum>` group is the whole difference, so the join is a two-rung ladder:
+
+| Rung | Matches |
+| --- | --- |
+| exact | The model's name is the graph's name. |
+| stripped | Same after dropping one trailing `__<alnum>` group from each — and only when a non-empty base survives, since `__A8` on its own is a whole name, not a suffix. |
+
+Exact comes first and it matters: a model can hold both `ip_cdc_sync` and `ip_cdc_sync__W4`, and only exact-first keeps the plain one off the parameterised one's node. It is also the mitigation for the obvious caveat — a module a project really did call `axi__lite` strips to `axi`, but it matches its own node before it can be offered `axi`'s.
+
+Several elaborations of one module therefore land on one node, and their coverage is **aggregated** there: counts summed per metric, ratios recomputed from the sums, file and test lists unioned. The entry names the elaborations it was built from in `elaborations`, so the aggregate can be taken apart again. The aggregate is computed over the whole set of elaborations at once rather than by adding up per-elaboration totals — verilator's line points carry no module at all, so they belong to *every* elaboration of their file, and adding would count them once per elaboration.
+
+The same rule runs client-side on the `/cov` pane (the `module-names` block in `cov_page.html`); the two ends cite each other, and neither may change alone.
+
+A module whose name matches no node either way still gets an entry, keyed by the `module:<name>` id the design tier would have emitted, and is listed in `summary.unmatched_modules` under its elaborated name — the name that is in the coverage model, and so the name you can grep for. Coverage that exists is never silently dropped.
+
+The ratio itself is `rb cov module`'s — one implementation, so the tint on the pane cannot contradict the number in the verb. The one place they legitimately differ is a multi-elaboration module: `rb cov module ip_cdc_handshake__W13` answers for *that* elaboration, because the model's vocabulary is what the verb takes, while the graph node answers for the source module and so for both. Same arithmetic, different question — and `elaborations` says which.
 
 ### Reading it back
 

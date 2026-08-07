@@ -34,7 +34,9 @@ nothing re-run rewrites identical bytes.
 different people in different files, so the correlation is heuristic.
 Rather than hide that, each match records *which rung* it came off
 (:data:`MATCH_TIERS`), so a wrong join is visible instead of merely
-wrong.
+wrong. The module join has a two-rung ladder of its own
+(:func:`base_module_name`), because the model speaks the simulator's
+elaborated names and the graph speaks the source's.
 
 Per item the join emits one of three statuses:
 
@@ -60,7 +62,11 @@ import re
 from dataclasses import dataclass, field as dc_field
 
 from ..cov.model import cover_points
-from ..cov.query import CovQueryError, load_context as load_cov_context, module_coverage
+from ..cov.query import (
+    CovQueryError,
+    load_context as load_cov_context,
+    modules_coverage,
+)
 from ..logging_utils import log_event
 from .build import QUALIFIER_SEP
 from .config_tier import MAPS_TO
@@ -97,6 +103,37 @@ _DESIGN_TYPES = frozenset({"module", "instance"})
 
 _NON_ALNUM = re.compile(r"[^0-9a-z]+")
 _COV_AFFIX = ("cov", "cvr", "c")
+
+#: One trailing ``__<alnum>`` group — see :func:`base_module_name`.
+_ELABORATION_SUFFIX = re.compile(r"__[A-Za-z0-9]+$")
+
+
+def base_module_name(name: str) -> str:
+    """The source-level module name behind an elaborated one.
+
+    The coverage model keys modules on the name the **simulator**
+    elaborated: verilator appends a mangled parameterisation suffix, so
+    ``ip_async_fifo`` compiled once is ``ip_async_fifo__DB13`` and
+    compiled twice is ``ip_cdc_handshake__W13`` and
+    ``ip_cdc_handshake__Wc``. The design graph keys on the **source**
+    name (``module:ip_async_fifo``), which is also the name a person
+    reads in ``design/common/*.sv``. One trailing ``__<alnum>`` group is
+    the entire difference between the two vocabularies, so it is
+    stripped exactly once, and only when a non-empty base survives —
+    ``__A8`` on its own is a whole name, not a suffix.
+
+    A module a project really did call ``axi__lite`` strips to ``axi``,
+    which is why every caller must try exact equality first (see
+    :func:`_design_entries`); a real name then beats any stripped near
+    miss.
+
+    This is the python end of a wire whose other end is the
+    ``module-names`` marker block in ``rtl_buddy/hub/cov_page.html``
+    (``baseModuleName`` / ``resolveModuleName``). The two must agree: if
+    one changes, the other changes with it.
+    """
+    text = str(name)
+    return _ELABORATION_SUFFIX.sub("", text) or text
 
 
 def _normalize(name: str) -> str:
@@ -366,36 +403,74 @@ def _undeclared_entry(record: dict) -> dict:
     }
 
 
+def _resolve_module_node(name: str, node_ids: dict, by_base: dict) -> str | None:
+    """The graph's name for one elaborated model module, or ``None``.
+
+    **Exact first, stripped second** — the same order, for the same
+    reason, as ``resolveModuleName`` in the ``module-names`` block of
+    ``rtl_buddy/hub/cov_page.html``. It matters: the project template
+    has both an ``ip_cdc_sync`` and an ``ip_cdc_sync__W4`` in one model,
+    and only exact-first keeps the plain one off the parameterised one's
+    node. Ties among stripped candidates go to the first name in sorted
+    order, which is what ``by_base`` was built with.
+    """
+    if name in node_ids:
+        return name
+    return by_base.get(base_module_name(name))
+
+
 def _design_entries(model: dict, graph: dict | None) -> tuple[dict, list[str]]:
     """Node id -> module coverage, for every module the model knows.
+
+    The model spells a module the way the simulator elaborated it and
+    the graph spells it the way the source does; :func:`base_module_name`
+    is the whole difference, and :func:`_resolve_module_node` is the
+    ladder across it. Several elaborations of one module therefore land
+    on one node and are **aggregated** there — counts summed, ratios
+    recomputed from the sums, file and test lists unioned — because the
+    graph has one node for what the simulator compiled twice. The
+    aggregate is computed by
+    :func:`~rtl_buddy.cov.query.modules_coverage` over the whole set at
+    once rather than by adding up per-elaboration totals, which would
+    count each file's module-less line points once per elaboration.
 
     A module the graph has no node for still gets an entry, keyed by the
     ``module:<name>`` id the design tier would have emitted: a graph
     built with ``--no-design`` still carries that id as a dangling
     ``maps_to`` target, and the pane draws those. The entry is inert
     when nothing claims the id, and the modules in that position are
-    reported so "the design tier was never built" is visible rather than
-    silently absent coverage.
+    reported under their **elaborated** name — the name that is in the
+    coverage model and so the name a person can grep for — so "the
+    design tier was never built" is visible rather than silently absent
+    coverage.
     """
     node_ids = _module_nodes(graph)
-    attached: dict[str, dict] = {}
+    by_base: dict[str, str] = {}
+    for graph_name in sorted(node_ids):
+        by_base.setdefault(base_module_name(graph_name), graph_name)
+
+    groups: dict[str, list[str]] = {}
     unmatched: list[str] = []
     for name in sorted(model.get("modules") or {}):
-        joined = module_coverage(model, name)
+        resolved = _resolve_module_node(name, node_ids, by_base)
+        if resolved is None:
+            unmatched.append(name)
+        groups.setdefault(resolved if resolved is not None else name, []).append(name)
+
+    attached: dict[str, dict] = {}
+    for group, names in sorted(groups.items()):
+        joined = modules_coverage(model, names)
         totals = joined["totals"]
         entry = {
             "kind": "design",
-            "module": name,
+            "module": group,
+            "elaborations": joined["modules"],
             "ratio": (totals.get(TINT_METRIC) or {}).get("ratio"),
             "totals": totals,
             "files": [row["path"] for row in joined["files"]],
             "tests": sorted(joined["tests"]),
         }
-        targets = node_ids.get(name)
-        if not targets:
-            unmatched.append(name)
-            targets = [f"module:{name}"]
-        for node_id in targets:
+        for node_id in node_ids.get(group) or [f"module:{group}"]:
             attached[node_id] = dict(entry)
     return attached, unmatched
 
@@ -591,6 +666,7 @@ __all__ = [
     "TINT_METRIC",
     "CoverageJoin",
     "annotate_coverage",
+    "base_module_name",
     "coverage_block",
     "coverage_for_node",
     "join_coverage",
