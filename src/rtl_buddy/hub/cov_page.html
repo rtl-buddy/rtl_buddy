@@ -69,6 +69,9 @@
       --tgl-miss: hsl(0,   var(--tint-s), var(--cov-l));
     }
     * { box-sizing: border-box; }
+    /* The panes below set `display` on the very elements the script
+       toggles with `hidden`, and an id beats the UA sheet's [hidden]. */
+    [hidden] { display: none !important; }
     html, body { height: 100%; margin: 0; }
     body {
       background: var(--bg); color: var(--fg);
@@ -113,7 +116,15 @@
       width: 24rem; flex: none; border-right: 1px solid var(--line);
       background: var(--panel); overflow: auto; padding: .6rem .5rem;
     }
-    section#content { flex: 1 1 auto; min-width: 0; overflow: auto; position: relative; }
+    /* #content no longer scrolls as a whole: the file view owns its own
+       scroller so the docked detail panel can sit outside it. */
+    section#content {
+      flex: 1 1 auto; min-width: 0; min-height: 0; position: relative;
+      display: flex; flex-direction: column;
+    }
+    #dash { flex: 1 1 auto; overflow: auto; min-height: 0; }
+    #file { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+    #src-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; }
     h2 {
       font-size: 12px; margin: .8rem 0 .4rem; letter-spacing: .1em;
       text-transform: uppercase; color: var(--fg-muted);
@@ -221,19 +232,28 @@
     .mark.badge { font-variant-numeric: tabular-nums; }
     .mark.badge.open { outline: 1px solid var(--accent); }
 
-    /* -- expansion row: the detail the marks column no longer carries -- */
-    table#src tr.expand > td {
-      white-space: normal; background: var(--panel-2);
-      border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
-      padding: .35rem .6rem .45rem calc(var(--gutter) + .8rem);
+    /* -- docked detail panel: what the marks column no longer carries --
+       Docked rather than inline under the line: a badge on the last
+       visible line of a long file would otherwise open its detail below
+       the fold, and reading it meant scrolling the line away. */
+    #detail {
+      flex: none; display: flex; flex-direction: column; min-height: 0;
+      max-height: 40vh; background: var(--panel);
+      border-top: 1px solid var(--line-strong);
     }
-    .expand-head {
-      display: flex; gap: .5rem; align-items: baseline;
-      font-size: var(--fs-small); color: var(--fg-muted);
+    #detail-head {
+      flex: none; display: flex; gap: .5rem; align-items: center;
+      flex-wrap: wrap; padding: .3rem .75rem; font-size: var(--fs-small);
+      border-bottom: 1px solid var(--line); color: var(--fg-muted);
     }
-    .expand-head button { padding: 0 .35rem; line-height: 1.2; }
+    #detail-head .where { font-weight: 600; color: var(--fg); }
+    #detail-head button { padding: 0 .35rem; line-height: 1.3; }
+    #detail-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; padding: 0 .75rem .5rem; }
+    /* The open line keeps its place in the code while its panel is up. */
+    table#src tr.open td { background: var(--panel-2); }
+    table#src tr.open td.no { box-shadow: inset 2px 0 0 var(--accent); }
     /* A declaration line can carry a dozen signals; wrapping keeps the
-       expansion a few lines tall instead of a dozen. */
+       panel a few lines tall instead of a dozen. */
     .tgs { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 1.6rem; }
     .tg { margin: .3rem 0 0; }
     .tg-head {
@@ -263,10 +283,14 @@
     .bit:hover { outline: 1px solid var(--fg-muted); }
     .bit.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
     .tg-chips { margin-top: .35rem; }
+    /* The attribution of a point clicked in the grid above it: same
+       panel, so the grid you clicked in stays on screen. */
     #point {
-      border-top: 1px solid var(--line); background: var(--panel);
-      padding: .4rem .75rem; font-size: var(--fs-small);
+      border-top: 1px dashed var(--line); margin-top: .4rem;
+      padding: .35rem 0 0; font-size: var(--fs-small);
     }
+    #point table { width: auto; min-width: 10rem; }
+    #point table td { padding-right: .75rem; }
 
     footer {
       border-top: 1px solid var(--line); background: var(--panel);
@@ -334,8 +358,22 @@
       <div id="dash"></div>
       <div id="file" hidden>
         <div id="file-head"></div>
-        <table id="src"><tbody id="src-body"></tbody></table>
-        <div id="point" hidden></div>
+        <div id="src-scroll"><table id="src"><tbody id="src-body"></tbody></table></div>
+        <!--
+          Docked, i.e. OUTSIDE #src-scroll: the detail of a line near the
+          bottom of a long file used to open below that line, inside the
+          same scroller, so opening it scrolled it out of sight. It is a
+          sibling of the code area instead, and the attribution of a
+          point clicked inside it stacks in the same panel — one home for
+          "what is on this line", not two panels racing for the bottom.
+        -->
+        <div id="detail" hidden>
+          <div id="detail-head"></div>
+          <div id="detail-scroll">
+            <div id="detail-body"></div>
+            <div id="point" hidden></div>
+          </div>
+        </div>
       </div>
       <div id="empty"><div id="empty-msg"></div></div>
     </section>
@@ -376,6 +414,10 @@
     file: document.getElementById('file'),
     fileHead: document.getElementById('file-head'),
     srcBody: document.getElementById('src-body'),
+    srcScroll: document.getElementById('src-scroll'),
+    detail: document.getElementById('detail'),
+    detailHead: document.getElementById('detail-head'),
+    detailBody: document.getElementById('detail-body'),
     point: document.getElementById('point'),
     empty: document.getElementById('empty'),
     emptyMsg: document.getElementById('empty-msg'),
@@ -397,7 +439,7 @@
     test: null,        // selected test name (attribution filter)
     focusLine: null,   // line to scroll to / highlight in the file view
     focusItem: null,   // point name to highlight in the file view
-    expandedLine: null, // the one line whose detail row is open, if any
+    expandedLine: null, // the line the docked detail panel is showing
     sources: Object.create(null),
     pending: null      // cov_focus that arrived before the model did
   };
@@ -842,7 +884,7 @@
       return false;
     }
     // A line number only means something within one file, so the open
-    // detail row does not survive a change of file.
+    // detail panel does not survive a change of file.
     if (state.file !== path) { state.expandedLine = null; }
     state.file = path;
     state.focusLine = opts.line || null;
@@ -984,15 +1026,12 @@
   }
 
   // ---------------------------------------------------------------
-  // the marks column and its expansion row
+  // the marks column and its docked detail panel
   // ---------------------------------------------------------------
 
   //: line number -> the entries of the file currently rendered, so the
-  //  expansion row can be built without re-walking the model.
+  //  detail panel can be built without re-walking the model.
   var lineMarks = Object.create(null);
-
-  //: no · hits · marks · code — what an expansion row has to span.
-  var SRC_COLUMNS = 4;
 
   // Toggle always collapses (a bus is dozens of points per line); other
   // metrics collapse only when there is more than one of them, because a
@@ -1022,6 +1061,7 @@
     }
     mark.addEventListener('click', function (ev) {
       ev.stopPropagation();
+      selectDetail(mark);
       showPoint(entry.metric, entry.point);
     });
     return mark;
@@ -1036,10 +1076,10 @@
     if (state.expandedLine === lineNo) { badge.classList.add('open'); }
     badge.title = list.length + ' ' + metric + ' point' + (list.length === 1 ? '' : 's') +
       ' on this line · ' + hit + ' hit' +
-      (state.test ? ' by ' + state.test : '') + '\nclick for the detail';
+      (state.test ? ' by ' + state.test : '') + '\nclick for the detail panel';
     badge.addEventListener('click', function (ev) {
       ev.stopPropagation();
-      toggleExpansion(lineNo);
+      toggleDetail(lineNo);
     });
     return badge;
   }
@@ -1054,6 +1094,16 @@
       }
       box.appendChild(metricBadge(metric, list, lineNo));
     });
+  }
+
+  // Exactly one point's attribution is on show at a time, so exactly
+  // one cell or chip carries the selection.
+  function selectDetail(node) {
+    Array.prototype.forEach.call(
+      document.querySelectorAll('.mark.sel, .bit.sel'),
+      function (n) { n.classList.remove('sel'); }
+    );
+    node.classList.add('sel');
   }
 
   function bitCell(group, cell) {
@@ -1083,7 +1133,9 @@
     else if (!up) { pick = down; }
     node.addEventListener('click', function (ev) {
       ev.stopPropagation();
-      if (pick) { showPoint('toggle', pick); }
+      if (!pick) { return; }
+      selectDetail(node);
+      showPoint('toggle', pick);
     });
     return node;
   }
@@ -1122,19 +1174,37 @@
     return wrap;
   }
 
-  function collapseExpansion() {
-    var open = els.srcBody.querySelector('tr.expand');
-    if (open) { open.parentNode.removeChild(open); }
+  function appendDetailClose() {
+    els.detailHead.appendChild(elem('span', 'grow'));
+    var close = elem('button', null, '×');
+    close.title = 'Close the detail panel';
+    close.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      closeDetail();
+    });
+    els.detailHead.appendChild(close);
+  }
+
+  function closeDetail() {
+    els.detail.hidden = true;
+    clear(els.detailHead);
+    clear(els.detailBody);
+    clear(els.point);
+    els.point.hidden = true;
     Array.prototype.forEach.call(
       els.srcBody.querySelectorAll('.mark.badge.open'),
       function (badge) { badge.classList.remove('open'); }
     );
+    Array.prototype.forEach.call(
+      els.srcBody.querySelectorAll('tr.open'),
+      function (tr) { tr.classList.remove('open'); }
+    );
     state.expandedLine = null;
   }
 
-  function expandLine(lineNo, opts) {
+  function openDetail(lineNo, opts) {
     opts = opts || {};
-    collapseExpansion();
+    closeDetail();
     var host = els.srcBody.querySelector('tr[data-line="' + lineNo + '"]');
     var entries = lineMarks[lineNo] || [];
     if (!host || !entries.length) { return false; }
@@ -1144,19 +1214,19 @@
     });
     if (!collapsed.length) { return false; }
 
-    var tr = elem('tr', 'expand');
-    var td = elem('td');
-    td.colSpan = SRC_COLUMNS;
-    var head = elem('div', 'expand-head');
-    head.appendChild(elem('span', null, 'line ' + lineNo));
-    var close = elem('button', null, '×');
-    close.title = 'Close this detail row';
-    close.addEventListener('click', function (ev) {
-      ev.stopPropagation();
-      collapseExpansion();
+    var where = elem('span', 'where',
+      (state.file || '').split('/').pop() + ':' + lineNo);
+    where.title = state.file + ':' + lineNo;
+    els.detailHead.appendChild(where);
+    collapsed.forEach(function (metric) {
+      var list = split.groups[metric];
+      var hit = 0;
+      list.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
+      els.detailHead.appendChild(elem('span', 'pill',
+        METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length));
     });
-    head.appendChild(close);
-    td.appendChild(head);
+    if (state.test) { els.detailHead.appendChild(elem('span', 'pill hot', 'lens: ' + state.test)); }
+    appendDetailClose();
 
     collapsed.forEach(function (metric) {
       if (metric === 'toggle') {
@@ -1164,30 +1234,31 @@
         groupToggles(split.groups[metric]).forEach(function (group) {
           grid.appendChild(renderToggleGroup(group));
         });
-        td.appendChild(grid);
+        els.detailBody.appendChild(grid);
         return;
       }
       // Everything that is not a toggle keeps the named chips — they are
       // few per line, and the name IS the information.
       var chips = elem('div', 'tg-chips');
       split.groups[metric].forEach(function (entry) { chips.appendChild(namedMark(entry)); });
-      td.appendChild(chips);
+      els.detailBody.appendChild(chips);
     });
 
-    tr.appendChild(td);
-    if (host.nextSibling) { els.srcBody.insertBefore(tr, host.nextSibling); }
-    else { els.srcBody.appendChild(tr); }
+    els.detail.hidden = false;
     state.expandedLine = lineNo;
+    host.classList.add('open');
     Array.prototype.forEach.call(host.querySelectorAll('.mark.badge'), function (badge) {
       badge.classList.add('open');
     });
-    if (opts.scroll) { tr.scrollIntoView({ block: 'center' }); }
+    // The panel takes its space from the code area, so the line it
+    // belongs to has to be pulled back into what is left of it.
+    host.scrollIntoView({ block: opts.scroll ? 'center' : 'nearest' });
     return true;
   }
 
-  function toggleExpansion(lineNo) {
-    if (state.expandedLine === lineNo) { collapseExpansion(); return; }
-    expandLine(lineNo, {});
+  function toggleDetail(lineNo) {
+    if (state.expandedLine === lineNo) { closeDetail(); return; }
+    openDetail(lineNo, {});
   }
 
   // A cov_focus can name a point (`paddr[3]:0->1`) that now lives inside
@@ -1246,8 +1317,8 @@
     });
     var marks = pointsByLine(row);
     lineMarks = marks;
-    // The rows are about to be thrown away, so the open slot is too —
-    // it is re-opened below once the line it belongs to exists again.
+    // The rows are about to be thrown away, so the panel's line
+    // highlight is too — it is re-opened below against the new rows.
     var reopen = state.expandedLine;
     state.expandedLine = null;
     var last = lines ? lines.length : 0;
@@ -1289,26 +1360,41 @@
       if (state.focusLine === n) { tr.classList.add('hot'); target = tr; }
       els.srcBody.appendChild(tr);
     }
-    els.point.hidden = true;
+    closeDetail();
     if (target) { target.scrollIntoView({ block: 'center' }); }
+    // A focused point wins over whatever was open, and otherwise the
+    // panel survives a re-render (a lens change must not close it).
     var open = lineOfFocusItem();
     if (open == null) { open = reopen; }
-    if (open != null) { expandLine(open, { scroll: target == null }); }
+    if (open != null) { openDetail(open, { scroll: target == null }); }
   }
 
   function showDashboard() {
     state.file = null;
     state.focusLine = null;
     state.focusItem = null;
-    state.expandedLine = null;
+    closeDetail();
     els.file.hidden = true;
     els.dash.hidden = false;
     renderFiles();
   }
 
+  // The attribution of one point, docked in the same panel as the line
+  // detail it was clicked in — the grid you clicked stays on screen, and
+  // clicking another cell updates this section in place.
   function showPoint(metric, point) {
     clear(els.point);
     els.point.hidden = false;
+    els.detail.hidden = false;
+    if (!els.detailHead.firstChild) {
+      // A chip the marks column kept inline has no line panel behind it,
+      // so the panel still needs a header it can be closed from.
+      var where = elem('span', 'where',
+        (state.file || '').split('/').pop() + ':' + point.line);
+      where.title = state.file + ':' + point.line;
+      els.detailHead.appendChild(where);
+      appendDetailClose();
+    }
     els.point.appendChild(elem('strong', null,
       metric + ' · ' + (point.name || '(unnamed)') +
       (point.module ? ' · ' + point.module : '') +

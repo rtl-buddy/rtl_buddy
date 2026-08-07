@@ -492,19 +492,54 @@ def test_marks_column_collapses_to_one_badge_per_metric():
     assert "max-width: var(--markcol); overflow: hidden;" in body
 
 
-def test_expansion_row_is_one_full_width_slot():
+def test_detail_panel_is_docked_outside_the_code_scroller():
+    """The detail used to open inline under its line, inside the same
+    scroller — so a badge near the bottom of a long file opened its own
+    detail below the fold. The panel is a sibling of the code area."""
+
     js = _page_js()
     body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert "expandedLine: null," in js
-    assert "function toggleExpansion(lineNo)" in js
-    assert "if (state.expandedLine === lineNo) { collapseExpansion(); return; }" in js
-    assert "function collapseExpansion()" in js
-    # Full width, inserted directly under its line — the detail may never
-    # widen the marks column it came out of.
-    assert "var SRC_COLUMNS = 4;" in js
-    assert "td.colSpan = SRC_COLUMNS;" in js
-    assert "els.srcBody.insertBefore(tr, host.nextSibling)" in js
-    assert "table#src tr.expand > td {" in body
+    assert "function toggleDetail(lineNo)" in js
+    assert "if (state.expandedLine === lineNo) { closeDetail(); return; }" in js
+    assert "function closeDetail()" in js
+    # The file view scrolls its code area, not itself, and the panel
+    # sits after it — never inside `#src-scroll`, or the fix is undone.
+    scroller = body.index('<div id="src-scroll">')
+    scroller_end = body.index("</div>", body.index("</table>"))
+    panel = body.index('<div id="detail" hidden>')
+    assert scroller < scroller_end < panel
+    assert "#src-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; }" in body
+    assert "#file { flex: 1 1 auto; display: flex; flex-direction: column;" in body
+    # An id selector setting `display` outranks the UA sheet's [hidden].
+    assert "[hidden] { display: none !important; }" in body
+    # Capped, with its own scroll, so a many-signal line never eats the
+    # code view.
+    assert "max-height: 40vh;" in body
+    assert "#detail-scroll { flex: 1 1 auto; overflow: auto;" in body
+    # …and the line it belongs to stays marked while it is open.
+    assert "host.classList.add('open');" in body
+    assert "table#src tr.open td { background: var(--panel-2); }" in body
+
+
+def test_point_attribution_docks_in_the_same_panel():
+    """One panel, not two: the attribution of a cell you clicked shows
+    under the grid you clicked it in, so the context stays on screen."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    detail = body.index('<div id="detail" hidden>')
+    scroll = body.index('<div id="detail-scroll">')
+    point = body.index('<div id="point" hidden></div>')
+    assert detail < scroll < point
+    assert "els.detail.hidden = false;" in js
+    # Clicking another cell moves the selection rather than adding one.
+    assert "function selectDetail(node)" in js
+    assert "selectDetail(node);" in js and "selectDetail(mark);" in js
+    # A chip the marks column kept inline has no line panel behind it, so
+    # the panel still has to be closable.
+    assert "if (!els.detailHead.firstChild) {" in js
+    assert "function appendDetailClose()" in js
 
 
 def test_bit_grid_encodes_both_directions_in_one_cell():
@@ -538,7 +573,13 @@ def test_focus_item_opens_the_line_and_selects_the_bit():
     assert "function lineOfFocusItem()" in js
     assert "entry.point.name === state.focusItem" in js
     assert "node.classList.add('sel');" in js
-    assert "expandLine(open, { scroll: target == null });" in js
+    assert "openDetail(open, { scroll: target == null });" in js
+    # A lens change re-renders the rows; the panel is re-opened against
+    # the new ones rather than closing under the user.
+    assert "var reopen = state.expandedLine;" in js
+    assert "if (open == null) { open = reopen; }" in js
+    # …but a different file has different line numbers.
+    assert "if (state.file !== path) { state.expandedLine = null; }" in js
 
 
 def test_toggle_grouping_is_per_signal_msb_first():
