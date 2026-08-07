@@ -18,12 +18,19 @@ Four surfaces, in the order a user meets them:
 4. ``graph_focus`` — the wire type behind ``rb hub send graph-focus``:
    schema-valid, broadcast to peers, and replayed to a peer that
    connects after the fact.
+5. Module-level design-view sync — the fallback for a node that has no
+   instance path, which on a project-tier graph is every node. Its pure
+   helper is sliced out of the page between markers and exercised in
+   ``node``, the same convention ``tests/test_hub_cov_page.py`` uses.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
+import shutil
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -503,6 +510,179 @@ def test_page_carries_the_pieces_the_issue_asks_for():
     assert "open_source" in body
     assert "graph_focus" in body
     assert "'graph'" in body  # registers under its own origin
+
+
+# ---------------------------------------------------------------------------
+# module-level design-view sync
+# ---------------------------------------------------------------------------
+
+
+def _page_js() -> str:
+    """The page's inline script — the last ``<script>`` in the body."""
+
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    return body.split("<script>")[-1].split("</script>")[0]
+
+
+def _marked_js(marker: str) -> str:
+    """One block of pure helpers, sliced out of the page by its markers.
+
+    Same convention as ``cov_page.html``: nothing between the markers
+    may touch the DOM or close over page state, which is exactly what
+    evaluating them in bare ``node`` enforces.
+    """
+
+    match = re.search(rf"// >>> {marker}\n(.*?)// <<< {marker}", _page_js(), re.S)
+    assert match, f"the {marker} markers moved"
+    return match.group(1)
+
+
+def _node_eval(script: str) -> str:
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - depends on the dev machine
+        pytest.skip("node not installed")
+    done = subprocess.run(
+        [node, "-e", script], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def test_a_model_node_is_named_after_its_top_module():
+    """Project-tier graphs — everything you have before a design tier is
+    built — put the design content on ``model:`` nodes, and a model is
+    named after the module it wraps. The fragment after ``#`` is that
+    name; a model id without one names nothing."""
+
+    out = _node_eval(
+        _marked_js("module-name")
+        + """
+        var ids = [
+          'model:design/common/models.yaml#ip_async_fifo',
+          'model:design/cdc/models.yaml#ip_cdc_handshake',
+          'model:design/common/models.yaml#',
+          'model:design/common/models.yaml',
+          'model:a/b.yaml#deep#er'
+        ];
+        console.log(JSON.stringify(ids.map(function (id) {
+          return moduleNameFor({ id: id, type: 'model' });
+        })));
+        """
+    )
+    assert json.loads(out) == [
+        "ip_async_fifo",
+        "ip_cdc_handshake",
+        # An empty fragment is not a module name.
+        None,
+        # No fragment at all, likewise.
+        None,
+        # Everything after the FIRST `#` — a name may not contain one,
+        # but splitting on the last would silently truncate a weird id.
+        "deep#er",
+    ]
+
+
+def test_a_module_node_falls_back_to_its_own_id():
+    """``moduleNameFor`` only sees a ``module:`` node when
+    ``instancePathFor`` found no ``instance_of`` link to follow, and
+    then the id minus its prefix is the name."""
+
+    out = _node_eval(
+        _marked_js("module-name")
+        + """
+        var ids = ['module:fifo', 'module:axi__lite__W8', 'module:', 'fifo'];
+        console.log(JSON.stringify(ids.map(function (id) {
+          return moduleNameFor({ id: id, type: 'module' });
+        })));
+        """
+    )
+    assert json.loads(out) == [
+        "fifo",
+        # Verbatim: both ends of this wire speak the SOURCE vocabulary,
+        # so there is no elaboration suffix to strip and stripping one
+        # would corrupt a real name. (cov_page.html's `baseModuleName`
+        # exists because coverage speaks the simulator's names instead.)
+        "axi__lite__W8",
+        None,
+        # Not a `module:` id, so not a name we can vouch for.
+        None,
+    ]
+
+
+def test_nothing_else_names_a_module():
+    """Tests, suites, coverage items and testbenches are not design
+    coordinates. Naming one would move the design view on a click that
+    had nothing to do with the design."""
+
+    out = _node_eval(
+        _marked_js("module-name")
+        + """
+        var nodes = [
+          { id: 'test:verif/fifo#smoke', type: 'test' },
+          { id: 'suite:verif/fifo', type: 'suite' },
+          { id: 'covitem:spec/fifo#REQ-1', type: 'covitem' },
+          { id: 'tb:verif/fifo/tb_fifo.sv', type: 'testbench' },
+          { id: 'py:verif/fifo/cocotb_fifo.py', type: 'python_module' },
+          { id: 'inst:fifo/fifo.u_wr', type: 'instance' }
+        ];
+        console.log(JSON.stringify(nodes.map(moduleNameFor)));
+        console.log(JSON.stringify([moduleNameFor(null), moduleNameFor(undefined),
+                                    moduleNameFor({ type: 'module' })]));
+        """
+    )
+    typed, nullish = out.strip().splitlines()
+    assert json.loads(typed) == [None] * 6
+    assert json.loads(nullish) == [None, None, None]
+
+
+def test_a_node_without_an_instance_still_syncs_the_design_view():
+    """The bug this closes: with only config and binding tiers built,
+    ``instancePathFor`` returns null for every node and the click
+    broadcast nothing at all. The fallback emits the wire type the cov
+    pane already sends, ``graph_focus {node: 'module:<name>'}``.
+
+    ``activate`` closes over the page's DOM, so this is asserted on the
+    source rather than in ``node``.
+    """
+
+    js = _page_js()
+    assert "var mod = moduleNameFor(n);" in js
+    assert "if (mod && emit('graph_focus', { node: 'module:' + mod })) {" in js
+    assert "did.push('focus module:' + mod + ' in design view');" in js
+    # The instance path still wins, and the cross-model warning is still
+    # cleared on the fallback branch.
+    assert "if (ip && emit('selection_changed', { instance_path: ip })) {" in js
+    fallback = js.split("var mod = moduleNameFor(n);")[1]
+    assert fallback.index("setCrossModel(null);") < fallback.index(
+        "els.optOpen.checked"
+    )
+    # Self-echo is harmless: inbound graph_focus ignores our own origin.
+    assert "case 'graph_focus':\n        if (env.origin === 'graph') { break; }" in js
+
+
+def test_the_sync_toggle_advertises_the_module_fallback():
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    label = [line for line in body.splitlines() if 'id="opt-select"' in line]
+    assert label, "the sync design view checkbox moved"
+    tooltip = body.split('<input type="checkbox" id="opt-select"')[0].split(
+        '<label class="chk" title="'
+    )[-1]
+    assert "highlight all instances of their module" in tooltip
+
+
+def test_page_javascript_parses(tmp_path: Path):
+    """A page that ships a syntax error renders a blank tab and says
+    nothing about why, so the parse is worth a test of its own."""
+
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - depends on the dev machine
+        pytest.skip("node not installed")
+    script = tmp_path / "graph_page.js"
+    script.write_text(_page_js(), encoding="utf-8")
+    done = subprocess.run(
+        [node, "--check", str(script)], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
 
 
 # ---------------------------------------------------------------------------

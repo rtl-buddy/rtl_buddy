@@ -216,7 +216,7 @@
     <div class="legend" id="legend"></div>
     <span class="grow"></span>
     <input type="search" id="search" placeholder="filter by id, label or file…" spellcheck="false">
-    <label class="chk" title="Clicking a node also highlights it in the schematic design view — open the viewer at / in another tab to see it. Does nothing when no viewer is connected.">
+    <label class="chk" title="Clicking a node also highlights it in the schematic design view — open the viewer at / in another tab to see it. Nodes without a concrete instance (project-tier models, un-instantiated modules) highlight all instances of their module instead. Does nothing when no viewer is connected.">
       <input type="checkbox" id="opt-select" checked> sync design view
     </label>
     <label class="chk" title="Clicking a node also jumps your editor to its source file and line — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
@@ -1099,6 +1099,44 @@
     return null;
   }
 
+  // >>> module-name
+  // The coarser identity, for a node `instancePathFor` cannot place.
+  // A project-tier graph — the common case, and all you get before a
+  // design tier is built — carries its design content on `model:`
+  // nodes, so every click on one broadcast nothing at all and the pane
+  // looked inert. A module name is the fallback the design view can
+  // still act on: it highlights every instance of that module.
+  //
+  // A model is named after its top module, so the fragment after `#`
+  // in `model:design/common/models.yaml#ip_async_fifo` IS the module
+  // name. A `module:` node only reaches here when no `instance_of`
+  // link was extracted for it, and then its id minus the prefix is the
+  // name. Everything else — tests, suites, covitems, testbenches — is
+  // not a design coordinate at all, and returning a name for those
+  // would move the design view on every click that had nothing to do
+  // with it.
+  //
+  // The name goes out verbatim: no `baseModuleName` strip, which is
+  // the rule cov_page.html needs because COVERAGE speaks the
+  // simulator's elaborated names (`ip_async_fifo__DB13`). Both ends of
+  // this wire speak the SOURCE vocabulary instead — the graph is built
+  // from the source, and so is the design view's hierarchy — so there
+  // is no suffix to remove here, and stripping one would corrupt a
+  // real module whose name happens to end in `__<alnum>`.
+  function moduleNameFor(n) {
+    if (!n) { return null; }
+    var id = String(n.id == null ? '' : n.id);
+    if (n.type === 'model') {
+      var hash = id.indexOf('#');
+      return hash < 0 ? null : (id.slice(hash + 1) || null);
+    }
+    if (n.type === 'module') {
+      return id.indexOf('module:') === 0 ? (id.slice(7) || null) : null;
+    }
+    return null;
+  }
+  // <<< module-name
+
   // A selection whose root is not the design view's active model
   // highlights nothing there — which reads as "the view is stuck".
   // The cached model can be stale (the SPA picker switches without
@@ -1186,6 +1224,14 @@
         did.push('select ' + ip);
         maybeWarnCrossModel(ip);
       } else {
+        // No instance path, but often still a module — send the coarser
+        // coordinate rather than nothing (see `moduleNameFor`). The echo
+        // back from the hub is ignored: inbound graph_focus breaks on
+        // `origin === 'graph'`.
+        var mod = moduleNameFor(n);
+        if (mod && emit('graph_focus', { node: 'module:' + mod })) {
+          did.push('focus module:' + mod + ' in design view');
+        }
         // No instance to select — a stale "view → X" would fix the
         // wrong click.
         setCrossModel(null);
