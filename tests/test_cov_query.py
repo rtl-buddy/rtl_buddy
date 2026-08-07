@@ -13,6 +13,7 @@ from rtl_buddy.cov.model import TestArtefacts, build_model, write_model
 from rtl_buddy.cov.query import (
     COV_QUERY_SCHEMA_VERSION,
     CovQueryError,
+    coldest_first,
     detail_payload,
     load_context,
     module_names,
@@ -145,6 +146,72 @@ def test_summary_lists_the_coldest_files_first(project):
     assert [row["path"] for row in payload["files"]] == [
         "design/blk.sv",
         "design/other.sv",
+    ]
+
+
+def test_coldest_first_ranks_by_ratio_then_misses_then_path():
+    """The one ordering the CLI and the ``/cov`` pane share, so it is
+    pinned here rather than inferred from a payload."""
+
+    def row(path, found, hit):
+        ratio = hit / found if found else None
+        return {
+            "path": path,
+            "totals": {"line": {"found": found, "hit": hit, "ratio": ratio}},
+        }
+
+    rows = [
+        row("design/full.sv", 10, 10),
+        row("design/warm.sv", 10, 9),
+        row("design/big_cold.sv", 100, 20),
+        row("design/cold.sv", 10, 2),
+        row("design/a_full.sv", 4, 4),
+    ]
+
+    assert [r["path"] for r in coldest_first(rows)] == [
+        # 20% twice: the one missing 80 points outranks the one missing 8.
+        "design/big_cold.sv",
+        "design/cold.sv",
+        "design/warm.sv",
+        # Fully covered, and path decides between them.
+        "design/a_full.sv",
+        "design/full.sv",
+    ]
+    assert [r["path"] for r in coldest_first(rows, limit=2)] == [
+        "design/big_cold.sv",
+        "design/cold.sv",
+    ]
+
+
+def test_coldest_first_sinks_files_with_no_line_points():
+    """A file the database recorded no lines for is silent, not covered.
+
+    Its ``null`` ratio used to read as 1.0, which filed it among the
+    fully covered files — and ``a_silent.sv`` then sorted *above* a
+    file that really was 100%, which is the wrong end of the list for
+    something carrying no information at all.
+    """
+
+    def row(path, found, hit):
+        ratio = hit / found if found else None
+        return {
+            "path": path,
+            "totals": {"line": {"found": found, "hit": hit, "ratio": ratio}},
+        }
+
+    rows = [
+        row("design/a_silent.sv", 0, 0),
+        row("design/full.sv", 10, 10),
+        row("design/cold.sv", 10, 1),
+        row("design/z_silent.sv", 0, 0),
+    ]
+
+    assert [r["path"] for r in coldest_first(rows)] == [
+        "design/cold.sv",
+        "design/full.sv",
+        # Both silent, and path decides between them.
+        "design/a_silent.sv",
+        "design/z_silent.sv",
     ]
 
 

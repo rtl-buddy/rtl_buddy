@@ -184,9 +184,17 @@ def _file_summary(file_row: dict) -> dict:
 def coldest_first(file_rows, limit=None):
     """Files ordered coldest first: lowest line ratio, then most misses.
 
+    Files with no line points at all go last. They are not cold, they
+    are silent — a header, a package, a file whose lines the database
+    never recorded — and reading their ``null`` ratio as 1.0 filed them
+    among the fully covered ones, where a reader scanning up from the
+    bottom for "what is left" met them first.
+
     Public because the ``/cov`` pane orders its file list the same way
     the summary does — two orderings for "which file should I look at
-    first" would be one too many.
+    first" would be one too many. The pane applies this same rule to
+    whichever metric its picker has selected; on ``line`` the two agree
+    exactly.
     """
 
     def sort_key(row):
@@ -195,6 +203,7 @@ def coldest_first(file_rows, limit=None):
         found = totals.get("found", 0)
         hit = totals.get("hit", 0)
         return (
+            0 if found else 1,
             ratio if ratio is not None else 1.0,
             -(found - hit),
             row["path"],

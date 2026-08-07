@@ -753,21 +753,17 @@
   // --- pure helper, no DOM and no state ------------------------------
   // >>> file-ordering
   // The file list ranks by the SELECTED metric, not by the one the
-  // payload happened to be ordered on. Same rule shape as
-  // `coldest_first` in rtl_buddy/cov/query.py — ratio ascending, then
-  // absolute misses descending — so the pane and `rb cov summary` agree
-  // about which file is coldest.
+  // payload happened to be ordered on. Same rule as `coldest_first` in
+  // rtl_buddy/cov/query.py — files with no points of the metric last
+  // (silent, not cold), then ratio ascending, then absolute misses
+  // descending — so on `line`, the metric the builder ranks on, the
+  // pane and `rb cov summary` produce the same list.
   //
-  // Two details the builder cannot express, because it always ranks on
-  // `line`:
-  //  * a file with NO points of the selected metric is not cold, it is
-  //    silent. Reading its null ratio as 1.0 (what the builder does)
-  //    would file it among the fully covered ones; it sinks to the
-  //    bottom instead, visible but not pretending to be a finding.
-  //  * ties keep the payload's own order rather than re-deciding on
-  //    path. For `line` that IS the builder's path tie-break, since the
-  //    payload arrives in the builder's order; for every other metric
-  //    it means the list cannot jitter between renders.
+  // The one difference is the final tie-break: ties keep the payload's
+  // own order rather than re-deciding on path. For `line` that IS the
+  // builder's path tie-break, because the payload arrives in the
+  // builder's order; for every other metric it means the list cannot
+  // jitter between renders.
   function coldestFirst(rows, metric) {
     return (rows || []).map(function (row, index) {
       var totals = (row && row.totals && row.totals[metric]) || {};
