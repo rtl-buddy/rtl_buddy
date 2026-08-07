@@ -501,7 +501,9 @@ def test_detail_panel_is_docked_outside_the_code_scroller():
     body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert "expandedLine: null," in js
     assert "function toggleDetail(lineNo)" in js
-    assert "if (state.expandedLine === lineNo) { closeDetail(); return; }" in js
+    assert (
+        "if (state.expandedLine === lineNo && state.expandedKind === 'marks') {" in js
+    )
     assert "function closeDetail()" in js
     # The file view scrolls its code area, not itself, and the panel
     # sits after it — never inside `#src-scroll`, or the fix is undone.
@@ -517,9 +519,66 @@ def test_detail_panel_is_docked_outside_the_code_scroller():
     # code view.
     assert "max-height: 40vh;" in body
     assert "#detail-scroll { flex: 1 1 auto; overflow: auto;" in body
-    # …and the line it belongs to stays marked while it is open.
-    assert "host.classList.add('open');" in body
-    assert "table#src tr.open td { background: var(--panel-2); }" in body
+    # …and the line it belongs to stays marked while it is open —
+    # without painting over the hit tint the panel may be opened from.
+    assert "host.classList.add('open');" in js
+    assert "table#src tr.open td.code { background: var(--panel-2); }" in body
+    assert (
+        "table#src tr.open td.no { box-shadow: inset 2px 0 0 var(--accent); }" in body
+    )
+
+
+def test_the_hit_count_column_opens_the_same_panel():
+    """Consistency with the badges: the hover tooltip is the peek, the
+    click is the read, and both reads land in the same place."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert "function openLineDetail(lineNo, opts)" in js
+    assert "function toggleLineDetail(lineNo)" in js
+    # One slot, two kinds: a badge panel and a line panel on the same
+    # line are different content, so "click again to close" needs both.
+    assert "expandedKind: null," in js
+    assert "state.expandedKind === 'line'" in js
+    assert "state.expandedKind === 'marks'" in js
+    assert "bindDetailToRow(host, lineNo, 'line', opts);" in js
+    assert "showPoint('line', point);" in js
+    # The cell is clickable and says so, and its click is NOT the row's:
+    # inspecting attribution must not drive the editor and the schematic.
+    assert "table#src td.hits.act { cursor: pointer; }" in body
+    assert "hits.classList.add('act');" in js
+    assert "toggleLineDetail(lineNo);" in js
+    handler = js[
+        js.index("hits.addEventListener") : js.index("toggleLineDetail(lineNo);")
+    ]
+    assert "ev.stopPropagation();" in handler
+
+
+def test_the_tests_table_pins_a_merged_row():
+    """ "How do I get back to all tests?" had one answer — click the
+    selected test again — which you could only learn by accident."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert "'all tests (merged)'" in js
+    assert "elem('tr', 'row all-tests')" in js
+    assert "all.classList.toggle('sel', !state.test);" in js
+    assert (
+        "tr.row.all-tests td { border-bottom: 1px solid var(--line-strong); }" in body
+    )
+    # Every route into the lens goes through one setter, which no-ops
+    # when the lens is already where you asked for.
+    assert "function setLens(name)" in js
+    assert "if (state.test === name) { return; }" in js
+    assert "all.addEventListener('click', function () { setLens(null); });" in js
+    # The old gesture still works…
+    assert "setLens(state.test === row.name ? null : row.name);" in js
+    # …and the lens pill is now the way out too, wherever it is shown.
+    assert "function lensPill()" in js
+    assert "'lens: ' + state.test + ' ×'" in js
+    assert "els.fileHead.appendChild(lensPill());" in js
+    assert "els.detailHead.appendChild(lensPill());" in js
+    assert ".pill.act { cursor: pointer; }" in body
 
 
 def test_point_attribution_docks_in_the_same_panel():
@@ -575,11 +634,16 @@ def test_focus_item_opens_the_line_and_selects_the_bit():
     assert "node.classList.add('sel');" in js
     assert "openDetail(open, { scroll: target == null });" in js
     # A lens change re-renders the rows; the panel is re-opened against
-    # the new ones rather than closing under the user.
+    # the new ones rather than closing under the user, in whichever of
+    # the two kinds it was showing.
     assert "var reopen = state.expandedLine;" in js
-    assert "if (open == null) { open = reopen; }" in js
+    assert "var reopenKind = state.expandedKind;" in js
+    assert "if (open == null) { open = reopen; kind = reopenKind || 'marks'; }" in js
     # …but a different file has different line numbers.
-    assert "if (state.file !== path) { state.expandedLine = null; }" in js
+    assert (
+        "if (state.file !== path) { state.expandedLine = null; "
+        "state.expandedKind = null; }"
+    ) in js
 
 
 def test_toggle_grouping_is_per_signal_msb_first():

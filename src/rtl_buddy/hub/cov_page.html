@@ -197,6 +197,11 @@
       color: var(--fg-muted); white-space: nowrap;
     }
     .pill.hot { border-color: var(--accent); color: var(--accent); }
+    .pill.act { cursor: pointer; }
+    /* Pinned first row of the tests table: the merged view is a
+       destination, not one of the tests. */
+    tr.row.all-tests td { border-bottom: 1px solid var(--line-strong); }
+    tr.row.all-tests td:first-child { font-style: italic; }
     table#src { font-size: var(--fs-base); }
     table#src td { text-align: left; padding: 0 .4rem; white-space: pre; }
     table#src td.no {
@@ -205,8 +210,11 @@
     }
     table#src td.hits {
       width: var(--hitcol); text-align: right; color: var(--fg-muted);
-      font-size: var(--fs-small); cursor: help;
+      font-size: var(--fs-small);
     }
+    /* Hover is the peek (the title lists the per-test hits), the click
+       is the read — same docked panel a marks badge opens. */
+    table#src td.hits.act { cursor: pointer; }
     table#src td.marks { width: 1%; white-space: nowrap; }
     table#src td.code { width: 100%; overflow-wrap: normal; }
     table#src tr.hot td.code { box-shadow: inset 0 0 0 1px var(--accent); }
@@ -249,8 +257,10 @@
     #detail-head .where { font-weight: 600; color: var(--fg); }
     #detail-head button { padding: 0 .35rem; line-height: 1.3; }
     #detail-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; padding: 0 .75rem .5rem; }
-    /* The open line keeps its place in the code while its panel is up. */
-    table#src tr.open td { background: var(--panel-2); }
+    /* The open line keeps its place in the code while its panel is up —
+       on the code cell only, or it would paint over the hit tint in the
+       very column the panel may have been opened from. */
+    table#src tr.open td.code { background: var(--panel-2); }
     table#src tr.open td.no { box-shadow: inset 2px 0 0 var(--accent); }
     /* A declaration line can carry a dozen signals; wrapping keeps the
        panel a few lines tall instead of a dozen. */
@@ -440,6 +450,7 @@
     focusLine: null,   // line to scroll to / highlight in the file view
     focusItem: null,   // point name to highlight in the file view
     expandedLine: null, // the line the docked detail panel is showing
+    expandedKind: null, // 'marks' (the badges) or 'line' (the hit count)
     sources: Object.create(null),
     pending: null      // cov_focus that arrived before the model did
   };
@@ -761,6 +772,31 @@
   // tests table — the attribution the Coverview fork existed to render
   // ---------------------------------------------------------------
 
+  // The attribution filter is a lens, and a lens you cannot take off is
+  // a mode — every way of changing it goes through here.
+  function setLens(name) {
+    if (state.test === name) { return; }
+    state.test = name;
+    renderTests();
+    if (state.file) { renderFile(); }
+    note(state.test
+      ? 'attribution: showing what ' + state.test + ' hit'
+      : 'attribution: all tests (merged)');
+  }
+
+  // Wearing the lens is the abnormal state, so say so where the numbers
+  // are, and make saying it the way out.
+  function lensPill() {
+    var pill = elem('span', 'pill hot act', 'lens: ' + state.test + ' ×');
+    pill.title = 'Only what ' + state.test +
+      ' hit is counted. Click for all tests (merged).';
+    pill.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setLens(null);
+    });
+    return pill;
+  }
+
   function renderTests() {
     clear(els.tests);
     var rows = (state.payload && state.payload.tests) || [];
@@ -775,6 +811,21 @@
     METRICS.forEach(function (m) { htr.appendChild(elem('th', null, METRIC_INITIAL[m])); });
     thead.appendChild(htr); table.appendChild(thead);
     var tbody = document.createElement('tbody');
+    // Merged is what the pane shows by default, and "click the selected
+    // test again" was the only way back to it — a gesture you had to
+    // already know. This row is the way back, and it is always there.
+    var all = elem('tr', 'row all-tests');
+    all.classList.toggle('sel', !state.test);
+    var allName = elem('td', null, 'all tests (merged)');
+    allName.title = 'Every test in the run, merged — what the pane shows by default. ' +
+      'Pick a test below to see its contribution alone.';
+    all.appendChild(allName);
+    METRICS.forEach(function (m) {
+      var t = totalsOf(state.payload, m);
+      all.appendChild(elem('td', null, t.found ? pct(t.ratio) : '—'));
+    });
+    all.addEventListener('click', function () { setLens(null); });
+    tbody.appendChild(all);
     rows.forEach(function (row) {
       var tr = elem('tr', 'row');
       tr.classList.toggle('sel', state.test === row.name);
@@ -786,15 +837,10 @@
         var td = elem('td', null, t.found ? pct(t.ratio) : '—');
         tr.appendChild(td);
       });
+      // Second click clears too: the gesture predates the row above and
+      // people have it in their fingers.
       tr.addEventListener('click', function () {
-        // Second click clears: the attribution filter is a lens, and a
-        // lens you cannot take off is a mode.
-        state.test = state.test === row.name ? null : row.name;
-        renderTests();
-        if (state.file) { renderFile(); }
-        note(state.test
-          ? 'attribution: showing what ' + state.test + ' hit'
-          : 'attribution: all tests');
+        setLens(state.test === row.name ? null : row.name);
       });
       tbody.appendChild(tr);
     });
@@ -885,7 +931,7 @@
     }
     // A line number only means something within one file, so the open
     // detail panel does not survive a change of file.
-    if (state.file !== path) { state.expandedLine = null; }
+    if (state.file !== path) { state.expandedLine = null; state.expandedKind = null; }
     state.file = path;
     state.focusLine = opts.line || null;
     state.focusItem = opts.item || null;
@@ -1033,6 +1079,9 @@
   //  detail panel can be built without re-walking the model.
   var lineMarks = Object.create(null);
 
+  //: line number -> that line's line-coverage point, same purpose.
+  var linePoints = Object.create(null);
+
   // Toggle always collapses (a bus is dozens of points per line); other
   // metrics collapse only when there is more than one of them, because a
   // lone named chip never pushed anything off-screen and reads better.
@@ -1073,7 +1122,9 @@
     var badge = elem('span', 'mark badge' + (hit ? '' : ' miss'),
       METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length);
     tint(badge, list.length ? hit / list.length : null);
-    if (state.expandedLine === lineNo) { badge.classList.add('open'); }
+    if (state.expandedLine === lineNo && state.expandedKind === 'marks') {
+      badge.classList.add('open');
+    }
     badge.title = list.length + ' ' + metric + ' point' + (list.length === 1 ? '' : 's') +
       ' on this line · ' + hit + ' hit' +
       (state.test ? ' by ' + state.test : '') + '\nclick for the detail panel';
@@ -1174,6 +1225,13 @@
     return wrap;
   }
 
+  function detailWhere(lineNo) {
+    var where = elem('span', 'where',
+      (state.file || '').split('/').pop() + ':' + lineNo);
+    where.title = state.file + ':' + lineNo;
+    els.detailHead.appendChild(where);
+  }
+
   function appendDetailClose() {
     els.detailHead.appendChild(elem('span', 'grow'));
     var close = elem('button', null, '×');
@@ -1200,6 +1258,17 @@
       function (tr) { tr.classList.remove('open'); }
     );
     state.expandedLine = null;
+    state.expandedKind = null;
+  }
+
+  // The row the panel belongs to keeps its place in the code, and is
+  // pulled back into what the panel left of the code area.
+  function bindDetailToRow(host, lineNo, kind, opts) {
+    els.detail.hidden = false;
+    state.expandedLine = lineNo;
+    state.expandedKind = kind;
+    host.classList.add('open');
+    host.scrollIntoView({ block: opts.scroll ? 'center' : 'nearest' });
   }
 
   function openDetail(lineNo, opts) {
@@ -1214,10 +1283,7 @@
     });
     if (!collapsed.length) { return false; }
 
-    var where = elem('span', 'where',
-      (state.file || '').split('/').pop() + ':' + lineNo);
-    where.title = state.file + ':' + lineNo;
-    els.detailHead.appendChild(where);
+    detailWhere(lineNo);
     collapsed.forEach(function (metric) {
       var list = split.groups[metric];
       var hit = 0;
@@ -1225,7 +1291,7 @@
       els.detailHead.appendChild(elem('span', 'pill',
         METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length));
     });
-    if (state.test) { els.detailHead.appendChild(elem('span', 'pill hot', 'lens: ' + state.test)); }
+    if (state.test) { els.detailHead.appendChild(lensPill()); }
     appendDetailClose();
 
     collapsed.forEach(function (metric) {
@@ -1244,21 +1310,45 @@
       els.detailBody.appendChild(chips);
     });
 
-    els.detail.hidden = false;
-    state.expandedLine = lineNo;
-    host.classList.add('open');
+    bindDetailToRow(host, lineNo, 'marks', opts);
     Array.prototype.forEach.call(host.querySelectorAll('.mark.badge'), function (badge) {
       badge.classList.add('open');
     });
-    // The panel takes its space from the code area, so the line it
-    // belongs to has to be pulled back into what is left of it.
-    host.scrollIntoView({ block: opts.scroll ? 'center' : 'nearest' });
     return true;
   }
 
   function toggleDetail(lineNo) {
-    if (state.expandedLine === lineNo) { closeDetail(); return; }
+    if (state.expandedLine === lineNo && state.expandedKind === 'marks') {
+      closeDetail();
+      return;
+    }
     openDetail(lineNo, {});
+  }
+
+  // The hit-count column opens the same panel as a badge does — the
+  // tooltip is the peek, this is the read.
+  function openLineDetail(lineNo, opts) {
+    opts = opts || {};
+    closeDetail();
+    var host = els.srcBody.querySelector('tr[data-line="' + lineNo + '"]');
+    var point = linePoints[lineNo];
+    if (!host || !point) { return false; }
+    detailWhere(lineNo);
+    els.detailHead.appendChild(elem('span', 'pill', 'line'));
+    els.detailHead.appendChild(elem('span', 'pill', hitsFor(point) + ' hits'));
+    if (state.test) { els.detailHead.appendChild(lensPill()); }
+    appendDetailClose();
+    bindDetailToRow(host, lineNo, 'line', opts);
+    showPoint('line', point);
+    return true;
+  }
+
+  function toggleLineDetail(lineNo) {
+    if (state.expandedLine === lineNo && state.expandedKind === 'line') {
+      closeDetail();
+      return;
+    }
+    openLineDetail(lineNo, {});
   }
 
   // A cov_focus can name a point (`paddr[3]:0->1`) that now lives inside
@@ -1306,9 +1396,7 @@
       });
       els.fileHead.appendChild(pill);
     });
-    if (state.test) {
-      els.fileHead.appendChild(elem('span', 'pill hot', 'lens: ' + state.test));
-    }
+    if (state.test) { els.fileHead.appendChild(lensPill()); }
 
     var lines = state.sources[row.path];
     var byLine = Object.create(null);
@@ -1317,9 +1405,11 @@
     });
     var marks = pointsByLine(row);
     lineMarks = marks;
+    linePoints = byLine;
     // The rows are about to be thrown away, so the panel's line
     // highlight is too — it is re-opened below against the new rows.
     var reopen = state.expandedLine;
+    var reopenKind = state.expandedKind;
     state.expandedLine = null;
     var last = lines ? lines.length : 0;
     Object.keys(byLine).concat(Object.keys(marks)).forEach(function (n) {
@@ -1338,8 +1428,17 @@
       if (point) {
         var h = hitsFor(point);
         hits.textContent = h;
-        hits.title = attribution(point);
+        hits.title = attribution(point) + '\nclick for the detail panel';
         tint(hits, h > 0 ? 1 : 0);
+        hits.classList.add('act');
+        (function (lineNo) {
+          hits.addEventListener('click', function (ev) {
+            // Never the row's own click: inspecting attribution must not
+            // also drive the editor and the schematic.
+            ev.stopPropagation();
+            toggleLineDetail(lineNo);
+          });
+        })(n);
       } else {
         hits.textContent = '';
       }
@@ -1365,8 +1464,11 @@
     // A focused point wins over whatever was open, and otherwise the
     // panel survives a re-render (a lens change must not close it).
     var open = lineOfFocusItem();
-    if (open == null) { open = reopen; }
-    if (open != null) { openDetail(open, { scroll: target == null }); }
+    var kind = 'marks';
+    if (open == null) { open = reopen; kind = reopenKind || 'marks'; }
+    if (open == null) { return; }
+    if (kind === 'line') { openLineDetail(open, { scroll: target == null }); }
+    else { openDetail(open, { scroll: target == null }); }
   }
 
   function showDashboard() {
@@ -1395,10 +1497,14 @@
       els.detailHead.appendChild(where);
       appendDetailClose();
     }
-    els.point.appendChild(elem('strong', null,
-      metric + ' · ' + (point.name || '(unnamed)') +
-      (point.module ? ' · ' + point.module : '') +
-      ' · line ' + point.line + ' · hits ' + (point.hits || 0)));
+    // A line point has no name, and its metric is already in the
+    // panel's header — "line · line 69" reads like a stutter.
+    var parts = [];
+    if (metric !== 'line') { parts.push(metric); }
+    if (point.name) { parts.push(point.name); }
+    if (point.module) { parts.push(point.module); }
+    parts.push('line ' + point.line, 'hits ' + (point.hits || 0));
+    els.point.appendChild(elem('strong', null, parts.join(' · ')));
     var tests = point.tests || {};
     var names = Object.keys(tests).sort();
     if (!names.length) {
@@ -1414,8 +1520,7 @@
       if (!tests[name]) { td.className = 'faint'; }
       tr.appendChild(td);
       tr.addEventListener('click', function () {
-        state.test = state.test === name ? null : name;
-        renderTests(); renderFile();
+        setLens(state.test === name ? null : name);
       });
       tbody.appendChild(tr);
     });
