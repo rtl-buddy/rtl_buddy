@@ -196,6 +196,25 @@
       color: var(--fg-muted); white-space: nowrap;
     }
     .pill.hot { border-color: var(--accent); color: var(--accent); }
+    /* The elaboration lens: buttons joined into one strip, so it reads
+       as one choice with one answer rather than as three actions. */
+    .seg { display: inline-flex; }
+    .seg button {
+      padding: 0 .4rem; font-size: var(--fs-small); color: var(--fg-muted);
+      border-radius: 0; border-right-width: 0;
+    }
+    .seg button:first-child { border-radius: 999px 0 0 999px; padding-left: .55rem; }
+    .seg button:last-child {
+      border-radius: 0 999px 999px 0; border-right-width: 1px; padding-right: .55rem;
+    }
+    .seg button.on {
+      border-color: var(--accent); color: var(--accent); background: var(--panel);
+    }
+    .elab-head {
+      display: flex; gap: .4rem; align-items: baseline;
+      margin: .45rem 0 .2rem; font-size: var(--fs-small);
+    }
+    .elab-head:first-child { margin-top: 0; }
     /* A clickable pill answers on hover the way the buttons and the
        switcher links do, so "this does something" is visible before
        the click rather than after it. */
@@ -354,7 +373,7 @@
     <label class="chk" title="Which metric the FILE LIST is ranked and barred on — coldest first, files with no points of that kind last — and which the cold-only filter reads. It opens on toggle, where the holes usually are, and clicking a column header in the source view sets it too. The source view itself always shows all five. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
       metric <select id="metric"></select>
     </label>
-    <label class="chk" title="Restrict the file list and the tests table to one module's sources. A file included into several modules keeps only the points belonging to the module you pick. These are the ELABORATED names the simulator compiled (ip_async_fifo__DB13), because that is what the coverage model is keyed on and two parameterisations of one module are two entries here; the source name is what the module chips in the file header show.">
+    <label class="chk" title="Restrict the FILE LIST and the tests table to one module's sources. These are the ELABORATED names the simulator compiled (ip_async_fifo__DB13), because that is what the coverage model is keyed on and two parameterisations of one module are two entries here; the source name is what the module chips in the file header show. To count only one elaboration's points INSIDE an open file, use the elaboration lens in the file header.">
       module <select id="module"><option value="">all</option></select>
     </label>
     <input type="search" id="search" placeholder="filter files by path…" spellcheck="false">
@@ -475,6 +494,8 @@
     coldOnly: false,
     file: null,        // selected file path
     test: null,        // selected test name (attribution filter)
+    elab: null,        // one elaborated module, or null for all of them
+
     focusLine: null,   // line to scroll to / highlight in the file view
     focusItem: null,   // point name to highlight in the file view
     expandedLine: null, // the line the docked detail panel is showing
@@ -812,6 +833,82 @@
   }
   // <<< module-names
 
+  // >>> elaboration-lens
+  // Builds on `baseModuleName` above — sliced separately, evaluated
+  // together.
+  //
+  // The elaborated modules one file's points were recorded against.
+  // Verilator's LINE points carry no module at all — line coverage is
+  // per source line, merged across every elaboration — so `line` never
+  // contributes and is never scoped by the lens below.
+  function elaborationsOf(row, metrics) {
+    var names = [], seen = Object.create(null);
+    (metrics || []).forEach(function (metric) {
+      if (metric === 'line') { return; }
+      ((row && row[metric]) || []).forEach(function (point) {
+        var name = point && point.module;
+        if (!name || seen[name]) { return; }
+        seen[name] = true; names.push(name);
+      });
+    });
+    return names.sort();
+  }
+
+  // Labels for the elaboration lens. When every elaboration in the file
+  // is of the SAME module the base is the same word repeated on every
+  // segment, so the label is the parameterisation suffix alone (`W13`)
+  // and the un-parameterised one keeps its plain name; when the file
+  // holds several modules the base is the information, so the label is
+  // the whole name. The full name is the tooltip either way.
+  function elaborationSegments(names) {
+    var uniq = [], seen = Object.create(null);
+    (names || []).forEach(function (name) {
+      var text = String(name == null ? '' : name);
+      if (!text || seen[text]) { return; }
+      seen[text] = true; uniq.push(text);
+    });
+    uniq.sort();
+    var bases = Object.create(null), count = 0;
+    uniq.forEach(function (name) {
+      var base = baseModuleName(name);
+      if (!bases[base]) { bases[base] = true; count += 1; }
+    });
+    return uniq.map(function (name) {
+      var base = baseModuleName(name);
+      var suffix = name.length > base.length ? name.slice(base.length + 2) : '';
+      return { name: name, label: count > 1 ? name : (suffix || base) };
+    });
+  }
+
+  function pointsOfElaboration(points, elab) {
+    if (!elab) { return points || []; }
+    return (points || []).filter(function (point) {
+      return point && point.module === elab;
+    });
+  }
+
+  // One cell's entries split per elaboration, each with its own hit
+  // count — the breakdown the detail panel heads its groups with.
+  // `hits` is passed in rather than closed over so this stays pure:
+  // what counts as a hit depends on the test lens.
+  function elaborationGroups(entries, hits) {
+    var groups = [], byName = Object.create(null);
+    (entries || []).forEach(function (entry) {
+      var name = ((entry && entry.point) || {}).module || '';
+      var group = byName[name];
+      if (!group) {
+        group = byName[name] = { module: name, entries: [], hit: 0 };
+        groups.push(group);
+      }
+      group.entries.push(entry);
+      if (hits(entry.point) > 0) { group.hit += 1; }
+    });
+    return groups.sort(function (a, b) {
+      return a.module < b.module ? -1 : a.module > b.module ? 1 : 0;
+    });
+  }
+  // <<< elaboration-lens
+
   function renderModulePicker() {
     var current = state.module;
     clear(els.module);
@@ -918,6 +1015,55 @@
     note(state.test
       ? 'attribution: showing what ' + state.test + ' hit'
       : 'attribution: all tests (merged)');
+  }
+
+  // The second lens: one elaboration of a parameterised module. A file
+  // compiled twice (`ip_cdc_handshake__W13` and `__Wc`) has two sets of
+  // branch/toggle/expression/cover points on the same source lines, and
+  // merged they answer "is this line covered somewhere" when the
+  // question was "is it covered in the configuration I care about".
+  // Composes with the test lens: both on intersects them.
+  function setElab(name) {
+    if (state.elab === name) { return; }
+    state.elab = name || null;
+    if (state.file) { renderFile(); }
+    note(state.elab
+      ? 'elaboration: counting only ' + state.elab
+      : 'elaboration: all of them (merged)');
+  }
+
+  function elabControl(segs) {
+    var wrap = elem('span', 'seg');
+    var all = elem('button', state.elab ? null : 'on', 'all');
+    all.title = 'Count every elaboration together — the model’s own numbers, ' +
+      'which is what rb cov summary reports.';
+    all.addEventListener('click', function () { setElab(null); });
+    wrap.appendChild(all);
+    segs.forEach(function (seg) {
+      var b = elem('button', state.elab === seg.name ? 'on' : null, seg.label);
+      b.title = seg.name +
+        '\nCount only this elaboration’s points. Line coverage stays merged: ' +
+        'verilator records it per source line, with no module on it.';
+      b.addEventListener('click', function () { setElab(seg.name); });
+      wrap.appendChild(b);
+    });
+    return wrap;
+  }
+
+  function elabPill() {
+    var pill = elem('span', 'pill hot act', 'elab: ' + baseElabLabel(state.elab) + ' ×');
+    pill.title = 'Only ' + state.elab + '’s points are counted. ' +
+      'Click for all elaborations (merged).';
+    pill.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setElab(null);
+    });
+    return pill;
+  }
+
+  function baseElabLabel(name) {
+    var seg = elaborationSegments([name])[0];
+    return seg ? seg.label : String(name || '');
   }
 
   // Wearing the lens is the abnormal state, so say so where the numbers
@@ -1071,8 +1217,15 @@
       return false;
     }
     // A line number only means something within one file, so the open
-    // detail panel does not survive a change of file.
-    if (state.file !== path) { state.expandedLine = null; state.expandedMetric = null; }
+    // detail panel does not survive a change of file — and neither does
+    // the elaboration lens, which names a module the next file may not
+    // even contain.
+    if (state.file !== path) {
+      state.expandedLine = null;
+      state.expandedMetric = null;
+      state.elab = null;
+    }
+    if (opts.elab !== undefined) { state.elab = opts.elab; }
     state.file = path;
     state.focusLine = opts.line || null;
     state.focusItem = opts.item || null;
@@ -1112,7 +1265,7 @@
   function pointsByLine(row) {
     var index = Object.create(null);
     METRICS.forEach(function (metric) {
-      (row[metric] || []).forEach(function (point) {
+      pointsOfElaboration(row[metric], state.elab).forEach(function (point) {
         if (metric === 'line' || point.line == null) { return; }
         (index[point.line] = index[point.line] || []).push({ metric: metric, point: point });
       });
@@ -1368,6 +1521,53 @@
     return wrap;
   }
 
+  // One line's points of one metric. With the lens off and the points
+  // coming from more than one elaboration, the panel says so instead of
+  // showing `3/6` and leaving the reader to guess that it is the same
+  // three points counted twice — each elaboration gets a subhead with
+  // its own score, and the subhead is the way into the lens.
+  function renderDetailBody(metric, entries) {
+    var groups = state.elab ? null : elaborationGroups(entries, hitsFor);
+    if (!groups || groups.length < 2) {
+      els.detailBody.appendChild(detailBlock(metric, entries));
+      return;
+    }
+    groups.forEach(function (group) {
+      els.detailBody.appendChild(elabSubhead(group));
+      els.detailBody.appendChild(detailBlock(metric, group.entries));
+    });
+  }
+
+  function detailBlock(metric, entries) {
+    if (metric === 'toggle') {
+      var grid = elem('div', 'tgs');
+      groupToggles(entries).forEach(function (group) {
+        grid.appendChild(renderToggleGroup(group));
+      });
+      return grid;
+    }
+    // Everything that is not a toggle keeps the named chips — they are
+    // few per line, and the name IS the information.
+    var chips = elem('div', 'tg-chips');
+    entries.forEach(function (entry) { chips.appendChild(namedMark(entry)); });
+    return chips;
+  }
+
+  function elabSubhead(group) {
+    var head = elem('div', 'elab-head');
+    var chip = elem('span', 'pill act',
+      group.module ? baseElabLabel(group.module) : '(no module)');
+    chip.title = (group.module || 'points with no module recorded') +
+      '\nclick to count only this elaboration, here and in the columns above';
+    chip.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setElab(group.module || null);
+    });
+    head.appendChild(chip);
+    head.appendChild(elem('span', 'muted', group.hit + '/' + group.entries.length));
+    return head;
+  }
+
   function detailWhere(lineNo) {
     var where = elem('span', 'where',
       (state.file || '').split('/').pop() + ':' + lineNo);
@@ -1436,21 +1636,10 @@
     els.detailHead.appendChild(elem('span', 'pill',
       METRIC_INITIAL[metric] + ' ' + hit + '/' + entries.length));
     if (state.test) { els.detailHead.appendChild(lensPill()); }
+    if (state.elab) { els.detailHead.appendChild(elabPill()); }
     appendDetailClose();
 
-    if (metric === 'toggle') {
-      var grid = elem('div', 'tgs');
-      groupToggles(entries).forEach(function (group) {
-        grid.appendChild(renderToggleGroup(group));
-      });
-      els.detailBody.appendChild(grid);
-    } else {
-      // Everything that is not a toggle keeps the named chips — they are
-      // few per line, and the name IS the information.
-      var chips = elem('div', 'tg-chips');
-      entries.forEach(function (entry) { chips.appendChild(namedMark(entry)); });
-      els.detailBody.appendChild(chips);
-    }
+    renderDetailBody(metric, entries);
 
     bindDetailToRow(host, lineNo, metric, opts);
     var cell = host.querySelector('td.marks[data-metric="' + metric + '"]');
@@ -1526,14 +1715,25 @@
   // model's own numbers, so the header agrees with `rb cov summary`;
   // with one they are recounted through it, so the header agrees with
   // the cells underneath it — which is the whole point of a lens.
+  //
+  // The two lenses differ in what they move. The test lens changes who
+  // HIT the points, never how many there are; the elaboration lens
+  // changes which points exist at all, so `found` is recounted too.
+  // Both on is the intersection: that test's hits on that
+  // elaboration's points.
   function fileTotals(row, metric) {
     var t = totalsOf(row, metric);
-    if (!state.test || !t.found) { return t; }
+    // Verilator's line coverage is per source LINE and carries no
+    // module, so it is one number for every elaboration together and
+    // the elaboration lens deliberately leaves this column alone.
+    var elab = metric === 'line' ? null : state.elab;
+    if (!state.test && !elab) { return t; }
+    if (!elab && !t.found) { return t; }
+    var points = pointsOfElaboration(row[metric], elab);
+    var found = elab ? points.length : t.found;
     var hit = 0;
-    (row[metric] || []).forEach(function (point) {
-      if (hitsFor(point) > 0) { hit += 1; }
-    });
-    return { found: t.found, hit: hit, ratio: hit / t.found };
+    points.forEach(function (point) { if (hitsFor(point) > 0) { hit += 1; } });
+    return { found: found, hit: hit, ratio: found ? hit / found : null };
   }
 
   function renderSrcHead(row) {
@@ -1552,10 +1752,16 @@
         METRIC_INITIAL[metric] + ' ' +
         (t.found ? Math.round(t.ratio * 100) + '%' : '—')));
       if (t.found) { th.appendChild(elem('div', 'mh-num', t.hit + '/' + t.found)); }
+      var scoped = state.elab && metric !== 'line';
       th.title = metric + (t.found
         ? ': ' + t.hit + ' of ' + t.found + ' points in this file hit' +
-          (state.test ? ' by ' + state.test : '')
-        : ': no points in this file') +
+          (state.test ? ' by ' + state.test : '') +
+          (scoped ? ', counting only ' + state.elab : '')
+        : ': no points in this file' + (scoped ? ' for ' + state.elab : '')) +
+        (state.elab && metric === 'line'
+          ? '\nline coverage is per source line and carries no module, so the ' +
+            'elaboration lens leaves it merged'
+          : '') +
         '\nclick to rank the file list on ' + metric;
       th.addEventListener('click', function () { setMetric(metric); });
       tr.appendChild(th);
@@ -1586,6 +1792,14 @@
       pill.addEventListener('click', function () { focusModuleElsewhere(chip.base); });
       els.fileHead.appendChild(pill);
     });
+    // The elaboration lens, and only when there is a choice to make: a
+    // segmented control on a file with one elaboration is a control
+    // that can only say what is already true.
+    var elabs = elaborationsOf(row, METRICS);
+    if (state.elab && elabs.indexOf(state.elab) < 0) { state.elab = null; }
+    if (elabs.length > 1) {
+      els.fileHead.appendChild(elabControl(elaborationSegments(elabs)));
+    }
     // The per-metric totals used to be pills here. They are the source
     // table's own header row now, directly above the columns they
     // describe, and printing the same five numbers twice on one screen
@@ -1671,6 +1885,8 @@
     state.file = null;
     state.focusLine = null;
     state.focusItem = null;
+    // The elaboration lens only ever meant something inside one file.
+    state.elab = null;
     closeDetail();
     els.file.hidden = true;
     els.dash.hidden = false;
@@ -1819,7 +2035,17 @@
     state.module = resolved;
     els.module.value = resolved;
     renderFiles();
-    return selectFile(rows[0].path, opts);
+    // Naming an ELABORATION verbatim is asking about that one
+    // configuration, so the lens goes on; naming the module in the
+    // design's own vocabulary is asking about the module, all of it, so
+    // it comes off. On a file with a single elaboration the lens can
+    // only say what is already true — and its control is hidden there —
+    // so it stays off rather than becoming a mode with no way out.
+    var spans = elaborationsOf(rows[0], METRICS).length > 1;
+    var elab = spans && resolved === String(name) ? resolved : null;
+    return selectFile(rows[0].path, {
+      line: opts.line, item: opts.item, metric: opts.metric, elab: elab
+    });
   }
 
   function focusTest(name) {

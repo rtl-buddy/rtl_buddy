@@ -455,6 +455,13 @@ def _module_names_js() -> str:
     return _marked_js("module-names")
 
 
+def _elaboration_lens_js() -> str:
+    """The lens helpers build on ``baseModuleName``, so they are sliced
+    separately and evaluated on top of the block that defines it."""
+
+    return _marked_js("module-names") + _marked_js("elaboration-lens")
+
+
 def _node(script: str) -> str:
     node = shutil.which("node")
     if node is None:  # pragma: no cover - depends on the dev machine
@@ -522,7 +529,8 @@ def test_the_source_table_heads_each_column_with_the_file_totals():
     # with `rb cov summary`; with one it is recounted through the lens,
     # so it agrees with the cells underneath it.
     assert "function fileTotals(row, metric)" in js
-    assert "if (!state.test || !t.found) { return t; }" in js
+    assert "if (!state.test && !elab) { return t; }" in js
+    assert "if (!elab && !t.found) { return t; }" in js
     assert "var t = fileTotals(row, metric);" in js
     # Sticky, so it survives scrolling the source it heads (the shared
     # `table th` rule already sticks; this block only sizes it).
@@ -746,11 +754,10 @@ def test_focus_item_opens_the_line_and_selects_the_bit():
     assert "var reopenMetric = state.expandedMetric;" in js
     assert "var open = cell ? cell.line : reopen;" in js
     assert "var metric = cell ? cell.metric : reopenMetric;" in js
-    # …but a different file has different line numbers.
-    assert (
-        "if (state.file !== path) { state.expandedLine = null; "
-        "state.expandedMetric = null; }"
-    ) in js
+    # …but a different file has different line numbers, and a different
+    # set of elaborations.
+    assert "if (state.file !== path) {" in js
+    assert "state.expandedLine = null;\n      state.expandedMetric = null;" in js
 
 
 def test_file_list_reranks_on_the_selected_metric():
@@ -1053,6 +1060,217 @@ def test_inbound_focus_resolves_before_it_filters():
     assert "return (row.modules || []).indexOf(resolved) >= 0;" in js
     # The instance-path heuristic speaks source names too.
     assert "if (resolveModuleName(known, candidates[i]) !== null) {" in js
+
+
+# ---------------------------------------------------------------------------
+# the elaboration lens
+# ---------------------------------------------------------------------------
+
+
+def test_the_files_elaborations_come_from_its_points_not_its_modules():
+    """A file's ``modules`` list is what the model says was compiled
+    from it; the lens needs what the POINTS were recorded against, which
+    is the only thing it can actually filter on. Line points carry no
+    module at all — verilator records line coverage per source line,
+    merged over every elaboration — so they never contribute."""
+
+    out = _node(
+        _elaboration_lens_js()
+        + """
+        var row = {
+          modules: ['ip_cdc_sync', 'ip_cdc_sync__W4'],
+          line: [{ line: 20, hits: 2152 }],
+          branch: [
+            { line: 21, module: 'ip_cdc_sync__W4', hits: 36 },
+            { line: 21, module: 'ip_cdc_sync', hits: 108 }
+          ],
+          toggle: [{ line: 12, module: 'ip_cdc_sync', hits: 1608 }],
+          expression: [], cover: []
+        };
+        var metrics = ['line', 'branch', 'toggle', 'expression', 'cover'];
+        console.log(JSON.stringify(elaborationsOf(row, metrics)));
+        console.log(JSON.stringify(elaborationsOf(
+          { line: [{ line: 1, hits: 3 }] }, metrics)));
+        console.log(JSON.stringify(elaborationsOf(null, metrics)));
+        """
+    )
+    spans, lines_only, empty = out.strip().splitlines()
+    assert json.loads(spans) == ["ip_cdc_sync", "ip_cdc_sync__W4"]
+    # Line points alone means no elaboration to choose between, so the
+    # control never appears on a line-only file.
+    assert json.loads(lines_only) == []
+    assert json.loads(empty) == []
+
+
+def test_segment_labels_drop_the_base_only_when_it_is_shared():
+    """`all · W13 · Wc` on one module, because the base repeated on
+    every segment is the same word three times; whole names when the
+    file holds more than one module, because then the base IS the
+    information."""
+
+    out = _node(
+        _elaboration_lens_js()
+        + """
+        function labels(names) {
+          return elaborationSegments(names).map(function (s) { return s.label; });
+        }
+        console.log(JSON.stringify(labels(
+          ['ip_cdc_handshake__W13', 'ip_cdc_handshake__Wc'])));
+        console.log(JSON.stringify(labels(['ip_cdc_sync__W4', 'ip_cdc_sync'])));
+        console.log(JSON.stringify(labels(['blk__A1', 'other__A2'])));
+        console.log(JSON.stringify(elaborationSegments(
+          ['ip_cdc_handshake__Wc', 'ip_cdc_handshake__W13', 'ip_cdc_handshake__Wc'])));
+        console.log(JSON.stringify(labels(['axi__lite__W8', 'axi__lite__W4'])));
+        console.log(JSON.stringify([elaborationSegments([]), elaborationSegments(null)]));
+        """
+    )
+    one, mixed, several, dedup, dunder, empty = out.strip().splitlines()
+    assert json.loads(one) == ["W13", "Wc"]
+    # The un-parameterised elaboration keeps its plain name — there is
+    # no suffix to name it by, and `—` would say nothing.
+    assert json.loads(mixed) == ["ip_cdc_sync", "W4"]
+    assert json.loads(several) == ["blk__A1", "other__A2"]
+    # Sorted and de-duplicated, so the strip cannot reshuffle or repeat.
+    assert json.loads(dedup) == [
+        {"name": "ip_cdc_handshake__W13", "label": "W13"},
+        {"name": "ip_cdc_handshake__Wc", "label": "Wc"},
+    ]
+    # Only the LAST group is a parameterisation, so the shared base here
+    # is `axi__lite` and the labels are what follows it.
+    assert json.loads(dunder) == ["W4", "W8"]
+    assert json.loads(empty) == [[], []]
+
+
+def test_the_lens_filters_points_and_the_groups_score_them():
+    """Filtering is the lens; grouping is what the panel shows when the
+    lens is off and a line's points came from more than one of them."""
+
+    out = _node(
+        _elaboration_lens_js()
+        + """
+        var points = [
+          { name: 'if', module: 'ip_cdc_sync', hits: 108, tests: { a: 108, b: 0 } },
+          { name: 'if', module: 'ip_cdc_sync__W4', hits: 0, tests: { a: 0, b: 0 } },
+          { name: 'else', module: 'ip_cdc_sync__W4', hits: 4, tests: { a: 0, b: 4 } }
+        ];
+        function names(list) { return list.map(function (p) { return p.module; }); }
+        console.log(JSON.stringify(names(pointsOfElaboration(points, 'ip_cdc_sync__W4'))));
+        console.log(JSON.stringify(names(pointsOfElaboration(points, null)).length));
+        console.log(JSON.stringify(names(pointsOfElaboration(points, 'nope'))));
+        console.log(JSON.stringify(pointsOfElaboration(null, 'x')));
+
+        var entries = points.map(function (p) {
+          return { metric: 'branch', point: p };
+        });
+        // Merged hits: the lens-off reading.
+        var merged = elaborationGroups(entries, function (p) { return p.hits; });
+        console.log(JSON.stringify(merged.map(function (g) {
+          return [g.module, g.hit, g.entries.length];
+        })));
+        // Composed with the test lens: only what `b` hit counts.
+        var lensed = elaborationGroups(entries, function (p) {
+          return (p.tests || {}).b || 0;
+        });
+        console.log(JSON.stringify(lensed.map(function (g) {
+          return [g.module, g.hit, g.entries.length];
+        })));
+        // A point with no module recorded still has to be reachable.
+        console.log(JSON.stringify(elaborationGroups(
+          [{ metric: 'branch', point: { hits: 1 } }],
+          function (p) { return p.hits; }
+        ).map(function (g) { return [g.module, g.hit]; })));
+        """
+    )
+    only, all_of, miss, nullish, merged, lensed, unnamed = out.strip().splitlines()
+    assert json.loads(only) == ["ip_cdc_sync__W4", "ip_cdc_sync__W4"]
+    assert json.loads(all_of) == 3
+    assert json.loads(miss) == []
+    assert json.loads(nullish) == []
+    # Sorted by name, so the panel's groups cannot reorder between renders.
+    assert json.loads(merged) == [["ip_cdc_sync", 1, 1], ["ip_cdc_sync__W4", 1, 2]]
+    # The intersection: `b` hit nothing in the first elaboration and one
+    # of the two points in the second.
+    assert json.loads(lensed) == [["ip_cdc_sync", 0, 1], ["ip_cdc_sync__W4", 1, 2]]
+    assert json.loads(unnamed) == [["", 1]]
+
+
+def test_the_header_control_appears_only_when_there_is_a_choice():
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    assert "var elabs = elaborationsOf(row, METRICS);" in js
+    assert "if (elabs.length > 1) {" in js
+    assert "els.fileHead.appendChild(elabControl(elaborationSegments(elabs)));" in js
+    # A lens naming an elaboration the open file has no points for is not
+    # a lens, it is an empty pane.
+    assert (
+        "if (state.elab && elabs.indexOf(state.elab) < 0) { state.elab = null; }" in js
+    )
+    # The segmented control, styled as one strip.
+    assert ".seg { display: inline-flex; }" in body
+    assert ".seg button.on {" in body
+    assert "elem('button', state.elab ? null : 'on', 'all')" in js
+    assert "setElab(null)" in js
+    assert "setElab(seg.name)" in js
+
+
+def test_the_lens_recounts_found_and_leaves_line_merged():
+    """The test lens changes who hit the points; the elaboration lens
+    changes which points exist, so `found` moves with it. Line coverage
+    is exempt: verilator records it per source line with no module."""
+
+    js = _page_js()
+    assert "var elab = metric === 'line' ? null : state.elab;" in js
+    assert "var points = pointsOfElaboration(row[metric], elab);" in js
+    assert "var found = elab ? points.length : t.found;" in js
+    assert "return { found: found, hit: hit, ratio: found ? hit / found : null };" in js
+    # The cells and badges read the same filter, through the index the
+    # file view is built from.
+    assert (
+        "pointsOfElaboration(row[metric], state.elab).forEach(function (point) {" in js
+    )
+    # And the column header says which way it is reading.
+    assert "', counting only ' + state.elab" in js
+    assert "elaboration lens leaves it merged" in js
+
+
+def test_the_panel_breaks_down_per_elaboration_and_the_subhead_is_the_way_in():
+    js = _page_js()
+    assert "function renderDetailBody(metric, entries)" in js
+    assert "var groups = state.elab ? null : elaborationGroups(entries, hitsFor);" in js
+    assert "if (!groups || groups.length < 2) {" in js
+    assert "els.detailBody.appendChild(elabSubhead(group));" in js
+    assert "els.detailBody.appendChild(detailBlock(metric, group.entries));" in js
+    # The subhead carries that group's own score and sets the lens.
+    assert "elem('span', 'muted', group.hit + '/' + group.entries.length)" in js
+    assert "setElab(group.module || null);" in js
+    # Both blocks — the bit grids and the named chips — go through it.
+    assert "groupToggles(entries).forEach(function (group) {" in js
+    assert (
+        "entries.forEach(function (entry) { chips.appendChild(namedMark(entry)); });"
+        in js
+    )
+    # A lens on is an abnormal state, said where the numbers are, and
+    # saying it is the way out — same contract as the test lens.
+    assert "if (state.elab) { els.detailHead.appendChild(elabPill()); }" in js
+    assert (
+        "elem('span', 'pill hot act', 'elab: ' + baseElabLabel(state.elab) + ' ×')"
+        in js
+    )
+
+
+def test_an_inbound_elaborated_name_also_sets_the_lens():
+    """`module:ip_cdc_handshake__Wc` is a question about one
+    configuration; `module:ip_cdc_handshake` is a question about the
+    module. The stripped fallback that makes the second one land must
+    not silently answer it as the first."""
+
+    js = _page_js()
+    assert "var spans = elaborationsOf(rows[0], METRICS).length > 1;" in js
+    assert "var elab = spans && resolved === String(name) ? resolved : null;" in js
+    assert "line: opts.line, item: opts.item, metric: opts.metric, elab: elab" in js
+    # selectFile owns the reset, so every route into a file agrees.
+    assert "if (opts.elab !== undefined) { state.elab = opts.elab; }" in js
+    assert "state.elab = null;" in js
 
 
 # ---------------------------------------------------------------------------
