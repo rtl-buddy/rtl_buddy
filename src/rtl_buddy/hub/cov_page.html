@@ -218,12 +218,13 @@
     table#src td.marks { width: 1%; white-space: nowrap; }
     table#src td.code { width: 100%; overflow-wrap: normal; }
     table#src tr.hot td.code { box-shadow: inset 0 0 0 1px var(--accent); }
-    /* The marks column is capped and clipped on purpose. One 32-bit bus
-       declaration is 64 toggle points on a single line; rendering a chip
-       each pushed the code column off the right of the screen. The cap
-       lives on an inner block because a max-width on a `td` is advisory
-       in auto table layout — as an inner block's it caps the column's
-       intrinsic contribution, so nothing in a cell can widen it. */
+    /* The annotation column carries the SELECTED metric only, and is
+       capped and clipped on purpose. One 32-bit bus declaration is 64
+       toggle points on a single line; rendering a chip each pushed the
+       code column off the right of the screen. The cap lives on an
+       inner block because a max-width on a `td` is advisory in auto
+       table layout — as an inner block's it caps the column's intrinsic
+       contribution, so nothing in a cell can widen it. */
     table#src td.marks .marks-in {
       display: flex; gap: .15rem; align-items: center;
       max-width: var(--markcol); overflow: hidden; white-space: nowrap;
@@ -330,7 +331,7 @@
 <body>
   <header>
     <h1>rtl-buddy-cov <small id="counts"></small></h1>
-    <label class="chk" title="Which coverage kind the file list, the bars and the gutter report. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
+    <label class="chk" title="One metric drives the whole pane: the file list's bars and its ranking (coldest first, files with no points of that kind last), and the annotation column beside the source. Opens on toggle, where the holes usually are. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
       metric <select id="metric"></select>
     </label>
     <label class="chk" title="Restrict the file list and the tests table to one module's sources. A file included into several modules keeps only the points belonging to the module you pick.">
@@ -406,6 +407,10 @@
   // Metric order is authoritative from `hub.metrics` when served; this
   // is the fallback for a payload from an older hub.
   var METRICS = ['line', 'branch', 'toggle', 'expression', 'cover'];
+  //: The metric the pane opens on. Toggle is where the holes are on a
+  //  real run — line and branch are usually near 100% by the time
+  //  anybody opens this — so it is the useful first ranking.
+  var DEFAULT_METRIC = 'toggle';
   var METRIC_INITIAL = {
     line: 'L', branch: 'B', toggle: 'T', expression: 'E', cover: 'C'
   };
@@ -441,7 +446,7 @@
     payload: null,
     byPath: Object.create(null),
     modules: Object.create(null),
-    metric: 'line',
+    metric: null,      // chosen on the first ingest, the user's pick after
     module: '',
     filter: '',
     coldOnly: false,
@@ -658,7 +663,13 @@
     var hub = payload.hub || {};
     if (Array.isArray(hub.metrics) && hub.metrics.length) { METRICS = hub.metrics; }
     if (hub.source_route) { SOURCE_URL = hub.source_route; }
-    if (METRICS.indexOf(state.metric) < 0) { state.metric = METRICS[0]; }
+    // Only when the user has not picked one: a reload must not undo a
+    // choice, but a first load has to land on something with points in
+    // it (an .info-only run has no toggles at all, and opening on an
+    // empty column reads as a broken pane, not as a missing metric).
+    if (!state.metric || METRICS.indexOf(state.metric) < 0) {
+      state.metric = initialMetric(payload);
+    }
 
     renderMetricPicker();
     renderModulePicker();
@@ -691,6 +702,18 @@
     if (p.simulator) { parts.push(p.simulator); }
     els.counts.textContent = parts.length ? '· ' + parts.join(' · ') : '';
     els.counts.title = p.manifest ? 'from ' + p.manifest : '';
+  }
+
+  function initialMetric(payload) {
+    var totals = (payload && payload.totals) || {};
+    function has(metric) {
+      return METRICS.indexOf(metric) >= 0 && (totals[metric] || {}).found;
+    }
+    if (has(DEFAULT_METRIC)) { return DEFAULT_METRIC; }
+    for (var i = 0; i < METRICS.length; i++) {
+      if (has(METRICS[i])) { return METRICS[i]; }
+    }
+    return METRICS[0];
   }
 
   function renderMetricPicker() {
@@ -727,9 +750,45 @@
   // file list
   // ---------------------------------------------------------------
 
+  // --- pure helper, no DOM and no state ------------------------------
+  // >>> file-ordering
+  // The file list ranks by the SELECTED metric, not by the one the
+  // payload happened to be ordered on. Same rule shape as
+  // `coldest_first` in rtl_buddy/cov/query.py — ratio ascending, then
+  // absolute misses descending — so the pane and `rb cov summary` agree
+  // about which file is coldest.
+  //
+  // Two details the builder cannot express, because it always ranks on
+  // `line`:
+  //  * a file with NO points of the selected metric is not cold, it is
+  //    silent. Reading its null ratio as 1.0 (what the builder does)
+  //    would file it among the fully covered ones; it sinks to the
+  //    bottom instead, visible but not pretending to be a finding.
+  //  * ties keep the payload's own order rather than re-deciding on
+  //    path. For `line` that IS the builder's path tie-break, since the
+  //    payload arrives in the builder's order; for every other metric
+  //    it means the list cannot jitter between renders.
+  function coldestFirst(rows, metric) {
+    return (rows || []).map(function (row, index) {
+      var totals = (row && row.totals && row.totals[metric]) || {};
+      var found = totals.found || 0;
+      return {
+        row: row,
+        index: index,
+        silent: found ? 0 : 1,
+        ratio: totals.ratio == null ? 1 : totals.ratio,
+        misses: found - (totals.hit || 0)
+      };
+    }).sort(function (a, b) {
+      return (a.silent - b.silent) || (a.ratio - b.ratio) ||
+             (b.misses - a.misses) || (a.index - b.index);
+    }).map(function (entry) { return entry.row; });
+  }
+  // <<< file-ordering
+
   function visibleFiles() {
     var rows = (state.payload && state.payload.files) || [];
-    return rows.filter(function (row) {
+    return coldestFirst(rows.filter(function (row) {
       if (state.module && (row.modules || []).indexOf(state.module) < 0) { return false; }
       if (state.filter && row.path.toLowerCase().indexOf(state.filter) < 0) { return false; }
       if (state.coldOnly) {
@@ -737,7 +796,7 @@
         if (!t.found || t.hit >= t.found) { return false; }
       }
       return true;
-    });
+    }), state.metric);
   }
 
   function renderFiles() {
@@ -915,7 +974,8 @@
 
     els.dash.appendChild(elem('h2', null, 'coldest files'));
     els.dash.appendChild(elem('p', 'muted',
-      'Pick one on the left — the list is ordered coldest first for the selected metric.'));
+      'Pick one on the left — the list is ranked coldest first for the metric ' +
+      'selected above, with files that have no points of it last.'));
   }
 
   // ---------------------------------------------------------------
@@ -938,6 +998,15 @@
     if (opts.metric && METRICS.indexOf(opts.metric) >= 0) {
       state.metric = opts.metric;
       els.metric.value = opts.metric;
+    }
+    // An item names a point, and a point belongs to a metric. The
+    // annotation column shows one metric now, so landing on any other
+    // one would highlight nothing — the item is the more specific of
+    // the two hints, so it wins over `metric` and over the current pick.
+    var itemMetric = state.focusItem && metricOfItem(row, state.focusItem);
+    if (itemMetric && itemMetric !== state.metric) {
+      state.metric = itemMetric;
+      els.metric.value = itemMetric;
     }
     renderFiles();
     els.dash.hidden = true;
@@ -1057,6 +1126,18 @@
   }
   // <<< toggle-grouping
 
+  function metricOfItem(row, item) {
+    var found = null;
+    METRICS.forEach(function (metric) {
+      // `line` points have no names, so nothing can name one.
+      if (found || metric === 'line') { return; }
+      (row[metric] || []).forEach(function (point) {
+        if (!found && point.name === item) { found = metric; }
+      });
+    });
+    return found;
+  }
+
   function hitsFor(point) {
     // With a test lens on, the number shown is that test's contribution
     // — which is the whole question "what would I lose by dropping it".
@@ -1089,13 +1170,12 @@
     return metric === 'toggle' || list.length > 1;
   }
 
-  function byMetric(entries) {
-    var groups = Object.create(null), order = [];
-    entries.forEach(function (entry) {
-      if (!groups[entry.metric]) { groups[entry.metric] = []; order.push(entry.metric); }
-      groups[entry.metric].push(entry);
+  //: the points of the selected metric on one line, which is all the
+  //  annotation column and the detail panel ever show.
+  function selectedOn(lineNo) {
+    return (lineMarks[lineNo] || []).filter(function (entry) {
+      return entry.metric === state.metric;
     });
-    return { order: order, groups: groups };
   }
 
   function namedMark(entry) {
@@ -1135,16 +1215,21 @@
     return badge;
   }
 
+  // One column, one metric: the picker's subject. Rendering every
+  // metric's badges on every row put four columns of information where
+  // the reader wanted one, and `line` is already the gutter to the left
+  // — repeating it here would be the same number twice.
   function renderMarks(box, lineNo, entries) {
-    var split = byMetric(entries);
-    split.order.forEach(function (metric) {
-      var list = split.groups[metric];
-      if (!collapses(metric, list)) {
-        list.forEach(function (entry) { box.appendChild(namedMark(entry)); });
-        return;
-      }
-      box.appendChild(metricBadge(metric, list, lineNo));
+    if (state.metric === 'line') { return; }
+    var list = entries.filter(function (entry) {
+      return entry.metric === state.metric;
     });
+    if (!list.length) { return; }
+    if (!collapses(state.metric, list)) {
+      list.forEach(function (entry) { box.appendChild(namedMark(entry)); });
+      return;
+    }
+    box.appendChild(metricBadge(state.metric, list, lineNo));
   }
 
   // Exactly one point's attribution is on show at a time, so exactly
@@ -1275,40 +1360,30 @@
     opts = opts || {};
     closeDetail();
     var host = els.srcBody.querySelector('tr[data-line="' + lineNo + '"]');
-    var entries = lineMarks[lineNo] || [];
-    if (!host || !entries.length) { return false; }
-    var split = byMetric(entries);
-    var collapsed = split.order.filter(function (metric) {
-      return collapses(metric, split.groups[metric]);
-    });
-    if (!collapsed.length) { return false; }
+    var entries = selectedOn(lineNo);
+    if (!host || !entries.length || !collapses(state.metric, entries)) { return false; }
 
     detailWhere(lineNo);
-    collapsed.forEach(function (metric) {
-      var list = split.groups[metric];
-      var hit = 0;
-      list.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
-      els.detailHead.appendChild(elem('span', 'pill',
-        METRIC_INITIAL[metric] + ' ' + hit + '/' + list.length));
-    });
+    var hit = 0;
+    entries.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
+    els.detailHead.appendChild(elem('span', 'pill',
+      METRIC_INITIAL[state.metric] + ' ' + hit + '/' + entries.length));
     if (state.test) { els.detailHead.appendChild(lensPill()); }
     appendDetailClose();
 
-    collapsed.forEach(function (metric) {
-      if (metric === 'toggle') {
-        var grid = elem('div', 'tgs');
-        groupToggles(split.groups[metric]).forEach(function (group) {
-          grid.appendChild(renderToggleGroup(group));
-        });
-        els.detailBody.appendChild(grid);
-        return;
-      }
+    if (state.metric === 'toggle') {
+      var grid = elem('div', 'tgs');
+      groupToggles(entries).forEach(function (group) {
+        grid.appendChild(renderToggleGroup(group));
+      });
+      els.detailBody.appendChild(grid);
+    } else {
       // Everything that is not a toggle keeps the named chips — they are
       // few per line, and the name IS the information.
       var chips = elem('div', 'tg-chips');
-      split.groups[metric].forEach(function (entry) { chips.appendChild(namedMark(entry)); });
+      entries.forEach(function (entry) { chips.appendChild(namedMark(entry)); });
       els.detailBody.appendChild(chips);
-    });
+    }
 
     bindDetailToRow(host, lineNo, 'marks', opts);
     Array.prototype.forEach.call(host.querySelectorAll('.mark.badge'), function (badge) {
@@ -1358,14 +1433,11 @@
     if (!state.focusItem) { return null; }
     Object.keys(lineMarks).forEach(function (key) {
       if (found != null) { return; }
-      var split = byMetric(lineMarks[key]);
-      split.order.forEach(function (metric) {
-        if (found != null || !collapses(metric, split.groups[metric])) { return; }
-        var hit = split.groups[metric].some(function (entry) {
-          return entry.point.name === state.focusItem;
-        });
-        if (hit) { found = parseInt(key, 10); }
-      });
+      var list = selectedOn(key);
+      if (!collapses(state.metric, list)) { return; }
+      if (list.some(function (entry) { return entry.point.name === state.focusItem; })) {
+        found = parseInt(key, 10);
+      }
     });
     return found;
   }

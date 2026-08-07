@@ -430,19 +430,25 @@ def _page_js() -> str:
     return body.split("<script>")[-1].split("</script>")[0]
 
 
-def _toggle_grouping_js() -> str:
-    """The pure helpers, sliced out of the page by their markers.
+def _marked_js(marker: str) -> str:
+    """One block of pure helpers, sliced out of the page by its markers.
 
     Nothing between the markers may touch the DOM or close over page
     state, which is exactly what evaluating them in bare ``node``
     enforces.
     """
 
-    match = re.search(
-        r"// >>> toggle-grouping\n(.*?)// <<< toggle-grouping", _page_js(), re.S
-    )
-    assert match, "the toggle-grouping markers moved"
+    match = re.search(rf"// >>> {marker}\n(.*?)// <<< {marker}", _page_js(), re.S)
+    assert match, f"the {marker} markers moved"
     return match.group(1)
+
+
+def _toggle_grouping_js() -> str:
+    return _marked_js("toggle-grouping")
+
+
+def _file_ordering_js() -> str:
+    return _marked_js("file-ordering")
 
 
 def _node(script: str) -> str:
@@ -471,7 +477,23 @@ def test_page_javascript_parses(tmp_path: Path):
     assert done.returncode == 0, done.stderr
 
 
-def test_marks_column_collapses_to_one_badge_per_metric():
+def test_the_annotation_column_shows_one_metric_the_selected_one():
+    """The column is the metric picker's subject, not a summary of
+    everything: four metrics' badges on every row put four columns of
+    information where the reader wanted one."""
+
+    js = _page_js()
+    assert "function renderMarks(box, lineNo, entries)" in js
+    assert "if (state.metric === 'line') { return; }" in js
+    assert "return entry.metric === state.metric;" in js
+    assert "box.appendChild(metricBadge(state.metric, list, lineNo));" in js
+    # …and the detail panel behind the badge shows the same one metric.
+    assert "var entries = selectedOn(lineNo);" in js
+    assert "if (state.metric === 'toggle') {" in js
+    assert "function selectedOn(lineNo)" in js
+
+
+def test_the_annotation_column_collapses_to_one_badge():
     """One 32-bit bus declaration is 64 toggle points on a line. A chip
     each pushed the code column off the right of the screen, which is
     the bug this collapse fixes."""
@@ -490,6 +512,39 @@ def test_marks_column_collapses_to_one_badge_per_metric():
     assert "--markcol:  13rem;" in body
     assert "table#src td.marks .marks-in {" in body
     assert "max-width: var(--markcol); overflow: hidden;" in body
+
+
+def test_the_pane_opens_on_toggle():
+    """Line and branch are near 100% by the time anybody opens this;
+    the bus toggles are where the holes are."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert "var DEFAULT_METRIC = 'toggle';" in js
+    assert "function initialMetric(payload)" in js
+    # An .info-only run has no toggles at all — falling through to the
+    # first metric with points beats opening on an empty column.
+    assert "return METRICS.indexOf(metric) >= 0 && (totals[metric] || {}).found;" in js
+    # A reload must not undo a metric the user picked.
+    assert "if (!state.metric || METRICS.indexOf(state.metric) < 0) {" in js
+    assert "metric: null," in js
+    # The dropdown says it drives everything, not just the bars.
+    assert "One metric drives the whole pane" in body
+    assert "Opens on toggle" in body
+
+
+def test_a_focus_item_switches_to_the_metric_it_belongs_to():
+    """The column shows one metric, so a focused point in another one
+    would highlight nothing."""
+
+    js = _page_js()
+    assert "function metricOfItem(row, item)" in js
+    # `line` points have no names, so nothing can name one.
+    assert "if (found || metric === 'line') { return; }" in js
+    assert (
+        "var itemMetric = state.focusItem && metricOfItem(row, state.focusItem);" in js
+    )
+    assert "if (itemMetric && itemMetric !== state.metric) {" in js
 
 
 def test_detail_panel_is_docked_outside_the_code_scroller():
@@ -644,6 +699,73 @@ def test_focus_item_opens_the_line_and_selects_the_bit():
         "if (state.file !== path) { state.expandedLine = null; "
         "state.expandedKind = null; }"
     ) in js
+
+
+def test_file_list_reranks_on_the_selected_metric():
+    """The payload arrives ranked on `line`. Picking `toggle` used to
+    change the bars and leave the ranking, so the top of the list was
+    the coldest file for a metric you were no longer looking at."""
+
+    js = _page_js()
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert "function coldestFirst(rows, metric)" in js
+    # The ordering wraps the FILTER, so cold-only/module/path filtering
+    # and the ranking cannot disagree about what is on screen.
+    assert "return coldestFirst(rows.filter(function (row) {" in js
+    assert "}), state.metric);" in js
+    # The dropdown says what it now does.
+    assert "the file list's bars and its ranking" in body
+    assert "files with no points of that kind last" in body
+
+
+def test_file_ordering_matches_the_builders_rule():
+    """Same shape as ``coldest_first`` in ``rtl_buddy.cov.query``:
+    ratio ascending, then absolute misses descending."""
+
+    out = _node(
+        _file_ordering_js()
+        + """
+        function row(path, totals) { return { path: path, totals: totals }; }
+        function m(found, hit) {
+          return { found: found, hit: hit, ratio: found ? hit / found : null };
+        }
+        var rows = [
+          row('cold.sv',   { line: m(10, 2),  toggle: m(4, 4) }),
+          row('warm.sv',   { line: m(10, 9),  toggle: m(100, 10) }),
+          row('silent.sv', { line: m(0, 0),   toggle: m(8, 1) }),
+          row('same.sv',   { line: m(10, 2),  toggle: m(0, 0) }),
+          row('big.sv',    { line: m(100, 20), toggle: m(0, 0) })
+        ];
+        function paths(metric) {
+          return coldestFirst(rows, metric).map(function (r) { return r.path; });
+        }
+        console.log(JSON.stringify(paths('line')));
+        console.log(JSON.stringify(paths('toggle')));
+        console.log(JSON.stringify(coldestFirst([], 'line')));
+        console.log(JSON.stringify(paths('line')));
+        """
+    )
+    line, toggle, empty, again = out.strip().splitlines()
+    # 20%, 20%, 20% then 90% — and among the three at 20% the one with
+    # the most absolute misses (80) comes first, the remaining two keep
+    # the payload's order.
+    assert json.loads(line) == ["big.sv", "cold.sv", "same.sv", "warm.sv", "silent.sv"]
+    # A different metric is a different ranking, not the same list with
+    # different bars: 12.5%, 10%, 100%, then the two silent files in
+    # payload order.
+    assert json.loads(toggle) == [
+        "warm.sv",
+        "silent.sv",
+        "cold.sv",
+        "same.sv",
+        "big.sv",
+    ]
+    # A file with no points of the metric is not cold, it is silent —
+    # last, and never at the top with a null ratio read as zero.
+    assert json.loads(line)[-1] == "silent.sv"
+    assert json.loads(empty) == []
+    # Ties keep the payload order, so the list cannot jitter.
+    assert again == line
 
 
 def test_toggle_grouping_is_per_signal_msb_first():
