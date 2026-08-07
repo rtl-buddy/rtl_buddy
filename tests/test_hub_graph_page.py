@@ -1,6 +1,6 @@
 """Tests for the hub-served design-knowledge-graph pane (#382).
 
-Four surfaces, in the order a user meets them:
+Six surfaces, in the order a user meets them:
 
 1. ``GET /graph.json`` — ``artefacts/graph/graph.json`` joined with
    ``artefacts/graph/results-overlay.json`` in memory. The join must not
@@ -22,6 +22,9 @@ Four surfaces, in the order a user meets them:
    instance path, which on a project-tier graph is every node. Its pure
    helper is sliced out of the page between markers and exercised in
    ``node``, the same convention ``tests/test_hub_cov_page.py`` uses.
+6. The version label in the status strip — one wording of "which build
+   am I looking at" shared with the coverage pane and the view SPA, so
+   its cases are asserted identically in all three.
 """
 
 from __future__ import annotations
@@ -683,6 +686,120 @@ def test_page_javascript_parses(tmp_path: Path):
         [node, "--check", str(script)], capture_output=True, text=True, timeout=60
     )
     assert done.returncode == 0, done.stderr
+
+
+# ---------------------------------------------------------------------------
+# the hub version label
+#
+# The same contract in three places — this pane, cov_page.html, and the
+# view SPA's ``viewer/src/buildInfo.js`` — so the cases below are the
+# cases ``tests/test_hub_cov_page.py`` asserts, deliberately word for
+# word. If one of the three drifts, exactly one of these suites goes red.
+# ---------------------------------------------------------------------------
+
+
+def test_a_dev_build_is_labelled_with_its_git_sha():
+    """``server_version`` is setuptools-scm's, and on anything built past
+    a tag the ``g``-prefixed run in the local segment IS the git SHA.
+    The ``.dYYYYMMDD`` beside it is a build date the SHA already
+    implies, so it does not reach the label."""
+
+    out = _node_eval(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel('6.26.2.dev13+g3f5b890e3.d20260806'),
+          versionLabel('6.26.2.dev13+g3f5b890e3'),
+          versionLabel('6.26.2.dev1+g0abcdef12.d20260101.dirty'),
+          versionLabel('6.26.2.dev13+d20260806.g3f5b890e3')
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        "6.26.2.dev13 @ 3f5b890e3",
+        "6.26.2.dev13 @ 3f5b890e3",
+        "6.26.2.dev1 @ 0abcdef12",
+        # Order inside the local segment is not ours to assume: the run
+        # is found wherever it sits, not only at the front.
+        "6.26.2.dev13 @ 3f5b890e3",
+    ]
+
+
+def test_a_release_is_labelled_by_its_version_alone():
+    """A tagged build has no local segment and so no SHA to show —
+    ``6.26.2`` is the whole truth about it, and a bare ``@`` with
+    nothing after it would only look broken."""
+
+    out = _node_eval(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify(
+          ['6.26.2', '6.26.2.dev13', '0.0.0'].map(versionLabel)));
+        """
+    )
+    assert json.loads(out) == ["6.26.2", "6.26.2.dev13", "0.0.0"]
+
+
+def test_a_local_segment_without_a_sha_still_labels_the_version():
+    """``1.0+local`` is a legal version; it simply names no build. The
+    base is still worth showing, so a missing SHA drops the ``@`` and
+    nothing else."""
+
+    out = _node_eval(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel('1.0+local'),
+          versionLabel('1.0+d20260806'),
+          versionLabel('1.0+gitlab'),
+          versionLabel('1.0+')
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        "1.0",
+        "1.0",
+        # `gitlab` starts with a g but `itlab` is not hex — no SHA here.
+        "1.0",
+        "1.0",
+    ]
+
+
+def test_no_version_means_no_label_at_all():
+    """A welcome without ``server_version`` (an older hub, or a payload
+    that lost the field) renders nothing rather than the word
+    ``undefined`` in the status strip."""
+
+    out = _node_eval(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel(''), versionLabel(undefined), versionLabel(null),
+          versionLabel('+g3f5b890e3')
+        ]));
+        """
+    )
+    # A version that is nothing but a local segment names no release,
+    # so there is no label to hang the SHA off.
+    assert json.loads(out) == [None, None, None, None]
+
+
+def test_the_footer_carries_the_version_and_every_welcome_rewrites_it():
+    """The label lives beside the peers it shares a tier with, and is
+    re-read on every welcome: a reconnect can land on a hub restarted
+    on a newer build."""
+
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert '<span id="hub-version" class="muted"></span>' in body
+    # After the peers span, before the flexible gap.
+    peers = body.index('<span id="peers"')
+    version = body.index('<span id="hub-version"')
+    assert peers < version < body.index('<span class="grow"></span>', peers)
+
+    js = _page_js()
+    assert "setHubVersion(env.payload && env.payload.server_version);" in js
+    assert "els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';" in js
+    assert "els.hubVersion.title = full;" in js
 
 
 # ---------------------------------------------------------------------------

@@ -436,6 +436,7 @@
   <footer>
     <span><span class="dot connecting" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
     <span id="peers" class="muted"></span>
+    <span id="hub-version" class="muted"></span>
     <span class="grow"></span>
     <span id="msg" class="muted"></span>
   </footer>
@@ -481,6 +482,7 @@
     empty: document.getElementById('empty'),
     emptyMsg: document.getElementById('empty-msg'),
     peers: document.getElementById('peers'),
+    hubVersion: document.getElementById('hub-version'),
     msg: document.getElementById('msg'),
     wsDot: document.getElementById('ws-dot'),
     wsStatus: document.getElementById('ws-status')
@@ -619,7 +621,7 @@
         wsReady = true; retryMs = 500;
         els.wsDot.className = 'dot connected';
         els.wsStatus.textContent = 'connected';
-        els.wsStatus.title = 'hub ' + (env.payload && env.payload.server_version || '');
+        setHubVersion(env.payload && env.payload.server_version);
         setPeers(env.payload && env.payload.registered_clients);
         break;
       case 'peer_joined':
@@ -656,6 +658,49 @@
   function setPeers(list) {
     if (!Array.isArray(list)) { return; }
     els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+  }
+
+  // >>> version-label
+  // One version label, said the same way by all three hub apps: this
+  // pane, graph_page.html beside it, and the view SPA (rtl-buddy-view,
+  // viewer/src/buildInfo.js). A pane is a self-contained single file by
+  // design, so this helper is hand-duplicated from graph_page.html
+  // rather than shared, and the SPA keeps its own copy under the same
+  // contract. Change the rule in one and change it in all three, or the
+  // three tabs start disagreeing about which build is running.
+  //
+  // The input is rtl_buddy's own version as setuptools-scm writes it:
+  // `6.26.2` from a release tag, `6.26.2.dev13+g3f5b890e3.d20260806`
+  // from anything built past one. Everything before `+` is the version
+  // a person quotes. The local segment after it carries the git SHA as
+  // a `g`-prefixed hex run, alongside a `.dYYYYMMDD` build date that
+  // says nothing the SHA does not — so the SHA is the payload, the date
+  // is dropped, and nine hex digits is as much of a SHA as anyone
+  // actually reads.
+  //
+  // A local segment with no `g<hex>` run is not an error — `1.0+local`
+  // is a legal version — it simply has no build to point at, and the
+  // base alone is the label.
+  function versionLabel(raw) {
+    var text = String(raw == null ? '' : raw);
+    var plus = text.indexOf('+');
+    var base = plus < 0 ? text : text.slice(0, plus);
+    if (!base) { return null; }
+    var local = plus < 0 ? '' : text.slice(plus + 1);
+    var found = /(^|\.)g([0-9a-fA-F]+)/.exec(local);
+    return found ? base + ' @ ' + found[2].slice(0, 9) : base;
+  }
+  // <<< version-label
+
+  // Re-read on every welcome, not just the first: a reconnect can land
+  // on a hub that was restarted on a newer build, and a label frozen at
+  // the version of the first connection would then be quietly wrong.
+  function setHubVersion(raw) {
+    var full = raw ? String(raw) : '';
+    var label = versionLabel(full);
+    els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';
+    els.hubVersion.title = full;
+    els.wsStatus.title = 'hub ' + full;
   }
 
   // ---------------------------------------------------------------
