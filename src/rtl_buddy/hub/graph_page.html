@@ -1589,14 +1589,13 @@
   // cross-app actions
   // ---------------------------------------------------------------
 
-  // Two controls per sibling app, because they answer two different
-  // questions. `send → X` puts the current selection on the X tab that
-  // is already open and does not navigate. `open X ↗` emits the same
-  // envelope and THEN opens X in a new tab: the hub caches the latest
-  // selection_changed / graph_focus / cov_focus and replays them to each
-  // peer as it registers (`_replay_cached_state` in hub/server.py), so
-  // the fresh tab comes up already on the selection. No deep links, no
-  // new wire types.
+  // One control per sibling app: `send → X` puts the current selection
+  // on the X tab that is already open and does not navigate. Opening an
+  // app fresh is the header switcher's job — and a tab opened AFTER a
+  // send still lands on the selection, because the hub caches the
+  // latest selection_changed / graph_focus / cov_focus and replays them
+  // to each peer as it registers (`_replay_cached_state` in
+  // hub/server.py). No deep links, no new wire types.
   var APPS = [
     {
       origin: 'view', prose: 'the schematic',
