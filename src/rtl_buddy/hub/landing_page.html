@@ -204,6 +204,7 @@
   <footer>
     <span><span class="dot connecting" id="conn-dot"></span> <span id="conn-status">connecting…</span></span>
     <span id="peers"></span>
+    <span id="hub-version" class="muted"></span>
     <span class="grow"></span>
     <span id="hub-addr"></span>
     <span id="msg"></span>
@@ -229,6 +230,7 @@
     graph: document.getElementById('st-graph'),
     empty: document.getElementById('empty'),
     emptyMsg: document.getElementById('empty-msg'),
+    hubVersion: document.getElementById('hub-version'),
     dot: document.getElementById('conn-dot'),
     status: document.getElementById('conn-status'),
     peers: document.getElementById('peers'),
@@ -264,6 +266,26 @@
       ? ORIGIN_LABELS[key] : key;
   }
   // <<< origin-labels
+
+  // >>> version-label
+  // One version label, said the same way by all four hub surfaces: the
+  // graph pane, the coverage pane, the schematic SPA (rtl-buddy-view,
+  // viewer/src/buildInfo.js) and this landing page. Hand-duplicated per
+  // the panes' self-contained-file convention — change the rule in one
+  // and change it everywhere, or the tabs start disagreeing about which
+  // build is running. The landing is not a hub peer, so it reads the
+  // version from /hub/state.json's hub.server_version instead of a
+  // welcome envelope; the parse and the rendered form are identical.
+  function versionLabel(raw) {
+    var text = String(raw == null ? '' : raw);
+    var plus = text.indexOf('+');
+    var base = plus < 0 ? text : text.slice(0, plus);
+    if (!base) { return null; }
+    var local = plus < 0 ? '' : text.slice(plus + 1);
+    var found = /(^|[.\-_])g([0-9a-fA-F]{4,})(?=$|[.\-_])/.exec(local);
+    return found ? base + ' @ ' + found[2].slice(0, 9) : base;
+  }
+  // <<< version-label
 
   function text(node, value, emptyText) {
     if (value) { node.textContent = value; node.classList.remove('none'); }
@@ -359,6 +381,9 @@
     text(els.root, hub.project_root, 'not a project hub');
     els.model.classList.toggle('prose', !hub.active_model);
     text(els.model, hub.active_model, 'none selected');
+    var label = versionLabel(hub.server_version);
+    els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';
+    els.hubVersion.title = hub.server_version || '';
     var peers = state.peers || [];
     text(els.peersKv,
          peers.length ? peers.map(originLabel).join(', ') : '', 'none connected');

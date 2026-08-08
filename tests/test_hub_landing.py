@@ -412,3 +412,41 @@ def test_the_card_shows_the_long_name_and_the_switcher_the_short_one():
     switcher = js.split("function renderSwitcher(apps) {")[1].split("\n  }")[0]
     assert "var a = el('a', null, app.short || app.name);" in switcher
     assert "app.name" not in switcher.split("app.short || app.name")[1]
+
+
+def test_the_footer_carries_the_family_version_label():
+    """The three apps show `rtl-buddy <base> @ <sha>` in their strips;
+    the landing joins them, fed from /hub/state.json's
+    ``hub.server_version`` rather than a welcome (it is not a peer)."""
+
+    body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert '<span id="hub-version" class="muted"></span>' in body
+    js = _page_js()
+    assert "hubVersion: document.getElementById('hub-version')," in js
+    assert "var label = versionLabel(hub.server_version);" in js
+    assert "els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';" in js
+
+
+def test_version_label_agrees_with_the_pane_copies():
+    """Same lockstep cases as tests/test_hub_graph_page.py /
+    test_hub_cov_page.py pin — four copies of one rule."""
+
+    out = _node(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel('6.26.2.dev13+g3f5b890e3.d20260806'),
+          versionLabel('6.26.2'),
+          versionLabel('1.0+gabc'),
+          versionLabel(''),
+          versionLabel('+g3f5b890e3')
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        "6.26.2.dev13 @ 3f5b890e3",
+        "6.26.2",
+        "1.0",
+        None,
+        None,
+    ]
