@@ -40,7 +40,7 @@ uv run rb hub status                  # in another shell: who's connected
 uv run rb hub stop                    # graceful shutdown via SIGTERM
 ```
 
-With `--serve-viewer`, open `http://127.0.0.1:<http_port>/` — the [landing page](#apps-the-landing-page-and-hub-chrome) lists every app this hub can serve (design view, knowledge graph), says which one already has a tab attached, and shows the project state.
+With `--serve-viewer`, open `http://127.0.0.1:<http_port>/` — the [landing page](#apps-the-landing-page-and-hub-chrome) lists every app this hub can serve (`rtl-buddy-schematic`, `rtl-buddy-graph`, `rtl-buddy-coverage`), says which one already has a tab attached, and shows the project state.
 
 `rb hub start` runs in the foreground by default; backgrounding is the caller's job (`nohup rb hub start &`, a process manager, or — on macOS — the bundled LaunchAgent: see [`rb hub install-launchagent`](#auto-start-on-macos-launchagent)). The server binds the OS-assigned port (TCP, and HTTP if `--serve-viewer` is set) unless `hub.toml` pins them; the resolved TCP address (and HTTP port, with `--serve-viewer`) is written to `.rtl-buddy/hub.json` so peers can discover it.
 
@@ -227,6 +227,20 @@ Cards advertise on **data presence**, the same rule `__RTL_BUDDY_GRAPH_URL__` fo
 
 The landing page is deliberately **not** a hub peer: it polls `/hub/state.json` instead of opening `/ws`. A tab that only lists the apps must never hold an origin, or it would be the thing that evicted the app you had open.
 
+### App names (display) and origins (wire)
+
+The three browser apps are one family, and each carries two names:
+
+| App | Long name | Short name | Wordmark | Wire origin |
+|---|---|---|---|---|
+| Schematic SPA (`/view`) | `rtl-buddy-schematic` | `sch` | `rtl-buddy-sch` | `view` |
+| Knowledge graph pane (`/graph`) | `rtl-buddy-graph` | `gph` | `rtl-buddy-gph` | `graph` |
+| Coverage pane (`/cov`) | `rtl-buddy-coverage` | `cov` | `rtl-buddy-cov` | `cov` |
+
+The **long name introduces an app**: it is what the landing page's cards say, and what these docs say on first mention. Everything after that is the **short name** — every switcher link (`sch ↗`), every peer strip, every `send → gph` button, and the wordmark each pane titles itself with. Tooltips and prose use plain English instead ("the schematic", "the graph pane", "the coverage pane"): short names are labels, not sentences.
+
+The **origin is the wire, and it does not move for a rename.** The schematic still registers as `view` and the graph pane as `graph`; `view_capture`, `resolve_signal_to_view`, the `/view` route, `view.json`, `--serve-viewer` and every Python identifier keep the names they have until a protocol v2 renames them in lockstep across both repos. The seam between the two vocabularies is a one-line **origin → display label** map — `{view: 'sch', graph: 'gph'}`, every other origin passed through unchanged — that each app applies wherever an origin would otherwise reach a user. It is hand-duplicated, because a pane is a self-contained single file by design: `graph_page.html`, `cov_page.html` and `landing_page.html` each carry it between `>>> origin-labels` markers, the SPA keeps its copy in `viewer/src/components/HubStatus.vue`, and the server-side names live in the `name`/`short` columns of `hub/landing_page.py`'s `APPS` table. Change one, change all of them. `rb hub status` is the deliberate exception: it lists raw origins, because it is the tool you reach for when you want to know what the *wire* says.
+
 ### Design tokens (`/hub/theme.css`)
 
 One sheet, served same-origin, is the source of surfaces (`--bg` / `--panel` / `--panel-2` / `--line` / `--line-strong`), text tiers (`--fg` / `--fg-muted` / `--fg-faint`), one accent family (`--accent` / `--accent-contrast`), status colours and banner tints (`--ok` / `--warn` / `--err` / `--info` + `--ok-bg` / `--warn-bg` / `--err-bg`), the eight graph column hues (`--col-*`), the coverage ramp (`--cov-0` / `--cov-50` / `--cov-100` / `--cov-none` + `--cov-l` for the continuous `hsl(pct * 1.2, 70%, var(--cov-l))` fill), type (`--font-mono` / `--font-sans`, `--fs-base` 13px / `--fs-small` 11px), shape (`--radius-1/2/3`) and elevation (`--shadow-1/2`).
@@ -291,7 +305,7 @@ The **landing page** at `/` is not in this table on purpose: it polls `/hub/stat
 
 `rb hub status` lists every origin a user can have open — `view`, `wave`, `src`, `graph`, `cov` — as `CONNECTED` or `not connected`. `cli` is excluded (it is the status query itself) and so is `notebook` (it peers for one marimo session rather than being an app you keep open).
 
-Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker), `graph` (the design-knowledge-graph pane) and `cov` (the coverage pane). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph and coverage panes have their own origins rather than sharing `view` precisely because of that rule: they are meant to be open *alongside* the schematic, since clicking a module in the graph — or a cold line in the coverage pane — selects it in the design view.
+Each peer has a closed `Origin` enum value — a **wire** value, unaffected by the [display names above](#app-names-display-and-origins-wire): `view` (the schematic SPA, shown as `sch`), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker), `graph` (the knowledge graph pane, shown as `gph`) and `cov` (the coverage pane). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph and coverage panes have their own origins rather than sharing `view` precisely because of that rule: they are meant to be open *alongside* the schematic, since clicking a module in the graph — or a cold line in the coverage pane — selects it in the schematic.
 
 ## Protocol
 
@@ -332,12 +346,12 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 
 Clicking a node sends the same envelopes the SPA sends, over the same `/ws`:
 
-- **`selection_changed`** for anything that resolves to a design-view instance path. An `instance` node's id already *is* the coordinate (`inst:<top>/<dot.path>` — the resolver's identity); a `module` node has no instance path of its own, so the pane picks the shallowest instance of it, which is what a person means by "show me this module".
+- **`selection_changed`** for anything that resolves to an instance path in the schematic. An `instance` node's id already *is* the coordinate (`inst:<top>/<dot.path>` — the resolver's identity); a `module` node has no instance path of its own, so the pane picks the shallowest instance of it, which is what a person means by "show me this module".
 - **`open_source`** (routed to the `src` peer, i.e. nvim) for any node that knows its `file`, at its `line`.
 
 Both are individually toggleable in the pane's toolbar. The reverse direction works too: `rb hub send graph-focus NODE` centres and selects a node, and a `selection_changed` from the SPA or the editor highlights the matching instance node in the graph.
 
-The inspector heads the selected node with the [cross-app row](#sending-the-selection-to-another-app): `send → design view` re-sends the coordinate above *without* the `sync design view` toggle having to be on, and `send → coverage` translates the node into a `cov_focus` target — a `test:` node to that test's attribution, a `model:`/`module:` node to the module, a spec `coverage_item` to its block with the cover column up and the item named, and anything else that knows its `file` to that file and line. A node that is none of those leaves both buttons dark and says why.
+The inspector heads the selected node with the [cross-app row](#sending-the-selection-to-another-app): `send → sch` re-sends the coordinate above *without* the `sync schematic` toggle having to be on, and `send → cov` translates the node into a `cov_focus` target — a `test:` node to that test's attribution, a `model:`/`module:` node to the module, a spec `coverage_item` to its block with the cover column up and the item named, and anything else that knows its `file` to that file and line. A node that is none of those leaves both buttons dark and says why.
 
 When a graph exists, the index page also gets a `window.__RTL_BUDDY_GRAPH_URL__ = "/graph.json"` injection alongside `__RTL_BUDDY_VIEW_URL__`, so an SPA overlay can advertise the pane on presence of the global instead of probing the endpoint and handling a 404.
 
@@ -363,7 +377,7 @@ Clicking a line sends the same envelopes the other panes send, over the same `/w
 - **`open_source`** (routed to the `src` peer, i.e. nvim) at the clicked line.
 - **`graph_focus`** `{node: "module:<name>"}` when you click a module chip, since `module:<name>` is the id that module carries in the graph.
 
-The file header carries the [cross-app row](#sending-the-selection-to-another-app) beside those chips, for the open file's first module: `send → graph` and `send → design view` both broadcast that one `graph_focus`, since the graph pane and the schematic view read the same `module:` vocabulary — the two buttons differ only in which tab they assume or open, and their tooltips say so.
+The file header carries the [cross-app row](#sending-the-selection-to-another-app) beside those chips, for the open file's first module: `send → gph` and `send → sch` both broadcast that one `graph_focus`, since the graph pane and the schematic read the same `module:` vocabulary — the two buttons differ only in which tab they assume or open, and their tooltips say so.
 
 Both directions work: `rb hub send cov-focus <target>` focuses the pane (replayed on connect, so it lands even before the tab is open), an editor's `source_focused` scrolls it to the matching file and line, and a `selection_changed` from the SPA is matched to a module by the usual instance-prefix convention (`u_`, `i_`, `inst_`, `dut_`) — a soft miss when the convention does not hold, since nothing in either model says which module an instance is of. A `test:` target is matched on the model's bare test name, and a qualified `test:<suite>#<name>` — the form the schema and `rb hub send cov-focus` document — falls back to its `#` fragment.
 

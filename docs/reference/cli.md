@@ -1369,16 +1369,16 @@ Usage: rtl-buddy hub send [OPTIONS] COMMAND [ARGS]...
 │                ID. Exactly one of --to / --before is required.                       │
 │ wave-comment   Add comment rows (named dividers) to surfer's view. Returns the new   │
 │                item ids. Maps to WCP add_dividers.                                   │
-│ view-pan       Ask the view peer (SPA) to pan/center on INSTANCE_PATH.               │
+│ view-pan       Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.     │
 │ overlay        Flip an overlay's enabled state on the SPA. Built-in NAMES are        │
 │                'clock', 'reset', 'axi-perf', 'wave'; an unknown name is a no-op. Use │
 │                --on / --off (default --on). Useful for agents or scripted demos that │
 │                want to direct the user's attention to a specific overlay layer       │
 │                without a UI click.                                                   │
-│ capture        Ask the view peer (SPA) to snapshot the current graph and write it to │
-│                --out. Graph-only — surrounding panels are not captured. Useful for   │
-│                agents that want to look at what the user is seeing without a browser │
-│                screenshot tool.                                                      │
+│ capture        Ask the schematic (rtl-buddy-sch) to snapshot the current graph and   │
+│                write it to --out. Graph-only — surrounding panels are not captured.  │
+│                Useful for agents that want to look at what the user is seeing        │
+│                without a browser screenshot tool.                                    │
 │ open-source    Ask the src peer (nvim) to open FILE at line+col.                     │
 │ resolve        resolve coordinates via the hub's view.json + tb_prefix mapping       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -1712,7 +1712,7 @@ Usage: rtl-buddy hub send wave-comment [OPTIONS] TEXTS...
 ```text
 Usage: rtl-buddy hub send view-pan [OPTIONS] INSTANCE_PATH                             
                                                                                         
- Ask the view peer (SPA) to pan/center on INSTANCE_PATH.                                
+ Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.                      
                                                                                         
 ╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
 │ *    instance_path      TEXT  view.json instance_path [required]                     │
@@ -1746,7 +1746,7 @@ Usage: rtl-buddy hub send overlay [OPTIONS] NAME
 ```text
 Usage: rtl-buddy hub send capture [OPTIONS]                                            
                                                                                         
- Ask the view peer (SPA) to snapshot the current graph and write it to --out.           
+ Ask the schematic (rtl-buddy-sch) to snapshot the current graph and write it to --out. 
  Graph-only — surrounding panels are not captured. Useful for agents that want to look  
  at what the user is seeing without a browser screenshot tool.                          
                                                                                         

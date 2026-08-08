@@ -98,7 +98,7 @@ PLACEHOLDER_HTML = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>rtl-buddy-hub viewer placeholder</title>
+  <title>rtl-buddy-sch placeholder</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
   <link rel="stylesheet" href="/hub/theme.css">
@@ -119,7 +119,7 @@ PLACEHOLDER_HTML = """<!doctype html>
   </script>
 </head>
 <body>
-  <h1>rtl-buddy-hub <small>(viewer placeholder)</small></h1>
+  <h1>rtl-buddy-sch <small>(schematic placeholder)</small></h1>
   <p>
     The HTTP + WebSocket layer is live, but no viewer bundle is configured
     for this hub. The real Vue/Vite SPA ships in <a

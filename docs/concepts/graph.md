@@ -523,12 +523,12 @@ What it does:
 | Click target | Envelope | Effect |
 |---|---|---|
 | `instance` node | `selection_changed {instance_path}` | The SPA pans/highlights that instance. The id *is* the coordinate: `inst:<top>/<dot.path>`. |
-| `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the design view can select, its instances are. |
+| `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the schematic can select, its instances are. |
 | any node with `file` | `open_source {file, line, col}` | The `src` peer (nvim) opens it. Test, coverage-item, spec-block and Python-module nodes all carry `file`/`line`. |
 
 Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol.
 
-A selection can land outside the design view's *active model* — clicking `module:blk_b` while the view shows `blk_a` highlights nothing there. The pane detects this (reconfirming against a fresh `state_snapshot`, since the SPA's picker can move without telling it) and arms the **switch view model** button in the toolbar, greyed out until then. Clicking it issues the same `GET /view.json?model=NAME` the SPA's own picker uses — the hub builds that model's view if needed, activates it, broadcasts `view_changed` — and then re-sends the selection so the freshly switched view lands on the node that was clicked. From the other direction:
+A selection can land outside the schematic's *active model* — clicking `module:blk_b` while the schematic shows `blk_a` highlights nothing there. The pane detects this (reconfirming against a fresh `state_snapshot`, since the SPA's picker can move without telling it) and arms the **switch model** button in the toolbar, greyed out until then. Clicking it issues the same `GET /view.json?model=NAME` the SPA's own picker uses — the hub builds that model's view if needed, activates it, broadcasts `view_changed` — and then re-sends the selection so the freshly switched view lands on the node that was clicked. From the other direction:
 
 ```bash
 rb hub send graph-focus test:verif/dma#smoke

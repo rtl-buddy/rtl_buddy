@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>rtl-buddy-graph</title>
+  <title>rtl-buddy-gph</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
   <!--
@@ -227,12 +227,12 @@
 </head>
 <body>
   <header>
-    <h1>rtl-buddy-graph <small id="counts"></small></h1>
+    <h1>rtl-buddy-gph <small id="counts"></small></h1>
     <div class="legend" id="legend"></div>
     <span class="grow"></span>
     <input type="search" id="search" placeholder="filter by id, label or file…" spellcheck="false">
-    <label class="chk" title="Clicking a node also highlights it in the schematic design view — open the viewer at / in another tab to see it. Nodes without a concrete instance (project-tier models, un-instantiated modules) highlight all instances of their module instead. Does nothing when no viewer is connected.">
-      <input type="checkbox" id="opt-select" checked> sync design view
+    <label class="chk" title="Clicking a node also highlights it in the schematic — open it from the header links to see it. Nodes without a concrete instance (project-tier models, un-instantiated modules) highlight all instances of their module instead. Does nothing when no schematic tab is connected.">
+      <input type="checkbox" id="opt-select" checked> sync schematic
     </label>
     <label class="chk" title="Clicking a node also jumps your editor to its source file and line — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
       <input type="checkbox" id="opt-open" checked> open in editor
@@ -249,19 +249,19 @@
     </label>
     <button id="reload" title="Re-fetch /graph.json (after rb graph build / rb graph results)">reload</button>
     <button id="fix-view" disabled
-       title="Enabled when the selected node is not in the design view's active model — click to switch the view to the model that contains it.">switch view model</button>
+       title="Enabled when the selected node is not in the schematic's active model — click to switch the schematic to the model that contains it.">switch model</button>
     <nav class="switcher" aria-label="hub apps">
       <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
-      <a href="/cov" target="_blank" rel="noopener"
-         title="Open the coverage pane in a new tab.">coverage ↗</a>
-      <a href="/view" target="_blank" rel="noopener"
-         title="Open the schematic design view in a new tab. Once it is open, clicking a node here highlights the instance there (the sync design view toggle).">design view ↗</a>
+      <a href="/cov" target="_blank" rel="noopener" data-origin="cov"
+         title="Open the coverage pane in a new tab.">cov ↗</a>
+      <a href="/view" target="_blank" rel="noopener" data-origin="view"
+         title="Open the schematic in a new tab. Once it is open, clicking a node here highlights the instance there (the sync schematic toggle).">sch ↗</a>
     </nav>
   </header>
 
   <main>
     <div id="canvas-wrap">
-      <svg id="canvas" aria-label="rtl-buddy-graph">
+      <svg id="canvas" aria-label="rtl-buddy-gph">
         <g id="scene">
           <g id="bands"></g>
           <g id="links"></g>
@@ -484,7 +484,7 @@
   // to evict whoever holds the slot. Sending it unconditionally is what
   // made two tabs of this pane supersede each other in a loop.
   //
-  // Same flow as the view SPA (rtl-buddy-view,
+  // Same flow as the schematic SPA (rtl-buddy-view,
   // viewer/src/composables/useHub.js — its `_pendingTakeover` /
   // `superseded` handling), hand-duplicated here because a pane is a
   // self-contained single file by design; cov_page.html carries the same
@@ -603,7 +603,7 @@
   // dealt with here, in which case the message area stays out of it —
   // one event, one surface.
   //
-  // Mirrors the view SPA's `error` case (rtl-buddy-view,
+  // Mirrors the schematic SPA's `error` case (rtl-buddy-view,
   // viewer/src/composables/useHub.js); cov_page.html carries the same
   // handler. One one-client-per-origin rule, three apps that have to
   // obey it identically.
@@ -669,6 +669,47 @@
     connect();
   }
 
+  // >>> origin-labels
+  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
+  // WIRE vocabulary and it does not move for a rebrand: the schematic
+  // app registers as `view` and the graph pane as `graph`, and both
+  // keep doing so until protocol v2. Their DISPLAY names are `sch` and
+  // `gph` (rtl-buddy-sch, rtl-buddy-gph), so this map is the seam, and
+  // every place an origin reaches a user goes through it -- the peer
+  // strip below, the header switcher's sibling labels, the `send -> X`
+  // buttons and the cross-model button. An origin with no entry is
+  // shown verbatim, which is what keeps a peer from a newer hub legible
+  // instead of blank.
+  //
+  // It is also the one knob for a short name: change `gph` here and
+  // every graph label in this file follows.
+  //
+  // A pane is a self-contained single file by design, so this helper is
+  // hand-duplicated into cov_page.html and landing_page.html beside it,
+  // and the SPA keeps its own copy under the same contract
+  // (rtl-buddy-view, viewer/src/components/HubStatus.vue). Change the
+  // map in one and change it in all four, or the tabs start calling the
+  // same peer different things.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
+
+  function originLabel(origin) {
+    var key = String(origin == null ? '' : origin);
+    return Object.prototype.hasOwnProperty.call(ORIGIN_LABELS, key)
+      ? ORIGIN_LABELS[key] : key;
+  }
+  // <<< origin-labels
+
+  // The switcher's sibling links carry `data-origin`, so their labels
+  // come from the map too (outside the markers: this one touches the
+  // DOM). The text in the markup is what a person reading the file
+  // sees; this is what the browser shows.
+  function relabelSwitcher() {
+    var links = document.querySelectorAll('.switcher a[data-origin]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].textContent = originLabel(links[i].getAttribute('data-origin')) + ' \u2197';
+    }
+  }
+
   // The latest peer list, kept rather than only printed: the inspector's
   // cross-app row asks it which sibling apps are open, and "send" to an
   // app nobody is running is a click with no effect and no explanation.
@@ -681,7 +722,8 @@
     var next = list.slice().sort();
     var changed = next.join(' ') !== peers.join(' ');
     peers = next;
-    els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+    els.peers.textContent =
+      'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
     // An app that just opened (or just closed) changes which of the
     // inspector's buttons are live, and the user is looking at that row
     // right now — repaint it rather than leaving it a click behind.
@@ -692,7 +734,7 @@
 
   // >>> version-label
   // One version label, said the same way by all three hub apps: this
-  // pane, cov_page.html beside it, and the view SPA (rtl-buddy-view,
+  // pane, cov_page.html beside it, and the schematic SPA (rtl-buddy-view,
   // viewer/src/buildInfo.js). A pane is a self-contained single file by
   // design, so this helper is hand-duplicated into cov_page.html rather
   // than shared, and the SPA keeps its own copy under the same
@@ -1276,7 +1318,7 @@
       if (slash >= 0) { return rest.slice(slash + 1); }
     }
     if (n.type === 'module') {
-      // A module is not a coordinate the design view can select — its
+      // A module is not a coordinate the schematic can select — its
       // instances are. Pick the shallowest instance of it, which is the
       // one a person means by "show me this module".
       var best = null;
@@ -1295,7 +1337,7 @@
   // A project-tier graph — the common case, and all you get before a
   // design tier is built — carries its design content on `model:`
   // nodes, so every click on one broadcast nothing at all and the pane
-  // looked inert. A module name is the fallback the design view can
+  // looked inert. A module name is the fallback the schematic can
   // still act on: it highlights every instance of that module.
   //
   // A model is named after its top module, so the fragment after `#`
@@ -1304,14 +1346,14 @@
   // link was extracted for it, and then its id minus the prefix is the
   // name. Everything else — tests, suites, covitems, testbenches — is
   // not a design coordinate at all, and returning a name for those
-  // would move the design view on every click that had nothing to do
+  // would move the schematic on every click that had nothing to do
   // with it.
   //
   // The name goes out verbatim: no `baseModuleName` strip, which is
   // the rule cov_page.html needs because COVERAGE speaks the
   // simulator's elaborated names (`ip_async_fifo__DB13`). Both ends of
   // this wire speak the SOURCE vocabulary instead — the graph is built
-  // from the source, and so is the design view's hierarchy — so there
+  // from the source, and so is the schematic's hierarchy — so there
   // is no suffix to remove here, and stripping one would corrupt a
   // real module whose name happens to end in `__<alnum>`.
   function moduleNameFor(n) {
@@ -1342,7 +1384,7 @@
   //   `focusTest` falls back to the fragment — because the suite is real
   //   information the schema's own example carries.
   // * a `model:`/`module:` node → the module, via the same derivation
-  //   the design view is sent (`moduleNameFor`); the cov pane resolves
+  //   the schematic is sent (`moduleNameFor`); the cov pane resolves
   //   the source name onto its elaborated keys itself.
   // * a `coverage_item` node → its spec block read as a module, with the
   //   metric pinned to `cover` and the item id as the point name. Both
@@ -1378,28 +1420,28 @@
   }
   // <<< cov-target
 
-  // A selection whose root is not the design view's active model
-  // highlights nothing there — which reads as "the view is stuck".
+  // A selection whose root is not the schematic's active model
+  // highlights nothing there — which reads as "the schematic is stuck".
   // The cached model can be stale (the SPA picker switches without
   // telling us), so reconfirm before accusing the click.
   //
   // The fix is one hub request away (`GET /view.json?model=` builds and
   // activates, and the hub broadcasts `view_changed` to the SPA), so
-  // the warning arms the `switch view model` button instead of telling
+  // the warning arms the `switch model` button instead of telling
   // the user to go find the SPA's model picker.
   var crossModel = null;
   function setCrossModel(target) {
     crossModel = target;
     if (target) {
       els.fixView.disabled = false;
-      els.fixView.textContent = 'view → ' + target.model;
-      els.fixView.title = 'Switch the design view to model ' + target.model +
+      els.fixView.textContent = originLabel('view') + ' → ' + target.model;
+      els.fixView.title = 'Switch the schematic to model ' + target.model +
         ' (builds its view.json if needed), then re-highlight ' + target.ip + '.';
     } else {
       els.fixView.disabled = true;
-      els.fixView.textContent = 'switch view model';
-      els.fixView.title = 'Enabled when the selected node is not in the design ' +
-        "view's active model — click to switch the view to the model that contains it.";
+      els.fixView.textContent = 'switch model';
+      els.fixView.title = "Enabled when the selected node is not in the schematic's " +
+        'active model — click to switch the schematic to the model that contains it.';
     }
   }
 
@@ -1411,8 +1453,9 @@
       activeModel = reply.payload.active_model;
       if (activeModel && root !== activeModel) {
         setCrossModel({ model: root, ip: ip });
-        note('selected ' + ip + ' — not in the active design-view model (' + activeModel +
-             '); click “view → ' + root + '” above to switch', 'warn');
+        note('selected ' + ip + " — not in the schematic's active model (" + activeModel +
+             '); click “' + originLabel('view') + ' → ' + root +
+             '” above to switch', 'warn');
       } else {
         setCrossModel(null);
       }
@@ -1443,25 +1486,25 @@
         // Re-send the selection so the freshly switched view lands on
         // the node the user actually clicked.
         emit('selection_changed', { instance_path: target.ip });
-        note('design view switched to ' + target.model);
+        note('schematic switched to ' + target.model);
         setCrossModel(null);
       })
       .catch(function (err) {
-        note('design view switch failed: ' + err.message, 'error');
+        note('schematic switch failed: ' + err.message, 'error');
         setCrossModel(target); // re-arm for a retry
       });
   });
 
-  // The envelope that puts the design view on a node, or null when the
+  // The envelope that puts the schematic on a node, or null when the
   // node is not a design coordinate at all. The instance path is the
   // exact answer; without one the coarser module name still moves the
-  // view (it highlights every instance of that module — see
+  // schematic (it highlights every instance of that module — see
   // `moduleNameFor`). The echo back from the hub is ignored either way:
   // inbound graph_focus breaks on `origin === 'graph'`.
   //
   // Spelled as a value rather than inline, because two callers take this
-  // same decision: the click path below (gated on the `sync design view`
-  // checkbox) and the inspector's explicit `send → design view` button
+  // same decision: the click path below (gated on the `sync schematic`
+  // checkbox) and the inspector's explicit `send → sch` button
   // (which is not).
   function viewTargetFor(n) {
     var ip = instancePathFor(n);
@@ -1476,7 +1519,7 @@
       return {
         type: 'graph_focus', payload: { node: 'module:' + mod },
         ip: null, coord: 'module:' + mod,
-        note: 'focus module:' + mod + ' in design view'
+        note: 'focus module:' + mod + ' in the schematic'
       };
     }
     return null;
@@ -1494,8 +1537,8 @@
       var sent = !!view && emit(view.type, view.payload);
       if (sent) { did.push(view.note); }
       // The cross-model warning is about a selected INSTANCE. Anything
-      // else — a module fallback, an undeliverable send, a node the view
-      // cannot place — must clear it, or a stale "view → X" fixes the
+      // else — a module fallback, an undeliverable send, a node the
+      // schematic cannot place — must clear it, or a stale "sch → X" fixes the
       // wrong click.
       if (sent && view.ip) { maybeWarnCrossModel(view.ip); }
       else { setCrossModel(null); }
@@ -1556,7 +1599,7 @@
   // new wire types.
   var APPS = [
     {
-      origin: 'view', name: 'view',
+      origin: 'view', prose: 'the schematic',
       targetFor: viewTargetFor,
       send: function (t) { return emit(t.type, t.payload); },
       label: function (t) { return t.coord; },
@@ -1569,7 +1612,7 @@
       why: 'this node is not a design coordinate — no instance path and no module name'
     },
     {
-      origin: 'cov', name: 'coverage',
+      origin: 'cov', prose: 'the coverage pane',
       targetFor: covTargetFor,
       send: function (t) { return emit('cov_focus', t); },
       label: function (t) {
@@ -1585,7 +1628,7 @@
     var t = app.targetFor(n);
     if (!t) { note(app.why, 'warn'); return false; }
     if (!app.send(t)) { note('hub not connected', 'error'); return false; }
-    note('sent to ' + app.name + ': ' + app.label(t));
+    note('sent to ' + originLabel(app.origin) + ': ' + app.label(t));
     app.after(t);
     return true;
   }
@@ -1609,11 +1652,11 @@
       var t = app.targetFor(n);
       var live = hasPeer(app.origin);
       box.appendChild(actionButton(
-        'send → ' + app.name,
+        'send → ' + originLabel(app.origin),
         !t ? app.why
-           : !live ? app.name + ' is not connected — open it from the header links'
-           : 'Send ' + app.label(t) + ' to the open ' + app.name +
-             ' tab, without leaving this one. ' + app.overlap,
+           : !live ? app.prose + ' is not connected — open it from the header links'
+           : 'Send ' + app.label(t) + ' to ' + app.prose +
+             ', without leaving this tab. ' + app.overlap,
         !t || !live,
         function () { sendTo(app, n); }));
     });
@@ -1821,6 +1864,7 @@
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
   });
 
+  relabelSwitcher();
   connect();
   load();
 })();

@@ -624,7 +624,7 @@ def cmd_wave_comment(
 
 @send_app.command(
     "view-pan",
-    help="Ask the view peer (SPA) to pan/center on INSTANCE_PATH.",
+    help="Ask the schematic (rtl-buddy-sch) to pan/center on INSTANCE_PATH.",
 )
 def cmd_view_pan(
     instance_path: Annotated[str, typer.Argument(help="view.json instance_path")],
@@ -660,7 +660,7 @@ def cmd_view_overlay(
 @send_app.command(
     "capture",
     help=(
-        "Ask the view peer (SPA) to snapshot the current graph and "
+        "Ask the schematic (rtl-buddy-sch) to snapshot the current graph and "
         "write it to --out. Graph-only — surrounding panels are not "
         "captured. Useful for agents that want to look at what the "
         "user is seeing without a browser screenshot tool."

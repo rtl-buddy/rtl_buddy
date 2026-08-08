@@ -19,7 +19,7 @@ It wraps simulation, synthesis, and project scripts to provide a structured, con
 - Formal property verification (`rb fpv`) with SymbiYosys, solver pinning, and `rb wave-fpv` counterexample viewing
 - Mutation testing (`rb mut`) that scores a verification suite by mutating a design and checking whether an FPV or simulation/assertion oracle kills each mutant
 - Waveform viewing (`rb wave`) in [Surfer](https://surfer-project.org/) with live editor annotation, and module hierarchy rendering (`rb hier`)
-- AXI interconnect profiling (`rb axi-profile`) with a packaged marimo notebook, and a coordination hub (`rb hub`) tying the view SPA, Surfer, and editors together
+- AXI interconnect profiling (`rb axi-profile`) with a packaged marimo notebook, and a coordination hub (`rb hub`) tying the schematic SPA, Surfer, and editors together
 - Spec traceability (`rb spec`) and a declarative external-tool readiness check (`rb tool-check`)
 - Verilator coverage collection, merge, summary, and export workflows
 - Verible command integration (`rb verible`) for lint, syntax, formatting, preprocessing, and `verible.filelist` generation

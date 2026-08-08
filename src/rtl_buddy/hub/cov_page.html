@@ -398,8 +398,8 @@
       <input type="checkbox" id="opt-cold"> cold only
     </label>
     <span class="grow"></span>
-    <label class="chk" title="Clicking a line also broadcasts source_focused; the hub resolves it to a design-view instance and highlights it there. Does nothing when no viewer is connected.">
-      <input type="checkbox" id="opt-select" checked> sync design view
+    <label class="chk" title="Clicking a line also broadcasts source_focused; the hub resolves it to an instance and highlights it in the schematic. Does nothing when no schematic tab is connected.">
+      <input type="checkbox" id="opt-select" checked> sync schematic
     </label>
     <label class="chk" title="Clicking a line also jumps your editor to it — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
       <input type="checkbox" id="opt-open" checked> open in editor
@@ -407,10 +407,10 @@
     <button id="reload" title="Re-fetch /cov.json (after another coverage run)">reload</button>
     <nav class="switcher" aria-label="hub apps">
       <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
-      <a href="/graph" target="_blank" rel="noopener"
-         title="Open the design knowledge graph in a new tab. Selecting a module here focuses it there.">graph ↗</a>
-      <a href="/view" target="_blank" rel="noopener"
-         title="Open the schematic design view in a new tab.">design view ↗</a>
+      <a href="/graph" target="_blank" rel="noopener" data-origin="graph"
+         title="Open the design knowledge graph in a new tab. Selecting a module here focuses it there.">gph ↗</a>
+      <a href="/view" target="_blank" rel="noopener" data-origin="view"
+         title="Open the schematic in a new tab.">sch ↗</a>
     </nav>
   </header>
 
@@ -594,7 +594,7 @@
   // evict whoever holds the slot. Sending it unconditionally is what
   // made two tabs of this pane supersede each other in a loop.
   //
-  // Same flow as the view SPA (rtl-buddy-view,
+  // Same flow as the schematic SPA (rtl-buddy-view,
   // viewer/src/composables/useHub.js — its `_pendingTakeover` /
   // `superseded` handling), hand-duplicated here because a pane is a
   // self-contained single file by design; graph_page.html carries the
@@ -715,7 +715,7 @@
   // dealt with here, in which case the message area stays out of it —
   // one event, one surface.
   //
-  // Mirrors the view SPA's `error` case (rtl-buddy-view,
+  // Mirrors the schematic SPA's `error` case (rtl-buddy-view,
   // viewer/src/composables/useHub.js); graph_page.html carries the same
   // handler. One one-client-per-origin rule, three apps that have to
   // obey it identically.
@@ -781,6 +781,47 @@
     connect();
   }
 
+  // >>> origin-labels
+  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
+  // WIRE vocabulary and it does not move for a rebrand: the schematic
+  // app registers as `view` and the graph pane as `graph`, and both
+  // keep doing so until protocol v2. Their DISPLAY names are `sch` and
+  // `gph` (rtl-buddy-sch, rtl-buddy-gph), so this map is the seam, and
+  // every place an origin reaches a user goes through it -- the peer
+  // strip below, the header switcher's sibling labels and the
+  // `send -> X` buttons. An origin with no entry is shown verbatim
+  // (this pane's own `cov` among them), which is what keeps a peer from
+  // a newer hub legible instead of blank.
+  //
+  // It is also the one knob for a short name: change `gph` here and
+  // every graph label in this file follows.
+  //
+  // A pane is a self-contained single file by design, so this helper is
+  // hand-duplicated into graph_page.html and landing_page.html beside
+  // it, and the SPA keeps its own copy under the same contract
+  // (rtl-buddy-view, viewer/src/components/HubStatus.vue). Change the
+  // map in one and change it in all four, or the tabs start calling the
+  // same peer different things.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
+
+  function originLabel(origin) {
+    var key = String(origin == null ? '' : origin);
+    return Object.prototype.hasOwnProperty.call(ORIGIN_LABELS, key)
+      ? ORIGIN_LABELS[key] : key;
+  }
+  // <<< origin-labels
+
+  // The switcher's sibling links carry `data-origin`, so their labels
+  // come from the map too (outside the markers: this one touches the
+  // DOM). The text in the markup is what a person reading the file
+  // sees; this is what the browser shows.
+  function relabelSwitcher() {
+    var links = document.querySelectorAll('.switcher a[data-origin]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].textContent = originLabel(links[i].getAttribute('data-origin')) + ' \u2197';
+    }
+  }
+
   // The latest peer list, kept rather than only printed: the file
   // header's cross-app row asks it which sibling apps are open, and
   // "send" to an app nobody is running is a click with no effect and no
@@ -794,7 +835,8 @@
     var next = list.slice().sort();
     var changed = next.join(' ') !== peers.join(' ');
     peers = next;
-    els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+    els.peers.textContent =
+      'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
     // An app that just opened (or just closed) changes which of the file
     // header's buttons are live, and the user is looking at that row
     // right now — repaint it rather than leaving it a click behind.
@@ -805,7 +847,7 @@
 
   // >>> version-label
   // One version label, said the same way by all three hub apps: this
-  // pane, graph_page.html beside it, and the view SPA (rtl-buddy-view,
+  // pane, graph_page.html beside it, and the schematic SPA (rtl-buddy-view,
   // viewer/src/buildInfo.js). A pane is a self-contained single file by
   // design, so this helper is hand-duplicated from graph_page.html
   // rather than shared, and the SPA keeps its own copy under the same
@@ -2216,16 +2258,16 @@
   //
   // Both apps are sent the SAME envelope, deliberately. `graph_focus
   // {node:'module:<name>'}` is the graph pane's own vocabulary and the
-  // view SPA resolves `module:` targets as well, so the pair of buttons
+  // schematic SPA resolves `module:` targets as well, so the pair of buttons
   // differ only in which tab they assume or open — the broadcast reaches
   // whichever of the two is listening. The tooltips say so.
   var APPS = [
-    { origin: 'graph', name: 'graph' },
-    { origin: 'view', name: 'view' }
+    { origin: 'graph', prose: 'the graph pane' },
+    { origin: 'view', prose: 'the schematic' }
   ];
 
   var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +
-    'the graph pane AND the view, whichever of them is open.';
+    'the graph pane AND the schematic, whichever of them is open.';
   var NO_MODULE = 'This file records no module, so there is nothing to ' +
     'point the other apps at.';
 
@@ -2245,11 +2287,11 @@
     APPS.forEach(function (app) {
       var live = hasPeer(app.origin);
       box.appendChild(actionButton(
-        'send → ' + app.name,
+        'send → ' + originLabel(app.origin),
         !base ? NO_MODULE
-           : !live ? app.name + ' is not connected — open it from the header links'
-           : 'Send module:' + baseModuleName(base) + ' to the open ' +
-             app.name + ' tab, without leaving this one. ' + OVERLAP,
+           : !live ? app.prose + ' is not connected — open it from the header links'
+           : 'Send module:' + baseModuleName(base) + ' to ' + app.prose +
+             ', without leaving this tab. ' + OVERLAP,
         !base || !live,
         function () { focusModuleElsewhere(base); }));
     });
@@ -2368,7 +2410,7 @@
     if (Array.isArray(ip)) { ip = ip[0]; }
     if (typeof ip !== 'string' || !ip || !state.payload) { return; }
     // A naming-convention heuristic, and a soft miss when it fails: the
-    // coverage model has modules, the design view has instances, and
+    // coverage model has modules, the schematic has instances, and
     // nothing in either says which module an instance is of. Stripping
     // the usual instance prefixes off the leaf is right often enough to
     // be worth the zero cost of being wrong (nothing happens).
@@ -2418,6 +2460,7 @@
     if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
   });
 
+  relabelSwitcher();
   connect();
   load();
 })();

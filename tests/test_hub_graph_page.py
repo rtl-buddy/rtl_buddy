@@ -18,12 +18,12 @@ Six surfaces, in the order a user meets them:
 4. ``graph_focus`` — the wire type behind ``rb hub send graph-focus``:
    schema-valid, broadcast to peers, and replayed to a peer that
    connects after the fact.
-5. Module-level design-view sync — the fallback for a node that has no
+5. Module-level schematic sync — the fallback for a node that has no
    instance path, which on a project-tier graph is every node. Its pure
    helper is sliced out of the page between markers and exercised in
    ``node``, the same convention ``tests/test_hub_cov_page.py`` uses.
 6. The version label in the status strip — one wording of "which build
-   am I looking at" shared with the coverage pane and the view SPA, so
+   am I looking at" shared with the coverage pane and the schematic SPA, so
    its cases are asserted identically in all three.
 """
 
@@ -516,7 +516,7 @@ def test_page_carries_the_pieces_the_issue_asks_for():
 
 
 # ---------------------------------------------------------------------------
-# module-level design-view sync
+# module-level schematic sync
 # ---------------------------------------------------------------------------
 
 
@@ -614,7 +614,7 @@ def test_a_module_node_falls_back_to_its_own_id():
 
 def test_nothing_else_names_a_module():
     """Tests, suites, coverage items and testbenches are not design
-    coordinates. Naming one would move the design view on a click that
+    coordinates. Naming one would move the schematic on a click that
     had nothing to do with the design."""
 
     out = _node_eval(
@@ -638,14 +638,14 @@ def test_nothing_else_names_a_module():
     assert json.loads(nullish) == [None, None, None]
 
 
-def test_a_node_without_an_instance_still_syncs_the_design_view():
+def test_a_node_without_an_instance_still_syncs_the_schematic():
     """The bug this closes: with only config and binding tiers built,
     ``instancePathFor`` returns null for every node and the click
     broadcast nothing at all. The fallback emits the wire type the cov
     pane already sends, ``graph_focus {node: 'module:<name>'}``.
 
     The choice lives in ``viewTargetFor`` — the click path and the
-    inspector's explicit ``send → design view`` button must take it
+    inspector's explicit ``send → sch`` button must take it
     identically, and duplicating it is how they stop being identical.
     Both it and ``activate`` close over the page's DOM (``state.inc``,
     ``els``), so this is asserted on the source rather than in ``node``.
@@ -660,7 +660,7 @@ def test_a_node_without_an_instance_still_syncs_the_design_view():
     assert "var mod = moduleNameFor(n);" in derivation
     assert "type: 'graph_focus', payload: { node: 'module:' + mod }," in derivation
     assert derivation.index("instancePathFor") < derivation.index("moduleNameFor")
-    assert "note: 'focus module:' + mod + ' in design view'" in derivation
+    assert "note: 'focus module:' + mod + ' in the schematic'" in derivation
     # One emit per click, off the one derivation.
     click = js.split("if (els.optSelect.checked) {")[1].split("\n    }")[0]
     assert "var view = viewTargetFor(n);" in click
@@ -676,7 +676,7 @@ def test_a_node_without_an_instance_still_syncs_the_design_view():
 def test_the_sync_toggle_advertises_the_module_fallback():
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     label = [line for line in body.splitlines() if 'id="opt-select"' in line]
-    assert label, "the sync design view checkbox moved"
+    assert label, "the sync schematic checkbox moved"
     tooltip = body.split('<input type="checkbox" id="opt-select"')[0].split(
         '<label class="chk" title="'
     )[-1]
@@ -772,8 +772,8 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
     # The vocabulary each app is addressed in, and the route it opens on
     # — the same routes the header switcher links to.
-    assert "origin: 'view', name: 'view'," in apps
-    assert "origin: 'cov', name: 'coverage'," in apps
+    assert "origin: 'view', prose: 'the schematic'," in apps
+    assert "origin: 'cov', prose: 'the coverage pane'," in apps
     assert "targetFor: viewTargetFor," in apps
     assert "send: function (t) { return emit(t.type, t.payload); }," in apps
     assert "targetFor: covTargetFor," in apps
@@ -782,9 +782,9 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
     # variant: opening an app fresh is the header switcher's job.
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
     assert "var t = app.targetFor(n);" in row
-    assert "'send → ' + app.name," in row
+    assert "'send → ' + originLabel(app.origin)," in row
     assert "function () { sendTo(app, n); }" in row
-    assert "'open ' + app.name" not in row
+    assert "'open ' + " not in row
     assert "window.open(" not in row
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     for route in ("/view", "/cov"):
@@ -793,7 +793,7 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
 
 def test_send_ignores_the_sync_checkbox():
     """The checkbox governs what a CLICK broadcasts. An explicit
-    ``send → view`` is the user asking for it in so many words,
+    ``send → sch`` is the user asking for it in so many words,
     so it must not be gated on a toggle they never touched."""
 
     js = _page_js()
@@ -817,7 +817,7 @@ def test_a_send_is_dark_when_its_app_is_not_connected():
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
     assert "var live = hasPeer(app.origin);" in row
     assert "!t || !live," in row
-    assert "app.name + ' is not connected — open it from the header links'" in row
+    assert "app.prose + ' is not connected — open it from the header links'" in row
     # The peer list is kept, not merely printed, and the row repaints
     # when it moves.
     assert "function hasPeer(origin) { return peers.indexOf(origin) >= 0; }" in js
@@ -844,7 +844,7 @@ def test_the_action_row_has_no_open_buttons():
 
 def test_the_tooltips_own_up_to_the_broadcast():
     """A focus event is a broadcast, not a point-to-point send: an
-    instance path aimed at the design view also moves the coverage pane,
+    instance path aimed at the schematic also moves the coverage pane,
     which resolves instance paths onto modules of its own accord."""
 
     js = _page_js()
@@ -865,7 +865,7 @@ def test_the_tooltips_own_up_to_the_broadcast():
 # ``"<client> client replaced by a newer registration"`` before closing
 # its socket. This pane used to send ``takeover: true`` on EVERY hello
 # and reconnect from every close, so two tabs of it evicted each other
-# every ~500 ms. The flow below is the view SPA's, mirrored: its
+# every ~500 ms. The flow below is the schematic SPA's, mirrored: its
 # ``_pendingTakeover`` / ``superseded`` handling in
 # ``viewer/src/composables/useHub.js`` (rtl-buddy-view).
 # ---------------------------------------------------------------------------
@@ -1175,7 +1175,7 @@ async def test_http_graph_page_served(hub_and_viewer):
     assert status == 200
     assert "text/html" in headers.get("Content-Type", "")
     assert f"{viewer.hub_host}:{viewer.hub_port}".encode("utf-8") in body
-    assert b"rtl-buddy-graph" in body
+    assert b"rtl-buddy-gph" in body
 
 
 @pytest.mark.asyncio
@@ -1305,7 +1305,7 @@ def test_graph_origin_is_its_own_peer_slot():
 
     The hub allows one client per origin, and the acceptance criteria
     require both open at once ("clicking a module node selects it in the
-    design view"), so a shared slot would make them evict each other.
+    schematic"), so a shared slot would make them evict each other.
     """
 
     assert Origin.GRAPH.value == "graph"
@@ -1437,3 +1437,73 @@ async def test_graph_focus_is_replayed_to_a_late_pane(bare_hub: HubServer):
             await pane.close()
     finally:
         await driver.close()
+
+
+# ---------------------------------------------------------------------------
+# display names vs wire origins
+#
+# The apps were renamed (`rtl-buddy-sch`, `rtl-buddy-gph`,
+# `rtl-buddy-cov`); the `Origin` enum was not, and will not be until a
+# protocol v2 moves it in lockstep with rtl-buddy-view. The seam is the
+# origin→label map, so it gets a test of its own — and so does the wire
+# it must not have leaked into.
+# ---------------------------------------------------------------------------
+
+
+def test_the_origin_label_map_renames_only_the_display():
+    """`view` and `graph` are wire values with different display names;
+    everything else is passed through, including a peer origin this
+    build has never heard of — a blank chip in the strip would be worse
+    than an unfamiliar word."""
+
+    out = _node_eval(
+        _marked_js("origin-labels")
+        + """
+        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+                       'notebook', 'quantum'];
+        console.log(JSON.stringify(origins.map(originLabel)));
+        console.log(JSON.stringify([originLabel(null), originLabel(undefined),
+                                    originLabel('')]));
+        console.log(JSON.stringify(originLabel('toString')));
+        """
+    )
+    labelled, nullish, inherited = out.strip().splitlines()
+    assert json.loads(labelled) == [
+        "sch",
+        "gph",
+        "cov",
+        "wave",
+        "src",
+        "cli",
+        "notebook",
+        "quantum",
+    ]
+    assert json.loads(nullish) == ["", "", ""]
+    # `hasOwnProperty`, not `in`: an origin that collides with a name on
+    # Object.prototype must still come back as itself.
+    assert json.loads(inherited) == "toString"
+
+
+def test_every_rendered_origin_goes_through_the_map():
+    js = _page_js()
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    # the peer strip
+    assert "list.map(originLabel).join(', ')" in js
+    # the header switcher's sibling links
+    assert "originLabel(links[i].getAttribute('data-origin'))" in js
+    # the cross-app buttons and the cross-model button
+    assert "'send → ' + originLabel(app.origin)," in js
+    assert "els.fixView.textContent = originLabel('view') + ' → ' + target.model;" in js
+
+
+def test_the_rename_did_not_leak_into_the_wire():
+    """The fence for the display rebrand: the hub still speaks `view`,
+    `graph` and `cov`, and the schematic still lives at `/view`."""
+
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    assert "origin: 'graph', kind: 'request', type: 'hello'," in js
+    assert "origin: 'view'," in js  # the APPS entry addresses the wire value
+    assert "origin: 'cov'," in js
+    assert 'href="/view"' in body
+    assert "fetch('/view.json?model=' + encodeURIComponent(target.model))" in js

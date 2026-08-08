@@ -86,7 +86,7 @@ def test_regenerate_entry_point_is_source_checkout_only():
 
 def test_theme_tokens_the_apps_consume_exist():
     """The vocabulary #398 fixed, by name. Renaming one is a two-repo
-    change (the view SPA adopts the same sheet in Phase 0b), so it must
+    change (the schematic SPA adopts the same sheet in Phase 0b), so it must
     not happen by accident."""
 
     css = theme.THEME_CSS

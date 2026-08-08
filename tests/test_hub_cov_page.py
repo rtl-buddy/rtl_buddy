@@ -22,7 +22,7 @@ the graph pane. Six surfaces, in the order a user meets them:
    connects after the fact, which is what makes "send it before the tab
    is open" work.
 6. The version label in the status strip — one wording of "which build
-   am I looking at" shared with the graph pane and the view SPA, so its
+   am I looking at" shared with the graph pane and the schematic SPA, so its
    cases are asserted identically in all three.
 
 The page is static HTML plus one inline script, so what can be asserted
@@ -542,7 +542,7 @@ def _node(script: str) -> str:
 # ``"<client> client replaced by a newer registration"`` before closing
 # its socket. This pane used to send ``takeover: true`` on EVERY hello
 # and reconnect from every close, so two tabs of it evicted each other
-# every ~500 ms. The flow below is the view SPA's, mirrored: its
+# every ~500 ms. The flow below is the schematic SPA's, mirrored: its
 # ``_pendingTakeover`` / ``superseded`` handling in
 # ``viewer/src/composables/useHub.js`` (rtl-buddy-view). The graph pane
 # carries the same flow, and ``tests/test_hub_graph_page.py`` asserts it
@@ -1277,13 +1277,13 @@ def test_the_file_header_offers_a_send_for_every_sibling_app():
     body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
     js = _page_js()
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
-    assert "{ origin: 'graph', name: 'graph' }," in apps
-    assert "{ origin: 'view', name: 'view' }" in apps
+    assert "{ origin: 'graph', prose: 'the graph pane' }," in apps
+    assert "{ origin: 'view', prose: 'the schematic' }" in apps
     for route in ("/graph", "/view"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
-    assert "'send → ' + app.name," in row
-    assert "'open ' + app.name" not in row
+    assert "'send → ' + originLabel(app.origin)," in row
+    assert "'open ' + " not in row
     assert "window.open(" not in row
     # The row lands in the file header, beside the module pills.
     head = js.split("function renderFile() {")[1].split("\n  }")[0]
@@ -1315,7 +1315,7 @@ def test_the_send_row_speaks_for_the_first_module_pill():
 
 
 def test_both_sends_emit_the_one_broadcast_and_say_so():
-    """`send → graph` and `send → view` are the same envelope.
+    """`send → gph` and `send → sch` are the same envelope.
     That is not a bug — hub events are broadcasts and the SPA resolves
     `module:` targets too — but two buttons that do one thing have to
     admit it in their tooltips."""
@@ -1323,7 +1323,7 @@ def test_both_sends_emit_the_one_broadcast_and_say_so():
     js = _page_js()
     assert (
         "var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +\n"
-        "    'the graph pane AND the view, whichever of them is open.';" in js
+        "    'the graph pane AND the schematic, whichever of them is open.';" in js
     )
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert row.count("OVERLAP") == 1
@@ -1337,7 +1337,7 @@ def test_a_send_is_dark_when_its_app_is_not_connected():
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert "var live = hasPeer(app.origin);" in row
     assert "!base || !live," in row
-    assert "app.name + ' is not connected — open it from the header links'" in row
+    assert "app.prose + ' is not connected — open it from the header links'" in row
     # A file the model records no module for can address neither app.
     assert "!base ? NO_MODULE" in row
     assert "var NO_MODULE = 'This file records no module" in js
@@ -2096,3 +2096,59 @@ async def test_hub_state_reset_clears_the_cov_slot(bare_hub: HubServer):
     bare_hub.state.cov_focus = CovFocus(target="module:blk", origin=Origin.CLI)
     bare_hub.state.reset()
     assert bare_hub.state.cov_focus is None
+
+
+# ---------------------------------------------------------------------------
+# display names vs wire origins
+#
+# See the same section in ``tests/test_hub_graph_page.py``: the apps were
+# renamed, the ``Origin`` enum was not, and the origin→label map is the
+# seam between the two vocabularies. Each pane carries its own copy, so
+# each pane is tested for it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_origin_label_map_renames_only_the_display():
+    out = _node(
+        _marked_js("origin-labels")
+        + """
+        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+                       'notebook', 'quantum'];
+        console.log(JSON.stringify(origins.map(originLabel)));
+        console.log(JSON.stringify([originLabel(null), originLabel(undefined),
+                                    originLabel('')]));
+        console.log(JSON.stringify(originLabel('toString')));
+        """
+    )
+    labelled, nullish, inherited = out.strip().splitlines()
+    assert json.loads(labelled) == [
+        "sch",
+        "gph",
+        "cov",
+        "wave",
+        "src",
+        "cli",
+        "notebook",
+        "quantum",
+    ]
+    assert json.loads(nullish) == ["", "", ""]
+    assert json.loads(inherited) == "toString"
+
+
+def test_every_rendered_origin_goes_through_the_map():
+    js = _page_js()
+    # The same map, word for word, as the graph pane's and the landing's.
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    assert "list.map(originLabel).join(', ')" in js
+    assert "originLabel(links[i].getAttribute('data-origin'))" in js
+    assert "'send → ' + originLabel(app.origin)," in js
+
+
+def test_the_rename_did_not_leak_into_the_wire():
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    assert "origin: 'cov', kind: 'request', type: 'hello'," in js
+    assert "origin: 'graph'," in js  # the APPS entries address wire values
+    assert "origin: 'view'," in js
+    assert 'href="/view"' in body
+    assert 'href="/graph"' in body

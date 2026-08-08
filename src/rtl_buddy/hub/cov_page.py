@@ -33,7 +33,7 @@ The page is a hub *peer* registering as ``origin=cov``
 (:class:`~rtl_buddy.hub.protocol.Origin`), so it is open alongside the
 schematic and the graph rather than evicting them. Clicking a cold line
 emits ``source_focused`` (which the hub's resolver augments into a
-``selection_changed`` for the design view — the pane knows files and
+``selection_changed`` for the schematic — the pane knows files and
 modules, not instance paths, so deriving the instance on the hub is the
 only honest way to reach the schematic) and, on request, ``open_source``
 to the editor. ``rb hub send cov-focus <target>`` drives it from the

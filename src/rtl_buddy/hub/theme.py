@@ -4,7 +4,7 @@
 #
 """The hub's shared design tokens + brand assets (rtl-buddy/rtl_buddy#398).
 
-Every hub app — the landing page, the graph pane, the view SPA, the
+Every hub app — the landing page, the graph pane, the schematic SPA, the
 coverage pane — reads its surfaces, text tiers, accent, status colours,
 column hues and type scale from ONE sheet, served same-origin at
 :data:`THEME_CSS_ROUTE`. Same-origin is what keeps a pane "self-contained"

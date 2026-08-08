@@ -27,7 +27,7 @@ The page is a hub *peer*, registering as ``origin=graph`` (see
 :class:`~rtl_buddy.hub.protocol.Origin`) so it can be open at the same
 time as the schematic SPA rather than evicting it. Clicking a node
 emits the same envelopes the SPA emits: ``selection_changed`` for
-anything that resolves to a design-view instance path, ``open_source``
+anything that resolves to an instance path in the schematic, ``open_source``
 for anything that knows its file. ``rb hub send graph-focus <node>``
 drives it from the other direction.
 """
