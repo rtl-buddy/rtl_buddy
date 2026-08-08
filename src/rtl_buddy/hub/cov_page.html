@@ -222,6 +222,13 @@
        the click rather than after it. */
     .pill.act { cursor: pointer; }
     .pill.act:hover { border-color: var(--accent); color: var(--accent); }
+    /* The cross-app row in the file header: the pane's own buttons, one
+       size down, because they are about the open file rather than about
+       the pane. */
+    .actions { display: inline-flex; gap: .25rem; flex-wrap: wrap; }
+    .actions button { font-size: var(--fs-small); padding: .1rem .4rem; }
+    button:disabled { opacity: .45; cursor: default; }
+    button:disabled:hover { border-color: var(--line); }
     /* Pinned first row of the tests table: the merged view is a
        destination, not one of the tests. */
     tr.row.all-tests td { border-bottom: 1px solid var(--line-strong); }
@@ -655,9 +662,26 @@
     }
   }
 
+  // The latest peer list, kept rather than only printed: the file
+  // header's cross-app row asks it which sibling apps are open, and
+  // "send" to an app nobody is running is a click with no effect and no
+  // explanation.
+  var peers = [];
+
+  function hasPeer(origin) { return peers.indexOf(origin) >= 0; }
+
   function setPeers(list) {
     if (!Array.isArray(list)) { return; }
+    var next = list.slice().sort();
+    var changed = next.join(' ') !== peers.join(' ');
+    peers = next;
     els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+    // An app that just opened (or just closed) changes which of the file
+    // header's buttons are live, and the user is looking at that row
+    // right now — repaint it rather than leaving it a click behind.
+    // Only the row: re-rendering the file would throw away the scroll
+    // position and the open detail panel over a peer coming and going.
+    if (changed) { refreshActions(); }
   }
 
   // >>> version-label
@@ -1829,7 +1853,12 @@
     // you are looking at — and carries the elaborated names it stands
     // for in its tooltip; the graph is sent the source name, which is
     // the only one it has a node for.
+    // The first chip is the file's primary module: chips come out in the
+    // model's first-seen order, so this is what the header reads left to
+    // right, and the send buttons must agree with the row above them.
+    var primary = null;
     moduleChips(row.modules).forEach(function (chip) {
+      if (primary === null) { primary = chip.base; }
       var pill = elem('span', 'pill act', chip.base);
       var elaborated = chip.names.length > 1 || chip.names[0] !== chip.base
         ? 'elaborated as ' + chip.names.join(', ') + '\n' : '';
@@ -1838,6 +1867,9 @@
       pill.addEventListener('click', function () { focusModuleElsewhere(chip.base); });
       els.fileHead.appendChild(pill);
     });
+    actionsBase = primary;
+    actionsEl = renderActions(actionsBase);
+    els.fileHead.appendChild(actionsEl);
     // The elaboration lens, and only when there is a choice to make: a
     // segmented control on a file with one elaboration is a control
     // that can only say what is already true.
@@ -2040,9 +2072,91 @@
     var name = baseModuleName(base);
     if (emit('graph_focus', { node: 'module:' + name })) {
       note('graph-focus module:' + name);
-    } else {
-      note('hub not connected', 'error');
+      return true;
     }
+    note('hub not connected', 'error');
+    return false;
+  }
+
+  // ---------------------------------------------------------------
+  // cross-app actions
+  // ---------------------------------------------------------------
+
+  // Two controls per sibling app, because they answer two different
+  // questions. `send → X` puts the open file's module on the X tab that
+  // is already open and does not navigate. `open X ↗` emits the same
+  // envelope and THEN opens X in a new tab: the hub caches the latest
+  // graph_focus and replays it to each peer as it registers
+  // (`_replay_cached_state` in hub/server.py), so the fresh tab comes up
+  // already on that module. No deep links, no new wire types.
+  //
+  // Both apps are sent the SAME envelope, deliberately. `graph_focus
+  // {node:'module:<name>'}` is the graph pane's own vocabulary and the
+  // view SPA resolves `module:` targets as well, so the pair of buttons
+  // differ only in which tab they assume or open — the broadcast reaches
+  // whichever of the two is listening. The tooltips say so.
+  var APPS = [
+    { origin: 'graph', name: 'graph', route: '/graph' },
+    { origin: 'view', name: 'design view', route: '/view' }
+  ];
+
+  var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +
+    'the graph pane AND the design view, whichever of them is open.';
+  var NO_MODULE = 'This file records no module, so there is nothing to ' +
+    'point the other apps at.';
+
+  function actionButton(label, title, disabled, onClick) {
+    var b = elem('button', null, label);
+    b.title = title;
+    if (disabled) { b.disabled = true; } else { b.addEventListener('click', onClick); }
+    return b;
+  }
+
+  // One client per origin, and the hub honours `takeover` — so a second
+  // tab of an app that is already open evicts the first. `send` is what
+  // the user means in that case, which is why `open` goes dark and says
+  // so rather than quietly replacing a tab they were using.
+  function renderActions(base) {
+    var box = elem('div', 'actions');
+    APPS.forEach(function (app) {
+      var live = hasPeer(app.origin);
+      box.appendChild(actionButton(
+        'send → ' + app.name,
+        !base ? NO_MODULE
+           : !live ? app.name + ' is not connected — use open ↗'
+           : 'Send module:' + baseModuleName(base) + ' to the open ' +
+             app.name + ' tab, without leaving this one. ' + OVERLAP,
+        !base || !live,
+        function () { focusModuleElsewhere(base); }));
+      box.appendChild(actionButton(
+        'open ' + app.name + ' ↗',
+        !base ? NO_MODULE
+           : live ? app.name + ' is already open — use send → ' + app.name
+           : 'Open the ' + app.name + ' in a new tab, landed on module:' +
+             baseModuleName(base) + '. ' + OVERLAP,
+        !base || live,
+        // Emit first, open second — and do not open at all when the emit
+        // did not leave, because a tab opened on a stale cached focus is
+        // a worse answer than a status line saying the hub is down.
+        function () {
+          if (focusModuleElsewhere(base)) {
+            window.open(app.route, '_blank', 'noopener');
+          }
+        }));
+    });
+    return box;
+  }
+
+  // Rebuilt in place when the peer list moves. Only the row: re-rendering
+  // the file would throw away the scroll position and the open detail
+  // panel over a peer coming and going.
+  var actionsEl = null, actionsBase = null;
+
+  function refreshActions() {
+    if (!actionsEl || !actionsEl.parentNode) { return; }
+    var next = renderActions(actionsBase);
+    actionsEl.parentNode.replaceChild(next, actionsEl);
+    actionsEl = next;
   }
 
   // ---------------------------------------------------------------
@@ -2094,11 +2208,23 @@
     });
   }
 
+  // The wire spells a test `test:<suite>#<name>` — that is the schema's
+  // own example, what `rb hub send cov-focus` documents, and the id the
+  // graph pane carries. The coverage model keys tests by the BARE name
+  // (`cov/model.py` writes `artefacts.name`), so the qualified form is
+  // matched by its fragment rather than missed outright. Exact first, so
+  // a run whose test really is called `a#b` still wins.
   function focusTest(name) {
-    var known = ((state.payload && state.payload.tests) || []).some(function (row) {
-      return row.name === name;
-    });
-    if (!known) { return false; }
+    var rows = (state.payload && state.payload.tests) || [];
+    function known(candidate) {
+      return rows.some(function (row) { return row.name === candidate; });
+    }
+    if (!known(name)) {
+      var hash = String(name).lastIndexOf('#');
+      var bare = hash < 0 ? null : String(name).slice(hash + 1);
+      if (!bare || !known(bare)) { return false; }
+      name = bare;
+    }
     state.test = name;
     renderTests();
     if (state.file) { renderFile(); }

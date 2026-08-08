@@ -171,6 +171,13 @@
       display: inline-block; padding: 0 .4rem; border-radius: 999px;
       border: 1px solid currentColor; font-size: 11px;
     }
+    /* The cross-app row at the top of the inspector. Same buttons as the
+       header, one size down, because they are about the selection rather
+       than about the pane. */
+    .actions {
+      display: flex; gap: .25rem; flex-wrap: wrap; margin: 0 0 .6rem;
+    }
+    .actions button { font-size: var(--fs-small); padding: .15rem .4rem; }
     .edges { list-style: none; margin: .35rem 0 0; padding: 0; }
     .edges li { padding: .1rem 0; overflow-wrap: anywhere; }
     .edges a { color: var(--accent); text-decoration: none; cursor: pointer; }
@@ -544,9 +551,25 @@
     }
   }
 
+  // The latest peer list, kept rather than only printed: the inspector's
+  // cross-app row asks it which sibling apps are open, and "send" to an
+  // app nobody is running is a click with no effect and no explanation.
+  var peers = [];
+
+  function hasPeer(origin) { return peers.indexOf(origin) >= 0; }
+
   function setPeers(list) {
     if (!Array.isArray(list)) { return; }
+    var next = list.slice().sort();
+    var changed = next.join(' ') !== peers.join(' ');
+    peers = next;
     els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+    // An app that just opened (or just closed) changes which of the
+    // inspector's buttons are live, and the user is looking at that row
+    // right now — repaint it rather than leaving it a click behind.
+    // Only the row: re-rendering the inspector would throw its scroll
+    // position away over a peer coming and going.
+    if (changed) { refreshActions(); }
   }
 
   // >>> version-label
@@ -1182,6 +1205,56 @@
   }
   // <<< module-name
 
+  // >>> cov-target
+  // A graph node's coordinate in the COVERAGE model, or null when it has
+  // none. The vocabulary is `cov_focus.target` from the wire schema —
+  // `test:`, `module:` or `file:` — and the rule is "send what the cov
+  // pane's `applyFocus` can actually resolve", which is why each branch
+  // below names the thing it resolves against:
+  //
+  // * a `test:` node → the run's per-test attribution. The graph's id is
+  //   `test:<suite>#<name>`; the coverage model keys tests by the BARE
+  //   name (`cov/model.py` writes `artefacts.name`), so the fragment
+  //   after the last `#` is what lands. The id goes out whole anyway —
+  //   `focusTest` falls back to the fragment — because the suite is real
+  //   information the schema's own example carries.
+  // * a `model:`/`module:` node → the module, via the same derivation
+  //   the design view is sent (`moduleNameFor`); the cov pane resolves
+  //   the source name onto its elaborated keys itself.
+  // * a `coverage_item` node → its spec block read as a module, with the
+  //   metric pinned to `cover` and the item id as the point name. Both
+  //   narrowings are soft misses at the far end, so the worst case is
+  //   landing on the module with the cover column up.
+  // * anything else that has a `file` → that file, at its line. The
+  //   graph stores paths project-root-relative (`_rel(project_root, …)`
+  //   in the tier builders) and `/cov.json` keys files the same way, so
+  //   the path crosses verbatim.
+  //
+  // Order matters: a `module:` node has a `file` too, and the module is
+  // the better answer.
+  function covTargetFor(n) {
+    if (!n) { return null; }
+    var id = String(n.id == null ? '' : n.id);
+    if (n.type === 'test') {
+      return id.indexOf('test:') === 0 && id.length > 5 ? { target: id } : null;
+    }
+    var mod = moduleNameFor(n);
+    if (mod) { return { target: 'module:' + mod }; }
+    if (n.type === 'coverage_item') {
+      var block = n.block == null ? '' : String(n.block);
+      var item = n.label == null ? '' : String(n.label);
+      if (!block || !item) { return null; }
+      return { target: 'module:' + block, metric: 'cover', item: item };
+    }
+    var file = n.file == null ? '' : String(n.file);
+    if (!file) { return null; }
+    var out = { target: 'file:' + file };
+    var line = Number(n.line);
+    if (line >= 1) { out.line = Math.floor(line); }
+    return out;
+  }
+  // <<< cov-target
+
   // A selection whose root is not the design view's active model
   // highlights nothing there — which reads as "the view is stuck".
   // The cached model can be stale (the SPA picker switches without
@@ -1256,6 +1329,36 @@
       });
   });
 
+  // The envelope that puts the design view on a node, or null when the
+  // node is not a design coordinate at all. The instance path is the
+  // exact answer; without one the coarser module name still moves the
+  // view (it highlights every instance of that module — see
+  // `moduleNameFor`). The echo back from the hub is ignored either way:
+  // inbound graph_focus breaks on `origin === 'graph'`.
+  //
+  // Spelled as a value rather than inline, because two callers take this
+  // same decision: the click path below (gated on the `sync design view`
+  // checkbox) and the inspector's explicit `send → design view` button
+  // (which is not).
+  function viewTargetFor(n) {
+    var ip = instancePathFor(n);
+    if (ip) {
+      return {
+        type: 'selection_changed', payload: { instance_path: ip },
+        ip: ip, coord: ip, note: 'select ' + ip
+      };
+    }
+    var mod = moduleNameFor(n);
+    if (mod) {
+      return {
+        type: 'graph_focus', payload: { node: 'module:' + mod },
+        ip: null, coord: 'module:' + mod,
+        note: 'focus module:' + mod + ' in design view'
+      };
+    }
+    return null;
+  }
+
   function activate(n, opts) {
     opts = opts || {};
     state.selected = n.id;
@@ -1264,23 +1367,15 @@
     if (!opts.emit) { return; }
     var did = [];
     if (els.optSelect.checked) {
-      var ip = instancePathFor(n);
-      if (ip && emit('selection_changed', { instance_path: ip })) {
-        did.push('select ' + ip);
-        maybeWarnCrossModel(ip);
-      } else {
-        // No instance path, but often still a module — send the coarser
-        // coordinate rather than nothing (see `moduleNameFor`). The echo
-        // back from the hub is ignored: inbound graph_focus breaks on
-        // `origin === 'graph'`.
-        var mod = moduleNameFor(n);
-        if (mod && emit('graph_focus', { node: 'module:' + mod })) {
-          did.push('focus module:' + mod + ' in design view');
-        }
-        // No instance to select — a stale "view → X" would fix the
-        // wrong click.
-        setCrossModel(null);
-      }
+      var view = viewTargetFor(n);
+      var sent = !!view && emit(view.type, view.payload);
+      if (sent) { did.push(view.note); }
+      // The cross-model warning is about a selected INSTANCE. Anything
+      // else — a module fallback, an undeliverable send, a node the view
+      // cannot place — must clear it, or a stale "view → X" fixes the
+      // wrong click.
+      if (sent && view.ip) { maybeWarnCrossModel(view.ip); }
+      else { setCrossModel(null); }
     }
     if (els.optOpen.checked && n.file) {
       var payload = { file: String(n.file), line: n.line ? Number(n.line) : 1, col: 1 };
@@ -1325,6 +1420,110 @@
   }
 
   // ---------------------------------------------------------------
+  // cross-app actions
+  // ---------------------------------------------------------------
+
+  // Two controls per sibling app, because they answer two different
+  // questions. `send → X` puts the current selection on the X tab that
+  // is already open and does not navigate. `open X ↗` emits the same
+  // envelope and THEN opens X in a new tab: the hub caches the latest
+  // selection_changed / graph_focus / cov_focus and replays them to each
+  // peer as it registers (`_replay_cached_state` in hub/server.py), so
+  // the fresh tab comes up already on the selection. No deep links, no
+  // new wire types.
+  var APPS = [
+    {
+      origin: 'view', name: 'design view', route: '/view',
+      targetFor: viewTargetFor,
+      send: function (t) { return emit(t.type, t.payload); },
+      label: function (t) { return t.coord; },
+      after: function (t) { if (t.ip) { maybeWarnCrossModel(t.ip); } },
+      // Broadcast, not point-to-point: the coverage pane reads
+      // selection_changed too (it guesses a module off the leaf name).
+      overlap: 'This is a hub broadcast — an instance-path send also ' +
+        'nudges the coverage pane, which resolves instance paths onto ' +
+        'modules of its own accord.',
+      why: 'this node is not a design coordinate — no instance path and no module name'
+    },
+    {
+      origin: 'cov', name: 'coverage', route: '/cov',
+      targetFor: covTargetFor,
+      send: function (t) { return emit('cov_focus', t); },
+      label: function (t) {
+        return t.target + (t.line ? ':' + t.line : '') + (t.item ? ' ' + t.item : '');
+      },
+      after: function () {},
+      overlap: 'cov_focus is read by the coverage pane only.',
+      why: 'nothing the coverage pane can focus on this node — no test, module or file'
+    }
+  ];
+
+  function sendTo(app, n) {
+    var t = app.targetFor(n);
+    if (!t) { note(app.why, 'warn'); return false; }
+    if (!app.send(t)) { note('hub not connected', 'error'); return false; }
+    note('sent to ' + app.name + ': ' + app.label(t));
+    app.after(t);
+    return true;
+  }
+
+  // Emit first, open second — and do not open at all when the emit did
+  // not leave, because a tab opened on a stale cached focus is a worse
+  // answer than a status line saying the hub is down.
+  function openWith(app, n) {
+    if (!sendTo(app, n)) { return; }
+    window.open(app.route, '_blank', 'noopener');
+  }
+
+  function actionButton(label, title, disabled, onClick) {
+    var b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    if (disabled) { b.disabled = true; } else { b.addEventListener('click', onClick); }
+    return b;
+  }
+
+  // One client per origin, and the hub honours `takeover` — so a second
+  // tab of an app that is already open evicts the first. `send` is what
+  // the user means in that case, which is why `open` goes dark and says
+  // so rather than quietly replacing a tab they were using.
+  function renderActions(n) {
+    var box = document.createElement('div');
+    box.className = 'actions';
+    APPS.forEach(function (app) {
+      var t = app.targetFor(n);
+      var live = hasPeer(app.origin);
+      box.appendChild(actionButton(
+        'send → ' + app.name,
+        !t ? app.why
+           : !live ? app.name + ' is not connected — use open ↗'
+           : 'Send ' + app.label(t) + ' to the open ' + app.name +
+             ' tab, without leaving this one. ' + app.overlap,
+        !t || !live,
+        function () { sendTo(app, n); }));
+      box.appendChild(actionButton(
+        'open ' + app.name + ' ↗',
+        !t ? app.why
+           : live ? app.name + ' is already open — use send → ' + app.name
+           : 'Open the ' + app.name + ' in a new tab, landed on ' +
+             app.label(t) + '. ' + app.overlap,
+        !t || live,
+        function () { openWith(app, n); }));
+    });
+    return box;
+  }
+
+  // Rebuilt in place when the peer list moves — see `setPeers`.
+  var actionsEl = null, actionsNode = null;
+
+  function refreshActions() {
+    if (!actionsEl || !actionsEl.parentNode || !actionsNode) { return; }
+    var next = renderActions(actionsNode);
+    actionsEl.parentNode.replaceChild(next, actionsEl);
+    actionsEl = next;
+  }
+
+  // ---------------------------------------------------------------
   // inspector
   // ---------------------------------------------------------------
 
@@ -1343,6 +1542,7 @@
 
   function renderInspector(n) {
     els.inspector.textContent = '';
+    actionsEl = null; actionsNode = n || null;
     if (!n) {
       var hint = document.createElement('p');
       hint.className = 'muted';
@@ -1350,6 +1550,11 @@
       els.inspector.appendChild(hint);
       return;
     }
+    // First, above the identity: the row is about what you can DO with
+    // the selection, and it must not need a scroll on a node with fifty
+    // edges to be found.
+    actionsEl = renderActions(n);
+    els.inspector.appendChild(actionsEl);
     var dl = document.createElement('dl');
     dl.className = 'kv';
     row(dl, 'id', n.id);

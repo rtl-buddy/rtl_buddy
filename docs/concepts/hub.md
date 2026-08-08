@@ -262,6 +262,17 @@ Every hub app implements the same two strips, so moving between them costs nothi
 
 Detail that does not fit the vocabulary (the hub's `server_version`, the reason a socket dropped) belongs in the element's `title`, not in the status word — a strip that says four different things for "connected" is a strip nobody reads.
 
+### Sending the selection to another app
+
+The switcher opens a sibling app; it does not carry what you were looking at. Each pane therefore offers, beside the thing that is selected, **two controls per sibling app**:
+
+- **`send → X`** — broadcast the selection in X's vocabulary and stay where you are. For an X tab that is already open, this is the whole interaction.
+- **`open X ↗`** — the same broadcast, and *then* a new tab on X's route. It lands focused for free: the hub caches the latest `selection_changed`, `graph_focus` and `cov_focus`, and replays them to every client as it registers, so the tab that opens a moment later is told what to show. No deep links and no extra wire types are involved. If the broadcast cannot leave (hub down), no tab is opened — it would come up on whatever was cached last — and the status strip says so instead.
+
+Enablement follows the peer list in the status strip: `send` is dark when nobody is running X (nothing would see it — the tooltip points at `open ↗`), and `open` is dark when X *is* running, because the hub allows [one client per origin](#peers-who-connects-to-the-hub) and a second tab would evict the first (the tooltip points back at `send →`).
+
+These are **broadcasts, not point-to-point sends**, and the vocabularies overlap on purpose: `graph_focus {node:"module:…"}` is understood by the graph pane *and* the schematic view, and `selection_changed` moves the coverage pane as well as the schematic. So a send aimed at one app may legitimately move another. Where two buttons emit the identical envelope, the tooltips say so rather than pretending the pair are independent.
+
 ## Peers (who connects to the hub)
 
 | Peer | Transport | How it connects |
@@ -322,6 +333,8 @@ Clicking a node sends the same envelopes the SPA sends, over the same `/ws`:
 
 Both are individually toggleable in the pane's toolbar. The reverse direction works too: `rb hub send graph-focus NODE` centres and selects a node, and a `selection_changed` from the SPA or the editor highlights the matching instance node in the graph.
 
+The inspector heads the selected node with the [cross-app row](#sending-the-selection-to-another-app): `send → design view` re-sends the coordinate above *without* the `sync design view` toggle having to be on, and `send → coverage` translates the node into a `cov_focus` target — a `test:` node to that test's attribution, a `model:`/`module:` node to the module, a spec `coverage_item` to its block with the cover column up and the item named, and anything else that knows its `file` to that file and line. A node that is none of those leaves both buttons dark and says why.
+
 When a graph exists, the index page also gets a `window.__RTL_BUDDY_GRAPH_URL__ = "/graph.json"` injection alongside `__RTL_BUDDY_VIEW_URL__`, so an SPA overlay can advertise the pane on presence of the global instead of probing the endpoint and handling a 404.
 
 ## Coverage pane
@@ -346,7 +359,9 @@ Clicking a line sends the same envelopes the other panes send, over the same `/w
 - **`open_source`** (routed to the `src` peer, i.e. nvim) at the clicked line.
 - **`graph_focus`** `{node: "module:<name>"}` when you click a module chip, since `module:<name>` is the id that module carries in the graph.
 
-Both directions work: `rb hub send cov-focus <target>` focuses the pane (replayed on connect, so it lands even before the tab is open), an editor's `source_focused` scrolls it to the matching file and line, and a `selection_changed` from the SPA is matched to a module by the usual instance-prefix convention (`u_`, `i_`, `inst_`, `dut_`) — a soft miss when the convention does not hold, since nothing in either model says which module an instance is of.
+The file header carries the [cross-app row](#sending-the-selection-to-another-app) beside those chips, for the open file's first module: `send → graph` and `send → design view` both broadcast that one `graph_focus`, since the graph pane and the schematic view read the same `module:` vocabulary — the two buttons differ only in which tab they assume or open, and their tooltips say so.
+
+Both directions work: `rb hub send cov-focus <target>` focuses the pane (replayed on connect, so it lands even before the tab is open), an editor's `source_focused` scrolls it to the matching file and line, and a `selection_changed` from the SPA is matched to a module by the usual instance-prefix convention (`u_`, `i_`, `inst_`, `dut_`) — a soft miss when the convention does not hold, since nothing in either model says which module an instance is of. A `test:` target is matched on the model's bare test name, and a qualified `test:<suite>#<name>` — the form the schema and `rb hub send cov-focus` document — falls back to its `#` fragment.
 
 When a coverage manifest exists, the SPA index also gets a `window.__RTL_BUDDY_COV_URL__ = "/cov.json"` injection, the same presence-advertisement `__RTL_BUDDY_GRAPH_URL__` uses. Discovery is a bounded walk rather than one `stat` (coverage artefacts land wherever the command ran), so the answer is cached for a few seconds — a run finishing elsewhere shows up on the landing page's next poll but one.
 

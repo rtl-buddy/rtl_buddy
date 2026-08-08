@@ -644,21 +644,31 @@ def test_a_node_without_an_instance_still_syncs_the_design_view():
     broadcast nothing at all. The fallback emits the wire type the cov
     pane already sends, ``graph_focus {node: 'module:<name>'}``.
 
-    ``activate`` closes over the page's DOM, so this is asserted on the
-    source rather than in ``node``.
+    The choice lives in ``viewTargetFor`` — the click path and the
+    inspector's explicit ``send → design view`` button must take it
+    identically, and duplicating it is how they stop being identical.
+    Both it and ``activate`` close over the page's DOM (``state.inc``,
+    ``els``), so this is asserted on the source rather than in ``node``.
     """
 
     js = _page_js()
-    assert "var mod = moduleNameFor(n);" in js
-    assert "if (mod && emit('graph_focus', { node: 'module:' + mod })) {" in js
-    assert "did.push('focus module:' + mod + ' in design view');" in js
-    # The instance path still wins, and the cross-model warning is still
-    # cleared on the fallback branch.
-    assert "if (ip && emit('selection_changed', { instance_path: ip })) {" in js
-    fallback = js.split("var mod = moduleNameFor(n);")[1]
-    assert fallback.index("setCrossModel(null);") < fallback.index(
-        "els.optOpen.checked"
-    )
+    derivation = js.split("function viewTargetFor(n) {")[1].split("\n  }")[0]
+    # The instance path still wins…
+    assert "var ip = instancePathFor(n);" in derivation
+    assert "type: 'selection_changed', payload: { instance_path: ip }," in derivation
+    # …and the module name is the fallback, not a second send.
+    assert "var mod = moduleNameFor(n);" in derivation
+    assert "type: 'graph_focus', payload: { node: 'module:' + mod }," in derivation
+    assert derivation.index("instancePathFor") < derivation.index("moduleNameFor")
+    assert "note: 'focus module:' + mod + ' in design view'" in derivation
+    # One emit per click, off the one derivation.
+    click = js.split("if (els.optSelect.checked) {")[1].split("\n    }")[0]
+    assert "var view = viewTargetFor(n);" in click
+    assert "var sent = !!view && emit(view.type, view.payload);" in click
+    # The cross-model warning is armed only for a delivered instance path,
+    # and cleared for everything else — including a send that never left.
+    assert "if (sent && view.ip) { maybeWarnCrossModel(view.ip); }" in click
+    assert "else { setCrossModel(null); }" in click
     # Self-echo is harmless: inbound graph_focus ignores our own origin.
     assert "case 'graph_focus':\n        if (env.origin === 'graph') { break; }" in js
 
@@ -671,6 +681,190 @@ def test_the_sync_toggle_advertises_the_module_fallback():
         '<label class="chk" title="'
     )[-1]
     assert "highlight all instances of their module" in tooltip
+
+
+# ---------------------------------------------------------------------------
+# cross-app send / open
+#
+# Two controls per sibling app: `send → X` puts the selection on the tab
+# already open, `open X ↗` emits the same envelope and then opens the tab,
+# which lands focused because ``HubServer._replay_cached_state`` unicasts
+# the cached focus slots to every peer as it registers.
+# ---------------------------------------------------------------------------
+
+
+def _cov_target_js() -> str:
+    """``covTargetFor`` builds on ``moduleNameFor``, so it is sliced on
+    top of the block that defines it — the same way the cov pane's lens
+    helpers are sliced on top of ``module-names``."""
+
+    return _marked_js("module-name") + _marked_js("cov-target")
+
+
+def test_a_graph_node_maps_onto_a_coverage_target():
+    """``cov_focus.target`` is prefixed — ``test:``, ``module:`` or
+    ``file:`` — and each branch has to name something the cov pane's
+    ``applyFocus`` can actually resolve, not merely something the schema
+    accepts."""
+
+    out = _node_eval(
+        _cov_target_js()
+        + """
+        var nodes = [
+          // A test: the run's per-test attribution, qualified by suite
+          // the way the schema's own example spells it.
+          { id: 'test:verif/fifo#smoke', type: 'test', label: 'smoke',
+            file: 'verif/fifo/tests.yaml', line: 4 },
+          // A model is named after its top module (moduleNameFor).
+          { id: 'model:design/common/models.yaml#ip_async_fifo', type: 'model' },
+          // A module node has a `file` too — the module is the better
+          // answer, so it must win.
+          { id: 'module:fifo', type: 'module',
+            file: 'design/fifo/src/fifo.sv', line: 3 },
+          // A spec coverage item: its block read as a module, with the
+          // cover column up and the item id as the point name.
+          { id: 'covitem:fifo#REQ-1', type: 'coverage_item', label: 'REQ-1',
+            block: 'fifo', file: 'spec/fifo/spec.yaml', line: 9 },
+          // Anything else with a file: the file, at its line. Paths are
+          // project-root-relative on both sides, so they cross verbatim.
+          { id: 'inst:fifo/fifo.u_wr', type: 'instance',
+            file: 'design/fifo/src/fifo.sv', line: 9 },
+          { id: 'tb:verif/fifo#tb_fifo', type: 'testbench',
+            file: 'verif/fifo/tb_fifo.sv' },
+          // No test, no module, no file — nothing to point cov at.
+          { id: 'suite:verif/fifo', type: 'suite' },
+          { id: 'test:', type: 'test' },
+          { id: 'covitem:fifo#REQ-2', type: 'coverage_item', label: 'REQ-2' }
+        ];
+        console.log(JSON.stringify(nodes.map(covTargetFor)));
+        console.log(JSON.stringify([covTargetFor(null), covTargetFor(undefined)]));
+        """
+    )
+    mapped, nullish = out.strip().splitlines()
+    assert json.loads(mapped) == [
+        {"target": "test:verif/fifo#smoke"},
+        {"target": "module:ip_async_fifo"},
+        {"target": "module:fifo"},
+        {"target": "module:fifo", "metric": "cover", "item": "REQ-1"},
+        {"target": "file:design/fifo/src/fifo.sv", "line": 9},
+        # No line on the node, no line on the wire — the field is
+        # optional and 0 is not a legal one.
+        {"target": "file:verif/fifo/tb_fifo.sv"},
+        None,
+        None,
+        # A coverage item with no block names no module.
+        None,
+    ]
+    assert json.loads(nullish) == [None, None]
+
+
+def test_the_inspector_offers_send_and_open_for_every_sibling_app():
+    """Two controls per app, and the row sits above the identity: it is
+    about what you can do with the selection, and a node with fifty edges
+    must not push it out of sight."""
+
+    js = _page_js()
+    assert "els.inspector.appendChild(actionsEl);" in js
+    inspector = js.split("function renderInspector(n) {")[1]
+    assert inspector.index("actionsEl = renderActions(n);") < inspector.index(
+        "row(dl, 'id', n.id);"
+    )
+    apps = js.split("var APPS = [")[1].split("\n  ];")[0]
+    # The vocabulary each app is addressed in, and the route it opens on
+    # — the same routes the header switcher links to.
+    assert "origin: 'view', name: 'design view', route: '/view'," in apps
+    assert "origin: 'cov', name: 'coverage', route: '/cov'," in apps
+    assert "targetFor: viewTargetFor," in apps
+    assert "send: function (t) { return emit(t.type, t.payload); }," in apps
+    assert "targetFor: covTargetFor," in apps
+    assert "send: function (t) { return emit('cov_focus', t); }," in apps
+    # Both controls, per app, off the one target derivation.
+    row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
+    assert "var t = app.targetFor(n);" in row
+    assert "'send → ' + app.name," in row
+    assert "'open ' + app.name + ' ↗'," in row
+    assert "function () { sendTo(app, n); }" in row
+    assert "function () { openWith(app, n); }" in row
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    for route in ("/view", "/cov"):
+        assert f'<a href="{route}" target="_blank" rel="noopener"' in body
+
+
+def test_send_ignores_the_sync_checkbox():
+    """The checkbox governs what a CLICK broadcasts. An explicit
+    ``send → design view`` is the user asking for it in so many words,
+    so it must not be gated on a toggle they never touched."""
+
+    js = _page_js()
+    send = js.split("function sendTo(app, n) {")[1].split("\n  }")[0]
+    assert "els.optSelect" not in send
+    assert "var t = app.targetFor(n);" in send
+    assert (
+        "if (!app.send(t)) { note('hub not connected', 'error'); return false; }"
+        in (send)
+    )
+    # …and the same "nothing to send" wording the click path uses.
+    assert "if (!t) { note(app.why, 'warn'); return false; }" in send
+
+
+def test_a_send_is_dark_when_its_app_is_not_connected():
+    """`send` pushes to a tab that is already open; with no such tab the
+    envelope goes nowhere visible. `open` is the answer then, and the
+    tooltip says so rather than leaving a dead button."""
+
+    js = _page_js()
+    row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
+    assert "var live = hasPeer(app.origin);" in row
+    assert "!t || !live," in row
+    assert "app.name + ' is not connected — use open ↗'" in row
+    # The peer list is kept, not merely printed, and the row repaints
+    # when it moves.
+    assert "function hasPeer(origin) { return peers.indexOf(origin) >= 0; }" in js
+    assert "peers = next;" in js
+    assert "if (changed) { refreshActions(); }" in js
+
+
+def test_open_is_dark_when_its_app_is_already_running():
+    """One client per origin and the hub honours ``takeover``, so a
+    second tab evicts the first. The panes reconnect unconditionally, so
+    two tabs of one pane trade the slot back and forth — `send` is what
+    the user meant, and `open` says so instead of starting that."""
+
+    js = _page_js()
+    row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
+    assert "live ? app.name + ' is already open — use send → ' + app.name" in row
+    assert "!t || live," in row
+
+
+def test_a_tab_is_only_opened_once_the_envelope_has_left():
+    """The whole trick is ``_replay_cached_state``: the hub unicasts its
+    cached focus slots to each peer as it registers, so a tab opened
+    AFTER the emit comes up on the selection. A tab opened after a failed
+    emit would come up on whatever was cached last, which is worse than
+    not opening at all."""
+
+    js = _page_js()
+    open_with = js.split("function openWith(app, n) {")[1].split("\n  }")[0]
+    assert "if (!sendTo(app, n)) { return; }" in open_with
+    assert open_with.index("sendTo(app, n)") < open_with.index("window.open(")
+    assert "window.open(app.route, '_blank', 'noopener');" in open_with
+    # No deep link, and no new wire type: the three the hub already
+    # replays are the three used here.
+    assert "?focus=" not in js
+    assert "#node=" not in js
+
+
+def test_the_tooltips_own_up_to_the_broadcast():
+    """A focus event is a broadcast, not a point-to-point send: an
+    instance path aimed at the design view also moves the coverage pane,
+    which resolves instance paths onto modules of its own accord."""
+
+    js = _page_js()
+    apps = js.split("var APPS = [")[1].split("\n  ];")[0]
+    assert "This is a hub broadcast" in apps
+    assert "cov_focus is read by the coverage pane only." in apps
+    row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
+    assert row.count("app.overlap") == 2
 
 
 def test_page_javascript_parses(tmp_path: Path):

@@ -1120,6 +1120,141 @@ def test_inbound_focus_resolves_before_it_filters():
 
 
 # ---------------------------------------------------------------------------
+# cross-app send / open
+#
+# Two controls per sibling app in the file header: `send → X` puts the
+# open file's module on the tab already open, `open X ↗` emits the same
+# envelope and then opens the tab, which lands focused because
+# ``HubServer._replay_cached_state`` unicasts the cached ``graph_focus``
+# to every peer as it registers.
+# ---------------------------------------------------------------------------
+
+
+def test_the_file_header_offers_send_and_open_for_every_sibling_app():
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    apps = js.split("var APPS = [")[1].split("\n  ];")[0]
+    # The routes are the header switcher's, not a second set of links.
+    assert "{ origin: 'graph', name: 'graph', route: '/graph' }," in apps
+    assert "{ origin: 'view', name: 'design view', route: '/view' }" in apps
+    for route in ("/graph", "/view"):
+        assert f'<a href="{route}" target="_blank" rel="noopener"' in body
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert "'send → ' + app.name," in row
+    assert "'open ' + app.name + ' ↗'," in row
+    # The row lands in the file header, beside the module pills.
+    head = js.split("function renderFile() {")[1].split("\n  }")[0]
+    assert "actionsEl = renderActions(actionsBase);" in head
+    assert "els.fileHead.appendChild(actionsEl);" in head
+    assert head.index("moduleChips(row.modules).forEach") < head.index(
+        "els.fileHead.appendChild(actionsEl);"
+    )
+    assert ".actions { display: inline-flex; gap: .25rem; flex-wrap: wrap; }" in body
+
+
+def test_the_send_row_speaks_for_the_first_module_pill():
+    """Chips come out in the model's first-seen order, so the first one
+    is what the header reads left to right — and a button row that
+    disagreed with the pills beside it would be answering about a module
+    the reader cannot see it chose."""
+
+    js = _page_js()
+    head = js.split("function renderFile() {")[1].split("\n  }")[0]
+    assert "var primary = null;" in head
+    assert "if (primary === null) { primary = chip.base; }" in head
+    assert "actionsBase = primary;" in head
+    # Both controls go through the pill's own path, so the wire carries
+    # the SOURCE name exactly as a pill click does.
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert row.count("focusModuleElsewhere(base)") == 2
+    assert "emit('graph_focus', { node: 'module:' + name })" in js
+    assert "var name = baseModuleName(base);" in js
+
+
+def test_both_sends_emit_the_one_broadcast_and_say_so():
+    """`send → graph` and `send → design view` are the same envelope.
+    That is not a bug — hub events are broadcasts and the SPA resolves
+    `module:` targets too — but two buttons that do one thing have to
+    admit it in their tooltips."""
+
+    js = _page_js()
+    assert (
+        "var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +\n"
+        "    'the graph pane AND the design view, whichever of them is open.';" in js
+    )
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert row.count("OVERLAP") == 2
+    # No second wire type invented for the SPA's benefit.
+    assert row.count("emit(") == 0
+    assert "selection_changed" not in row
+
+
+def test_a_send_is_dark_when_its_app_is_not_connected():
+    js = _page_js()
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert "var live = hasPeer(app.origin);" in row
+    assert "!base || !live," in row
+    assert "app.name + ' is not connected — use open ↗'" in row
+    # A file the model records no module for can address neither app.
+    assert "!base ? NO_MODULE" in row
+    assert "var NO_MODULE = 'This file records no module" in js
+    # The peer list is kept, not merely printed, and only the row
+    # repaints when it moves — re-rendering the file would throw the
+    # scroll position and the open detail panel away.
+    assert "function hasPeer(origin) { return peers.indexOf(origin) >= 0; }" in js
+    assert "if (changed) { refreshActions(); }" in js
+    refresh = js.split("function refreshActions() {")[1].split("\n  }")[0]
+    assert "actionsEl.parentNode.replaceChild(next, actionsEl);" in refresh
+
+
+def test_open_is_dark_when_its_app_is_already_running():
+    """One client per origin and the hub honours ``takeover``, so a
+    second tab evicts the first — and the panes reconnect
+    unconditionally, so two tabs of one pane trade the slot back and
+    forth. `send` is what the user meant."""
+
+    js = _page_js()
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert "live ? app.name + ' is already open — use send → ' + app.name" in row
+    assert "!base || live," in row
+
+
+def test_a_tab_is_only_opened_once_the_envelope_has_left():
+    """A tab opened after a failed emit comes up on whatever the hub
+    cached last, which is worse than not opening it — so the emit's
+    verdict gates the open, and `focusModuleElsewhere` returns one."""
+
+    js = _page_js()
+    focus = js.split("function focusModuleElsewhere(base) {")[1].split("\n  }")[0]
+    assert "note('graph-focus module:' + name);\n      return true;" in focus
+    assert "note('hub not connected', 'error');\n    return false;" in focus
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert "if (focusModuleElsewhere(base)) {" in row
+    assert "window.open(app.route, '_blank', 'noopener');" in row
+    assert row.index("focusModuleElsewhere(base)) {") < row.index("window.open(")
+    # No deep link and no new wire type: the replayed graph_focus is the
+    # whole mechanism.
+    assert "?focus=" not in js
+    assert "#module=" not in js
+
+
+def test_a_qualified_test_target_matches_the_models_bare_name():
+    """The wire spells a test ``test:<suite>#<name>`` — the schema's own
+    example and what ``rb hub send cov-focus`` documents — while
+    ``/cov.json`` keys tests by the bare name. Without the fragment
+    fallback the documented form is a guaranteed soft miss."""
+
+    js = _page_js()
+    focus = js.split("function focusTest(name) {")[1].split("\n  }")[0]
+    assert "if (!known(name)) {" in focus
+    assert "var hash = String(name).lastIndexOf('#');" in focus
+    assert "var bare = hash < 0 ? null : String(name).slice(hash + 1);" in focus
+    assert "if (!bare || !known(bare)) { return false; }" in focus
+    # Exact first, so a run whose test really is called `a#b` still wins.
+    assert focus.index("if (!known(name)) {") < focus.index("lastIndexOf('#')")
+
+
+# ---------------------------------------------------------------------------
 # the elaboration lens
 # ---------------------------------------------------------------------------
 
