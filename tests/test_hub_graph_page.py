@@ -824,16 +824,25 @@ def test_a_send_is_dark_when_its_app_is_not_connected():
     assert "if (changed) { refreshActions(); }" in js
 
 
-def test_open_is_dark_when_its_app_is_already_running():
-    """One client per origin and the hub honours ``takeover``, so a
-    second tab evicts the first. The panes reconnect unconditionally, so
-    two tabs of one pane trade the slot back and forth — `send` is what
-    the user meant, and `open` says so instead of starting that."""
+def test_open_stays_live_even_when_its_app_is_already_running():
+    """``open ↗`` used to go dark for an origin that already had a peer,
+    because both tabs then sent ``takeover: true`` on every hello and
+    reconnected unconditionally — they evicted each other forever. With
+    the superseded tab standing down and offering the slot back, taking
+    over is a clean handover, so the button is live whenever a target
+    derives and the tooltip names what the click costs."""
 
     js = _page_js()
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
-    assert "live ? app.name + ' is already open — use send → ' + app.name" in row
-    assert "!t || live," in row
+    assert "is already open — use send" not in row
+    open_arm = row.split("'open ' + app.name + ' ↗',")[1]
+    # Gated on the target alone; `live` no longer disables anything here.
+    assert "        !t,\n        function () { openWith(app, n); }" in open_arm
+    assert "' — replaces the currently open ' + app.name +" in open_arm
+    assert "' tab’s hub connection' : '')" in open_arm
+    # The send arm's gating is untouched: an envelope nobody is listening
+    # for is still a click with no effect.
+    assert "!t || !live," in row
 
 
 def test_a_tab_is_only_opened_once_the_envelope_has_left():

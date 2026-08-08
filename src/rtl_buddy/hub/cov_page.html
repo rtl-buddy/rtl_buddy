@@ -2236,10 +2236,12 @@
     return b;
   }
 
-  // One client per origin, and the hub honours `takeover` — so a second
-  // tab of an app that is already open evicts the first. `send` is what
-  // the user means in that case, which is why `open` goes dark and says
-  // so rather than quietly replacing a tab they were using.
+  // One client per origin, so opening an app that is already open takes
+  // the hub slot off the tab that has it. That is now a clean handover
+  // rather than a fight — the evicted tab is told it was superseded,
+  // stops reconnecting and offers to take the slot back (`handleHubError`
+  // above) — so `open ↗` stays live whenever there is something to send,
+  // and the tooltip names the cost instead of the button going dark.
   function renderActions(base) {
     var box = elem('div', 'actions');
     APPS.forEach(function (app) {
@@ -2255,10 +2257,11 @@
       box.appendChild(actionButton(
         'open ' + app.name + ' ↗',
         !base ? NO_MODULE
-           : live ? app.name + ' is already open — use send → ' + app.name
            : 'Open the ' + app.name + ' in a new tab, landed on module:' +
-             baseModuleName(base) + '. ' + OVERLAP,
-        !base || live,
+             baseModuleName(base) + '. ' + OVERLAP +
+             (live ? ' — replaces the currently open ' + app.name +
+                     ' tab’s hub connection' : ''),
+        !base,
         // Emit first, open second — and do not open at all when the emit
         // did not leave, because a tab opened on a stale cached focus is
         // a worse answer than a status line saying the hub is down.
