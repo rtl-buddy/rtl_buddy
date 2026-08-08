@@ -1263,28 +1263,28 @@ def test_inbound_focus_resolves_before_it_filters():
 
 
 # ---------------------------------------------------------------------------
-# cross-app send / open
+# cross-app send
 #
-# Two controls per sibling app in the file header: `send → X` puts the
-# open file's module on the tab already open, `open X ↗` emits the same
-# envelope and then opens the tab, which lands focused because
-# ``HubServer._replay_cached_state`` unicasts the cached ``graph_focus``
-# to every peer as it registers.
+# One control per sibling app in the file header: `send → X` puts the
+# open file's module on the tab already open. Opening an app fresh is
+# the header switcher's job — no open-↗ variants (they were redundant
+# with those links, and ``HubServer._replay_cached_state`` lands a
+# late-opened tab on the current focus anyway).
 # ---------------------------------------------------------------------------
 
 
-def test_the_file_header_offers_send_and_open_for_every_sibling_app():
+def test_the_file_header_offers_a_send_for_every_sibling_app():
     body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
     js = _page_js()
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
-    # The routes are the header switcher's, not a second set of links.
-    assert "{ origin: 'graph', name: 'graph', route: '/graph' }," in apps
-    assert "{ origin: 'view', name: 'design view', route: '/view' }" in apps
+    assert "{ origin: 'graph', name: 'graph' }," in apps
+    assert "{ origin: 'view', name: 'view' }" in apps
     for route in ("/graph", "/view"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert "'send → ' + app.name," in row
-    assert "'open ' + app.name + ' ↗'," in row
+    assert "'open ' + app.name" not in row
+    assert "window.open(" not in row
     # The row lands in the file header, beside the module pills.
     head = js.split("function renderFile() {")[1].split("\n  }")[0]
     assert "actionsEl = renderActions(actionsBase);" in head
@@ -1306,16 +1306,16 @@ def test_the_send_row_speaks_for_the_first_module_pill():
     assert "var primary = null;" in head
     assert "if (primary === null) { primary = chip.base; }" in head
     assert "actionsBase = primary;" in head
-    # Both controls go through the pill's own path, so the wire carries
+    # The send goes through the pill's own path, so the wire carries
     # the SOURCE name exactly as a pill click does.
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
-    assert row.count("focusModuleElsewhere(base)") == 2
+    assert row.count("focusModuleElsewhere(base)") == 1
     assert "emit('graph_focus', { node: 'module:' + name })" in js
     assert "var name = baseModuleName(base);" in js
 
 
 def test_both_sends_emit_the_one_broadcast_and_say_so():
-    """`send → graph` and `send → design view` are the same envelope.
+    """`send → graph` and `send → view` are the same envelope.
     That is not a bug — hub events are broadcasts and the SPA resolves
     `module:` targets too — but two buttons that do one thing have to
     admit it in their tooltips."""
@@ -1323,10 +1323,10 @@ def test_both_sends_emit_the_one_broadcast_and_say_so():
     js = _page_js()
     assert (
         "var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +\n"
-        "    'the graph pane AND the design view, whichever of them is open.';" in js
+        "    'the graph pane AND the view, whichever of them is open.';" in js
     )
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
-    assert row.count("OVERLAP") == 2
+    assert row.count("OVERLAP") == 1
     # No second wire type invented for the SPA's benefit.
     assert row.count("emit(") == 0
     assert "selection_changed" not in row
@@ -1337,7 +1337,7 @@ def test_a_send_is_dark_when_its_app_is_not_connected():
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert "var live = hasPeer(app.origin);" in row
     assert "!base || !live," in row
-    assert "app.name + ' is not connected — use open ↗'" in row
+    assert "app.name + ' is not connected — open it from the header links'" in row
     # A file the model records no module for can address neither app.
     assert "!base ? NO_MODULE" in row
     assert "var NO_MODULE = 'This file records no module" in js
@@ -1350,44 +1350,19 @@ def test_a_send_is_dark_when_its_app_is_not_connected():
     assert "actionsEl.parentNode.replaceChild(next, actionsEl);" in refresh
 
 
-def test_open_stays_live_even_when_its_app_is_already_running():
-    """``open ↗`` used to go dark for an origin that already had a peer,
-    because both tabs then sent ``takeover: true`` on every hello and
-    reconnected unconditionally — they evicted each other forever. With
-    the superseded tab standing down and offering the slot back, taking
-    over is a clean handover, so the button is live whenever there is a
-    module to send and the tooltip names what the click costs."""
+def test_the_action_row_has_no_open_buttons():
+    """``open <app> ↗`` was redundant with the header switcher's links
+    and is gone; the row is sends-only. The header keeps the open links,
+    and the hub's replay still lands a late-opened tab on the current
+    focus — send first, then open from the header."""
 
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
     js = _page_js()
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
-    assert "is already open — use send" not in row
-    open_arm = row.split("'open ' + app.name + ' ↗',")[1]
-    # Gated on the module alone; `live` no longer disables anything here.
-    assert "        !base,\n" in open_arm
-    assert "' — replaces the currently open ' + app.name +" in open_arm
-    assert "' tab’s hub connection' : '')" in open_arm
-    # The send arm's gating is untouched: an envelope nobody is listening
-    # for is still a click with no effect.
-    assert "!base || !live," in row
-
-
-def test_a_tab_is_only_opened_once_the_envelope_has_left():
-    """A tab opened after a failed emit comes up on whatever the hub
-    cached last, which is worse than not opening it — so the emit's
-    verdict gates the open, and `focusModuleElsewhere` returns one."""
-
-    js = _page_js()
-    focus = js.split("function focusModuleElsewhere(base) {")[1].split("\n  }")[0]
-    assert "note('graph-focus module:' + name);\n      return true;" in focus
-    assert "note('hub not connected', 'error');\n    return false;" in focus
-    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
-    assert "if (focusModuleElsewhere(base)) {" in row
-    assert "window.open(app.route, '_blank', 'noopener');" in row
-    assert row.index("focusModuleElsewhere(base)) {") < row.index("window.open(")
-    # No deep link and no new wire type: the replayed graph_focus is the
-    # whole mechanism.
-    assert "?focus=" not in js
-    assert "#module=" not in js
+    assert "window.open(" not in row
+    assert "'open '" not in row
+    for route in ("/graph", "/view"):
+        assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
 def test_a_qualified_test_target_matches_the_models_bare_name():

@@ -2220,12 +2220,12 @@
   // differ only in which tab they assume or open — the broadcast reaches
   // whichever of the two is listening. The tooltips say so.
   var APPS = [
-    { origin: 'graph', name: 'graph', route: '/graph' },
-    { origin: 'view', name: 'design view', route: '/view' }
+    { origin: 'graph', name: 'graph' },
+    { origin: 'view', name: 'view' }
   ];
 
   var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +
-    'the graph pane AND the design view, whichever of them is open.';
+    'the graph pane AND the view, whichever of them is open.';
   var NO_MODULE = 'This file records no module, so there is nothing to ' +
     'point the other apps at.';
 
@@ -2236,12 +2236,10 @@
     return b;
   }
 
-  // One client per origin, so opening an app that is already open takes
-  // the hub slot off the tab that has it. That is now a clean handover
-  // rather than a fight — the evicted tab is told it was superseded,
-  // stops reconnecting and offers to take the slot back (`handleHubError`
-  // above) — so `open ↗` stays live whenever there is something to send,
-  // and the tooltip names the cost instead of the button going dark.
+  // Sends only: opening an app fresh is the header switcher's job, so
+  // there is no open-↗ variant here (it was redundant with those links,
+  // and the hub replays its cached focus to late joiners anyway — send
+  // first, then open from the header, lands the same way).
   function renderActions(base) {
     var box = elem('div', 'actions');
     APPS.forEach(function (app) {
@@ -2249,27 +2247,11 @@
       box.appendChild(actionButton(
         'send → ' + app.name,
         !base ? NO_MODULE
-           : !live ? app.name + ' is not connected — use open ↗'
+           : !live ? app.name + ' is not connected — open it from the header links'
            : 'Send module:' + baseModuleName(base) + ' to the open ' +
              app.name + ' tab, without leaving this one. ' + OVERLAP,
         !base || !live,
         function () { focusModuleElsewhere(base); }));
-      box.appendChild(actionButton(
-        'open ' + app.name + ' ↗',
-        !base ? NO_MODULE
-           : 'Open the ' + app.name + ' in a new tab, landed on module:' +
-             baseModuleName(base) + '. ' + OVERLAP +
-             (live ? ' — replaces the currently open ' + app.name +
-                     ' tab’s hub connection' : ''),
-        !base,
-        // Emit first, open second — and do not open at all when the emit
-        // did not leave, because a tab opened on a stale cached focus is
-        // a worse answer than a status line saying the hub is down.
-        function () {
-          if (focusModuleElsewhere(base)) {
-            window.open(app.route, '_blank', 'noopener');
-          }
-        }));
     });
     return box;
   }

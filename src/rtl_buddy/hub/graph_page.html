@@ -1556,7 +1556,7 @@
   // new wire types.
   var APPS = [
     {
-      origin: 'view', name: 'design view', route: '/view',
+      origin: 'view', name: 'view',
       targetFor: viewTargetFor,
       send: function (t) { return emit(t.type, t.payload); },
       label: function (t) { return t.coord; },
@@ -1569,7 +1569,7 @@
       why: 'this node is not a design coordinate — no instance path and no module name'
     },
     {
-      origin: 'cov', name: 'coverage', route: '/cov',
+      origin: 'cov', name: 'coverage',
       targetFor: covTargetFor,
       send: function (t) { return emit('cov_focus', t); },
       label: function (t) {
@@ -1590,14 +1590,6 @@
     return true;
   }
 
-  // Emit first, open second — and do not open at all when the emit did
-  // not leave, because a tab opened on a stale cached focus is a worse
-  // answer than a status line saying the hub is down.
-  function openWith(app, n) {
-    if (!sendTo(app, n)) { return; }
-    window.open(app.route, '_blank', 'noopener');
-  }
-
   function actionButton(label, title, disabled, onClick) {
     var b = document.createElement('button');
     b.textContent = label;
@@ -1606,12 +1598,10 @@
     return b;
   }
 
-  // One client per origin, so opening an app that is already open takes
-  // the hub slot off the tab that has it. That is now a clean handover
-  // rather than a fight — the evicted tab is told it was superseded,
-  // stops reconnecting and offers to take the slot back (`handleHubError`
-  // above) — so `open ↗` stays live whenever there is something to send,
-  // and the tooltip names the cost instead of the button going dark.
+  // Sends only: opening an app fresh is the header switcher's job, so
+  // there is no open-↗ variant here (it was redundant with those links,
+  // and the hub replays its cached focus to late joiners anyway — send
+  // first, then open from the header, lands the same way).
   function renderActions(n) {
     var box = document.createElement('div');
     box.className = 'actions';
@@ -1621,20 +1611,11 @@
       box.appendChild(actionButton(
         'send → ' + app.name,
         !t ? app.why
-           : !live ? app.name + ' is not connected — use open ↗'
+           : !live ? app.name + ' is not connected — open it from the header links'
            : 'Send ' + app.label(t) + ' to the open ' + app.name +
              ' tab, without leaving this one. ' + app.overlap,
         !t || !live,
         function () { sendTo(app, n); }));
-      box.appendChild(actionButton(
-        'open ' + app.name + ' ↗',
-        !t ? app.why
-           : 'Open the ' + app.name + ' in a new tab, landed on ' +
-             app.label(t) + '. ' + app.overlap +
-             (live ? ' — replaces the currently open ' + app.name +
-                     ' tab’s hub connection' : ''),
-        !t,
-        function () { openWith(app, n); }));
     });
     return box;
   }

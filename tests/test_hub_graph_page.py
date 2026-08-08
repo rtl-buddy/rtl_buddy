@@ -772,19 +772,20 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
     # The vocabulary each app is addressed in, and the route it opens on
     # — the same routes the header switcher links to.
-    assert "origin: 'view', name: 'design view', route: '/view'," in apps
-    assert "origin: 'cov', name: 'coverage', route: '/cov'," in apps
+    assert "origin: 'view', name: 'view'," in apps
+    assert "origin: 'cov', name: 'coverage'," in apps
     assert "targetFor: viewTargetFor," in apps
     assert "send: function (t) { return emit(t.type, t.payload); }," in apps
     assert "targetFor: covTargetFor," in apps
     assert "send: function (t) { return emit('cov_focus', t); }," in apps
-    # Both controls, per app, off the one target derivation.
+    # One send control per app, off the one target derivation. No open-↗
+    # variant: opening an app fresh is the header switcher's job.
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
     assert "var t = app.targetFor(n);" in row
     assert "'send → ' + app.name," in row
-    assert "'open ' + app.name + ' ↗'," in row
     assert "function () { sendTo(app, n); }" in row
-    assert "function () { openWith(app, n); }" in row
+    assert "'open ' + app.name" not in row
+    assert "window.open(" not in row
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     for route in ("/view", "/cov"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
@@ -792,7 +793,7 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
 
 def test_send_ignores_the_sync_checkbox():
     """The checkbox governs what a CLICK broadcasts. An explicit
-    ``send → design view`` is the user asking for it in so many words,
+    ``send → view`` is the user asking for it in so many words,
     so it must not be gated on a toggle they never touched."""
 
     js = _page_js()
@@ -816,7 +817,7 @@ def test_a_send_is_dark_when_its_app_is_not_connected():
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
     assert "var live = hasPeer(app.origin);" in row
     assert "!t || !live," in row
-    assert "app.name + ' is not connected — use open ↗'" in row
+    assert "app.name + ' is not connected — open it from the header links'" in row
     # The peer list is kept, not merely printed, and the row repaints
     # when it moves.
     assert "function hasPeer(origin) { return peers.indexOf(origin) >= 0; }" in js
@@ -824,43 +825,21 @@ def test_a_send_is_dark_when_its_app_is_not_connected():
     assert "if (changed) { refreshActions(); }" in js
 
 
-def test_open_stays_live_even_when_its_app_is_already_running():
-    """``open ↗`` used to go dark for an origin that already had a peer,
-    because both tabs then sent ``takeover: true`` on every hello and
-    reconnected unconditionally — they evicted each other forever. With
-    the superseded tab standing down and offering the slot back, taking
-    over is a clean handover, so the button is live whenever a target
-    derives and the tooltip names what the click costs."""
+def test_the_action_row_has_no_open_buttons():
+    """``open <app> ↗`` was redundant with the header switcher's links
+    and is gone; the row is sends-only. The header keeps the open links
+    (target=_blank), and the hub's ``_replay_cached_state`` still lands a
+    late-opened tab on the current focus — send first, then open from the
+    header, arrives the same way the old combined button did."""
 
     js = _page_js()
+    assert "function openWith(" not in js
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
-    assert "is already open — use send" not in row
-    open_arm = row.split("'open ' + app.name + ' ↗',")[1]
-    # Gated on the target alone; `live` no longer disables anything here.
-    assert "        !t,\n        function () { openWith(app, n); }" in open_arm
-    assert "' — replaces the currently open ' + app.name +" in open_arm
-    assert "' tab’s hub connection' : '')" in open_arm
-    # The send arm's gating is untouched: an envelope nobody is listening
-    # for is still a click with no effect.
-    assert "!t || !live," in row
-
-
-def test_a_tab_is_only_opened_once_the_envelope_has_left():
-    """The whole trick is ``_replay_cached_state``: the hub unicasts its
-    cached focus slots to each peer as it registers, so a tab opened
-    AFTER the emit comes up on the selection. A tab opened after a failed
-    emit would come up on whatever was cached last, which is worse than
-    not opening at all."""
-
-    js = _page_js()
-    open_with = js.split("function openWith(app, n) {")[1].split("\n  }")[0]
-    assert "if (!sendTo(app, n)) { return; }" in open_with
-    assert open_with.index("sendTo(app, n)") < open_with.index("window.open(")
-    assert "window.open(app.route, '_blank', 'noopener');" in open_with
-    # No deep link, and no new wire type: the three the hub already
-    # replays are the three used here.
-    assert "?focus=" not in js
-    assert "#node=" not in js
+    assert "window.open(" not in row
+    # The header switcher still carries the open links.
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    for route in ("/view", "/cov"):
+        assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
 def test_the_tooltips_own_up_to_the_broadcast():
@@ -873,7 +852,7 @@ def test_the_tooltips_own_up_to_the_broadcast():
     assert "This is a hub broadcast" in apps
     assert "cov_focus is read by the coverage pane only." in apps
     row = js.split("function renderActions(n) {")[1].split("\n  }")[0]
-    assert row.count("app.overlap") == 2
+    assert row.count("app.overlap") == 1
 
 
 # ---------------------------------------------------------------------------
