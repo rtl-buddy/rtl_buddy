@@ -262,6 +262,10 @@ Every hub app implements the same two strips, so moving between them costs nothi
 
 Detail that does not fit the vocabulary (the hub's `server_version`, the reason a socket dropped) belongs in the element's `title`, not in the status word — a strip that says four different things for "connected" is a strip nobody reads.
 
+**One exception, and it is a control rather than a status word.** The hub allows [one client per origin](#peers-who-connects-to-the-hub), so a second tab of the *same* app evicts the first, and the hub tells the evicted tab so with an `error` envelope whose code is `superseded`. Retrying would only evict the tab the user just opened, so that tab stops reconnecting and its strip reads **"another *X* tab took this connection — click to take back"** on an `--err` dot. Clicking re-arms the connection with `takeover: true`, and the *other* tab receives the same treatment. Every other drop — hub restart, network — is an ordinary `offline` with the usual backoff.
+
+That is also why a tab's *first* `hello` never sets `takeover`. It asks politely, and only if the hub answers `not_connected: <origin> client already registered` does it retry — once — with `takeover: true`. All three browser apps implement the identical flow: the SPA in `viewer/src/composables/useHub.js`, and each pane in its own file.
+
 ### Sending the selection to another app
 
 The switcher opens a sibling app; it does not carry what you were looking at. Each pane therefore offers, beside the thing that is selected, **two controls per sibling app**:

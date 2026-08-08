@@ -867,6 +867,145 @@ def test_the_tooltips_own_up_to_the_broadcast():
     assert row.count("app.overlap") == 2
 
 
+# ---------------------------------------------------------------------------
+# hub registration: the polite hello, one takeover retry, and the way back
+#
+# One client per origin. ``HubServer._run_handshake`` (hub/server.py)
+# refuses a hello for an occupied slot with ``not_connected`` /
+# ``"<client> client already registered"`` unless the hello sets
+# ``takeover``, and sends the tab it evicts ``superseded`` /
+# ``"<client> client replaced by a newer registration"`` before closing
+# its socket. This pane used to send ``takeover: true`` on EVERY hello
+# and reconnect from every close, so two tabs of it evicted each other
+# every ~500 ms. The flow below is the view SPA's, mirrored: its
+# ``_pendingTakeover`` / ``superseded`` handling in
+# ``viewer/src/composables/useHub.js`` (rtl-buddy-view).
+# ---------------------------------------------------------------------------
+
+
+def test_the_first_hello_is_polite():
+    """The common case is no other graph tab open, and a polite hello
+    wins that outright. Asking for a takeover unconditionally is what
+    turned a second tab into an eviction war."""
+
+    out = _node_eval(
+        _marked_js("hello-payload")
+        + """
+        console.log(JSON.stringify(
+          [helloPayload(false), helloPayload(true), helloPayload(undefined)]));
+        """
+    )
+    polite, takeover, unset = json.loads(out)
+    assert polite == {
+        "client": "graph",
+        "version": "1.0.0",
+        "capabilities": ["graph_focus"],
+    }
+    # Omitted, not `false`: the hub reads a missing field the same way,
+    # and the wire carries only what the tab is actually asking for.
+    assert "takeover" not in polite
+    assert unset == polite
+    assert takeover["takeover"] is True
+
+    js = _page_js()
+    # Every hello on the wire comes from that helper, flagged only by the
+    # state a refusal sets — there is no `takeover: true` literal left.
+    assert "payload: helloPayload(pendingTakeover)" in js
+    assert "ws.addEventListener('open', sendHello);" in js
+    assert "var pendingTakeover = false;" in js
+    assert "takeover: true" not in js
+
+
+def test_an_occupied_slot_is_retried_once_with_takeover():
+    """A stale tab must not be able to block this one forever, so the
+    refusal is answered with exactly one takeover hello — once, because
+    looping on it would be the old war with an extra round-trip."""
+
+    js = _page_js()
+    handler = js.split("function handleHubError(payload) {")[1].split("\n  }")[0]
+    assert "payload.code === 'not_connected' && !pendingTakeover &&" in handler
+    assert "/already registered/i.test(payload.message || '')" in handler
+    assert "pendingTakeover = true;" in handler
+    assert "sendHello();" in handler
+    # Cleared on welcome, so a later reconnect starts polite again.
+    welcome = js.split("case 'welcome':")[1].split("break;")[0]
+    assert "pendingTakeover = false;" in welcome
+    # A registration error the handler dealt with stays out of the
+    # message area — one event, one surface.
+    assert (
+        "if (env.kind === 'error' && env.payload && !handleHubError(env.payload)) {"
+        in js
+    )
+
+
+def test_superseded_stops_reconnecting_and_offers_the_slot_back():
+    """Losing the slot to a NEWER tab is the one drop worth not retrying:
+    reconnecting would evict the tab the user just opened. The strip says
+    so in its own words and is the way back."""
+
+    js = _page_js()
+    handler = js.split("function handleHubError(payload) {")[1].split("\n  }")[0]
+    assert "payload.code === 'superseded'" in handler
+    assert "superseded = true;" in handler
+    assert "showSuperseded();" in handler
+    assert "var superseded = false;" in js
+    # Disarmed at the timer AND at the close that follows the eviction,
+    # which would otherwise repaint the strip over the affordance.
+    sched = js.split("function scheduleReconnect() {")[1].split("\n  }")[0]
+    assert "if (superseded) { return; }" in sched
+    close = js.split("ws.addEventListener('close', function () {")[1].split(
+        "\n    });"
+    )[0]
+    assert close.index("if (superseded) { return; }") < close.index(
+        "scheduleReconnect();"
+    )
+    # A distinct strip state: offline dot, its own wording, clickable.
+    show = js.split("function showSuperseded() {")[1].split("\n  }")[0]
+    assert "els.wsDot.className = 'dot offline';" in show
+    assert "els.wsStatus.textContent = SUPERSEDED_TEXT;" in show
+    assert "els.wsStatus.className = 'take-back';" in show
+    assert "els.wsStatus.setAttribute('role', 'button');" in show
+    assert "another graph tab took this connection — click to take back" in js
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert ".take-back {" in body
+    assert "cursor: pointer;" in body.split(".take-back {")[1].split("}")[0]
+
+
+def test_taking_the_slot_back_hellos_with_takeover():
+    """The other tab still holds the slot, so the hello that reclaims it
+    is the one hello that MUST ask for a takeover — a polite one would be
+    refused and the tab would go straight back to offline."""
+
+    js = _page_js()
+    back = js.split("function takeBack() {")[1].split("\n  }")[0]
+    assert "if (!superseded) { return; }" in back
+    assert "superseded = false;" in back
+    assert "pendingTakeover = true;" in back
+    # Backoff starts over: this is a fresh, deliberate connection.
+    assert "retryMs = 500;" in back
+    assert "connect();" in back
+    # The status word IS the control while superseded; `takeBack` no-ops
+    # in every other state, so the listener is bound once.
+    assert "els.wsStatus.addEventListener('click', takeBack);" in js
+
+
+def test_an_ordinary_drop_still_reconnects():
+    """A hub restart or a flaky network is not a supersede, and nothing
+    about the fix may change what those look like."""
+
+    js = _page_js()
+    close = js.split("ws.addEventListener('close', function () {")[1].split(
+        "\n    });"
+    )[0]
+    assert "els.wsDot.className = 'dot offline';" in close
+    assert "els.wsStatus.textContent = 'offline';" in close
+    assert "els.wsStatus.title = 'lost /ws — retrying';" in close
+    assert "scheduleReconnect();" in close
+    sched = js.split("function scheduleReconnect() {")[1].split("\n  }")[0]
+    assert "setTimeout(connect, retryMs);" in sched
+    assert "retryMs = Math.min(retryMs * 2, 10000);" in sched
+
+
 def test_page_javascript_parses(tmp_path: Path):
     """A page that ships a syntax error renders a blank tab and says
     nothing about why, so the parse is worth a test of its own."""

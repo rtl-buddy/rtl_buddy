@@ -197,6 +197,14 @@
     .dot.connected { background: var(--ok); }
     .dot.connecting { background: var(--warn); }
     .dot.offline { background: var(--err); }
+    /* A fourth strip state, and the only one that is also a control:
+       another tab of THIS pane took the hub slot, and the words are the
+       way back (`showSuperseded`). Not a status word — it says what
+       happened and what a click will do. */
+    .take-back {
+      color: var(--err); font-weight: 600;
+      cursor: pointer; text-decoration: underline;
+    }
     nav.switcher { display: flex; gap: .35rem; align-items: center; }
     nav.switcher a {
       background: var(--panel-2); color: var(--fg); font: inherit;
@@ -448,10 +456,53 @@
 
   var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
   var activeModel = null;
+  // Set when a hello was refused because the graph slot was taken, so
+  // the NEXT hello asks the hub to evict the incumbent. Cleared on
+  // welcome, so a later reconnect starts polite again.
+  var pendingTakeover = false;
+  // The hub kicked this tab out because a NEWER graph tab registered.
+  // Racing back would only kick that tab out in turn — two tabs evicting
+  // each other every retry is exactly the defect this state exists to
+  // stop — so auto-reconnect stands down until the user asks for the
+  // slot back.
+  var superseded = false;
 
   function refreshActiveModel() {
     request('state_snapshot', {}, function (reply) {
       if (reply.kind === 'response') { activeModel = reply.payload.active_model; }
+    });
+  }
+
+  // >>> hello-payload
+  // The hello payload, built rather than inlined so the takeover rule is
+  // one pure function.
+  //
+  // `takeover` is opt-in PER HELLO. The first hello of a connection is
+  // polite — the field is omitted entirely, which `_run_handshake` in
+  // hub/server.py reads as false — and only a retry, after the hub
+  // answered `not_connected: graph client already registered`, asks it
+  // to evict whoever holds the slot. Sending it unconditionally is what
+  // made two tabs of this pane supersede each other in a loop.
+  //
+  // Same flow as the view SPA (rtl-buddy-view,
+  // viewer/src/composables/useHub.js — its `_pendingTakeover` /
+  // `superseded` handling), hand-duplicated here because a pane is a
+  // self-contained single file by design; cov_page.html carries the same
+  // helper with its own client and capabilities. Change the rule in one
+  // and change it in all three, or the tabs start fighting again.
+  function helloPayload(takeover) {
+    var payload = {
+      client: 'graph', version: '1.0.0', capabilities: ['graph_focus']
+    };
+    if (takeover) { payload.takeover = true; }
+    return payload;
+  }
+  // <<< hello-payload
+
+  function sendHello() {
+    return send({
+      v: 1, id: uuid(), origin: 'graph', kind: 'request', type: 'hello',
+      payload: helloPayload(pendingTakeover)
     });
   }
 
@@ -460,25 +511,17 @@
     try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
     catch (e) { scheduleReconnect(); return; }
 
-    ws.addEventListener('open', function () {
-      send({
-        v: 1, id: uuid(), origin: 'graph', kind: 'request', type: 'hello',
-        payload: {
-          client: 'graph', version: '1.0.0',
-          capabilities: ['graph_focus'],
-          // A refreshed tab supersedes the stale one, the same way the
-          // SPA's tab does. The graph pane has its own origin, so this
-          // never evicts the schematic view.
-          takeover: true
-        }
-      });
-    });
+    ws.addEventListener('open', sendHello);
     ws.addEventListener('message', function (ev) {
       var env; try { env = JSON.parse(ev.data); } catch (e) { return; }
       applyEnvelope(env);
     });
     ws.addEventListener('close', function () {
       wsReady = false;
+      // The hub closes the socket right after superseding us. That close
+      // must not repaint the strip over the take-back affordance, and
+      // must not restart the retry loop.
+      if (superseded) { return; }
       els.wsDot.className = 'dot offline';
       els.wsStatus.textContent = 'offline';
       els.wsStatus.title = 'lost /ws — retrying';
@@ -488,6 +531,7 @@
   }
 
   function scheduleReconnect() {
+    if (superseded) { return; }
     setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10000);
   }
@@ -519,7 +563,10 @@
     switch (env.type) {
       case 'welcome':
         wsReady = true; retryMs = 500;
+        // Hello accepted — the next reconnect starts polite again.
+        pendingTakeover = false;
         refreshActiveModel();
+        clearTakeBack();
         els.wsDot.className = 'dot connected';
         els.wsStatus.textContent = 'connected';
         setHubVersion(env.payload && env.payload.server_version);
@@ -546,9 +593,80 @@
       default:
         break;
     }
-    if (env.kind === 'error' && env.payload) {
+    if (env.kind === 'error' && env.payload && !handleHubError(env.payload)) {
       note('hub error: ' + env.payload.code + ': ' + env.payload.message, 'error');
     }
+  }
+
+  // The two hub errors that are about this tab's REGISTRATION rather
+  // than about a request it made. Returns true when the error has been
+  // dealt with here, in which case the message area stays out of it —
+  // one event, one surface.
+  //
+  // Mirrors the view SPA's `error` case (rtl-buddy-view,
+  // viewer/src/composables/useHub.js); cov_page.html carries the same
+  // handler. One one-client-per-origin rule, three apps that have to
+  // obey it identically.
+  function handleHubError(payload) {
+    // Superseded: a newer graph tab owns the slot now. The strip says so
+    // and offers the way back; auto-reconnect stops, because winning the
+    // race back would only evict that tab.
+    if (payload.code === 'superseded') {
+      superseded = true;
+      showSuperseded();
+      if (ws) { try { ws.close(); } catch (e) { /* already gone */ } }
+      return true;
+    }
+    // The polite hello lost to an incumbent. Ask once more, this time
+    // asking the hub to evict it. Once, not in a loop: if the takeover
+    // hello fails too, the next error falls through to the message area.
+    // The hub drops the socket after refusing a hello, so this send
+    // usually goes nowhere and the flag rides the reconnect instead —
+    // both routes end in the same takeover hello.
+    if (payload.code === 'not_connected' && !pendingTakeover &&
+        /already registered/i.test(payload.message || '')) {
+      pendingTakeover = true;
+      sendHello();
+      return true;
+    }
+    return false;
+  }
+
+  var SUPERSEDED_TEXT =
+    'another graph tab took this connection — click to take back';
+  var SUPERSEDED_HINT =
+    'A newer graph tab registered with the hub, and the hub allows one ' +
+    'client per origin. Click to take the slot back — that tab goes ' +
+    'offline instead.';
+
+  function showSuperseded() {
+    els.wsDot.className = 'dot offline';
+    els.wsStatus.textContent = SUPERSEDED_TEXT;
+    els.wsStatus.title = SUPERSEDED_HINT;
+    els.wsStatus.className = 'take-back';
+    els.wsStatus.setAttribute('role', 'button');
+    els.wsStatus.setAttribute('tabindex', '0');
+  }
+
+  function clearTakeBack() {
+    els.wsStatus.className = '';
+    els.wsStatus.removeAttribute('role');
+    els.wsStatus.removeAttribute('tabindex');
+  }
+
+  // The user asking for the slot back. The other tab still holds it, so
+  // the hello that reclaims it has to ask for the takeover the first
+  // hello deliberately did not.
+  function takeBack() {
+    if (!superseded) { return; }
+    superseded = false;
+    pendingTakeover = true;
+    retryMs = 500;
+    clearTakeBack();
+    els.wsDot.className = 'dot connecting';
+    els.wsStatus.textContent = 'connecting…';
+    els.wsStatus.title = hubTitle;
+    connect();
   }
 
   // The latest peer list, kept rather than only printed: the inspector's
@@ -607,12 +725,17 @@
   // Re-read on every welcome, not just the first: a reconnect can land
   // on a hub that was restarted on a newer build, and a label frozen at
   // the version of the first connection would then be quietly wrong.
+  // Kept so the strip's tooltip can be restored after a state that
+  // borrowed it (`showSuperseded` explains itself there instead).
+  var hubTitle = '';
+
   function setHubVersion(raw) {
     var full = raw ? String(raw) : '';
     var label = versionLabel(full);
     els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';
     els.hubVersion.title = full;
-    els.wsStatus.title = 'hub ' + full;
+    hubTitle = 'hub ' + full;
+    els.wsStatus.title = hubTitle;
   }
 
   // ---------------------------------------------------------------
@@ -1706,6 +1829,13 @@
   });
   document.getElementById('reload').addEventListener('click', load);
   window.addEventListener('resize', applyClasses);
+  // The strip's status word doubles as the take-back control while this
+  // tab is superseded; `takeBack` no-ops in every other state, so the
+  // listener is bound once here rather than added and removed.
+  els.wsStatus.addEventListener('click', takeBack);
+  els.wsStatus.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
+  });
 
   connect();
   load();
