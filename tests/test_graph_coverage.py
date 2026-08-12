@@ -265,6 +265,65 @@ def test_a_named_cov_dir_that_is_not_there_is_a_problem(tmp_path: Path):
     assert join.problems[0]["scope"] == "coverage"
 
 
+def _break_the_model(project: Path) -> Path:
+    """Leave a manifest that loads and a model that is the wrong shape.
+
+    Valid JSON, so ``load_context`` is happy — a file row with no
+    ``path`` is the kind of thing a truncated writer or a hand-edit
+    leaves behind, and it is exactly what the walks past the load index
+    into.
+    """
+    model_path = project / "verif" / "blk_a" / "cov_dir" / "coverage-model.json"
+    assert model_path.exists(), "the cov fixture moved"
+    model_path.write_text(
+        json.dumps({"files": [{"cover": [{"name": "cov_a_cov_1", "hits": 1}]}]}),
+        encoding="utf-8",
+    )
+    return model_path
+
+
+def test_a_broken_model_degrades_to_a_problem_row(cov_project: Path):
+    """A broken optional tier is a skipped row, not a traceback.
+
+    ``coverage=True`` is the default, so an unreadable-*shaped* model
+    used to take `rb graph results` down with it — every test status in
+    the overlay lost to a ``KeyError`` from the coverage join. The
+    manifest-is-unreadable path already degraded; this is the same
+    degradation for everything the join does after the load.
+    """
+    _break_the_model(cov_project)
+
+    overlay = refresh_results_overlay(cov_project)
+
+    coverage_problems = [p for p in overlay.problems if p.get("scope") == "coverage"]
+    assert len(coverage_problems) == 1
+    assert coverage_problems[0]["error"]
+    # The rest of the overlay still landed.
+    assert overlay.entries
+    assert "coverage" not in overlay.overlay
+
+
+def test_a_broken_model_still_fails_under_strict(cov_project: Path):
+    """Degrading is not the same as being quiet: `--strict` is the flag
+    that turns a problems row into a non-zero exit, and it must for this
+    one too."""
+    runner, rb = _runner()
+    assert (
+        runner.invoke(
+            rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
+        ).exit_code
+        == 0
+    )
+    _break_the_model(cov_project)
+
+    ok = runner.invoke(rb.app, ["graph", "results"])
+    assert ok.exit_code == 0, ok.output
+    assert "Traceback" not in ok.output
+
+    strict = runner.invoke(rb.app, ["graph", "results", "--strict"])
+    assert strict.exit_code == 1, strict.output
+
+
 def test_per_test_scalars_are_keyed_by_test_node_id(cov_project: Path):
     join = _join(cov_project, graph=_config_graph(cov_project))
 

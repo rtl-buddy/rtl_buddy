@@ -216,7 +216,7 @@ def _module_nodes(graph: dict | None) -> dict[str, list[str]]:
     """Design module name -> the graph node ids that carry its coverage.
 
     A module id is suite-qualified when two files claimed the same name
-    (``module:blk_a␟verif/x``), every instance of a module records the
+    (``module:blk_a@verif/x``), every instance of a module records the
     module it instantiates, and a ``model:`` node *is* its module under
     another name (the ``maps_to`` stitch is an identity) — so one model
     module can carry several nodes, and the mapping is built once here
@@ -521,6 +521,34 @@ def join_coverage(
         )
         return CoverageJoin(problems=problems)
 
+    # Past the load, every walk indexes into a document read off disk.
+    # An unreadable manifest already degrades to a problems row; a model
+    # that *loads* and is then the wrong shape — truncated writer, hand
+    # edit, a schema from a future build — must degrade the same way.
+    # `rb graph results` joins coverage by default, so anything raising
+    # here would take the whole overlay down with it, statuses included,
+    # and coverage is the optional tier.
+    try:
+        return _joined(ctx, entries=entries, graph=graph)
+    except Exception as exc:  # noqa: BLE001 - any shape of broken model
+        error = f"{type(exc).__name__}: {exc}"
+        log_event(
+            logger,
+            logging.WARNING,
+            "graph_coverage.unavailable",
+            error=error,
+            required=required,
+        )
+        return CoverageJoin(problems=[{"scope": "coverage", "error": error}])
+
+
+def _joined(ctx, *, entries: dict, graph: dict | None) -> CoverageJoin:
+    """The join proper, once the coverage model has loaded.
+
+    Split out of :func:`join_coverage` so that function can wrap it: the
+    body below is all model-shaped indexing, and the wrapper is what
+    turns a broken model into a reported problem instead of a traceback.
+    """
     model = ctx.model
     by_name, by_suite = _test_node_ids(entries)
     per_test: dict[str, dict] = {}

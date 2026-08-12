@@ -1507,3 +1507,54 @@ def test_the_rename_did_not_leak_into_the_wire():
     assert "origin: 'cov'," in js
     assert 'href="/view"' in body
     assert "fetch('/view.json?model=' + encodeURIComponent(target.model))" in js
+
+
+# ---------------------------------------------------------------------------
+# the hand-duplicated blocks, as *files*
+#
+# The panes are single self-contained HTML files by design, so the
+# shared blocks are copies rather than an import — and a copy that
+# drifts is the failure mode. Two properties of the files themselves,
+# neither visible in a rendered page:
+# ---------------------------------------------------------------------------
+
+_PANE_FILES = ("graph_page.html", "cov_page.html", "landing_page.html")
+
+
+def _pane_bytes(name: str) -> bytes:
+    return (Path(graph_page.__file__).parent / name).read_bytes()
+
+
+@pytest.mark.parametrize("name", _PANE_FILES)
+def test_a_pane_is_a_text_file(name: str):
+    """No NUL byte anywhere in a pane.
+
+    One landed in a JS string literal as a "separator nobody types", and
+    the cost was not the page — browsers do not care — it was that `rg`
+    and `grep` classify the file as *binary* and silently refuse to
+    search it. A 1,500-line source file you cannot grep is the tax, and
+    nothing about the page tells you why."""
+
+    assert b"\x00" not in _pane_bytes(name)
+
+
+def test_the_peer_list_is_diffed_identically_in_both_panes():
+    """``setPeers`` is one of the copies, and the separator its
+    comparison joins on carries no information — origins are short
+    lowercase tokens with no spaces, so any separator, including none,
+    is the same comparison. Which is exactly why the two copies drifted
+    (a space in one, a raw NUL in the other) with nothing noticing.
+
+    The prose comments differ on purpose — each pane names its own
+    surface — so this is asserted on the code."""
+
+    def code(name: str) -> list[str]:
+        body = _pane_bytes(name).decode("utf-8")
+        block = body.split("function setPeers(list) {")[1].split("\n  }")[0]
+        return [
+            line for line in block.splitlines() if not line.strip().startswith("//")
+        ]
+
+    graph, cov = code("graph_page.html"), code("cov_page.html")
+    assert graph == cov, "the two setPeers copies drifted"
+    assert "    var changed = next.join('') !== peers.join('');" in graph

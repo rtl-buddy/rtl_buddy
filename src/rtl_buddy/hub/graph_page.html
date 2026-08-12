@@ -720,7 +720,7 @@
   function setPeers(list) {
     if (!Array.isArray(list)) { return; }
     var next = list.slice().sort();
-    var changed = next.join(' ') !== peers.join(' ');
+    var changed = next.join('') !== peers.join('');
     peers = next;
     els.peers.textContent =
       'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
