@@ -233,6 +233,28 @@ it — so always write `time: "4:00:00"` (or bare minutes as a string,
 `time: "240"`). Applies everywhere `resources:` appears: `cfg-dispatch`,
 per-testbench, and per-test.
 
+## A suite's build job compiles every compile key serially, in one reservation
+
+The per-suite build job is a single `sbatch` job running `rb _build-job`,
+which walks the suite's planned tests in order and compiles each unique
+compile key. That is deliberate — it is what makes a VCS build take one
+license seat at a time instead of one per concurrent element — but it has
+two consequences that are easy to miss when sizing `cfg-dispatch.compile`:
+
+- **`compile.time` must cover the sum of those compiles, not one of them.**
+  A multi-testbench suite has one key per testbench (at least), so its build
+  job's wall-clock is their total. A limit sized from one observed compile
+  gets the build job killed, and because every sim job is gated on it with
+  `afterok`, the entire array is cancelled and reported as dispatch failures
+  pointing at a build log that simply stops mid-compile.
+- **The whole array waits for the slowest suite-wide build**, including
+  tests whose own compile key finished first. There is no partial release.
+
+The lever is the compile-key count, not the reservation: tests that differ
+only in `pd` plusdefines each cost a key. `rb --machine` logs one
+`compile.start` per key from inside the build job, which is the cheapest way
+to count them.
+
 ## Memory right-sizing depends on the accounting sampling interval
 
 `MaxRSS` is a high-water mark over `JobAcctGatherFrequency` samples, so a
