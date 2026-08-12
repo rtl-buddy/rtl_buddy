@@ -383,7 +383,8 @@ Usage: rtl-buddy synth-regression [OPTIONS]
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --reg-config  -c      TEXT     path to synth_regression.yaml                         │
-│                                [default: (Use ./synth_regression.yaml if present)]   │
+│                                [default: (Use ./synth_regression.yaml if present,    │
+│                                otherwise root_config.yaml synth-reg-cfg-path)]       │
 │ --reg-level   -l      INTEGER  synthesis regression level to stop at [default: 0]    │
 │ --effort              TEXT     override synthesis effort (must match                 │
 │                                cfg-synth-efforts entry)                              │
@@ -443,7 +444,8 @@ Usage: rtl-buddy power-regression [OPTIONS]
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --reg-config  -c      TEXT     path to power_regression.yaml                         │
-│                                [default: (Use ./power_regression.yaml if present)]   │
+│                                [default: (Use ./power_regression.yaml if present,    │
+│                                otherwise root_config.yaml power-reg-cfg-path)]       │
 │ --reg-level   -l      INTEGER  power regression level to stop at [default: 0]        │
 │ --help                         Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
@@ -492,7 +494,8 @@ Usage: rtl-buddy fpv-regression [OPTIONS]
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --reg-config  -c      TEXT     path to fpv_regression.yaml                           │
-│                                [default: (Use ./fpv_regression.yaml if present)]     │
+│                                [default: (Use ./fpv_regression.yaml if present,      │
+│                                otherwise root_config.yaml fpv-reg-cfg-path)]         │
 │ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
 │ --help                         Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯

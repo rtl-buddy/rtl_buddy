@@ -26,6 +26,7 @@ Fixture (``tests/fixtures/graph_config_tier/``):
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -338,6 +339,189 @@ def test_flow_stamp_changes_the_input_hashes(tmp_path):
     }
     assert "regression.yaml" not in before_inputs
     assert "regression.yaml" in after_inputs
+
+
+# ---------------------------------------------------------------------------
+# cfg-rtl-reg manifest paths (#389)
+#
+# A project keeping a flow's manifest away from the root declares it under
+# `cfg-rtl-reg` in root_config.yaml. The graph honours those paths with the
+# precedence every `rb <flow>-regression` command applies: the root
+# filename first, the configured path as the fallback — no private,
+# stricter discovery rule.
+# ---------------------------------------------------------------------------
+
+
+def _write_non_root_cdc_project(tmp_path: Path) -> None:
+    """A model plus one CDC analysis whose manifest lives at lint/cdc/."""
+
+    design = tmp_path / "design" / "blk"
+    design.mkdir(parents=True)
+    (design / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n"
+        "  - name: blk\n    filelist: [blk.sv]\n"
+    )
+    cdc_dir = tmp_path / "lint" / "cdc"
+    cdc_dir.mkdir(parents=True)
+    (cdc_dir / "cdc.yaml").write_text(
+        "rtl-buddy-filetype: cdc_config\nanalyses:\n"
+        "  - name: blk_lint\n    desc: CDC lint of blk\n    model: blk\n"
+        "    model_path: ../../design/blk/models.yaml\n"
+        "    tool: rtl-buddy-cdc\n    constraints: blk.sdc\n"
+    )
+    (cdc_dir / "cdc_regression.yaml").write_text(
+        "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: [cdc.yaml]\n"
+    )
+
+
+def _root_config_with(reg_block: str) -> str:
+    return f"rtl-buddy-filetype: project_root_config\ncfg-rtl-reg:\n{reg_block}"
+
+
+def test_a_configured_manifest_away_from_the_root_gains_the_flow_nodes(tmp_path):
+    """Acceptance for #389: `cdc_regression.yaml` under `lint/cdc/`,
+    declared via `cfg-rtl-reg.cdc-reg-cfg-path`, is no longer invisible."""
+
+    _write_non_root_cdc_project(tmp_path)
+    (tmp_path / "root_config.yaml").write_text(
+        _root_config_with(
+            "  reg-cfg-path: regression.yaml\n"
+            "  cdc-reg-cfg-path: lint/cdc/cdc_regression.yaml\n"
+        )
+    )
+
+    graph = build_config_tier(tmp_path)
+    assert _nodes_by_type(graph, "suite")["suite:lint/cdc"]["flow"] == "cdc"
+    assert _nodes_by_type(graph, "test")["test:lint/cdc#blk_lint"]["flow"] == "cdc"
+    assert (
+        "test:lint/cdc#blk_lint",
+        "model:design/blk/models.yaml#blk",
+    ) in _links_of_type(graph, "exercises")
+
+
+def test_an_undeclared_non_root_manifest_stays_invisible(tmp_path):
+    """No root file, no cfg-rtl-reg key: the filename convention cannot
+    see lint/cdc/, and the graph must not go hunting beyond what
+    `rb cdc-regression` would find."""
+
+    _write_non_root_cdc_project(tmp_path)
+    graph = build_config_tier(tmp_path)
+    assert "suite:lint/cdc" not in _nodes_by_type(graph, "suite")
+
+
+def test_the_root_filename_wins_over_the_configured_path(tmp_path):
+    """Same precedence as the commands: the local root manifest is read
+    first, cfg-rtl-reg is the fallback — not an override."""
+
+    _write_non_root_cdc_project(tmp_path)
+    (tmp_path / "cdc_regression.yaml").write_text(
+        "rtl-buddy-filetype: cdc_reg_config\ncdc-configs: []\n"
+    )
+    (tmp_path / "root_config.yaml").write_text(
+        _root_config_with(
+            "  reg-cfg-path: regression.yaml\n"
+            "  cdc-reg-cfg-path: lint/cdc/cdc_regression.yaml\n"
+        )
+    )
+
+    graph = build_config_tier(tmp_path)
+    # The root manifest claims nothing, and it won: lint/cdc stays out.
+    assert "suite:lint/cdc" not in _nodes_by_type(graph, "suite")
+
+
+def test_a_configured_path_pointing_nowhere_is_skipped_not_failed(tmp_path):
+    """reg-cfg-path defaults to "regression.yaml" in every template, so a
+    configured-but-absent manifest must not count as a load failure."""
+
+    (tmp_path / "root_config.yaml").write_text(
+        _root_config_with(
+            "  reg-cfg-path: regression.yaml\n"
+            "  cdc-reg-cfg-path: nope/cdc_regression.yaml\n"
+        )
+    )
+    result = extract_config_tier(tmp_path)
+    assert result.graph["nodes"] == []
+    assert result.suite_load_failures == []
+
+
+def test_a_malformed_cfg_rtl_reg_block_degrades_to_the_filename_convention(
+    tmp_path,
+):
+    _write_non_root_cdc_project(tmp_path)
+    (tmp_path / "root_config.yaml").write_text("cfg-rtl-reg: [not, a, mapping]\n")
+    result = extract_config_tier(tmp_path)
+    assert "suite:lint/cdc" not in _nodes_by_type(result.graph, "suite")
+    assert result.suite_load_failures == []
+
+
+def test_a_misspelled_cfg_rtl_reg_key_is_reported_by_name(tmp_path, caplog):
+    """Lenient-on-missing must not mean lenient-on-misspelled: `from_dict`
+    drops keys it does not know, so without this the typo reproduces the
+    exact silence #389 removes — no cdc nodes, no diagnostic."""
+
+    _write_non_root_cdc_project(tmp_path)
+    (tmp_path / "root_config.yaml").write_text(
+        _root_config_with(
+            "  reg-cfg-path: regression.yaml\n"
+            "  cdc-reg-cfg-paths: lint/cdc/cdc_regression.yaml\n"
+        )
+    )
+    with caplog.at_level(logging.WARNING):
+        result = extract_config_tier(tmp_path)
+
+    # Still degrades to the filename convention rather than failing...
+    assert "suite:lint/cdc" not in _nodes_by_type(result.graph, "suite")
+    # ...but the key is named, so the user can see why.
+    messages = [r.message for r in caplog.records]
+    assert any(
+        "unknown key(s) cdc-reg-cfg-paths" in m and "cdc-reg-cfg-path" in m
+        for m in messages
+    ), messages
+
+
+def test_the_correctly_spelled_keys_survive_an_unknown_neighbour(tmp_path):
+    """One typo should not cost a project the flows it spelled right."""
+
+    _write_non_root_cdc_project(tmp_path)
+    (tmp_path / "root_config.yaml").write_text(
+        _root_config_with(
+            "  reg-cfg-path: regression.yaml\n"
+            "  cdc-reg-cfg-path: lint/cdc/cdc_regression.yaml\n"
+            "  synth-reg-cfg-pathz: nowhere.yaml\n"
+        )
+    )
+    result = extract_config_tier(tmp_path)
+    assert "suite:lint/cdc" in _nodes_by_type(result.graph, "suite")
+
+
+def test_configured_manifests_and_root_config_join_the_input_hashes(tmp_path):
+    """Wiring a path into cfg-rtl-reg changes what the graph discovers, so
+    `rb graph build`'s no-op fingerprint has to see both the edit to
+    root_config.yaml and the manifest it points at."""
+
+    _write_non_root_cdc_project(tmp_path)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: []\n"
+    )
+    (tmp_path / "root_config.yaml").write_text(
+        _root_config_with(
+            "  reg-cfg-path: cfg/regression.yaml\n"
+            "  cdc-reg-cfg-path: lint/cdc/cdc_regression.yaml\n"
+        )
+    )
+
+    result = extract_config_tier(tmp_path)
+    paths = {e["path"] for e in result.meta["tiers"][CONFIG_TIER]["inputs"]}
+    assert {
+        "root_config.yaml",
+        # The sim flow goes through the same machinery: reg-cfg-path has
+        # always been how a project points `rb regression` off-root.
+        "cfg/regression.yaml",
+        "lint/cdc/cdc_regression.yaml",
+        "lint/cdc/cdc.yaml",
+    } <= paths
 
 
 # ---------------------------------------------------------------------------
