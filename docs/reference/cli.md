@@ -75,6 +75,7 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ fpv-regression     run FPV regression                                                │
 │ tool-check         check installed tool dependencies and subcommand readiness        │
 │ graph              build the design knowledge graph                                  │
+│ cov                query coverage artefacts already on disk                          │
 │ axi-profile        profile AXI interconnect performance via rtl-buddy-axi-profiler   │
 │ verible            verible commands                                                  │
 │ mut                mutation testing                                                  │
@@ -707,6 +708,58 @@ Usage: rtl-buddy graph explain [OPTIONS] NODE
 │ --graph                      TEXT  graph.json to query                               │
 │ --overlay                    TEXT  results-overlay.json to join                      │
 │ --help                             Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## cov
+
+```text
+Usage: rtl-buddy cov [OPTIONS] COMMAND [ARGS]...                                       
+                                                                                        
+ query coverage artefacts already on disk                                               
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────╮
+│ summary  run-level and per-test scalars, coldest files first                         │
+│ module   per-file, per-point coverage for one module's sources                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## cov summary
+
+```text
+Usage: rtl-buddy cov summary [OPTIONS]                                                 
+                                                                                        
+ run-level and per-test scalars, coldest files first                                    
+                                                                                        
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --limit           INTEGER  files to report, coldest first (0 for all) [default: 20]  │
+│ --cov-dir         TEXT     coverage artefact directory to read                       │
+│                            [default: (newest cov_dir under the project root)]        │
+│ --manifest        TEXT     manifest.json to read directly                            │
+│ --help                     Show this message and exit.                               │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+## cov module
+
+```text
+Usage: rtl-buddy cov module [OPTIONS] MODULE                                           
+                                                                                        
+ per-file, per-point coverage for one module's sources                                  
+                                                                                        
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
+│ *    module      TEXT  module name as the coverage model records it [required]       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+│ --cold        --all             list only the points with no hits [default: cold]    │
+│ --limit                INTEGER  points to list per metric (0 for all) [default: 20]  │
+│ --cov-dir              TEXT     coverage artefact directory to read                  │
+│                                 [default: (newest cov_dir under the project root)]   │
+│ --manifest             TEXT     manifest.json to read directly                       │
+│ --help                          Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```
 

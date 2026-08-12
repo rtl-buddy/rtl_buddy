@@ -52,9 +52,9 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 
 Outputs anchor on the **config file**, not your shell's cwd. `rb test -c path/to/tests.yaml` puts `artefacts/<test>/...` and `rtl_buddy.log` under `dirname(tests.yaml)`; same rule for `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, `models.yaml`. For `regression`, each suite anchors on its own `tests.yaml`; orchestration log under `regression.yaml`. Explicit CLI input/output paths (`-o out.svg`, `rb filelist <model> out.f`) follow shell semantics — relative to your cwd. Discover multi-suite layouts with `rg --files -g '**/tests.yaml'`; summarize per suite. Reference: `rtl-buddy docs show concepts/execution-context`.
 
-## Artefacts and waveforms
+## Artefacts, coverage and waveforms
 
-- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for one run (`artefacts/<test>/run-0001/...` per iteration for `randtest`).
+- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for one run (`artefacts/<test>/run-0001/...` per iteration for `randtest`). A run that produced coverage also writes `cov_dir/manifest.json` and a per-file/per-point model beside it with **no `--coverage-*` flag asked for** (the envelope's `payload.coverage.artefacts` names both), and `rb --machine cov summary` / `rb --machine cov module <name>` read those artefacts lock-free — so never re-run a regression to look at coverage again, and either verb answers while one is still in flight. Details: `rtl-buddy docs show concepts/coverage`.
 - `rb wave <test>` opens `artefacts/<test>/dump.fst` (FST from debug-mode builds, `-M debug`) in Surfer, running a debug sim first if no FST exists; needs `cfg-surfer` in `root_config.yaml` (`rtl-buddy docs show concepts/root-config`).
 - With a hub running, curate the open wave view from the CLI: `rb hub send wave-items` (list), then `wave-add` / `wave-remove` / `wave-move` / `wave-comment`; each reports success/error (non-zero exit on a surfer rejection). See `rtl-buddy docs show concepts/hub`.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`

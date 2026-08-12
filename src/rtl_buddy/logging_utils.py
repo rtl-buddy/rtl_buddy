@@ -859,6 +859,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('path')} ({fields.get('error')}) — the run itself "
                 "is unaffected, but `rb graph results` will report it as UNKNOWN"
             )
+        case "test.result_json_refresh_failed":
+            return (
+                f"could not refresh the result record for {fields.get('test')} at "
+                f"{fields.get('path')} after coverage post-processing "
+                f"({fields.get('error')}) — the run itself is unaffected and the "
+                "record still exists, but it names none of the coverage artefacts"
+            )
         case "graph_merge.node_type_conflict":
             return (
                 f"graph: node id {fields.get('node')!r} is a "

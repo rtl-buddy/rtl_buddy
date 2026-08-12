@@ -75,6 +75,33 @@ def attach_telemetry_json(path, telemetry: dict):
     os.replace(tmp, path)
 
 
+def refresh_result_json(path, results):
+    """Re-persist an envelope's ``result`` block after post-run mutation.
+
+    Coverage post-processing runs *after* the side-car is written and
+    mutates the per-test coverage dict in place — the LCOV export, the
+    HTML tree and the Coverview archive only exist by then. Without this
+    the envelope keeps the truncated dict it was born with
+    (``lcov_path`` / ``html_dir`` / ``merged_path`` all null) and the
+    artefacts are reachable only from that run's console output (#399).
+
+    Only ``result`` is replaced; ``run_token``, ``run_id`` and the
+    filetype header are the identity of the envelope and are preserved.
+    Atomic like the writer, and silent on a missing or unreadable
+    envelope — this is a best-effort side-car, never a run's verdict.
+    """
+    path = Path(path)
+    try:
+        raw = json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    raw["result"] = results.to_json_dict()
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=True, indent=2) + "\n")
+    os.replace(tmp, path)
+    return path
+
+
 def load_result_json(path, *, expected_run_token=None):
     """Load an envelope written by :func:`write_result_json`.
 
