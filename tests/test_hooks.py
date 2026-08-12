@@ -13,6 +13,8 @@ These tests exercise both exec() sites (VlogSim.pre() for preproc,
 RtlBuddy._expand_tests_with_sweep() for sweep) plus the helper directly.
 """
 
+from pathlib import Path
+
 from rtl_buddy.hooks import HOOK_MODULE_NAME, build_hook_namespace, exec_hook_script
 from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
@@ -97,8 +99,8 @@ class DummyPreprocTestCfg:
         return self._script_path
 
 
-def _make_preproc_sim(tmp_path, script_text):
-    script_path = tmp_path / "preproc.py"
+def _make_preproc_sim(tmp_path, script_text, *, run_id=None, script_name="preproc.py"):
+    script_path = tmp_path / script_name
     script_path.write_text(script_text)
     return VlogSim(
         name="rtl_buddy/vlog_sim",
@@ -107,6 +109,7 @@ def _make_preproc_sim(tmp_path, script_text):
         rtl_builder_mode="reg",
         sim_mode={"sim_to_stdout": False},
         suite_dir=str(tmp_path),
+        run_id=run_id,
     )
 
 
@@ -165,6 +168,82 @@ def test_preproc_plain_module_level_logic_still_runs(tmp_path):
 
     assert error is None
     assert marker.read_text() == "plain-ran"
+
+
+# --- preproc namespace: run scoping (issue #415) -----------------------------
+
+_DUMP_NS = (
+    "import json, pathlib\n"
+    "pathlib.Path(ns_out).write_text(json.dumps({\n"
+    "    'run_id': run_id,\n"
+    "    'artifact_dir': artifact_dir,\n"
+    "    'run_artifact_dir': run_artifact_dir,\n"
+    "}))\n"
+)
+
+
+def _preproc_namespace(tmp_path, *, run_id, script_name="preproc.py"):
+    import json
+
+    ns_out = tmp_path / f"ns-{run_id}.json"
+    sim = _make_preproc_sim(
+        tmp_path,
+        f"ns_out = {str(ns_out)!r}\n" + _DUMP_NS,
+        run_id=run_id,
+        script_name=script_name,
+    )
+    assert sim.pre() is None
+    return json.loads(ns_out.read_text())
+
+
+def test_preproc_namespace_carries_run_id_and_a_run_scoped_dir(tmp_path):
+    """A hook can scope its own output to the run it is preparing (#415)."""
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    ns = _preproc_namespace(tmp_path, run_id=7)
+
+    assert ns["run_id"] == 7
+    assert ns["artifact_dir"] == str(tmp_path / "artefacts" / "basic")
+    assert ns["run_artifact_dir"] == str(tmp_path / "artefacts" / "basic" / "run-0007")
+    # Handed directories to write into, not paths to mkdir.
+    assert Path(ns["artifact_dir"]).is_dir()
+    assert Path(ns["run_artifact_dir"]).is_dir()
+
+
+def test_preproc_run_artifact_dir_is_the_test_dir_without_a_run_id(tmp_path):
+    """One pre() serving the whole invocation has nothing to scope apart."""
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    ns = _preproc_namespace(tmp_path, run_id=None)
+
+    assert ns["run_id"] is None
+    assert ns["run_artifact_dir"] == ns["artifact_dir"]
+
+
+def test_preproc_run_artifact_dirs_do_not_collide_across_runs(tmp_path):
+    """The reported failure: every seed of a randtest shared one output dir.
+
+    `artifact_dir` is test-keyed and stays that way for compatibility, so the
+    separation has to come from the run-scoped directory.
+    """
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    first = _preproc_namespace(tmp_path, run_id=1, script_name="preproc1.py")
+    second = _preproc_namespace(tmp_path, run_id=2, script_name="preproc2.py")
+
+    assert first["artifact_dir"] == second["artifact_dir"]
+    assert first["run_artifact_dir"] != second["run_artifact_dir"]
+
+
+def test_preproc_run_artifact_dir_is_where_the_simulation_runs(tmp_path):
+    """The hook's per-run dir must be the sim's cwd, or the sim cannot read it."""
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    sim = _make_preproc_sim(tmp_path, "pass\n", run_id=3)
+
+    assert sim._ensure_artifact_dir(run_id=sim.run_id) == str(
+        tmp_path / "artefacts" / "basic" / "run-0003"
+    )
 
 
 # --- sweep (RtlBuddy._expand_tests_with_sweep()) -----------------------------

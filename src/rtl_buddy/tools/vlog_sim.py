@@ -568,6 +568,15 @@ class VlogSim:
         with open(script_path, "r") as file:
             code = file.read()
 
+        # `artifact_dir` stays test-keyed for backward compatibility, and
+        # `run_artifact_dir` is where a generator whose output depends on the
+        # run must write instead (#415). They are the same directory outside a
+        # per-run flow, so a hook can always use the latter. Both are created
+        # here: a hook is handed directories it may write to, not paths it has
+        # to mkdir.
+        artifact_dir = self._ensure_artifact_dir()
+        run_artifact_dir = self._ensure_artifact_dir(run_id=self.run_id)
+
         # Pass self.test_cfg to the preproc script as root_cfg
         # preproc script can mutate self.test_cfg, which is used for compile and sim
         try:
@@ -578,7 +587,9 @@ class VlogSim:
                 test_cfg=self.test_cfg,
                 root_cfg=self.root_cfg,
                 suite_dir=self.suite_work_dir,
-                artifact_dir=self._get_artifact_dir(),
+                artifact_dir=artifact_dir,
+                run_id=self.run_id,
+                run_artifact_dir=run_artifact_dir,
             )
         except Exception as e:
             log_event(

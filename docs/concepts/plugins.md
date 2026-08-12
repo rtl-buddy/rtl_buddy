@@ -77,10 +77,33 @@ The pre-processing hook runs after sweep expansion but before the compilation st
 | `test_cfg` | TestConfig (mutable) | Modify this to change compile/sim parameters |
 | `root_cfg` | RootConfig (mutable) | The loaded root config |
 | `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
-| `artifact_dir` | string | Artifact root for this test under `suite_dir/artefacts/` |
+| `artifact_dir` | string | Artifact root for this test under `suite_dir/artefacts/` — **test-keyed**, so every run of the test shares it |
+| `run_id` | int or None | The run index this hook is preparing (`randtest` iteration / dispatched array element), or `None` when one `preproc` serves the whole invocation |
+| `run_artifact_dir` | string | Artifact root for *this run*: `artifact_dir/run-NNNN` when `run_id` is set, otherwise `artifact_dir` itself. Also the simulation's working directory |
 | `__file__` | string | Absolute path to the current pre-processing script |
 
+Both directories exist by the time the hook runs.
+
 Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against `suite_dir` in preproc. Output filenames that should land in the per-test artefact tree can remain relative to `artifact_dir`.
+
+### Where a generator should write
+
+`artifact_dir` is keyed on the test name only, so under `randtest` or `--dispatch` every seed of a test resolves to the same path — and dispatched seeds run **concurrently**. Which directory to use follows from what the generated files depend on:
+
+- **Output depends only on the test** (the common case): write to `artifact_dir`, and write **atomically** — a temp file plus `os.replace`, never `open(path, "w")`. Truncate-in-place is not atomic, so a sibling element reading the file mid-write gets a short one, and the mismatch surfaces as a design failure rather than a harness failure.
+- **Output depends on the run or the seed**: write to `run_artifact_dir`. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative.
+
+```python
+# Seed-dependent stimulus: per-run directory, no race to worry about.
+out = Path(run_artifact_dir) / "stimulus.hex"
+out.write_text(generate(run_id))
+
+# Test-dependent stimulus: shared path, so publish it atomically.
+out = Path(artifact_dir) / "stimulus.hex"
+tmp = out.with_suffix(f".{os.getpid()}.tmp")
+tmp.write_text(generate())
+os.replace(tmp, out)
+```
 
 **Example:**
 
