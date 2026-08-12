@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rtl-buddy hub</title>
+  <!--
+    Served by rtl_buddy.hub.landing_page at GET / (rtl-buddy/rtl_buddy#398).
+
+    No build step and no route off localhost: the only external
+    references are same-origin hub routes (/hub/theme.css, /hub/assets/*,
+    /hub/state.json). The first inline <style> is a fallback for the
+    handful of tokens this page cannot render without, so a sheet that
+    fails to load degrades to a plain page instead of an unreadable one.
+
+    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
+    select :root, so they tie on specificity and document order decides
+    — a fallback placed after the link would permanently shadow the
+    sheet, including its @media (prefers-color-scheme: dark) block, and
+    every later palette edit would silently stop reaching this page.
+  -->
+  <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
+  <style>
+    /* --- minimal fallback: only what an unstyled page cannot do without */
+    :root {
+      color-scheme: light dark;
+      --bg: #f8fafc; --panel: #ffffff; --panel-2: #f1f5f9;
+      --line: #e2e8f0; --line-strong: #cbd5e1;
+      --fg: #1e293b; --fg-muted: #64748b; --fg-faint: #94a3b8;
+      --accent: #2563eb; --ok: #16a34a; --warn: #b45309; --err: #dc2626;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --fs-base: 13px; --fs-small: 11px;
+      --radius-2: 4px; --radius-3: 6px;
+      --shadow-1: 0 4px 12px rgba(15, 23, 42, .10);
+    }
+  </style>
+  <link rel="stylesheet" href="/hub/theme.css">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font: var(--fs-base)/1.5 var(--font-sans);
+      display: flex; flex-direction: column;
+    }
+
+    /* --- hub chrome: top bar ------------------------------------- */
+    header {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      padding: .5rem .9rem; border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .identity { display: flex; align-items: center; gap: .5rem; }
+    .identity img { width: 40px; height: 40px; display: block; }
+    .identity h1 {
+      font-size: 15px; font-weight: 600; margin: 0; letter-spacing: .01em;
+    }
+    .identity p {
+      margin: 0; font-size: var(--fs-small); color: var(--fg-muted);
+    }
+    .grow { flex: 1 1 auto; }
+    nav.switcher { display: flex; gap: .35rem; align-items: center; }
+    nav.switcher a, nav.switcher span.here {
+      font: var(--fs-small)/1.6 var(--font-sans);
+      border: 1px solid var(--line-strong); border-radius: var(--radius-2);
+      padding: .15rem .5rem; text-decoration: none; color: var(--fg);
+      white-space: nowrap;
+    }
+    nav.switcher a:hover { border-color: var(--accent); color: var(--accent); }
+    nav.switcher span.here {
+      background: var(--panel-2); color: var(--fg-muted); cursor: default;
+    }
+
+    /* --- main ------------------------------------------------------ */
+    main {
+      flex: 1 1 auto; overflow: auto; padding: 1.1rem .9rem 1.6rem;
+      max-width: 62rem; width: 100%; margin: 0 auto;
+    }
+    h2 {
+      font-size: var(--fs-small); letter-spacing: .12em; text-transform: uppercase;
+      color: var(--fg-muted); margin: 0 0 .6rem; font-weight: 600;
+    }
+    section + section { margin-top: 1.6rem; }
+
+    .cards {
+      display: grid; gap: .75rem;
+      grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+    }
+    .card {
+      display: flex; flex-direction: column; gap: .35rem;
+      border: 1px solid var(--line); border-radius: var(--radius-3);
+      background: var(--panel); padding: .8rem .85rem;
+      text-decoration: none; color: inherit;
+    }
+    a.card:hover {
+      border-color: var(--accent); box-shadow: var(--shadow-1);
+    }
+    .card .task { font-size: 14px; font-weight: 600; }
+    .card .app {
+      font: var(--fs-small)/1.5 var(--font-mono); color: var(--fg-muted);
+    }
+    .card .why { color: var(--fg-muted); }
+    .card .note { font: var(--fs-small)/1.5 var(--font-mono); color: var(--fg-muted); }
+    .card.off { opacity: .62; }
+    .card.off .task { color: var(--fg-muted); }
+    .badges { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .1rem; }
+    .badge {
+      font: var(--fs-small)/1.6 var(--font-sans);
+      border: 1px solid currentColor; border-radius: 999px; padding: 0 .45rem;
+    }
+    .badge.open { color: var(--warn); }
+    .badge.soon { color: var(--fg-faint); }
+    .badge.nodata { color: var(--fg-faint); }
+
+    .kv {
+      display: grid; grid-template-columns: 9rem 1fr; gap: .2rem .75rem;
+      border: 1px solid var(--line); border-radius: var(--radius-3);
+      background: var(--panel); padding: .75rem .85rem; margin: 0;
+    }
+    .kv dt { color: var(--fg-muted); }
+    .kv dd { margin: 0; font-family: var(--font-mono); overflow-wrap: anywhere; }
+    .kv dd.prose { font-family: var(--font-sans); }
+    .none { color: var(--fg-faint); }
+
+    .empty {
+      display: flex; align-items: center; gap: 1rem;
+      border: 1px dashed var(--line-strong); border-radius: var(--radius-3);
+      padding: .9rem; color: var(--fg-muted); background: var(--panel);
+    }
+    .empty img { width: 120px; height: 120px; flex: none; }
+    .empty code, .card code, .kv code {
+      font-family: var(--font-mono); background: var(--panel-2);
+      padding: 0 .25rem; border-radius: 3px;
+    }
+    .empty[hidden] { display: none; }
+
+    /* --- hub chrome: bottom status strip --------------------------- */
+    footer {
+      border-top: 1px solid var(--line); background: var(--panel);
+      padding: .3rem .9rem; color: var(--fg-muted);
+      display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+      font-size: var(--fs-small);
+    }
+    .dot {
+      width: .55rem; height: .55rem; border-radius: 50%;
+      display: inline-block; background: var(--fg-faint);
+    }
+    .dot.connected { background: var(--ok); }
+    .dot.connecting { background: var(--warn); }
+    .dot.offline { background: var(--err); }
+    #peers, #hub-addr { font-family: var(--font-mono); }
+    .msg-error { color: var(--err); font-weight: 600; }
+    .msg-warn { color: var(--warn); font-weight: 600; }
+  </style>
+  <script>
+    %HUB_INJECTION%
+  </script>
+</head>
+<body>
+  <header>
+    <div class="identity">
+      <img src="/hub/assets/rtl-buddy-logo-80.png" alt="" width="40" height="40">
+      <div>
+        <h1>rtl-buddy hub</h1>
+        <p id="subtitle">one project, every view of it</p>
+      </div>
+    </div>
+    <span class="grow"></span>
+    <nav class="switcher" id="switcher" aria-label="hub apps">
+      <span class="here">⌂ hub</span>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h2>what do you want to do</h2>
+      <div class="cards" id="cards"></div>
+    </section>
+
+    <section>
+      <h2>this hub</h2>
+      <dl class="kv" id="hub-state">
+        <dt>project root</dt><dd id="st-root" class="none">…</dd>
+        <dt>active model</dt><dd id="st-model" class="none">…</dd>
+        <dt>connected peers</dt><dd id="st-peers" class="none">…</dd>
+        <dt>design graph</dt><dd id="st-graph" class="none">…</dd>
+      </dl>
+      <div class="empty" id="empty" hidden>
+        <img src="/hub/assets/rtl-buddy-mascot-240.png" alt="" width="120" height="120">
+        <div id="empty-msg"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span><span class="dot connecting" id="conn-dot"></span> <span id="conn-status">connecting…</span></span>
+    <span id="peers"></span>
+    <span class="grow"></span>
+    <span id="hub-addr"></span>
+    <span id="msg"></span>
+  </footer>
+
+<script>
+(function () {
+  'use strict';
+
+  // The landing page is deliberately NOT a hub peer. One client per
+  // origin is the hub's rule, and a tab that merely lists the apps must
+  // not be the thing that evicts the app you had open — so live state
+  // arrives by polling this JSON instead of over /ws.
+  var STATE_URL = '/hub/state.json';
+  var POLL_MS = 4000;
+
+  var els = {
+    cards: document.getElementById('cards'),
+    switcher: document.getElementById('switcher'),
+    root: document.getElementById('st-root'),
+    model: document.getElementById('st-model'),
+    peersKv: document.getElementById('st-peers'),
+    graph: document.getElementById('st-graph'),
+    empty: document.getElementById('empty'),
+    emptyMsg: document.getElementById('empty-msg'),
+    dot: document.getElementById('conn-dot'),
+    status: document.getElementById('conn-status'),
+    peers: document.getElementById('peers'),
+    addr: document.getElementById('hub-addr'),
+    msg: document.getElementById('msg')
+  };
+
+  function text(node, value, emptyText) {
+    if (value) { node.textContent = value; node.classList.remove('none'); }
+    else { node.textContent = emptyText || '—'; node.classList.add('none'); }
+  }
+
+  // connected / connecting… / offline — the one vocabulary every hub app
+  // uses for its bottom strip (see docs/concepts/hub.md, hub chrome).
+  function setConnection(state) {
+    els.dot.className = 'dot ' + state;
+    els.status.textContent =
+      state === 'connected' ? 'connected'
+      : state === 'connecting' ? 'connecting…' : 'offline';
+  }
+
+  function note(message, level) {
+    els.msg.textContent = message || '';
+    els.msg.className =
+      level === 'error' ? 'msg-error' : level === 'warn' ? 'msg-warn' : '';
+  }
+
+  function el(tag, cls, textContent) {
+    var n = document.createElement(tag);
+    if (cls) { n.className = cls; }
+    if (textContent != null) { n.textContent = textContent; }
+    return n;
+  }
+
+  function ageText(seconds) {
+    if (seconds == null) { return ''; }
+    if (seconds < 90) { return Math.round(seconds) + 's ago'; }
+    if (seconds < 5400) { return Math.round(seconds / 60) + 'm ago'; }
+    if (seconds < 172800) { return Math.round(seconds / 3600) + 'h ago'; }
+    return Math.round(seconds / 86400) + 'd ago';
+  }
+
+  function renderCard(app) {
+    // A shipped app stays clickable even with no data: its own empty
+    // state names the command that fixes that, which is a better
+    // teacher than a dead card. Only a planned app is not a link.
+    var routable = app.status !== 'planned' && app.route;
+    var node = routable ? el('a', 'card') : el('div', 'card off');
+    if (routable) {
+      node.href = app.route;
+      if (!app.available) { node.className = 'card off'; }
+    }
+    node.appendChild(el('div', 'task', app.task));
+    node.appendChild(el('div', 'app', app.route ? app.name + '  ' + app.route : app.name));
+    node.appendChild(el('div', 'why', app.why));
+    var badges = el('div', 'badges');
+    if (app.open) {
+      // One client per origin: a second tab supersedes the first, so the
+      // warning belongs before the click, not in the evicted tab.
+      badges.appendChild(el('span', 'badge open', 'already open — this replaces it'));
+    }
+    if (app.status === 'planned') {
+      badges.appendChild(el('span', 'badge soon', 'coming soon'));
+    } else if (!app.available) {
+      badges.appendChild(el('span', 'badge nodata', 'no data yet'));
+    }
+    if (badges.childNodes.length) { node.appendChild(badges); }
+    if (app.note) { node.appendChild(el('div', 'note', app.note)); }
+    return node;
+  }
+
+  function renderSwitcher(apps) {
+    // Rebuild only the sibling links; the ⌂ hub marker is static.
+    var links = els.switcher.querySelectorAll('a');
+    for (var i = 0; i < links.length; i++) { links[i].remove(); }
+    apps.forEach(function (app) {
+      if (app.status === 'planned' || !app.route) { return; }
+      var a = el('a', null, app.name);
+      a.href = app.route;
+      a.title = app.task;
+      els.switcher.appendChild(a);
+    });
+  }
+
+  function render(state) {
+    var apps = state.apps || [];
+    els.cards.textContent = '';
+    apps.forEach(function (app) { els.cards.appendChild(renderCard(app)); });
+    renderSwitcher(apps);
+
+    var hub = state.hub || {};
+    text(els.root, hub.project_root, 'not a project hub');
+    els.model.classList.toggle('prose', !hub.active_model);
+    text(els.model, hub.active_model, 'none selected');
+    var peers = state.peers || [];
+    text(els.peersKv, peers.length ? peers.join(', ') : '', 'none connected');
+    els.peersKv.classList.toggle('prose', peers.length === 0);
+    var graph = state.graph || {};
+    els.graph.classList.toggle('prose', !graph.present);
+    text(
+      els.graph,
+      graph.present
+        ? (graph.path || 'graph.json') + '  ·  built ' + ageText(graph.age_seconds)
+        : '',
+      'not built — run `rb graph build`'
+    );
+
+    // Empty state: this hub has nothing built for any app yet. Not "no
+    // card is clickable" — /view always answers, so that test would
+    // never fire and the panel would be decoration.
+    var nothingBuilt = !hub.active_model && !graph.present;
+    els.empty.hidden = !nothingBuilt;
+    if (nothingBuilt) {
+      els.emptyMsg.textContent =
+        'Nothing built for this project yet. Pick a model in the design view ' +
+        '(or start the hub with --model NAME), and run `rb graph build` for ' +
+        'the knowledge graph.';
+    }
+
+    els.addr.textContent = hub.addr || '';
+    els.peers.textContent = peers.length ? 'peers: ' + peers.join(' ') : 'no peers';
+    setConnection('connected');
+    note('');
+  }
+
+  function poll() {
+    fetch(STATE_URL, { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) { throw new Error('GET ' + STATE_URL + ' → ' + r.status); }
+        return r.json();
+      })
+      .then(render)
+      .catch(function (err) {
+        setConnection('offline');
+        note(String(err && err.message ? err.message : err), 'error');
+      });
+  }
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

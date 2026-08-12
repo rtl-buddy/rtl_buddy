@@ -32,6 +32,7 @@ def test_banner_tcp_only_no_viewer(capfd):
     assert "rtl-buddy-hub running." in out
     assert "TCP:      127.0.0.1:12345" in out
     assert "Viewer:" not in out
+    assert "Hub:" not in out
     assert "Logs:" not in out
     assert "Press Ctrl-C to stop." in out
 
@@ -49,7 +50,8 @@ def test_banner_with_viewer_but_no_view_json(capfd):
         log_path=None,
     )
     out = capfd.readouterr().err
-    assert "Viewer:   http://127.0.0.1:54321/" in out
+    assert "Hub:      http://127.0.0.1:54321/" in out
+    assert "Viewer:   http://127.0.0.1:54321/view" in out
     assert "?view=" not in out
 
 
@@ -66,7 +68,8 @@ def test_banner_view_json_path_set_but_file_missing(capfd, tmp_path: Path):
         log_path=None,
     )
     out = capfd.readouterr().err
-    assert "Viewer:   http://127.0.0.1:54321/" in out
+    assert "Hub:      http://127.0.0.1:54321/" in out
+    assert "Viewer:   http://127.0.0.1:54321/view" in out
     assert "?view=" not in out
 
 
@@ -83,7 +86,8 @@ def test_banner_view_json_present_appends_query(capfd, tmp_path: Path):
         log_path=None,
     )
     out = capfd.readouterr().err
-    assert "Viewer:   http://127.0.0.1:54321/?view=/view.json" in out
+    assert "Hub:      http://127.0.0.1:54321/" in out
+    assert "Viewer:   http://127.0.0.1:54321/view?view=/view.json" in out
 
 
 def test_banner_includes_log_path_when_configured(capfd, tmp_path: Path):

@@ -32,7 +32,7 @@ from typing import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from rtl_buddy.hub import graph_page
+from rtl_buddy.hub import graph_page, theme
 from rtl_buddy.hub.protocol import (
     Envelope,
     HubProtocolError,
@@ -447,20 +447,48 @@ def test_page_injects_hub_address():
 
 
 def test_page_is_self_contained():
-    """No CDN, no external stylesheet, no remote font, no import."""
+    """No CDN, no remote font, no import, no off-machine reference.
+
+    Since #398 the pane links the hub's own token sheet, so "no external
+    stylesheet" narrowed to what it always meant: every ``src``/``href``
+    that is not a page anchor must be a **same-origin absolute path**,
+    served by this same hub process. A hub on a machine with no route
+    off localhost still renders the pane completely.
+    """
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     assert "<script src=" not in body
-    assert 'rel="stylesheet"' not in body
     assert "@import" not in body
     for host in ("cdn.", "unpkg", "jsdelivr", "googleapis", "//fonts"):
         assert host not in body
-    # The only absolute URLs may be the SVG namespace and href="/graph"-style
-    # same-origin paths; nothing may point off the machine.
+    for attr in ("href=", "src="):
+        for chunk in body.split(attr)[1:]:
+            quote = chunk[0]
+            value = chunk[1:].split(quote)[0] if quote in "\"'" else chunk.split()[0]
+            assert value.startswith("/"), f"{attr}{value}"
+    # The only absolute URLs may be the SVG namespace; nothing may point
+    # off the machine.
     for scheme in ("https://", "http://"):
         for chunk in body.split(scheme)[1:]:
             authority = chunk.split("'")[0].split('"')[0].split(" ")[0]
             assert authority.startswith("www.w3.org"), authority
+
+
+def test_page_links_the_shared_token_sheet_with_a_fallback():
+    """The sheet is a link, but a 404 on it must not blank the page."""
+
+    body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert '<link rel="stylesheet" href="/hub/theme.css">' in body
+    assert theme.FAVICON_16 in body and theme.FAVICON_32 in body
+    # Inline fallback: the tokens the pane cannot render without.
+    for token in ("--bg:", "--panel:", "--fg:", "--accent:", "--col-design:"):
+        assert token in body, token
+    # Light default (#398): the first surface value is the light one.
+    assert "--bg:          #f8fafc;" in body
+    # ...and the fallback comes BEFORE the link, or it would out-rank the
+    # sheet at equal specificity and kill prefers-color-scheme: dark.
+    # tests/test_hub_theme.py checks this properly, for every hub page.
+    assert body.index("--bg:          #f8fafc;") < body.index('href="/hub/theme.css"')
 
 
 def test_page_carries_the_pieces_the_issue_asks_for():
@@ -546,7 +574,7 @@ async def test_http_index_advertises_the_graph_url(hub_and_viewer):
     """A hub with a built graph sets ``__RTL_BUDDY_GRAPH_URL__``."""
 
     _hub, viewer = hub_and_viewer
-    url = f"http://127.0.0.1:{viewer.http_port}/"
+    url = f"http://127.0.0.1:{viewer.http_port}/view"
     _status, _headers, body = await asyncio.to_thread(_http_get, url)
     assert b"window.__RTL_BUDDY_GRAPH_URL__ = '/graph.json'" in body
 

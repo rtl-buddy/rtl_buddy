@@ -352,9 +352,10 @@ A static per-directory graph page would be the obvious answer. The hub can do be
 rb graph build
 rb hub start --serve-viewer          # prints the http_port
 # then open http://127.0.0.1:<http_port>/graph
+# (or http://127.0.0.1:<http_port>/ — the hub landing links every app)
 ```
 
-The pane needs nothing but `rb graph build`: the design + config tiers are enough to render, the extractor is not required, and neither is a viewer bundle. Everything on the page is inline — no CDN, no external font, no build step — so it opens on a machine with no route off localhost.
+The pane needs nothing but `rb graph build`: the design + config tiers are enough to render, the extractor is not required, and neither is a viewer bundle. Nothing on the page comes from off the machine — no CDN, no external font, no build step; the one stylesheet it links, the hub's [shared token sheet](hub.md#design-tokens-hubthemecss), is served by the same hub process.
 
 What it shows:
 

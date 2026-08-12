@@ -127,12 +127,15 @@ def _http_get(url: str) -> tuple[int, dict[str, str], bytes]:
 
 
 @pytest.mark.asyncio
-async def test_http_root_returns_placeholder(hub_and_viewer):
+async def test_http_view_route_returns_placeholder(hub_and_viewer):
+    """The SPA lives at ``/view`` since #398 — ``/`` is the landing."""
+
     _hub, viewer = hub_and_viewer
-    url = f"http://127.0.0.1:{viewer.http_port}/"
+    url = f"http://127.0.0.1:{viewer.http_port}/view"
     status, headers, body = await asyncio.to_thread(_http_get, url)
     assert status == 200
     assert "text/html" in headers.get("Content-Type", "")
+    assert b"placeholder" in body.lower()
     assert b"window.__RTL_BUDDY_HUB__" in body
     assert f"{viewer.hub_host}:{viewer.hub_port}".encode("utf-8") in body
 
@@ -253,8 +256,8 @@ async def test_http_view_json_served_when_configured(tmp_path: Path):
         assert "application/json" in headers.get("Content-Type", "")
         assert body == view_json.read_bytes()
 
-        # Bonus: index.html gets the auto-load preamble.
-        url_root = f"http://127.0.0.1:{viewer.http_port}/"
+        # Bonus: the SPA route gets the auto-load preamble.
+        url_root = f"http://127.0.0.1:{viewer.http_port}/view"
         _status, _, root_body = await asyncio.to_thread(_http_get, url_root)
         assert b"window.__RTL_BUDDY_VIEW_URL__" in root_body
         assert b"'/view.json'" in root_body
@@ -288,10 +291,17 @@ async def test_http_serves_static_from_bundle(tmp_path: Path):
     await viewer.start()
     vtask = asyncio.create_task(viewer.serve_forever())
     try:
-        url_idx = f"http://127.0.0.1:{viewer.http_port}/"
+        url_idx = f"http://127.0.0.1:{viewer.http_port}/view"
         status, _, body = await asyncio.to_thread(_http_get, url_idx)
         assert status == 200
         assert b"bundle index" in body
+        assert b"window.__RTL_BUDDY_HUB__" in body
+
+        # ``/index.html`` stays an alias for the injected bundle index —
+        # never the raw file _serve_static would hand back.
+        url_alias = f"http://127.0.0.1:{viewer.http_port}/index.html"
+        status, _, body = await asyncio.to_thread(_http_get, url_alias)
+        assert status == 200
         assert b"window.__RTL_BUDDY_HUB__" in body
 
         url_css = f"http://127.0.0.1:{viewer.http_port}/assets/app.css"

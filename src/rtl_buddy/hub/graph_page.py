@@ -391,6 +391,19 @@ def graph_payload_bytes(
     return 200, json.dumps(payload).encode("utf-8")
 
 
+def graph_json_path(project_root: str | os.PathLike) -> Path:
+    """Where ``graph.json`` lives for this root.
+
+    The single spelling of the "is there a graph?" coordinate: every
+    presence check (this module's, the landing's) derives from this
+    path, so they cannot drift apart.
+    """
+
+    from ..graph.config_tier import default_graph_dir
+
+    return default_graph_dir(project_root) / GRAPH_JSON_NAME
+
+
 def graph_files_present(project_root: str | os.PathLike) -> bool:
     """Whether ``artefacts/graph/graph.json`` exists for this root.
 
@@ -398,9 +411,7 @@ def graph_files_present(project_root: str | os.PathLike) -> bool:
     page advertises the ``/graph`` link.
     """
 
-    from ..graph.config_tier import default_graph_dir
-
-    return (default_graph_dir(project_root) / GRAPH_JSON_NAME).is_file()
+    return graph_json_path(project_root).is_file()
 
 
 def render_graph_html(*, hub_addr: str, graph_url: str = GRAPH_JSON_ROUTE) -> bytes:
@@ -446,6 +457,7 @@ __all__ = [
     "build_graph_payload",
     "categorize_nodes",
     "graph_files_present",
+    "graph_json_path",
     "graph_payload_bytes",
     "render_graph_html",
 ]

@@ -3,7 +3,9 @@
 Browsers can't speak the hub's raw TCP transport, so this module
 embeds an HTTP server alongside :mod:`rtl_buddy.hub.server` that:
 
-* serves the rtl-buddy-view SPA static bundle at ``/``,
+* serves the hub landing page at ``/`` and the rtl-buddy-view SPA
+  static bundle at ``/view`` (rtl-buddy/rtl_buddy#398 — ``/`` was the
+  SPA until the hub grew a second app worth advertising),
 * injects the hub's host:port into the page via a
   ``window.__RTL_BUDDY_HUB__`` script preamble (§4.4),
 * exposes the hub's JSON-message channel as a WebSocket at ``/ws``,
@@ -38,7 +40,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
 from ..logging_utils import log_event
-from . import graph_page
+from . import graph_page, landing_page, theme
 from .event_broker import EventBroker
 
 
@@ -97,13 +99,20 @@ PLACEHOLDER_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <title>rtl-buddy-hub viewer placeholder</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
+  <link rel="stylesheet" href="/hub/theme.css">
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 40rem;
-           margin: 4rem auto; padding: 0 1rem; line-height: 1.5; }
-    code { background: #f3f4f6; padding: 0 .25rem; border-radius: 3px; }
+    body { font-family: var(--font-sans, system-ui), sans-serif; max-width: 40rem;
+           margin: 4rem auto; padding: 0 1rem; line-height: 1.5;
+           background: var(--bg, #f8fafc); color: var(--fg, #1e293b); }
+    code { font-family: var(--font-mono, monospace);
+           background: var(--panel-2, #f1f5f9); padding: 0 .25rem;
+           border-radius: var(--radius-1, 3px); }
+    a { color: var(--accent, #2563eb); }
     h1 { font-size: 1.4rem; }
-    .ok  { color: #16a34a; }
-    .err { color: #dc2626; }
+    .ok  { color: var(--ok, #16a34a); }
+    .err { color: var(--err, #dc2626); }
   </style>
   <script>
     %HUB_INJECTION%
@@ -125,7 +134,8 @@ PLACEHOLDER_HTML = """<!doctype html>
   <p>
     The design knowledge graph pane is served independently of the SPA
     at <a href="/graph"><code>/graph</code></a> — it needs only
-    <code>rb graph build</code>, not a viewer bundle.
+    <code>rb graph build</code>, not a viewer bundle. Every app this hub
+    serves is listed on the landing page at <a href="/"><code>/</code></a>.
   </p>
   <p id="status">Connecting to <code>/ws</code>…</p>
   <script>
@@ -171,7 +181,7 @@ def render_index_html(
     view_url: str | None = None,
     graph_url: str | None = None,
 ) -> bytes:
-    """Return the HTML body served at ``/`` with hub address injected.
+    """Return the HTML body served at ``/view`` with hub address injected.
 
     When ``bundle_index`` points at an existing file, its contents are
     served with the ``%HUB_INJECTION%`` placeholder (or a ``<head>``
@@ -405,7 +415,35 @@ class ViewerServer:
             return _http_response(connection, 404, b"unknown ws path")
 
         # Plain HTTP.
-        if path in ("/", "/index.html"):
+        if path == landing_page.LANDING_PAGE_ROUTE:
+            return _http_response(
+                connection,
+                200,
+                landing_page.render_landing_html(hub_addr=self.hub_address),
+                content_type="text/html; charset=utf-8",
+            )
+
+        if path == landing_page.STATE_JSON_ROUTE:
+            return self._handle_hub_state(connection)
+
+        if path == theme.THEME_CSS_ROUTE:
+            return _http_response(
+                connection,
+                200,
+                theme.theme_css_bytes(),
+                content_type="text/css; charset=utf-8",
+            )
+
+        if path.startswith(theme.ASSETS_ROUTE_PREFIX):
+            return self._handle_asset(
+                connection, path[len(theme.ASSETS_ROUTE_PREFIX) :]
+            )
+
+        # ``/index.html`` stays an alias for the SPA: it is what the
+        # bundle's own relative links resolve to, and letting it fall
+        # through to ``_serve_static`` would serve the bundle's index
+        # WITHOUT the hub injection — an SPA that cannot find its hub.
+        if path in (landing_page.VIEW_PAGE_ROUTE, "/view/", "/index.html"):
             body = render_index_html(
                 bundle_index=self._bundle_index,
                 hub_addr=self.hub_address,
@@ -461,6 +499,74 @@ class ViewerServer:
                 return static
 
         return _http_response(connection, 404, b"not found")
+
+    # ------------------------------------------------------------------
+    # / + /hub/* — landing, tokens, brand marks (issue #398)
+    # ------------------------------------------------------------------
+
+    def _handle_hub_state(self, connection: ServerConnection) -> Response:
+        """``GET /hub/state.json`` — what the landing page renders.
+
+        Recomputed per request (two ``stat`` calls and a set read) for
+        the same reason ``/models`` walks per request: a graph built, or
+        a tab opened, while the landing is up must show up on its next
+        poll rather than on a hub restart.
+        """
+
+        peers = (
+            [o.value for o in self.hub_server.registered_origins]
+            if self.hub_server is not None
+            else []
+        )
+        graph_present, graph_path, graph_mtime = landing_page.graph_state(
+            self.project_root
+        )
+        payload = landing_page.build_state_payload(
+            hub_addr=self.hub_address,
+            server_version=(
+                getattr(self.hub_server, "server_version", None)
+                if self.hub_server is not None
+                else None
+            ),
+            project_root=self.project_root,
+            active_model=self.active_model,
+            active_test=self.active_test,
+            peers=peers,
+            # The SPA route always answers — without a bundle it serves
+            # the placeholder, which explains itself — so the card is
+            # live either way and the note carries the caveat.
+            view_available=True,
+            view_note=(
+                None
+                if self._bundle_index is not None
+                else "no viewer bundle installed — serving the placeholder page"
+            ),
+            graph_present=graph_present,
+            graph_path=graph_path,
+            graph_mtime=graph_mtime,
+        )
+        return _http_response(
+            connection,
+            200,
+            json.dumps(payload).encode("utf-8"),
+            content_type="application/json",
+        )
+
+    def _handle_asset(self, connection: ServerConnection, name: str) -> Response:
+        """``GET /hub/assets/<name>`` — the vendored brand marks.
+
+        ``name`` is matched against the shipped listing rather than
+        joined onto a path, so no traversal is possible here (unlike
+        ``_serve_static``, which has to resolve arbitrary bundle paths
+        and therefore carries its own containment check).
+        """
+
+        body = theme.asset_bytes(name)
+        if body is None:
+            return _http_response(connection, 404, b"not found")
+        return _http_response(
+            connection, 200, body, content_type=_guess_content_type(Path(name))
+        )
 
     # ------------------------------------------------------------------
     # /graph + /graph.json (issue #382)

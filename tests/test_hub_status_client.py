@@ -113,3 +113,21 @@ def test_display_origins_does_not_include_cli():
     assert "view" in DISPLAY_ORIGINS
     assert "wave" in DISPLAY_ORIGINS
     assert "src" in DISPLAY_ORIGINS
+
+
+def test_display_origins_includes_the_graph_pane():
+    """``rb hub status`` lists every app a user can have open.
+
+    The graph pane has been a first-class peer with its own origin since
+    #382; omitting it from the status listing made "who is connected?"
+    answer for two of the three apps (rtl-buddy/rtl_buddy#398).
+    """
+    assert "graph" in DISPLAY_ORIGINS
+
+
+def test_display_origins_are_real_protocol_origins():
+    """A typo here would print a peer that can never connect."""
+    from rtl_buddy.hub.protocol import Origin
+
+    values = {o.value for o in Origin}
+    assert set(DISPLAY_ORIGINS) <= values

@@ -134,7 +134,13 @@ def _print_startup_banner(
     """
     lines = ["rtl-buddy-hub running."]
     if http_port is not None:
-        url = f"http://127.0.0.1:{http_port}/"
+        base = f"http://127.0.0.1:{http_port}"
+        # The landing page is the URL to hand a person: it lists every
+        # app this hub can serve and says which already has a tab. The
+        # SPA keeps its own line because it is the one people paste
+        # into scripts and bookmarks.
+        lines.append(f"  Hub:      {base}/")
+        url = f"{base}/view"
         # Append the auto-load query string only when the view.json is
         # actually servable — otherwise it'd 404 and the SPA would land
         # in the empty state with a misleading URL on the user's first
