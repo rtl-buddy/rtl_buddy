@@ -489,6 +489,45 @@ def test_share_build_declines_absolute_builder_simv(tmp_path, monkeypatch):
     assert sim_a._get_simv_path() == pinned
 
 
+def test_a_pinned_simv_overwritten_by_another_test_invalidates_the_stamp(
+    tmp_path, monkeypatch
+):
+    """An absolute `builder-simv:` is one path shared by every test on that
+    builder, while the stamp is per test. Without stamping the executable,
+    test_a's stamp keeps validating after test_b overwrote the binary they
+    both point at, and test_a silently simulates test_b's build (#369)."""
+    _write_source(tmp_path)
+    calls = []
+    pinned = str(tmp_path / "pinned" / "simv")
+    _install_fake_builder(monkeypatch, calls, simv=pinned)
+
+    def _sim(name, pd=None):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=name,
+            exe="qrun",
+            family="questa",
+            simv=pinned,
+            pd=pd,
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+    # Nothing else has touched the binary: test_a reuses its own build.
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+
+    # test_b compiles a *different* configuration over the same pinned path.
+    assert _sim("test_b", pd={"WIDTH": 8}).compile() == 0
+    assert len(calls) == 2
+    _touch(Path(pinned), "test_b's binary\n")
+
+    # test_a must not inherit it.
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 3
+
+
 def test_share_build_supported_is_the_single_capability_source():
     assert vlog_sim_module.share_build_supported("verilator")
     assert vlog_sim_module.share_build_supported("vcs")

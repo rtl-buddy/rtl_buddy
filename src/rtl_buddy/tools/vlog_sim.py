@@ -714,8 +714,25 @@ class VlogSim:
             # honest reading is one rebuild — after which the stamp says
             # which it is.
             return False
+        # The executable is an *output*, so the input fingerprint says
+        # nothing about it. That was harmless while the output always lived
+        # in a directory named after those inputs, and stops being harmless
+        # here: an absolute `builder-simv:` is one path shared by every test
+        # using that builder, while the stamp is per test. Without this,
+        # test_a's stamp keeps validating after test_b overwrote the binary
+        # they both point at, and test_a silently simulates test_b's build
+        # (#369).
+        if stored.get("simv") != _stat_entry(str(simv_path)):
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.build_dep_changed",
+                test=test_name,
+                dependency=str(simv_path),
+            )
+            return False
         if {
-            key: value for key, value in stored.items() if key != "deps"
+            key: value for key, value in stored.items() if key not in ("deps", "simv")
         } != fingerprint:
             return False
         deps = stored["deps"]
@@ -1113,11 +1130,24 @@ class VlogSim:
                 stamp_dir = self._shared_build_dir or compile_work_dir
                 # Recorded from the finished build, not predicted from the
                 # filelist: the builder is the only thing that knows which
-                # headers it actually opened (#303).
-                deps = self._collect_build_deps(stamp_dir, compile_work_dir)
+                # headers it actually opened (#303). Read from the *build
+                # output* dir, which is the stamp dir only in the shared
+                # case — unshared, the builder's outputs are under
+                # `compile_work_dir / build_dir` while the stamp sits beside
+                # them in `compile_work_dir`.
+                deps = self._collect_build_deps(build_dir, compile_work_dir)
                 stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
                 stamp_path.write_text(
-                    json.dumps({**fingerprint, "deps": deps}, sort_keys=True)
+                    json.dumps(
+                        # The executable is stamped too, so a reuse check can
+                        # tell "these inputs" from "this binary" (#369).
+                        {
+                            **fingerprint,
+                            "deps": deps,
+                            "simv": _stat_entry(self._get_simv_path()),
+                        },
+                        sort_keys=True,
+                    )
                 )
                 log_event(
                     logger,

@@ -174,8 +174,12 @@ compiling one shared `simv` per unique compile key on a compute node is
 exactly what lets each sim job skip compilation and re-enter at simulation.
 This changes compile behaviour versus a plain local run — tests with
 identical compile inputs compile once, not once each. Builders share-build
-cannot handle fall back to compiling inside each job, which also skips the
-build job and widens that job's reservation to cover the compile; see
+cannot handle fall back to compiling inside each job, which widens that
+job's reservation to cover the compile. The build job is skipped for them
+too, but only while there is nothing to serialize: a test fanned out over
+several runs would otherwise have every element compiling into the one
+`artefacts/<test>/` at once, so it gets a build job and its elements wait
+for it. See
 [Parallel dispatch](concepts/dispatch.md#builders-that-compile-inside-the-job).
 The promotion is logged as `dispatch.share_build_implied`. Also
 note `--dispatch` cannot be combined with `--early-stop`: a build job
@@ -337,10 +341,20 @@ compile subprocess inherits (only the *extra* compile env is recorded, so a
 dependency file names that binary), and anything a builder consumes without
 declaring.
 
-The escape hatch where tracking does not reach: delete
-`artefacts/.shared-builds/` (or run once without `--share-build`) to force a
-fresh compile. When a warm run rebuilds and you want to know why,
-`compile.build_dep_changed` (DEBUG) names the input that changed.
+The escape hatch where tracking does not reach: delete the stamp, or run
+once without `--share-build`, to force a fresh compile. **Which stamp
+depends on the builder**, and the distinction matters most for exactly the
+builders with no dependency tracking:
+
+- a *shared* build stamps `artefacts/.shared-builds/obj_dir_<key>/`, so
+  deleting `artefacts/.shared-builds/` covers it;
+- a build that could not be shared (any non-Verilator/VCS/Icarus family, or
+  an absolute `builder-simv:`) stays in the test's own directory and stamps
+  `artefacts/<test>/rb-compile-stamp.json`, which that deletion does **not**
+  touch.
+
+When a warm run rebuilds and you want to know why, `compile.build_dep_changed`
+(DEBUG) names the input that changed.
 
 A stamp written by an rtl_buddy older than #303 has no dependency record at
 all, and its silence cannot be told from "there were none" — such a stamp is

@@ -817,6 +817,27 @@ def test_single_run_in_job_compiles_still_skip_the_build_job(
     assert fake_backend.dependencies == [None, None]
 
 
+def _add_second_builder(project: Path, *, name: str, family: str):
+    """Give the fixture a second builder so a suite can mix families."""
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            "cfg-verible:",
+            f'  - name: "{name}"\n'
+            f'    builder: "echo"\n'
+            f'    simulator-family: "{family}"\n'
+            f'    builder-simv: "obj_dir/simv"\n'
+            f"    sim-rand-seed: 1\n"
+            f'    sim-rand-seed-prefix: "+seed="\n'
+            f"    builder-opts:\n"
+            f"      debug:\n"
+            f'        compile-time: "--no-op"\n'
+            f'        run-time: "--no-op"\n'
+            f"\ncfg-verible:",
+        )
+    )
+
+
 def test_every_group_waits_for_the_build_job_that_writes_its_directory(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],
@@ -824,20 +845,37 @@ def test_every_group_waits_for_the_build_job_that_writes_its_directory(
 ):
     """The build job runs PRE+COMPILE for the whole plan, so it writes into a
     self-compiling test's artefact dir too — an ungated element would be the
-    second writer there."""
+    second writer there. That is the mixed-builder case, which needs no
+    fan-out at all: one shareable test puts a build job in the plan, and the
+    unshareable one beside it must still wait for it.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_second_builder(minimal_project, name="unshareable", family="questa")
     tests_yaml = minimal_project / "tests.yaml"
+    # `extra` compiles for itself AND resolves to a different reservation, so
+    # the two tests land in different arrays.
     tests_yaml.write_text(
         tests_yaml.read_text().replace(
             "  - name: extra\n",
-            "  - name: extra\n    resources: { mem: 24G }\n",
+            "  - name: extra\n    builder: unshareable\n    resources: { mem: 24G }\n",
         )
     )
-    result, _ = _invoke(["randtest", "basic", "2", "--dispatch", "slurm"])
+
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
     assert result.exit_code == 0, result.output
 
+    assert [spec.test_name for spec in recording_backend.submitted] == [
+        "basic",
+        "extra",
+    ]
+    # Two reservation groups, one build job, and neither group runs unblocked.
     assert len(recording_backend.build_submitted) == 1
+    assert len(recording_backend.array_calls) == 2
     assert [call["dependency"] for call in recording_backend.array_calls] == [
-        "fake-build"
+        "fake-build",
+        "fake-build",
     ]
 
 
