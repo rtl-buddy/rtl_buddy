@@ -310,31 +310,45 @@ to the pin and `test_pin_tracks_hub_protocol_version` asserts it equals the hub
 (1) tag a compatible `rtl-buddy-nvim` release, (2) bump `RTL_BUDDY_NVIM_REF` to
 it, and (3) bump `_PIN_PROTOCOL_VERSION`. Keep the three in lockstep.
 
-## Shared-build reuse does not see header edits or toolchain upgrades
+## Shared-build reuse sees header edits only where the builder reports them
 
 With [`--share-build`](concepts/tests.md#sharing-compiled-builds-across-tests)
 ([#293](https://github.com/rtl-buddy/rtl_buddy/issues/293)), a compile is
 skipped when the `rb-compile-stamp.json` in the shared build dir matches the
 current compile inputs. The stamp covers the compile command, the extra
-compile env, and the size/mtime of every **file listed in the resolved
-`run.f`** — but two input classes are not tracked:
+compile env, the size/mtime of every **file listed in the resolved `run.f`**,
+and — since [#303](https://github.com/rtl-buddy/rtl_buddy/issues/303) — every
+input the builder reports having **consumed**, read from the dependency file
+it emits. What that last part covers depends entirely on the builder:
 
-- **Include-dir contents.** `+incdir+` and `-y` entries resolve to
-  directories, so the stamp records only the raw line. Editing a header that
-  is only reachable through an include dir does **not** invalidate the stamp,
-  and a warm run reuses a simv built from the old header. Tracking consumed
-  headers via Verilator's emitted `.d` dependency file is
-  [#303](https://github.com/rtl-buddy/rtl_buddy/issues/303).
-- **The toolchain itself.** The builder executable is keyed by its configured
-  name (e.g. `verilator`), not its version, and only the *extra* compile env
-  is recorded — the ambient environment the subprocess inherits is not. An
-  in-place Verilator upgrade, or a `PATH` change that selects a different
-  binary, reuses the stale simv silently.
+- **Verilator** emits `V<prefix>__ver.d`, so included headers, files reached
+  through `-y` library dirs, its own std includes and the `verilator_bin`
+  binary are all tracked. A header-only edit and an in-place Verilator
+  upgrade each invalidate the stamp.
+- **VCS and Icarus** emit nothing comparable. Their stamps record
+  `"deps": null` — *no dependency information*, not *no dependencies* — and
+  reuse behaves as it did before: **editing a header reachable only through
+  `+incdir+`/`-y` does not invalidate the stamp**, and a warm run reuses a
+  simv built from the old header.
 
-The escape hatch for both: delete `artefacts/.shared-builds/` (or run once
-without `--share-build`) to force a fresh compile. Within-run and concurrent
-safety are separate concerns and *are* handled — same-key tests share by
-construction, and cross-process races are excluded by the
+Two things stay untracked for every builder: the **ambient environment** the
+compile subprocess inherits (only the *extra* compile env is recorded, so a
+`PATH` change that selects a different binary is invisible unless the
+dependency file names that binary), and anything a builder consumes without
+declaring.
+
+The escape hatch where tracking does not reach: delete
+`artefacts/.shared-builds/` (or run once without `--share-build`) to force a
+fresh compile. When a warm run rebuilds and you want to know why,
+`compile.build_dep_changed` (DEBUG) names the input that changed.
+
+A stamp written by an rtl_buddy older than #303 has no dependency record at
+all, and its silence cannot be told from "there were none" — such a stamp is
+rejected, so the first run after upgrading recompiles once per compile key.
+
+Within-run and concurrent safety are separate concerns and *are* handled —
+same-key tests share by construction, and cross-process races are excluded by
+the
 [per-tree artefact lock](#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)
 (with that quirk's NFS caveat applying here too).
 

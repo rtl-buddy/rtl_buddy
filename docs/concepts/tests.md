@@ -229,6 +229,20 @@ compile inputs (including each source file's size and modification time) is
 written next to the `simv`. Reuse only happens when the stamp matches, so
 editing any file listed in the filelist triggers a rebuild in place.
 
+The filelist only names what the *project* declared, which is not the whole
+truth: an entry that resolves to a directory (`+incdir+`, `-y`) says nothing
+about the headers reached through it. So the stamp also records every input
+the builder reports having actually consumed. **Under Verilator** that comes
+from the `V<prefix>__ver.d` dependency file it emits into the build dir, and
+it covers included headers, files pulled in from `-y` library dirs,
+Verilator's own std includes, and the `verilator_bin` binary itself — so a
+header-only edit *and* an in-place toolchain upgrade both invalidate the
+stamp. Other builders emit nothing comparable; their stamps record that no
+dependency information was available (`"deps": null`) and reuse behaves as
+it did before. `compile.build_stamp_written` logs how many inputs were
+tracked, and `compile.build_dep_changed` names the one that forced a
+rebuild.
+
 Where the build lands depends on the builder, but the executable is always
 `simv` inside the shared dir: Verilator is pointed there with `--Mdir`, VCS
 with `-o` (plus `-Mdir` so its `csrc` tree stays beside the binary), and
@@ -245,12 +259,13 @@ Caveats:
   (`compile.share_build_unsupported`, with the reason) and compile per test
   as before, as does any builder whose `builder-simv:` is an absolute path —
   that pins the executable outside the shared dir.
-- Changes inside `+incdir+` include directories are not tracked by the
-  stamp; delete `artefacts/.shared-builds/` (or run without
-  `--share-build`) to force a fresh compile after header-only edits.
-- Toolchain upgrades are likewise invisible to the stamp. See
-  [Known Issues](../known-issues.md#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades)
-  for the full list of untracked inputs.
+- Include-dir headers and toolchain changes are tracked **only where the
+  builder reports its inputs** — Verilator today. Under VCS or Icarus a
+  header-only edit still does not invalidate the stamp; delete
+  `artefacts/.shared-builds/` (or run without `--share-build`) to force a
+  fresh compile. See
+  [Known Issues](../known-issues.md#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them)
+  for what remains untracked.
 
 ## Randomization
 
