@@ -76,6 +76,17 @@ eval "$cmd"
 
 _SACCT_FORMAT = "JobID,State,ElapsedRaw,TimelimitRaw,AllocCPUS,ReqMem,TotalCPU,MaxRSS"
 
+# `MaxRSS` is a high-water mark over samples, so a job shorter than the
+# sampling interval reports whatever the first sample caught — near zero.
+# The stock `JobAcctGatherFrequency` is 30 s and dispatch exists to produce
+# jobs far shorter than that, so right-sizing was reading peaks 17-27x below
+# the truth and advising reservations from them (#365). Ask for the sampling
+# the advice needs instead of inheriting the site default; one sample per
+# second per job is cheap next to being wrong in the unsafe direction.
+_ACCT_FREQ_OPT = "--acctg-freq"
+_ACCT_FREQ_DEFAULT = f"{_ACCT_FREQ_OPT}=task=1"
+_DEFAULT_ACCT_INTERVAL_S = 1.0
+
 
 def _parse_mem_to_bytes(text: str) -> int | None:
     """Parse sacct memory strings like ``2948K`` / ``1.5G`` / ``4Gn``."""
@@ -120,6 +131,28 @@ def _parse_cpu_time_to_seconds(text: str) -> float | None:
     return days * 86400 + seconds
 
 
+def _task_sampling_interval(value: str) -> float | None:
+    """Seconds between task samples in an ``--acctg-freq`` value.
+
+    Accepts both forms Slurm takes: a bare interval (``30``) and the
+    typed, comma-separated form (``task=5,energy=0``). Only the ``task``
+    datatype samples memory, so the others are ignored; ``0`` disables
+    sampling entirely and is reported as unknown rather than as zero.
+    """
+    intervals = []
+    for part in value.split(","):
+        datatype, _, interval = part.rpartition("=")
+        if datatype not in ("", "task"):
+            continue
+        try:
+            intervals.append(float(interval))
+        except ValueError:
+            return None
+    if not intervals or min(intervals) <= 0:
+        return None
+    return min(intervals)
+
+
 class SlurmDispatchBackend(DispatchBackend):
     name = "slurm"
 
@@ -129,6 +162,39 @@ class SlurmDispatchBackend(DispatchBackend):
         require_tool("slurm")
         self.sbatch_args = list(dispatch_cfg.sbatch_args)
         self.poll_interval = dispatch_cfg.poll_interval
+        self._acct_interval_s = self._resolve_accounting_frequency()
+
+    def _resolve_accounting_frequency(self) -> float | None:
+        """Request per-second task sampling, unless the user asked for a rate.
+
+        Prepended rather than appended so it keeps the documented
+        precedence — user ``sbatch-args`` are last and win — which also
+        means a site that must not raise the rate can put its own
+        ``--acctg-freq`` in ``sbatch-args`` and be obeyed.
+
+        Returns the interval that will actually apply to the jobs this
+        backend submits, or ``None`` when the user's value cannot be
+        parsed; right-sizing uses it to decide whether a job ran long
+        enough to have been sampled at all.
+        """
+        for index, arg in enumerate(self.sbatch_args):
+            if arg == _ACCT_FREQ_OPT:
+                following = self.sbatch_args[index + 1 :]
+                return _task_sampling_interval(following[0]) if following else None
+            if arg.startswith(f"{_ACCT_FREQ_OPT}="):
+                return _task_sampling_interval(arg.split("=", 1)[1])
+        self.sbatch_args.insert(0, _ACCT_FREQ_DEFAULT)
+        log_event(
+            logger,
+            logging.DEBUG,
+            "dispatch.accounting_frequency_requested",
+            backend=self.name,
+            sbatch_arg=_ACCT_FREQ_DEFAULT,
+        )
+        return _DEFAULT_ACCT_INTERVAL_S
+
+    def accounting_interval_s(self) -> float | None:
+        return self._acct_interval_s
 
     @staticmethod
     def _cwd_of(handles: Sequence[JobHandle | None]) -> str | None:

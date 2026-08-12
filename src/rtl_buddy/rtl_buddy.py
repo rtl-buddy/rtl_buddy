@@ -1413,6 +1413,7 @@ class RtlBuddy:
                     str(ctx.primary_config), base_dir=str(self.invocation_cwd)
                 ),
                 suite_config_path=str(Path(ctx.primary_config).resolve()),
+                backend=dispatch_backend,
             )
             if not self.machine:
                 self._render_test_summary(
@@ -2727,7 +2728,13 @@ class RtlBuddy:
             return None
 
     def _analyze_reservations(
-        self, suite_results, *, suite_display, suite_config_path=None, reg_level=None
+        self,
+        suite_results,
+        *,
+        suite_display,
+        suite_config_path=None,
+        reg_level=None,
+        backend=None,
     ):
         """Right-size one dispatched suite's rows into advice findings."""
         rightsize_cfg = self.root_cfg.get_dispatch_cfg().effective_rightsize()
@@ -2749,6 +2756,11 @@ class RtlBuddy:
             # attribute: analysis is advisory and runs after every job has
             # finished — it must never turn a completed run into an abort.
             root_config_path=getattr(self.root_cfg, "root_cfg_path", None),
+            # How often the scheduler sampled usage, so a peak that was
+            # never actually measured cannot become a mem suggestion (#365).
+            accounting_interval_s=(
+                backend.accounting_interval_s() if backend is not None else None
+            ),
         )
         for finding in findings:
             fields = {k: v for k, v in finding.as_event().items() if k != "event"}
@@ -3073,6 +3085,7 @@ class RtlBuddy:
                         suite_display=suite_display,
                         suite_config_path=str(Path(suite_cfg.get_path()).resolve()),
                         reg_level=reg_level,
+                        backend=dispatch_backend,
                     )
                 )
                 reg_results.append(

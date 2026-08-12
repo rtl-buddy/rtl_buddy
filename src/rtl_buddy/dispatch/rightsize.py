@@ -25,6 +25,17 @@ Semantics:
   non-Verilator simulator families because a VCS ``-licqueue`` wait
   would masquerade as compute time (rtl-buddy/rtl_buddy#329), and
   skipped when the limit is unknown.
+- Memory advice needs a peak that was actually sampled. ``MaxRSS`` is a
+  high-water mark over accounting samples, so a test whose longest run
+  finished inside one sampling interval was measured at most once and
+  reports near-zero — 17-27x below the truth on a site running the stock
+  30 s ``JobAcctGatherFrequency`` (rtl-buddy/rtl_buddy#365). Utilization-based
+  memory advice is suppressed for those tests and the omission is logged,
+  because a too-small ``mem`` gets the job OOM-killed: this is the one
+  resource where confidently wrong advice costs more than none. An
+  ``OUT_OF_MEMORY`` kill still raises, being a fact about the reservation
+  rather than a measurement of it — the same rule the ``TIMEOUT`` case
+  follows for time.
 - Advice is labeled with the run count and regression level it was
   derived from — a smoke-level run must not be used to shrink a
   nightly test's reservation.
@@ -45,10 +56,14 @@ Semantics:
   to retire, and cannot tell that from a wrong suggestion.
 """
 
+import logging
 import math
 from dataclasses import dataclass, field
 
 from ..config.dispatch import mem_to_bytes, time_to_seconds
+from ..logging_utils import log_event
+
+logger = logging.getLogger(__name__)
 
 _TIME_FLOOR_S = 300  # never suggest a limit under 5 minutes
 _MEM_FLOOR_BYTES = 128 * 2**20  # never suggest under 128M
@@ -169,6 +184,7 @@ def analyze_suite_reservations(
     reg_level=None,
     simulator_family_of=None,
     root_config_path=None,
+    accounting_interval_s=None,
 ):
     """Produce :class:`RightsizeFinding`s for one suite's dispatched rows.
 
@@ -177,9 +193,13 @@ def analyze_suite_reservations(
     ``None`` disables that suppression. ``root_config_path`` is where
     ``cfg-dispatch`` lives, needed to hint at ``cfg-dispatch.compile`` for a
     field the compile reservation governs (#358); without it those findings
-    fall back to the per-test hint.
+    fall back to the per-test hint. ``accounting_interval_s`` is the
+    scheduler's usage-sampling interval, used to suppress memory advice
+    derived from a peak that was never sampled (#365); ``None`` disables
+    that suppression.
     """
     findings = []
+    unsampled = []
     for test, agg in _aggregate(suite_results).items():
         governed_by = agg["governed_by"]
         # An in-job compile's allocation is max(sim, compile), so no `reduce`
@@ -280,6 +300,16 @@ def analyze_suite_reservations(
         # --- memory ---------------------------------------------------
         req_mem = agg.get("req_mem_bytes")
         peak_rss = agg.get("max_rss_bytes")
+        # `elapsed` is already the peak across this test's runs, so a test
+        # is only unsampled when even its longest run finished inside one
+        # interval. Judged per test for the same reason utilization is.
+        mem_sampled = not (
+            accounting_interval_s
+            and elapsed is not None
+            and elapsed < accounting_interval_s
+        )
+        if not mem_sampled:
+            unsampled.append(test)
         if req_mem:
             if killed_oom:
                 findings.append(
@@ -294,7 +324,7 @@ def analyze_suite_reservations(
                         **common,
                     )
                 )
-            elif peak_rss:
+            elif peak_rss and mem_sampled:
                 util = peak_rss / req_mem
                 suggested_b = max(
                     int(peak_rss * rightsize_cfg.margin), _MEM_FLOOR_BYTES
@@ -362,4 +392,15 @@ def analyze_suite_reservations(
                             **common,
                         )
                     )
+    if unsampled:
+        # A silent gap reads as "nothing to advise", which is the wrong
+        # conclusion to leave an agent (or a person) with.
+        log_event(
+            logger,
+            logging.WARNING,
+            "rightsize.mem_advice_unsampled",
+            suite=suite_display,
+            tests=sorted(unsampled),
+            interval_s=accounting_interval_s,
+        )
     return findings

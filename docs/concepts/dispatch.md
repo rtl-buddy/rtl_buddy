@@ -366,6 +366,17 @@ Semantics:
   masquerade as compute time, so time advice is suppressed off Verilator
   (see [#329](https://github.com/rtl-buddy/rtl_buddy/issues/329)); memory
   and CPU-efficiency advice are unaffected.
+- **Memory advice needs a peak that was sampled.** `MaxRSS` is a high-water
+  mark over accounting samples, so a test whose longest run finished inside
+  one sampling interval was measured at most once and reports near-nothing.
+  Dispatch therefore asks for per-second task accounting
+  (`--acctg-freq=task=1`) on every job unless your `sbatch-args` already set
+  `--acctg-freq`, and *still* suppresses utilization-based memory advice for
+  any test that ran shorter than the interval actually in force — logging
+  `rightsize.mem_advice_unsampled` with the test names rather than leaving
+  the gap silent. An `OUT_OF_MEMORY` kill still raises, being a fact about
+  the reservation rather than a measurement of it. Background:
+  [#365](https://github.com/rtl-buddy/rtl_buddy/issues/365).
 - Advice is labelled with `runs` and `reg_level`, so a `-l 0` smoke run
   is never used to shrink a nightly test's reservation.
 - **`phase` says what the numbers cover.** `"sim"` is the usual case. A
@@ -383,6 +394,14 @@ Semantics:
 - Requires `sacct` (slurmdbd accounting). Without it, dispatch still works
   and right-sizing degrades gracefully to no advice. Turn it off with
   `rightsize: { report: false }`.
+
+!!! note "`MaxRSS` populates on step rows only"
+    Checking the advice by hand with `sacct -X` shows the field **blank** —
+    `-X` returns allocation rows, and usage is recorded on the steps
+    (`.batch`, `.extern`, …) and folded up. rtl_buddy queries without `-X`
+    and gets this right; a human reproducing it may conclude the field is
+    simply empty. Use `sacct -j <jobid> --format=JobID,Elapsed,MaxRSS` with
+    no `-X`.
 
 ## Agent loop
 

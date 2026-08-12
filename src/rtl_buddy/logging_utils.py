@@ -344,6 +344,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('utilization')}) → {fields.get('direction')} "
                 f"to {fields.get('suggested')}"
             )
+        case "rightsize.mem_advice_unsampled":
+            tests = fields.get("tests") or []
+            interval = fields.get("interval_s")
+            return (
+                f"{fields.get('suite')}: memory advice omitted for "
+                f"{len(tests)} test(s) that ran shorter than the {interval}s "
+                f"accounting interval ({', '.join(map(str, tests))}) — their "
+                "MaxRSS was never sampled. Lower the sampling interval with "
+                "cfg-dispatch.sbatch-args: [--acctg-freq=task=1]"
+            )
         case "randtest.dispatch_ignored_for_replay":
             jobs = fields.get("jobs")
             also = f" (and --jobs {jobs})" if jobs is not None else ""

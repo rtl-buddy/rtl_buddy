@@ -659,3 +659,65 @@ def test_the_flag_precedes_user_sbatch_args(monkeypatch):
     assert argv.index("--kill-on-invalid-dep=yes") < argv.index(
         "--kill-on-invalid-dep=no"
     )
+
+
+# ---------------------------------- accounting sampling frequency (#365)
+
+
+def test_per_second_task_accounting_is_requested_by_default(monkeypatch):
+    """MaxRSS is a high-water mark over samples, and a sim job is usually
+    shorter than the stock 30 s JobAcctGatherFrequency — so it is sampled
+    once, near zero, and right-sizing advises from that (#365)."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.accounting_interval_s() == 1.0
+    backend.submit(_spec())
+    (argv,) = calls
+    assert "--acctg-freq=task=1" in argv
+
+
+def test_a_configured_acctg_freq_is_left_alone(monkeypatch):
+    """A site that must not raise the sampling rate says so in sbatch-args."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq=task=15,energy=0"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    # ...and right-sizing is told the rate that will really apply.
+    assert backend.accounting_interval_s() == 15.0
+    backend.submit(_spec())
+    (argv,) = calls
+    assert len([a for a in argv if a.startswith("--acctg-freq")]) == 1
+    assert "--acctg-freq=task=15,energy=0" in argv
+
+
+def test_a_separated_acctg_freq_value_is_recognised(monkeypatch):
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq", "30"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.accounting_interval_s() == 30.0
+    assert "--acctg-freq=task=1" not in backend.sbatch_args
+
+
+def test_arrays_carry_the_accounting_frequency_too(monkeypatch, tmp_path):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="55", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array([_spec(run_id=1), _spec(run_id=2)], array_dir=tmp_path / "arr")
+
+    (argv,) = calls
+    assert "--acctg-freq=task=1" in argv
+
+
+def test_task_sampling_interval_parsing():
+    parse = slurm_module._task_sampling_interval
+    assert parse("30") == 30.0
+    assert parse("task=5") == 5.0
+    assert parse("energy=30,task=2") == 2.0
+    # Sampling turned off is unknown, not zero — nothing was measured.
+    assert parse("task=0") is None
+    assert parse("energy=30") is None
+    assert parse("task=nonsense") is None
