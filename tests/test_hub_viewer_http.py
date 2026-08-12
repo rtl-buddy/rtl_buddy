@@ -126,6 +126,24 @@ def _http_get(url: str) -> tuple[int, dict[str, str], bytes]:
         return resp.status, dict(resp.headers), resp.read()
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Surface 3xx as the response instead of following it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _http_get_no_redirect(url: str) -> tuple[int, dict[str, str]]:
+    """GET ``url``, returning the first response even if it is a 3xx."""
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url), timeout=2.0) as resp:
+            return resp.status, dict(resp.headers)
+    except urllib.error.HTTPError as exc:
+        return exc.code, dict(exc.headers)
+
+
 @pytest.mark.asyncio
 async def test_http_view_route_returns_placeholder(hub_and_viewer):
     """The SPA lives at ``/view`` since #398 — ``/`` is the landing."""
@@ -147,6 +165,62 @@ async def test_http_index_html_route(hub_and_viewer):
     status, _, body = await asyncio.to_thread(_http_get, url)
     assert status == 200
     assert b"placeholder" in body.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["/view", "/graph", "/cov"])
+async def test_http_trailing_slash_redirects_to_canonical_route(
+    hub_and_viewer, route: str
+):
+    """``<page>/`` is a 307 to ``<page>``.
+
+    The SPA bundle's asset references are relative (Vite ``base: ''``,
+    which rtl-buddy-view needs for ``embed.py``'s standalone HTML), so
+    a page served at ``/view/`` resolves them to ``/view/assets/…`` and
+    never loads. Canonicalising the URL is what keeps one spelling —
+    and one asset path — for every app page.
+    """
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}{route}/"
+    status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
+    assert status == 307
+    assert headers.get("Location") == route
+    # 307-not-301 is the whole argument for reusing a pinned port across
+    # projects, so the header that makes it true is part of the contract.
+    assert headers.get("Cache-Control") == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_http_trailing_slash_redirect_preserves_query(hub_and_viewer):
+    """``/view/?view=…`` must not lose the query on the way to ``/view``."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}/view/?view=/view.json&model=alu"
+    status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
+    assert status == 307
+    assert headers.get("Location") == "/view?view=/view.json&model=alu"
+
+
+@pytest.mark.asyncio
+async def test_http_landing_slash_is_not_redirected(hub_and_viewer):
+    """``/`` is already canonical — it must serve, not bounce."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}/"
+    status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
+    assert status == 200
+    assert "Location" not in headers
+
+
+@pytest.mark.asyncio
+async def test_http_unknown_trailing_slash_path_still_404s(hub_and_viewer):
+    """Only the three app routes canonicalise; nothing else is invented."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}/nope/"
+    status, _ = await asyncio.to_thread(_http_get_no_redirect, url)
+    assert status == 404
 
 
 @pytest.mark.asyncio
@@ -309,6 +383,25 @@ async def test_http_serves_static_from_bundle(tmp_path: Path):
         assert status == 200
         assert "text/css" in headers.get("Content-Type", "")
         assert body == b"body{}"
+
+        # ``/view/`` follows through to the injected index, and the
+        # relative ``./assets/app.css`` in it resolves against ``/view``
+        # — i.e. to the URL asserted above, not ``/view/assets/app.css``.
+        url_slash = f"http://127.0.0.1:{viewer.http_port}/view/"
+        status, _, body = await asyncio.to_thread(_http_get, url_slash)
+        assert status == 200
+        assert b"window.__RTL_BUDDY_HUB__" in body
+
+        # And the fix is the redirect, not a second mount of the assets
+        # one level deeper: the nested spelling stays a 404 so each
+        # asset keeps exactly one URL.
+        url_nested = f"http://127.0.0.1:{viewer.http_port}/view/assets/app.css"
+        try:
+            await asyncio.to_thread(_http_get, url_nested)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            pytest.fail("expected /view/assets/app.css to 404")
     finally:
         await viewer.shutdown()
         await hub.shutdown()

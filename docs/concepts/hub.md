@@ -223,6 +223,8 @@ The hub serves more than one browser app, so `GET /` is a **landing page** that 
 | `/hub/theme.css` | The shared design tokens (below). |
 | `/hub/assets/<name>` | The vendored brand marks (favicon, chip logo, mascot). |
 
+The three app routes are **canonical without a trailing slash**, and `<page>/` answers `307` to `<page>` with the query string carried over ([#423](https://github.com/rtl-buddy/rtl_buddy/issues/423)). The redirect is not cosmetic: the SPA bundle is built with Vite `base: ''` — rtl-buddy-view needs relative asset references so its `embed.py` standalone HTML works over `file://` — and a browser resolves those against the *directory* of the current URL, so a page served at `/view/` asks for `/view/assets/…` and hangs on "Loading…". Canonicalising is what keeps one URL per asset instead of mounting the bundle at two depths. It is a temporary redirect rather than `301` because hub HTTP ports are pinned and reused across projects, and a cached permanent redirect against `127.0.0.1:<port>` would outlive the hub that issued it.
+
 Cards advertise on **data presence**, the same rule `__RTL_BUDDY_GRAPH_URL__` follows: an app with nothing to show keeps its card, muted, carrying the command that would give it something (`rb graph build`, a coverage flag) rather than disappearing. An app whose origin already has a connected peer is badged **already open** — the hub allows one client per origin and a second tab supersedes the first, so the warning belongs before the click.
 
 The landing page is deliberately **not** a hub peer: it polls `/hub/state.json` instead of opening `/ws`. A tab that only lists the apps must never hold an origin, or it would be the thing that evicted the app you had open.

@@ -441,6 +441,21 @@ class ViewerServer:
             return _http_response(connection, 404, b"unknown ws path")
 
         # Plain HTTP.
+
+        # ``/view/`` → ``/view`` and friends. The slashless spelling is
+        # canonical: the SPA bundle is built with Vite ``base: ''`` so
+        # every asset reference in its ``index.html`` is relative
+        # (``./assets/index-*.js``), which the browser resolves against
+        # the *directory* of the current URL. From ``/view`` that is
+        # ``/assets/…`` and hits ``_serve_static``; from ``/view/`` it
+        # becomes ``/view/assets/…`` and 404s, leaving a shell that
+        # renders its chrome and then hangs on "Loading…". Redirecting
+        # rather than also mounting the assets one level deeper keeps
+        # one URL per asset, and rtl-buddy-view keeps the relative base
+        # it needs for ``embed.py``'s standalone ``file://`` HTML.
+        if redirect := self._canonical_route_redirect(connection, path, query_string):
+            return redirect
+
         if path == landing_page.LANDING_PAGE_ROUTE:
             return _http_response(
                 connection,
@@ -469,7 +484,7 @@ class ViewerServer:
         # bundle's own relative links resolve to, and letting it fall
         # through to ``_serve_static`` would serve the bundle's index
         # WITHOUT the hub injection — an SPA that cannot find its hub.
-        if path in (landing_page.VIEW_PAGE_ROUTE, "/view/", "/index.html"):
+        if path in (landing_page.VIEW_PAGE_ROUTE, "/index.html"):
             cov_available = await self._has_cov_data()
             body = render_index_html(
                 bundle_index=self._bundle_index,
@@ -536,6 +551,31 @@ class ViewerServer:
                 return static
 
         return _http_response(connection, 404, b"not found")
+
+    def _canonical_route_redirect(
+        self, connection: ServerConnection, path: str, query_string: str
+    ) -> Response | None:
+        """Redirect ``<page>/`` to ``<page>`` for the three app routes.
+
+        Returns ``None`` for every other path, so this is a no-op for
+        the landing page (``/`` *is* canonical), for the JSON and asset
+        routes (nothing links to them with a trailing slash), and for
+        bundle statics (a directory request there has always been a
+        404).
+
+        The redirect is **temporary** (307) rather than permanent on
+        purpose: hub http ports are pinned and reused across projects,
+        and a 301 cached against ``127.0.0.1:<port>`` would outlive the
+        hub that issued it.
+        """
+
+        if len(path) < 2 or not path.endswith("/"):
+            return None
+        target = path.rstrip("/")
+        if target not in _CANONICAL_PAGE_ROUTES:
+            return None
+        location = f"{target}?{query_string}" if query_string else target
+        return _http_redirect(connection, location)
 
     # ------------------------------------------------------------------
     # / + /hub/* — landing, tokens, brand marks (issue #398)
@@ -1663,14 +1703,44 @@ def _http_response(
     )
 
 
+def _http_redirect(
+    connection: ServerConnection, location: str, *, status: int = 307
+) -> Response:
+    """Build a redirect to ``location`` with an empty body."""
+
+    headers = Headers()
+    headers["Location"] = location
+    headers["Content-Length"] = "0"
+    headers["Cache-Control"] = "no-store"
+    return Response(
+        status_code=status,
+        reason_phrase=_REASON_PHRASES.get(status, ""),
+        headers=headers,
+        body=b"",
+    )
+
+
 _REASON_PHRASES = {
     200: "OK",
+    307: "Temporary Redirect",
     400: "Bad Request",
     403: "Forbidden",
     404: "Not Found",
     409: "Conflict",
     500: "Internal Server Error",
 }
+
+
+# The app pages whose ``<page>/`` spelling redirects to ``<page>``. Only
+# HTML routes belong here — the JSON and asset routes are fetched by
+# code that spells them exactly.
+_CANONICAL_PAGE_ROUTES = frozenset(
+    {
+        landing_page.VIEW_PAGE_ROUTE,
+        graph_page.GRAPH_PAGE_ROUTE,
+        cov_page.COV_PAGE_ROUTE,
+    }
+)
 
 
 _CONTENT_TYPES = {
