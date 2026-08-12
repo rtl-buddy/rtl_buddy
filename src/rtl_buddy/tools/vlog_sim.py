@@ -112,25 +112,33 @@ _DEPEND_TOKEN_RE = re.compile(r"(?:[^\s\\]|\\.)+")
 def parse_depend_prerequisites(text: str) -> list[str]:
     """Prerequisite paths from a make-style dependency file.
 
-    Everything up to the first bare ``:`` token (or the first token ending
-    in one) is the target list and is dropped — those are the generated
-    files, not inputs. Line continuations are joined and ``\\ `` escapes are
-    unescaped; order is preserved and duplicates are kept for the caller to
-    collapse, since a prerequisite listed twice is not an error.
+    Parsed rule by rule rather than "everything after the first colon":
+    with ``--MP`` (a ``builder-opts`` a project may set) Verilator appends a
+    ``gcc -MP``-style tail of phony rules — one bare ``<prerequisite>:`` per
+    line, so ``make`` does not fail on a deleted include. Those are targets,
+    and collecting them as prerequisites would stamp a shadow entry per real
+    dependency, each with a trailing colon and so resolving to a path that
+    never exists.
+
+    Within a rule, everything up to the ``:`` is the target list and is
+    dropped — those are generated files, not inputs. Line continuations are
+    joined and ``\\ `` escapes are unescaped; order is preserved and
+    duplicates are kept for the caller to collapse, since a prerequisite
+    listed twice is not an error.
     """
-    tokens = _DEPEND_TOKEN_RE.findall(text.replace("\\\n", " "))
-    for index, token in enumerate(tokens):
-        if token == ":":
-            rest = tokens[index + 1 :]
-            break
-        if token.endswith(":"):
-            rest = tokens[index + 1 :]
-            break
-    else:
-        # No separator: not a dependency file rtl_buddy understands. Say
-        # nothing rather than treating every target as an input.
-        return []
-    return [re.sub(r"\\(.)", r"\1", token) for token in rest]
+    prerequisites = []
+    for line in text.replace("\\\n", " ").splitlines():
+        tokens = _DEPEND_TOKEN_RE.findall(line)
+        for index, token in enumerate(tokens):
+            if token == ":" or token.endswith(":"):
+                # A rule with no prerequisites is a phony target: nothing to
+                # collect, and the next line starts a new rule either way.
+                prerequisites += tokens[index + 1 :]
+                break
+        # A line with no separator is not a rule rtl_buddy understands (a
+        # comment, or a stray target list); saying nothing beats treating
+        # every token on it as an input.
+    return [re.sub(r"\\(.)", r"\1", token) for token in prerequisites]
 
 
 def _stat_entry(path: str) -> list:
@@ -623,7 +631,12 @@ class VlogSim:
         mtime would invalidate the stamp for the very test that built it,
         and its *contents* are already fingerprinted entry by entry.
         """
-        depend_files = sorted(Path(build_dir).glob(_VERILATOR_DEPEND_GLOB))
+        # Resolved against the compile cwd, not used as given: `build_dir` is
+        # an absolute shared dir on one path and a bare directory *name* on
+        # the other, and globbing the latter would search the process cwd.
+        depend_files = sorted(
+            (Path(compile_cwd) / build_dir).glob(_VERILATOR_DEPEND_GLOB)
+        )
         if not depend_files:
             return None
         filelist_path = os.path.realpath(self._get_filelist_path())
@@ -1057,7 +1070,11 @@ class VlogSim:
                     "compile.build_stamp_written",
                     test=self.test_name,
                     stamp=str(stamp_path),
-                    tracked_deps="none" if deps is None else len(deps),
+                    # None, not "none": machine mode serialises these as JSON
+                    # Lines, and a field whose type varies by path forces
+                    # every consumer to type-check before comparing. `null`
+                    # is also how the stamp itself spells the same thing.
+                    tracked_deps=None if deps is None else len(deps),
                 )
         return result.returncode
 

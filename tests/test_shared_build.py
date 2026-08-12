@@ -154,7 +154,9 @@ def _make_sim(
     )
 
 
-def _install_fake_builder(monkeypatch, calls, *, stdout="", returncode=0, depends=None):
+def _install_fake_builder(
+    monkeypatch, calls, *, stdout="", returncode=0, depends=None, phony_tail=True
+):
     """run_managed_process stand-in that drops a simv where the flags say.
 
     Mirrors each supported family's output convention: Verilator's
@@ -162,8 +164,11 @@ def _install_fake_builder(monkeypatch, calls, *, stdout="", returncode=0, depend
     Icarus take (simv/snapshot at exactly that path).
 
     ``depends`` (Verilator only) is the prerequisite list to write into a
-    ``V<prefix>__ver.d`` beside the build, exactly as Verilator does: paths
-    relative to the *compile cwd*, not to ``--Mdir``.
+    ``V<prefix>__ver.d`` beside the build, in the format Verilator really
+    emits: absolute targets and the prerequisites relative to the *compile
+    cwd* (not to ``--Mdir``), followed by ``--MP``'s tail of phony
+    ``<prerequisite>:`` rules. That tail is what a project enabling ``--MP``
+    in ``builder-opts`` gets, and it must not be mistaken for input.
     """
 
     def _fake_run(cmd, capture_output, text, cwd, env=None):
@@ -179,7 +184,10 @@ def _install_fake_builder(monkeypatch, calls, *, stdout="", returncode=0, depend
             (mdir / "simv").write_text("binary\n")
             if depends is not None:
                 targets = " ".join(str(mdir / name) for name in ("Vtop.cpp", "Vtop.mk"))
-                (mdir / "Vtop__ver.d").write_text(f"{targets}  : {' '.join(depends)}\n")
+                text_out = f"{targets}  : {' '.join(depends)} \n"
+                if phony_tail:
+                    text_out += "\n" + "".join(f"{dep}:\n" for dep in depends)
+                (mdir / "Vtop__ver.d").write_text(text_out)
         elif "-o" in cmd:
             out = _resolve(cmd[cmd.index("-o") + 1])
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -601,6 +609,47 @@ def test_parse_depend_prerequisites_handles_attached_colon_and_escaped_spaces():
         "/opt/my tools/verilator",
         "../src/top.sv",
     ]
+
+
+def test_parse_depend_prerequisites_ignores_mp_phony_rules():
+    """`--MP` appends one bare `<prerequisite>:` rule per dependency so make
+    does not fail on a deleted include. Those are targets; collecting them
+    would stamp a shadow entry per real dep, each ending in a colon and so
+    resolving to a path that never exists. Shape copied from a real
+    `V<prefix>__ver.d` (Verilator 5.048, `--cc --MP`)."""
+    text = (
+        "obj/Vtop.cpp obj/Vtop.mk  : /opt/verilator_bin ../src/top.sv ../inc/w.svh \n"
+        "\n"
+        "../src/top.sv:\n"
+        "../inc/w.svh:\n"
+        "/opt/verilator_bin:\n"
+    )
+    assert vlog_sim_module.parse_depend_prerequisites(text) == [
+        "/opt/verilator_bin",
+        "../src/top.sv",
+        "../inc/w.svh",
+    ]
+
+
+def test_share_build_stamp_ignores_the_mp_phony_tail(tmp_path, monkeypatch):
+    """End to end: the tail must not double the stamp."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+
+    deps = json.loads(_stamp_of(sim).read_text())["deps"]
+    assert [entry[0] for entry in deps] == [
+        str((tmp_path / "inc" / "w.svh").resolve()),
+        str((tmp_path / "src" / "top.sv").resolve()),
+    ]
+    # Every tracked input exists; a colon-suffixed shadow would stat as absent.
+    assert all(entry[1] is not None for entry in deps)
 
 
 def test_parse_depend_prerequisites_returns_nothing_without_a_separator():
