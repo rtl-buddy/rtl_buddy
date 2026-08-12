@@ -93,7 +93,7 @@ Volatile data never enters `graph.json`: no pass/fail status, no seeds, no artef
 | `--no-design` | Skip the design tier — config-only graph, no viewer needed |
 | `--no-tb` | Skip the TB-rooted half of the design tier (DUT hierarchies only) |
 | `--no-flow-tops` | Skip the run-rooted exports (formal/synth/cdc run tops over the flow's own filelist) |
-| `--no-bind` | Skip the post-merge binding stage (no `binds_to` / `drives` / `checks_against` edges) |
+| `--no-bind` | Skip the post-merge binding stage (no `binds_to` / `drives` / `checks_against` / `implemented_by` edges) |
 | `--no-extract` | Skip the extractor's binding tier without probing for the tool |
 | `--no-extract-cross-check` | Don't run the extractor's `merge-graphs` as a second opinion |
 | `--force` | Rebuild even when nothing changed |
@@ -153,6 +153,10 @@ For every test whose testbench has a `cocotb: {module: M}` entry it emits:
 - `imports` between Python-module nodes, from a real `ast` parse. This is what makes a shared helper such as `verif/demo_tiny_alu_cocotb/_alu_common.py` reachable from the tests that use it.
 - `drives` from a Python module to a `port:` node, one per `dut.<name>` attribute access.
 - `checks_against` from the test to a `golden_model` node, when the cocotb module imports one — directly, or through a helper.
+
+The same stage stitches DPI (rtl-buddy-sch#127). For every `dpi_function` node the design tier contributed with `direction: import` — imports are the C-implements-it direction, and a node that omits the field binds nothing rather than being assumed an import — its C symbol is matched against the C/C++/Python sources under `verif/` and `spec/`.
+
+**`EXTRACTED` means a definition site, not a mention.** A whole-word hit fires on a header's prototype, a call in a driver, or a string literal just as readily as on the implementation, so the scan looks for the shape of a definition — `<declarator> symbol(...) {`, or `def symbol(` in Python — and grades the evidence on a four-rung ladder: an exact-case *definition* is `EXTRACTED`; an exact-case *mention* is `INFERRED` with `resolved: false`; a case-insensitive definition is `INFERRED` (name similarity); a case-insensitive mention is `INFERRED` with `resolved: false`. The best rung present wins outright, so the ordinary project of `alu_ref.h` declaring, `alu_ref.c` defining and `tb_driver.c` calling gets **one** edge — the definition — instead of three an agent cannot choose between, and mentions survive only when nothing defines the symbol at all. When the matching file is a golden model under `spec/`, the edge lands on the existing `golden_model` node — that is the DPI leg of the golden-model loop, alongside the cocotb `checks_against` path. A graph whose design tier predates `dpi_function` nodes (rtl-buddy-sch ≤ 0.5.0) simply has none, and the DPI pass is a silent no-op.
 
 `dut.<name>` is found with `ast`, so the string `"dut.a"` and `self.dut.a` are not mistaken for accesses and the reported `line` is the real one. The handle is `dut` plus the first parameter of every `@cocotb.test()` function, so a suite that calls it `alu` still binds. A file that does not parse falls back to a regex sweep rather than contributing nothing.
 
@@ -809,8 +813,9 @@ Binding tier:
 | `imports` | Python module | Python module | |
 | `drives` | Python module | **design-tier** port | `signal`, `file`, `line`, `via`, `resolved` |
 | `checks_against` | test | golden model | `via` |
+| `implemented_by` | **design-tier** DPI function | golden model / Python module / source file | `symbol`, `file`, `line`, `resolved` |
 
-`drives` is the only edge class in the whole graph that is allowed to be `INFERRED`; everything else, in every tier, is `EXTRACTED`. `via` on a `drives` or `checks_against` edge names the helper module the fact was inherited through — absent means the module says it itself.
+`drives` and `implemented_by` are the only edge classes in the whole graph that are allowed to be `INFERRED`; everything else, in every tier, is `EXTRACTED`. `via` on a `drives` or `checks_against` edge names the helper module the fact was inherited through — absent means the module says it itself. `resolved: false` on an `implemented_by` edge says the same thing `drives` says with it: the file was matched on a *mention* of the symbol, which is known not to be a definition of it.
 
 ### The config-to-design stitch is three verbs
 
