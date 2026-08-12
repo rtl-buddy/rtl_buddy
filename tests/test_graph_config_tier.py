@@ -287,6 +287,48 @@ def test_an_fpv_top_that_overrides_the_model_is_where_targets_lands(tmp_path):
     )
 
 
+def test_an_fpv_run_with_covers_reaches_the_spec_tier(tmp_path):
+    """`covers:` on an fpv run emits the same run -> coverage-item edge a
+    simulation test gets (rtl-buddy/rtl_buddy#385) — the missing hop that
+    kept formal runs from ever reaching a spec block.
+    """
+
+    spec = tmp_path / "spec" / "blk"
+    spec.mkdir(parents=True)
+    (spec / "specs.yaml").write_text(
+        "rtl-buddy-filetype: spec_config\nblocks:\n"
+        "  - name: blk\n    desc: block\n"
+        "    coverage-items:\n"
+        "      - id: BLK-SAFE-1\n        desc: never overflows\n"
+    )
+    design = tmp_path / "design" / "blk"
+    design.mkdir(parents=True)
+    (design / "models.yaml").write_text(
+        "rtl-buddy-filetype: model_config\nmodels:\n"
+        "  - name: blk\n    filelist: [blk.sv]\n"
+    )
+    fpv = tmp_path / "fpv" / "blk"
+    fpv.mkdir(parents=True)
+    (fpv / "fpv.yaml").write_text(
+        "rtl-buddy-filetype: fpv_config\nverifications:\n"
+        "  - name: safety\n    desc: bounded proof\n    model: blk\n"
+        "    model_path: ../../design/blk/models.yaml\n    tool: sby\n"
+        "    covers: [BLK-SAFE-1, GHOST-COV]\n"
+    )
+    (tmp_path / "fpv_regression.yaml").write_text(
+        "rtl-buddy-filetype: fpv_reg_config\nfpv-configs: [fpv/blk/fpv.yaml]\n"
+    )
+
+    graph = build_config_tier(tmp_path)
+    covers = _links_of_type(graph, "covers")
+    assert ("test:fpv/blk#safety", "covitem:blk#BLK-SAFE-1") in covers
+    # An id no block declares gets no edge — same rule as tests.yaml.
+    assert not [t for _, t in covers if t.endswith("#GHOST-COV")]
+    # The chain to the spec block is the block's own `declares`, so
+    # `rb graph path` walks run -> item -> block without a new verb.
+    assert ("spec:blk", "covitem:blk#BLK-SAFE-1") in _links_of_type(graph, "declares")
+
+
 def test_cocotb_is_stamped_on_the_test_and_its_testbench(graph):
     """A flat boolean, on both node types.
 

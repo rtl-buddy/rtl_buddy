@@ -9,7 +9,9 @@ Three tiers, one file. This module owns the orchestration:
 1. **design** — ``rtl-buddy-view graph`` once per model, reusing ``rb
    hier``'s ``artefacts/hier/<model>/hier.f`` filelist machinery, plus
    once per **testbench** rooted at its ``toplevel:`` (``--tb-top``),
-   reusing ``rb hier --view tb``'s DUT+TB filelist merge;
+   reusing ``rb hier --view tb``'s DUT+TB filelist merge, plus once per
+   **flow run** whose ``top:`` only elaborates inside the flow's own
+   filelist (#385 — an fpv checker top over the model + ``properties:``);
 2. **config** — :func:`rtl_buddy.graph.extract_config_tier` over the
    ``specs.yaml`` / ``models.yaml`` / ``tests.yaml`` trees;
 3. **binding** — the extractor's (``rb-graph-extract``) deterministic
@@ -62,11 +64,15 @@ from .config_tier import (
     CONFIG_TIER,
     ELABORATES_AS,
     EXTRACTED,
+    FLOW_FPV,
     GRAPH_JSON_NAME,
     GRAPH_META_NAME,
     SCHEMA_VERSION,
+    TARGETS,
+    _collect_flows,
     extract_config_tier,
     module_id,
+    test_id,
     testbench_id,
     write_graph_json,
     write_graph_meta,
@@ -110,6 +116,9 @@ DESIGN_SUBDIR = "design"
 #: Mirrors ``rb hier --view tb``'s ``artefacts/hier/<model>/tb/<tb>``
 #: filelist cache, which is where their sources come from.
 TB_SUBDIR = "tb"
+#: Run-rooted exports (#385) nest the same way: ``design/<model>/run/<top>``,
+#: with the filelist cache at ``artefacts/hier/<model>/run/<top>``.
+RUN_SUBDIR = "run"
 BINDING_FILE = "binding/graph.json"
 
 #: The in-process binding stage's own export (#378). Kept apart from
@@ -221,6 +230,9 @@ class TierReport:
         testbenches = self.extra.get("testbenches")
         if testbenches is not None:
             block["testbenches"] = testbenches
+        flow_runs = self.extra.get("flow_runs")
+        if flow_runs is not None:
+            block["flow_runs"] = flow_runs
         collisions = self.extra.get("id_collisions")
         if collisions:
             block["id_collisions"] = collisions
@@ -244,6 +256,9 @@ class TierReport:
         testbenches = self.extra.get("testbenches")
         if testbenches is not None:
             parts.append(f"{len(testbenches)} testbench(es)")
+        flow_runs = self.extra.get("flow_runs")
+        if flow_runs is not None:
+            parts.append(f"{len(flow_runs)} flow run top(s)")
         collisions = self.extra.get("id_collisions")
         if collisions:
             parts.append(f"{len(collisions)} id(s) suite-qualified")
@@ -391,6 +406,16 @@ class TestbenchTarget:
         """``<suite dir>#<tb name>`` — how failures name this target."""
         return f"{self.suite_rel}#{self.tb_name}"
 
+    @property
+    def node_ids(self) -> list[str]:
+        """Every config-tier node this export stitches — one for a TB."""
+        return [self.node_id]
+
+    @property
+    def stitch_type(self) -> str:
+        """Edge type of this target's config->design stitch."""
+        return ELABORATES_AS
+
 
 def testbenches_from_suites(
     project_root: str | os.PathLike,
@@ -477,6 +502,176 @@ def testbenches_from_suites(
 
 
 # ---------------------------------------------------------------------------
+# Flow-run selection (#385)
+#
+# A formal/synth/cdc run's `top:` often only elaborates inside the flow's
+# own filelist — the template's fpv checker tops live in `properties:`
+# files no models.yaml names — so the config tier's `targets` stitch would
+# dangle forever if the design tier only exported models and testbenches.
+# These runs get the TB treatment: one run-rooted export over the model
+# filelist plus the flow's own sources.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FlowRunTarget:
+    """One run-rooted design-tier export.
+
+    The flow-run counterpart of :class:`TestbenchTarget` — same duck
+    type where the qualification machinery is concerned (``suite_rel``,
+    ``node_id``, ``tb_top``, ``stitch_type``), different config-tier
+    node (``test:``, the run) and different stitch verb (``targets``).
+
+    Attributes:
+      suite_rel (str): Repo-relative suite directory — the same string
+        the config tier puts in ``test:<suite dir>#<name>``.
+      suite_dir (str): Absolute suite directory, anchoring any relative
+        entries in ``sources``.
+      flow (str): Which flow owns the run (``fpv`` / ``synth`` / ...).
+      run_names (list[str]): Every run collapsed into this export — an
+        fpv suite proving one checker under ``bmc`` and ``prove``
+        elaborates it once, but each run's ``test:`` node still gets its
+        own stitch (a suite-qualified top would strand the twins'
+        declared edges otherwise).
+      top (str): The run's ``top:`` — the module the export is rooted at.
+      model (ModelConfig): The DUT whose filelist the flow sources are
+        merged on top of.
+      sources (list[str]): The flow's own HDL beyond the model filelist
+        (an fpv run's ``properties:`` + ``constraints:``; absolute paths,
+        the loaders resolve them against the suite dir).
+    """
+
+    suite_rel: str
+    suite_dir: str
+    flow: str
+    run_names: list[str]
+    top: str
+    model: ModelConfig
+    sources: list[str]
+
+    @property
+    def run_name(self) -> str:
+        """The first run claiming this export — its short name."""
+        return self.run_names[0]
+
+    @property
+    def node_id(self) -> str:
+        """Config-tier ``test:`` node this export belongs to."""
+        return test_id(self.suite_rel, self.run_name)
+
+    @property
+    def node_ids(self) -> list[str]:
+        """One ``test:`` node per collapsed run — each gets a stitch."""
+        return [test_id(self.suite_rel, name) for name in self.run_names]
+
+    @property
+    def label(self) -> str:
+        """``<suite dir>#<run name>`` — how failures name this target."""
+        return f"{self.suite_rel}#{self.run_name}"
+
+    @property
+    def tb_top(self) -> str:
+        """The top the viewer is asked to elaborate from.
+
+        Named for the ``--tb-top`` mechanism it rides (and for the
+        qualification machinery, which handles TB and run targets
+        through one code path).
+        """
+        return self.top
+
+    @property
+    def stitch_type(self) -> str:
+        """Edge type of this target's config->design stitch."""
+        return TARGETS
+
+
+def _flow_run_sources(flow: str, entry) -> list[str]:
+    """The flow-owned HDL a run elaborates beyond the model filelist.
+
+    Only the formal flow has any today: ``properties:`` plus the
+    optional ``constraints:`` file, both SystemVerilog by contract and
+    both read into the sby script on top of the model sources — so the
+    export mirrors exactly what the proof elaborates. Synthesis and CDC
+    runs work the model filelist as-is (a ``cdc.yaml`` ``constraints:``
+    is an SDC, not HDL).
+    """
+    if flow != FLOW_FPV:
+        return []
+    sources = list(entry.get_properties())
+    constraints = entry.get_constraints()
+    if constraints:
+        sources.append(constraints)
+    return sources
+
+
+def flow_runs_from_regressions(
+    project_root: str | os.PathLike,
+    models: list[ModelConfig] | None = None,
+) -> list[FlowRunTarget]:
+    """Every non-simulation run worth a run-rooted export, de-duplicated.
+
+    Reads the same repo-level regression files the config tier reads,
+    through the same loaders (:func:`_collect_flows`), so the runs
+    exported here are exactly the ones that got ``test:`` nodes and
+    ``targets`` stitches.
+
+    A run whose ``top:`` is the model's own name is dropped: the DUT
+    export already covers that hierarchy, and today that is every synth
+    / cdc / fpga run (their ``get_top()`` is the model name by
+    construction). What remains is the formal case — a checker top
+    defined in the flow's own filelist.
+
+    Two runs are the same export when they resolve to the same
+    ``(suite dir, model, flow sources, top)``: that tuple is the entire
+    input to the viewer, exactly as testbench de-duplication reasons.
+    An fpv suite proving the same checker under ``bmc`` and ``prove``
+    elaborates it once — but every collapsed run is remembered in
+    ``run_names``, so each ``test:`` node still gets the observed
+    ``targets`` stitch the export produces.
+
+    Args:
+      project_root: Root the regression files are discovered under.
+      models: When given, only runs against a model in this list are
+        returned — the same narrowing ``--model`` / ``--regression``
+        applies to the DUT and TB exports. ``None`` means no filtering.
+
+    Returns:
+      list[FlowRunTarget]: sorted by ``(suite dir, run name)``.
+    """
+    root = Path(os.path.realpath(str(project_root)))
+    allowed = {_model_key(m) for m in models} if models is not None else None
+
+    by_key: dict[tuple, FlowRunTarget] = {}
+    for flow, suite_cfg, entries_attr in _collect_flows(root).suites:
+        suite_dir = os.path.dirname(os.path.realpath(suite_cfg.get_path()))
+        suite_rel = rel_path(root, suite_dir)
+        for entry in getattr(suite_cfg, entries_attr)():
+            model = entry.get_model()
+            top = entry.get_top()
+            if not top or top == model.name:
+                continue
+            if allowed is not None and _model_key(model) not in allowed:
+                continue
+            sources = _flow_run_sources(flow, entry)
+            key = (suite_dir, _model_key(model), tuple(sources), top)
+            existing = by_key.get(key)
+            if existing is not None:
+                if entry.get_name() not in existing.run_names:
+                    existing.run_names.append(entry.get_name())
+                continue
+            by_key[key] = FlowRunTarget(
+                suite_rel=suite_rel,
+                suite_dir=suite_dir,
+                flow=flow,
+                run_names=[entry.get_name()],
+                top=top,
+                model=model,
+                sources=sources,
+            )
+    return sorted(by_key.values(), key=lambda t: (t.suite_rel, t.run_name))
+
+
+# ---------------------------------------------------------------------------
 # Tiers
 # ---------------------------------------------------------------------------
 
@@ -544,20 +739,62 @@ def _tb_exporters(
     return exporters
 
 
-def _tb_stitch_link(node_id: str, module_node_id: str) -> dict:
-    """``tb:<suite>#<name> --elaborates_as--> module:<tb top>``.
+def _flow_exporters(
+    project_root: Path,
+    targets: list[FlowRunTarget],
+    out_dir: Path,
+    *,
+    view_executable: str,
+    frontend: str | None,
+) -> list[tuple[FlowRunTarget, RtlBuddyViewGraph]]:
+    """One run-rooted exporter per flow run, output paths disambiguated.
 
-    The observed twin of the config tier's declared ``elaborates_as``:
-    a ``tb:`` node is metadata about an elaboration, and this edge says
-    which design module that elaboration is topped by. It is the same
-    relation the model node's ``maps_to`` states, spelled with the
-    testbench's own verb so a reader never has to recover the source
-    kind from the id prefix.
+    ``design/<model>/run/<top>`` is keyed on the *top* rather than the
+    run name because the top is what de-duplication kept unique per
+    model — three verifications proving one checker are one export.
+    Two suites rooting different files at the same top under the same
+    model get a ``-2`` suffix rather than overwriting each other,
+    mirroring :func:`_tb_exporters`.
+    """
+    exporters = []
+    used: set[str] = set()
+    for target in targets:
+        base = f"{target.model.name}/{RUN_SUBDIR}/{target.top}"
+        slug, index = base, 2
+        while slug in used:
+            slug, index = f"{base}-{index}", index + 1
+        used.add(slug)
+        exporter = RtlBuddyViewGraph(
+            name=f"graph/design/{slug}",
+            model_cfg=target.model,
+            suite_dir=str(project_root),
+            output=str(out_dir / DESIGN_SUBDIR / slug / GRAPH_JSON_NAME),
+            project_root=str(project_root),
+            frontend=frontend,
+            executable=view_executable,
+            run_top=target.top,
+            run_filelist=target.sources,
+            run_key=slug.partition("/")[2],
+            test_suite_dir=target.suite_dir,
+        )
+        exporters.append((target, exporter))
+    return exporters
+
+
+def _stitch_link(node_id: str, module_node_id: str, link_type: str) -> dict:
+    """``<config node> --elaborates_as|targets--> module:<top>``.
+
+    The observed twin of the config tier's declared stitch: a ``tb:``
+    node (or a flow run's ``test:`` node) is metadata about an
+    elaboration, and this edge says which design module that elaboration
+    is topped by. It is the same relation the model node's ``maps_to``
+    states, spelled with the source's own verb so a reader never has to
+    recover the source kind from the id prefix.
     """
     return {
         "source": node_id,
         "target": module_node_id,
-        "type": ELABORATES_AS,
+        "type": link_type,
         "confidence": EXTRACTED,
     }
 
@@ -609,6 +846,68 @@ def _run_tb_tier(
         if report.generator is None:
             report.generator = (payload.get("graph") or {}).get("generator")
     report.extra["testbenches"] = built
+    return pairs
+
+
+def _run_flow_tier(
+    project_root: Path,
+    exporters: list[tuple[FlowRunTarget, RtlBuddyViewGraph]],
+    report: TierReport,
+) -> list[tuple[FlowRunTarget, dict]]:
+    """Invoke the viewer per flow run; return the graphs that came back.
+
+    Same contract as :func:`_run_tb_tier`: one broken run costs its own
+    hierarchy, never the tier, and its failure row names the run.
+
+    ``report.extra["flow_runs"]`` counts **exports**, not runs — a suite
+    proving one checker under ``bmc`` and ``prove`` elaborates it once —
+    so a collapsed export names its extra runs in parentheses rather than
+    letting a reader of ``graph-meta.json`` infer that the twin was
+    dropped. Every collapsed run still gets its own ``targets`` stitch.
+    """
+    pairs: list[tuple[FlowRunTarget, dict]] = []
+    built: list[str] = []
+    for target, exporter in exporters:
+        try:
+            rc = exporter.run()
+        except FatalRtlBuddyError as exc:
+            report.failures.append({"run": target.label, "error": str(exc)})
+            continue
+        if rc != 0:
+            report.failures.append(
+                {
+                    "run": target.label,
+                    "error": f"rtl-buddy-view graph exited {rc}",
+                    "log": rel_path(project_root, exporter.log_path()),
+                }
+            )
+            log_event(
+                logger,
+                logging.WARNING,
+                "graph_build.run_export_failed",
+                run=target.label,
+                top=target.top,
+                returncode=rc,
+                log=exporter.log_path(),
+            )
+            continue
+        try:
+            payload = json.loads(Path(exporter.output).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            report.failures.append({"run": target.label, "error": str(exc)})
+            continue
+        pairs.append((target, payload))
+        # One entry per *export*, not per run — but a de-duplicated export
+        # names every run it collapsed, so `graph-meta.json` never reads as
+        # if the twin had been dropped (it gets its own `targets` stitch).
+        built.append(
+            target.label
+            if len(target.run_names) == 1
+            else f"{target.label} (+{', '.join(target.run_names[1:])})"
+        )
+        if report.generator is None:
+            report.generator = (payload.get("graph") or {}).get("generator")
+    report.extra["flow_runs"] = built
     return pairs
 
 
@@ -798,15 +1097,18 @@ def _index_collision_labels(graphs: list[dict], collisions: dict[str, dict]) -> 
 
 def _qualify_tb_graphs(
     model_graphs: list[dict],
-    pairs: list[tuple[TestbenchTarget, dict]],
+    pairs: list[tuple[TestbenchTarget | FlowRunTarget, dict]],
     report: TierReport,
 ) -> tuple[list[dict], list[dict]]:
-    """Resolve TB id collisions and emit the ``tb:`` -> ``module:`` stitches.
+    """Resolve TB/run id collisions and emit the config -> ``module:`` stitches.
 
     The stitch points at the top the viewer *actually* elaborated
     (``graph.design.top``, which it auto-corrects when the ``--tb-top``
     hint names no real module), after qualification — so the edge always
-    lands on a node that exists and is the right one.
+    lands on a node that exists and is the right one. Its type is the
+    target's own verb: ``elaborates_as`` for a testbench, ``targets``
+    for a flow run — the qualification machinery is shared, the stitch
+    vocabulary is not.
     """
     ambiguous = _ambiguous_ids(model_graphs + [graph for _, graph in pairs])
     graphs: list[dict] = []
@@ -817,7 +1119,13 @@ def _qualify_tb_graphs(
         graphs.append(qualified)
         design = (graph.get("graph") or {}).get("design") or {}
         root_id = module_id(design.get("top") or design.get("tb_top") or target.tb_top)
-        stitches.append(_tb_stitch_link(target.node_id, rename.get(root_id, root_id)))
+        # One stitch per config node the export answers for: a flow-run
+        # export de-duplicated across several runs stitches each of their
+        # `test:` nodes, or a qualified top would strand the twins.
+        for node_id in target.node_ids:
+            stitches.append(
+                _stitch_link(node_id, rename.get(root_id, root_id), target.stitch_type)
+            )
         for original, new_id in rename.items():
             entry = collisions.setdefault(
                 original,
@@ -905,6 +1213,7 @@ def build_graph(
     frontend: str | None = None,
     design: bool = True,
     tb: bool = True,
+    flow_tops: bool = True,
     bind: bool = True,
     extract_enabled: bool = True,
     extract_executable: str = extract_mod.GRAPH_EXTRACT_BINARY,
@@ -929,6 +1238,9 @@ def build_graph(
         hierarchies only, no SV testbench modules or instances. It is a
         cost switch, not a correctness one: every testbench doubles the
         elaboration work for the design it sits on top of.
+      flow_tops: False skips the run-rooted exports (#385) — the
+        formal/synth/cdc run tops that only elaborate inside their
+        flow's own filelist. The same kind of cost switch as ``tb``.
       bind: False skips the post-merge binding stage (#378) — no
         ``binds_to`` / ``drives`` / ``checks_against`` edges.
       extract_enabled: False skips the extractor's binding tier without
@@ -964,6 +1276,7 @@ def build_graph(
     # --- design tier: filelists first, so hashing precedes parsing ------
     exporters: list[tuple[ModelConfig, RtlBuddyViewGraph]] = []
     tb_exporters: list[tuple[TestbenchTarget, RtlBuddyViewGraph]] = []
+    flow_exporters: list[tuple[FlowRunTarget, RtlBuddyViewGraph]] = []
     design_report = TierReport(tier=DESIGN_TIER)
     if not design:
         design_report.status = SKIPPED
@@ -1016,8 +1329,30 @@ def build_graph(
                         continue
                     sources.extend(exporter.source_files())
                     tb_exporters.append((target, exporter))
+            # Run-rooted exports (#385): same tier, same filelist
+            # machinery, `--tb-top` carrying the run's `top:` over the
+            # model filelist + the flow's own sources. Those sources
+            # join the tier's input hashes too, so editing a properties
+            # file invalidates the cached graph.
+            if flow_tops:
+                for target, exporter in _flow_exporters(
+                    root,
+                    flow_runs_from_regressions(root, models),
+                    out,
+                    view_executable=view_executable,
+                    frontend=frontend,
+                ):
+                    try:
+                        exporter.write_filelist()
+                    except Exception as exc:  # FilelistError and friends
+                        design_report.failures.append(
+                            {"run": target.label, "error": str(exc)}
+                        )
+                        continue
+                    sources.extend(exporter.source_files())
+                    flow_exporters.append((target, exporter))
             design_report.inputs = hash_inputs(root, sources)
-            if not exporters and not tb_exporters:
+            if not exporters and not tb_exporters and not flow_exporters:
                 design_report.status = FAILED
                 design_report.detail = "no model produced a filelist"
     reports[DESIGN_TIER] = design_report
@@ -1102,12 +1437,16 @@ def build_graph(
     tier_files: list[str] = []
 
     tb_stitches: list[dict] = []
-    if exporters or tb_exporters:
+    if exporters or tb_exporters or flow_exporters:
         design_graphs = _run_design_tier(root, exporters, design_report)
+        pairs: list[tuple[TestbenchTarget | FlowRunTarget, dict]] = []
         if tb_exporters:
-            tb_pairs = _run_tb_tier(root, tb_exporters, design_report)
+            pairs += _run_tb_tier(root, tb_exporters, design_report)
+        if flow_exporters:
+            pairs += _run_flow_tier(root, flow_exporters, design_report)
+        if pairs:
             tb_graphs, tb_stitches = _qualify_tb_graphs(
-                design_graphs, tb_pairs, design_report
+                design_graphs, pairs, design_report
             )
             design_graphs += tb_graphs
         if design_graphs:
@@ -1130,27 +1469,30 @@ def build_graph(
             tier_graphs.append((DESIGN_TIER, design_graph))
             tier_files.extend(
                 str(e.output)
-                for _, e in [*exporters, *tb_exporters]
+                for _, e in [*exporters, *tb_exporters, *flow_exporters]
                 if Path(e.output).is_file()
             )
         else:
             design_report.status = FAILED
             design_report.detail = "no model exported successfully"
 
-    # The `tb:` node belongs to the config tier, so its stitch to the
-    # hierarchy it elaborates is a config-tier link — the same asymmetry
-    # `model --maps_to--> module:` already has. It can only be written
-    # after the export, because only the export knows the top the viewer
-    # really elaborated (a testbench may declare no `toplevel:` at all)
-    # and whether that id had to be suite-qualified. Where both exist the
-    # export wins: the config tier's `toplevel:`-derived edge is a
-    # declaration, this one is an observation of the same thing.
+    # The `tb:` node (and a flow run's `test:` node) belongs to the
+    # config tier, so its stitch to the hierarchy it elaborates is a
+    # config-tier link — the same asymmetry `model --maps_to--> module:`
+    # already has. It can only be written after the export, because only
+    # the export knows the top the viewer really elaborated (a testbench
+    # may declare no `toplevel:` at all) and whether that id had to be
+    # suite-qualified. Where both exist the export wins: the config
+    # tier's `toplevel:`- / `top:`-derived edge is a declaration, this
+    # one is an observation of the same thing. Matching is on (source,
+    # type) so a run's declared `targets` is replaced without touching
+    # its other edges.
     if tb_stitches:
-        exported = {link["source"] for link in tb_stitches}
+        exported = {(link["source"], link["type"]) for link in tb_stitches}
         config.graph["links"] = [
             link
             for link in config.graph["links"]
-            if not (link["source"] in exported and link["type"] == ELABORATES_AS)
+            if (link["source"], link["type"]) not in exported
         ]
         config.graph["links"].extend(tb_stitches)
         # Restore the extractor's canonical ordering so the config
@@ -1341,7 +1683,7 @@ def _hydrate_from_meta(reports: dict[str, TierReport], stored_meta: dict) -> Non
             report.links = int(stored.get("links") or 0)
         if not report.failures:
             report.failures = stored.get("failures") or []
-        for key in ("models", "testbenches"):
+        for key in ("models", "testbenches", "flow_runs"):
             if key in stored and key not in report.extra:
                 report.extra[key] = stored[key]
 

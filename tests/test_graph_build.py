@@ -113,6 +113,47 @@ def _second_suite(project: Path, *, tb_name: str) -> Path:
     return suite
 
 
+def _flow_suite(
+    project: Path,
+    *,
+    suite: str = "blk_a_chk",
+    dut: str = "blk_a",
+    top: str = "blk_a_chk",
+    runs: tuple[str, ...] = ("chk_bmc", "chk_prove"),
+) -> Path:
+    """An fpv suite whose runs top at a checker in its own properties file.
+
+    The template shape #385 exists for: the checker module elaborates
+    only over model filelist + ``properties:``, so without a run-rooted
+    export the config tier's ``targets`` stitch has nowhere to land.
+    Two runs (bmc + prove) share the checker, which is what the
+    de-duplication rule is about.
+    """
+    suite_dir = project / "fpv" / suite
+    suite_dir.mkdir(parents=True, exist_ok=True)
+    (suite_dir / f"{suite}_props.sv").write_text(
+        f"module {top} (input logic clk);\n  {dut} i_dut (.clk(clk));\nendmodule\n"
+    )
+    entries = "\n".join(
+        f'  - name: "{run}"\n'
+        f'    desc: "{run} over the checker"\n'
+        '    tool: "sby"\n'
+        f'    model: "{dut}"\n'
+        f'    model_path: "../../design/{dut}/models.yaml"\n'
+        f'    top: "{top}"\n'
+        "    properties:\n"
+        f'      - "{suite}_props.sv"\n'
+        f'    mode: "{mode}"\n'
+        for run, mode in zip(runs, ("bmc", "prove"))
+    )
+    (suite_dir / "fpv.yaml").write_text(
+        f"rtl-buddy-filetype: fpv_config\nverifications:\n{entries}"
+    )
+    reg = project / "fpv_regression.yaml"
+    reg.write_text(reg.read_text() + f'  - "fpv/{suite}/fpv.yaml"\n')
+    return suite_dir
+
+
 def _design_graph(top: str) -> dict:
     """A minimal but contract-shaped design-tier export for ``top``."""
     return {
@@ -398,9 +439,26 @@ def _dut_calls(record: Path) -> list[list[str]]:
     return [argv for argv in _graph_calls(record) if "--tb-top" not in argv]
 
 
+def _call_filelist(argv: list[str]) -> Path:
+    return Path(argv[argv.index("--filelist") + 1])
+
+
 def _tb_calls(record: Path) -> list[list[str]]:
     """TB-rooted exports: one per testbench."""
-    return [argv for argv in _graph_calls(record) if "--tb-top" in argv]
+    return [
+        argv
+        for argv in _graph_calls(record)
+        if "--tb-top" in argv and _call_filelist(argv).parent.parent.name != "run"
+    ]
+
+
+def _run_calls(record: Path) -> list[list[str]]:
+    """Run-rooted exports (#385): one per flow run top."""
+    return [
+        argv
+        for argv in _graph_calls(record)
+        if "--tb-top" in argv and _call_filelist(argv).parent.parent.name == "run"
+    ]
 
 
 def _runner() -> tuple[CliRunner, RtlBuddy]:
@@ -1109,6 +1167,230 @@ def test_no_tb_and_tb_do_not_share_a_fingerprint(graph_project: Path, tmp_path: 
 
 
 # ---------------------------------------------------------------------------
+# Run-rooted design tier (#385)
+#
+# A formal/synth/cdc run's `top:` often only elaborates inside the flow's
+# own filelist — the template's fpv checker tops live in `properties:`
+# files no models.yaml names. These pin the run-rooted exports: the same
+# TB mechanism, keyed off the repo-level regression files, stitched with
+# the run's own verb (`targets`).
+# ---------------------------------------------------------------------------
+
+
+def test_flow_run_selection_skips_model_topped_runs_and_dedupes(graph_project: Path):
+    # The fixture's `blk_a_safety` run tops at the model itself: the DUT
+    # export already covers that hierarchy, so there is nothing to add.
+    assert graph_build.flow_runs_from_regressions(graph_project) == []
+
+    _flow_suite(graph_project)
+    targets = graph_build.flow_runs_from_regressions(graph_project)
+    # Two runs (bmc + prove), one checker: (suite, model, sources, top)
+    # is the entire input to the viewer, so they are one export.
+    assert [(t.suite_rel, t.run_name, t.top, t.flow) for t in targets] == [
+        ("fpv/blk_a_chk", "chk_bmc", "blk_a_chk", "fpv")
+    ]
+    target = targets[0]
+    assert target.node_id == "test:fpv/blk_a_chk#chk_bmc"
+    assert target.label == "fpv/blk_a_chk#chk_bmc"
+    assert target.stitch_type == "targets"
+    assert target.tb_top == "blk_a_chk"
+    assert [Path(s).name for s in target.sources] == ["blk_a_chk_props.sv"]
+    assert target.model.name == "blk_a"
+    # The collapsed twin is remembered: each run keeps its own stitch.
+    assert target.run_names == ["chk_bmc", "chk_prove"]
+    assert target.node_ids == [
+        "test:fpv/blk_a_chk#chk_bmc",
+        "test:fpv/blk_a_chk#chk_prove",
+    ]
+
+
+def test_flow_run_selection_honours_the_model_filter(graph_project: Path):
+    _flow_suite(graph_project)
+    only_b = [
+        m
+        for m in graph_build.models_from_design_tree(graph_project / "design")
+        if m.name == "blk_b"
+    ]
+    assert graph_build.flow_runs_from_regressions(graph_project, only_b) == []
+
+
+def test_run_export_is_rooted_at_the_run_top_and_welds_to_the_dut(
+    graph_project: Path, tmp_path: Path
+):
+    _flow_suite(graph_project)
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    (run_call,) = _run_calls(record)
+    assert run_call[run_call.index("--tb-top") + 1] == "blk_a_chk"
+    # --top stays the DUT, exactly as a TB export: the filelist is the
+    # model's plus the flow's own sources, cached under run/<top>.
+    assert run_call[run_call.index("--top") + 1] == "blk_a"
+    filelist = _call_filelist(run_call)
+    assert filelist.parts[-4:] == ("blk_a", "run", "blk_a_chk", "hier.f")
+    assert "blk_a_chk_props.sv" in filelist.read_text()
+
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    assert nodes["module:blk_a_chk"]["file"] == "fpv/blk_a_chk/blk_a_chk_props.sv"
+    # The weld: the checker's DUT instance lands on the module node the
+    # DUT-rooted export produced.
+    assert ("inst:blk_a_chk/blk_a_chk.i_dut", "module:blk_a") in {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "instance_of"
+    }
+    # Both runs' `targets` stitches resolve: the exported run's is the
+    # observation, the de-duplicated twin keeps its declaration — same
+    # module node either way. THE acceptance: no dangling run tops.
+    targets_links = {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "targets"
+    }
+    assert {
+        ("test:fpv/blk_a_chk#chk_bmc", "module:blk_a_chk"),
+        ("test:fpv/blk_a_chk#chk_prove", "module:blk_a_chk"),
+    } <= targets_links
+    assert not dangling_targets(graph)
+    # A run's stitch is `targets`, never the testbench's verb.
+    assert not [
+        link
+        for link in graph["links"]
+        if link["type"] == "elaborates_as" and link["source"].startswith("test:")
+    ]
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    # The envelope counts *exports*, but a collapsed one names the runs
+    # it swallowed — otherwise a reader of graph-meta.json would infer
+    # that the `prove` twin was dropped, when it has its own stitch.
+    assert design.extra["flow_runs"] == ["fpv/blk_a_chk#chk_bmc (+chk_prove)"]
+    assert "1 flow run top(s)" in design.row_detail()
+
+
+def test_a_changed_properties_file_invalidates_the_cached_graph(
+    graph_project: Path, tmp_path: Path
+):
+    """Flow sources are design-tier inputs, so the no-op check sees them."""
+    suite_dir = _flow_suite(graph_project)
+    view, record = _fake_view(tmp_path)
+    kwargs = {
+        "view_executable": str(view),
+        "view_version": "0.4.0",
+        "extract_enabled": False,
+    }
+    first = build_graph(graph_project, **kwargs)
+    second = build_graph(graph_project, **kwargs)
+    assert second.unchanged is True
+    # The cached envelope still names the run exports it is reusing.
+    cached = next(t for t in second.tiers if t.tier == DESIGN_TIER)
+    assert cached.extra["flow_runs"] == ["fpv/blk_a_chk#chk_bmc (+chk_prove)"]
+
+    props = suite_dir / "blk_a_chk_props.sv"
+    props.write_text(props.read_text().replace("i_dut", "u_dut"))
+    record.unlink()
+    third = build_graph(graph_project, **kwargs)
+    assert third.unchanged is False
+    assert third.fingerprint != first.fingerprint
+    assert len(_run_calls(record)) == 1
+
+
+def test_a_failed_run_export_is_reported_per_run(graph_project: Path, tmp_path: Path):
+    _flow_suite(graph_project)
+    view, _ = _fake_view(tmp_path, tb_exit_code=3)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    # The tier is still built — the DUT exports were fine.
+    assert design.status == "built"
+    assert design.extra["flow_runs"] == []
+    failure = next(f for f in design.failures if "run" in f)
+    assert failure["run"] == "fpv/blk_a_chk#chk_bmc"
+    assert "log" in failure
+    graph = json.loads(build.graph_path.read_text())
+    assert "module:blk_a_chk" not in _nodes(graph)
+    # The declared `targets` stitch survives — dangling, which is what a
+    # failed export means, not silently dropped.
+    assert "module:blk_a_chk" in dangling_targets(graph)
+
+
+def test_no_flow_tops_leaves_run_tops_dangling(graph_project: Path, tmp_path: Path):
+    _flow_suite(graph_project)
+    view, record = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+        flow_tops=False,
+    )
+    assert _run_calls(record) == []
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    assert "flow_runs" not in design.extra
+    graph = json.loads(build.graph_path.read_text())
+    assert "module:blk_a_chk" in dangling_targets(graph)
+
+
+def test_colliding_run_top_ids_are_qualified_by_suite(
+    graph_project: Path, tmp_path: Path
+):
+    """Two fpv suites, two different checker modules, one name.
+
+    The same collision testbench tops have — and the same resolution:
+    the run copies are qualified with the suite that owns them, the
+    `targets` stitches follow the rename — for every run collapsed into
+    the export, not just the first — and the DUT ids stay the weld.
+    """
+    _flow_suite(graph_project, suite="chk_one", dut="blk_a", top="chk_top")
+    _flow_suite(graph_project, suite="chk_two", dut="blk_b", top="chk_top")
+    view, _ = _fake_view(tmp_path)
+    build = build_graph(
+        graph_project,
+        view_executable=str(view),
+        view_version="0.4.0",
+        extract_enabled=False,
+    )
+    graph = json.loads(build.graph_path.read_text())
+    nodes = _nodes(graph)
+    assert "module:chk_top" not in nodes
+    targets_links = {
+        (link["source"], link["target"])
+        for link in graph["links"]
+        if link["type"] == "targets"
+    }
+    for suite, dut in (("fpv/chk_one", "blk_a"), ("fpv/chk_two", "blk_b")):
+        module = nodes[f"module:chk_top@{suite}"]
+        assert module["file"] == f"{suite}/{suite.split('/')[1]}_props.sv"
+        assert module["unqualified_id"] == "module:chk_top"
+        # Both runs stitch to the qualified module — the de-duplicated
+        # `chk_prove` twin included, or its declared edge would dangle.
+        assert (f"test:{suite}#chk_bmc", f"module:chk_top@{suite}") in targets_links
+        assert (f"test:{suite}#chk_prove", f"module:chk_top@{suite}") in targets_links
+        assert (
+            f"inst:chk_top/chk_top.i_dut@{suite}",
+            f"module:{dut}",
+        ) in {
+            (link["source"], link["target"])
+            for link in graph["links"]
+            if link["type"] == "instance_of"
+        }
+    assert not dangling_targets(graph)
+    design = next(t for t in build.tiers if t.tier == DESIGN_TIER)
+    by_id = {c["id"]: c for c in design.extra["id_collisions"]}
+    assert by_id["module:chk_top"]["qualified"] == [
+        "module:chk_top@fpv/chk_one",
+        "module:chk_top@fpv/chk_two",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Extractor (optional binding tier)
 # ---------------------------------------------------------------------------
 
@@ -1409,6 +1691,41 @@ def test_cli_no_tb_and_the_envelope_testbench_list(graph_project: Path, tmp_path
     assert _tb_calls(record) == []
 
 
+def test_cli_no_flow_tops_and_the_envelope_run_list(
+    graph_project: Path, tmp_path: Path
+):
+    _flow_suite(graph_project)
+    view, record = _fake_view(tmp_path)
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "graph", "build", "--tool", str(view), "--no-extract"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output.strip().splitlines()[-1])["payload"]
+    design = next(t for t in payload["tiers"] if t["tier"] == DESIGN_TIER)
+    assert design["flow_runs"] == ["fpv/blk_a_chk#chk_bmc (+chk_prove)"]
+
+    record.unlink()
+    off = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "graph",
+            "build",
+            "--no-flow-tops",
+            "--tool",
+            str(view),
+            "--no-extract",
+        ],
+    )
+    assert off.exit_code == 0, off.output
+    payload = json.loads(off.output.strip().splitlines()[-1])["payload"]
+    design = next(t for t in payload["tiers"] if t["tier"] == DESIGN_TIER)
+    assert "flow_runs" not in design
+    assert _run_calls(record) == []
+
+
 def test_cli_model_and_regression_are_mutually_exclusive(graph_project: Path):
     runner, rb = _runner()
     result = runner.invoke(
@@ -1515,3 +1832,29 @@ def test_end_to_end_with_the_installed_viewer(graph_project: Path):
     # The merged envelope is loadable by NetworkX readers.
     assert graph["graph"]["schema_version"] == SCHEMA_VERSION
     assert graph["directed"] is True and graph["multigraph"] is True
+
+
+def test_the_new_warning_events_have_human_message_cases():
+    """Guidelines → Logging: every WARNING/ERROR event gets a dedicated case,
+    otherwise the fallback renders `graph build run_export_failed` with none
+    of `run`, `top`, `returncode` or `log` — the fields that make the failure
+    actionable."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_build.run_export_failed",
+        {
+            "run": "fpv/blk_a_chk#chk_bmc",
+            "top": "blk_a_chk",
+            "returncode": 3,
+            "log": "/p/run.log",
+        },
+    )
+    for token in ("fpv/blk_a_chk#chk_bmc", "blk_a_chk", "3", "/p/run.log", "targets"):
+        assert token in msg, msg
+
+    msg = _human_message(
+        "spec_trace.fpv_reg_load_failed",
+        {"path": "/p/fpv_regression.yaml", "error": "bad filetype"},
+    )
+    assert "/p/fpv_regression.yaml" in msg and "bad filetype" in msg

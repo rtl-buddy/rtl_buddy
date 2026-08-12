@@ -216,6 +216,17 @@ class RtlBuddyView:
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "hier.log")
 
+    def _extra_filelist(self) -> list[str] | None:
+        """Filelist lines merged on top of the model's, or None.
+
+        The base class merges the test's testbench filelist; subclasses
+        with another source of extra HDL (a formal run's ``properties:``
+        files, say) override this instead of re-implementing the merge.
+        """
+        if self.test_cfg is not None:
+            return self.test_cfg.tb.get_filelist()
+        return None
+
     def _write_filelist(self) -> str:
         fl_path = self._filelist_path()
         vlog_fl = VlogFilelist(
@@ -242,12 +253,11 @@ class RtlBuddyView:
         # works on absolute source paths and does not need include
         # directories — the TB's compile-time options are not relevant
         # to its CST walk.
+        extra = self._extra_filelist()
         test_filelist = None
-        if self.test_cfg is not None:
+        if extra is not None:
             test_filelist = [
-                line
-                for line in self.test_cfg.tb.get_filelist()
-                if not _is_non_source_filelist_line(line)
+                line for line in extra if not _is_non_source_filelist_line(line)
             ]
         vlog_fl.write_output(
             output_filepath=fl_path,
@@ -425,6 +435,16 @@ class RtlBuddyViewGraph(RtlBuddyView):
     ``graph.design.dut_top``. Module ids are ``module:<name>`` either
     way, which is what welds the TB export's DUT subtree onto the
     DUT-rooted export at merge time.
+
+    With ``run_top`` set the export is **run-rooted** (#385): the same
+    shape as a TB export, for a formal/synth/cdc run whose ``top:``
+    module only elaborates inside the flow's own filelist (an fpv
+    checker module living in a ``properties:`` file, say).
+    ``run_filelist`` is merged on top of the model filelist exactly as a
+    testbench's would be, ``--tb-top`` carries the run's top with
+    ``--top`` staying the DUT, and the artefact dir keys on
+    ``run_key`` under ``artefacts/hier/<model>/run/``. Mutually
+    exclusive with ``test_cfg`` — a run has no testbench.
     """
 
     _event_name = "graph_design"
@@ -443,6 +463,9 @@ class RtlBuddyViewGraph(RtlBuddyView):
         executable: str = "rtl-buddy-view",
         test_cfg: TestConfig | None = None,
         test_suite_dir: str | None = None,
+        run_top: str | None = None,
+        run_filelist: list[str] | None = None,
+        run_key: str | None = None,
     ):
         super().__init__(
             name,
@@ -455,20 +478,39 @@ class RtlBuddyViewGraph(RtlBuddyView):
             test_suite_dir=test_suite_dir,
         )
         self.project_root = project_root
+        self.run_top = run_top
+        self.run_filelist = run_filelist
+        if run_key is not None:
+            # Run-rooted exports get their own filelist cache, keyed the
+            # way TB exports key on (model, tb): the flow's extra sources
+            # make the filelist differ from the plain `rb hier` one.
+            artefact_root = (
+                Path(suite_dir) / "artefacts" / "hier" / model_cfg.name / run_key
+            )
+            artefact_root.mkdir(parents=True, exist_ok=True)
+            self.artefact_dir = str(artefact_root)
 
     def tb_top(self) -> str | None:
         """The ``--tb-top`` this export will elaborate from, or None.
 
         Same convention as :class:`RtlBuddyView`: the testbench's
         explicit ``toplevel:`` when it has one, else its config name
-        (which is the TB's top module name by project convention). The
-        viewer auto-corrects a hint that names no real module, so the
+        (which is the TB's top module name by project convention). A
+        run-rooted export's ``run_top`` plays the same role. The viewer
+        auto-corrects a hint that names no real module, so the
         elaborated answer is read back off the export rather than
         trusted from here.
         """
+        if self.run_top is not None:
+            return self.run_top
         if self.test_cfg is None:
             return None
         return self.test_cfg.tb.toplevel or self.test_cfg.tb.name
+
+    def _extra_filelist(self) -> list[str] | None:
+        if self.run_filelist is not None:
+            return self.run_filelist
+        return super()._extra_filelist()
 
     def _log_path(self) -> str:
         return os.path.join(self.artefact_dir, "graph.log")
