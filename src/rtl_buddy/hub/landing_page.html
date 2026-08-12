@@ -101,6 +101,13 @@
     .card .app {
       font: var(--fs-small)/1.5 var(--font-mono); color: var(--fg-muted);
     }
+    /* The short name a person then navigates by: it is what every
+       switcher, peer strip and `send →` button in the family says,
+       so the card that introduces the long name shows it too. */
+    .card .short {
+      border: 1px solid var(--line-strong); border-radius: var(--radius-1);
+      padding: 0 .3rem; margin-right: .4rem; color: var(--fg);
+    }
     .card .why { color: var(--fg-muted); }
     .card .note { font: var(--fs-small)/1.5 var(--font-mono); color: var(--fg-muted); }
     .card.off { opacity: .62; }
@@ -197,6 +204,7 @@
   <footer>
     <span><span class="dot connecting" id="conn-dot"></span> <span id="conn-status">connecting…</span></span>
     <span id="peers"></span>
+    <span id="hub-version" class="muted"></span>
     <span class="grow"></span>
     <span id="hub-addr"></span>
     <span id="msg"></span>
@@ -222,12 +230,62 @@
     graph: document.getElementById('st-graph'),
     empty: document.getElementById('empty'),
     emptyMsg: document.getElementById('empty-msg'),
+    hubVersion: document.getElementById('hub-version'),
     dot: document.getElementById('conn-dot'),
     status: document.getElementById('conn-status'),
     peers: document.getElementById('peers'),
     addr: document.getElementById('hub-addr'),
     msg: document.getElementById('msg')
   };
+
+  // >>> origin-labels
+  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
+  // WIRE vocabulary and it does not move for a rebrand: the schematic
+  // app registers as `view` and the graph pane as `graph`, and both
+  // keep doing so until protocol v2. Their DISPLAY names are `sch` and
+  // `gph`, so this map is the seam wherever a raw origin reaches a user
+  // — here that is the peer list, in both strips. An origin with no
+  // entry is shown verbatim, which keeps `wave`, `src` and a peer from
+  // a newer hub legible instead of blank.
+  //
+  // The app cards and the switcher do NOT read this map: they are built
+  // from /hub/state.json, whose `name`/`short` come from
+  // hub/landing_page.py's APPS table. That table and this map are the
+  // two places a family rename touches on this page.
+  //
+  // Hand-duplicated into graph_page.html and cov_page.html beside this
+  // file (a pane is a self-contained single file by design), and the
+  // SPA keeps its own copy under the same contract (rtl-buddy-view,
+  // viewer/src/components/HubStatus.vue). Change the map in one and
+  // change it in all four.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
+
+  function originLabel(origin) {
+    var key = String(origin == null ? '' : origin);
+    return Object.prototype.hasOwnProperty.call(ORIGIN_LABELS, key)
+      ? ORIGIN_LABELS[key] : key;
+  }
+  // <<< origin-labels
+
+  // >>> version-label
+  // One version label, said the same way by all four hub surfaces: the
+  // graph pane, the coverage pane, the schematic SPA (rtl-buddy-view,
+  // viewer/src/buildInfo.js) and this landing page. Hand-duplicated per
+  // the panes' self-contained-file convention — change the rule in one
+  // and change it everywhere, or the tabs start disagreeing about which
+  // build is running. The landing is not a hub peer, so it reads the
+  // version from /hub/state.json's hub.server_version instead of a
+  // welcome envelope; the parse and the rendered form are identical.
+  function versionLabel(raw) {
+    var text = String(raw == null ? '' : raw);
+    var plus = text.indexOf('+');
+    var base = plus < 0 ? text : text.slice(0, plus);
+    if (!base) { return null; }
+    var local = plus < 0 ? '' : text.slice(plus + 1);
+    var found = /(^|[.\-_])g([0-9a-fA-F]{4,})(?=$|[.\-_])/.exec(local);
+    return found ? base + ' @ ' + found[2].slice(0, 9) : base;
+  }
+  // <<< version-label
 
   function text(node, value, emptyText) {
     if (value) { node.textContent = value; node.classList.remove('none'); }
@@ -275,7 +333,13 @@
       if (!app.available) { node.className = 'card off'; }
     }
     node.appendChild(el('div', 'task', app.task));
-    node.appendChild(el('div', 'app', app.route ? app.name + '  ' + app.route : app.name));
+    // The card is where the LONG name is introduced (`rtl-buddy-schematic`);
+    // the chip beside it is the short one every other surface uses.
+    var appLine = el('div', 'app');
+    if (app.short) { appLine.appendChild(el('span', 'short', app.short)); }
+    appLine.appendChild(document.createTextNode(
+      app.route ? app.name + '  ' + app.route : app.name));
+    node.appendChild(appLine);
     node.appendChild(el('div', 'why', app.why));
     var badges = el('div', 'badges');
     if (app.open) {
@@ -299,7 +363,8 @@
     for (var i = 0; i < links.length; i++) { links[i].remove(); }
     apps.forEach(function (app) {
       if (app.status === 'planned' || !app.route) { return; }
-      var a = el('a', null, app.name);
+      // Chrome is short names only — the long one belongs on the card.
+      var a = el('a', null, app.short || app.name);
       a.href = app.route;
       a.title = app.task;
       els.switcher.appendChild(a);
@@ -316,8 +381,12 @@
     text(els.root, hub.project_root, 'not a project hub');
     els.model.classList.toggle('prose', !hub.active_model);
     text(els.model, hub.active_model, 'none selected');
+    var label = versionLabel(hub.server_version);
+    els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';
+    els.hubVersion.title = hub.server_version || '';
     var peers = state.peers || [];
-    text(els.peersKv, peers.length ? peers.join(', ') : '', 'none connected');
+    text(els.peersKv,
+         peers.length ? peers.map(originLabel).join(', ') : '', 'none connected');
     els.peersKv.classList.toggle('prose', peers.length === 0);
     var graph = state.graph || {};
     els.graph.classList.toggle('prose', !graph.present);
@@ -336,13 +405,14 @@
     els.empty.hidden = !nothingBuilt;
     if (nothingBuilt) {
       els.emptyMsg.textContent =
-        'Nothing built for this project yet. Pick a model in the design view ' +
+        'Nothing built for this project yet. Pick a model in the schematic ' +
         '(or start the hub with --model NAME), and run `rb graph build` for ' +
         'the knowledge graph.';
     }
 
     els.addr.textContent = hub.addr || '';
-    els.peers.textContent = peers.length ? 'peers: ' + peers.join(' ') : 'no peers';
+    els.peers.textContent =
+      peers.length ? 'peers: ' + peers.map(originLabel).join(' ') : 'no peers';
     setConnection('connected');
     note('');
   }

@@ -38,8 +38,11 @@
       --warn:        #b45309;
       --err:         #dc2626;
       /* Coverage ramp: the continuous fill is
-         hsl(pct * 1.2, 70%, var(--cov-l)), so --cov-l is the one token
-         that has to survive a missing sheet or every tint goes black. */
+         hsl(pct * 1.2, var(--tint-s), var(--cov-l)), so these are the
+         tokens that have to survive a missing sheet or every tint goes
+         black. Shared with the graph pane since #402 — the saturation
+         used to be page-local here, which is one ramp in two places. */
+      --tint-s:      70%;
       --cov-l:       82%;
       --cov-none:    #e5e7eb;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -56,7 +59,6 @@
        re-declare a sheet token: both blocks select :root, so a
        re-declaration after the link would out-rank the sheet. */
     :root {
-      --tint-s:   70%;    /* saturation of the coverage ramp */
       --gutter:   3.2rem; /* line-number column */
       --markcol:  8rem;   /* hard cap on ONE metric column */
       /* The two ends of the same ramp `.tint` uses, named so a bit cell
@@ -220,6 +222,13 @@
        the click rather than after it. */
     .pill.act { cursor: pointer; }
     .pill.act:hover { border-color: var(--accent); color: var(--accent); }
+    /* The cross-app row in the file header: the pane's own buttons, one
+       size down, because they are about the open file rather than about
+       the pane. */
+    .actions { display: inline-flex; gap: .25rem; flex-wrap: wrap; }
+    .actions button { font-size: var(--fs-small); padding: .1rem .4rem; }
+    button:disabled { opacity: .45; cursor: default; }
+    button:disabled:hover { border-color: var(--line); }
     /* Pinned first row of the tests table: the merged view is a
        destination, not one of the tests. */
     tr.row.all-tests td { border-bottom: 1px solid var(--line-strong); }
@@ -353,6 +362,14 @@
     .dot.connected { background: var(--ok); }
     .dot.connecting { background: var(--warn); }
     .dot.offline { background: var(--err); }
+    /* A fourth strip state, and the only one that is also a control:
+       another tab of THIS pane took the hub slot, and the words are the
+       way back (`showSuperseded`). Not a status word — it says what
+       happened and what a click will do. */
+    .take-back {
+      color: var(--err); font-weight: 600;
+      cursor: pointer; text-decoration: underline;
+    }
 
     #empty {
       position: absolute; inset: 0; display: none; place-items: center;
@@ -381,8 +398,8 @@
       <input type="checkbox" id="opt-cold"> cold only
     </label>
     <span class="grow"></span>
-    <label class="chk" title="Clicking a line also broadcasts source_focused; the hub resolves it to a design-view instance and highlights it there. Does nothing when no viewer is connected.">
-      <input type="checkbox" id="opt-select" checked> sync design view
+    <label class="chk" title="Clicking a line also broadcasts source_focused; the hub resolves it to an instance and highlights it in the schematic. Does nothing when no schematic tab is connected.">
+      <input type="checkbox" id="opt-select" checked> sync schematic
     </label>
     <label class="chk" title="Clicking a line also jumps your editor to it — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
       <input type="checkbox" id="opt-open" checked> open in editor
@@ -390,10 +407,10 @@
     <button id="reload" title="Re-fetch /cov.json (after another coverage run)">reload</button>
     <nav class="switcher" aria-label="hub apps">
       <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
-      <a href="/graph" target="_blank" rel="noopener"
-         title="Open the design knowledge graph in a new tab. Selecting a module here focuses it there.">graph ↗</a>
-      <a href="/view" target="_blank" rel="noopener"
-         title="Open the schematic design view in a new tab.">design view ↗</a>
+      <a href="/view" target="_blank" rel="noopener" data-origin="view"
+         title="Open the schematic in a new tab.">sch ↗</a>
+      <a href="/graph" target="_blank" rel="noopener" data-origin="graph"
+         title="Open the design knowledge graph in a new tab. Selecting a module here focuses it there.">gph ↗</a>
     </nav>
   </header>
 
@@ -434,6 +451,7 @@
   <footer>
     <span><span class="dot connecting" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
     <span id="peers" class="muted"></span>
+    <span id="hub-version" class="muted"></span>
     <span class="grow"></span>
     <span id="msg" class="muted"></span>
   </footer>
@@ -479,6 +497,7 @@
     empty: document.getElementById('empty'),
     emptyMsg: document.getElementById('empty-msg'),
     peers: document.getElementById('peers'),
+    hubVersion: document.getElementById('hub-version'),
     msg: document.getElementById('msg'),
     wsDot: document.getElementById('ws-dot'),
     wsStatus: document.getElementById('ws-status')
@@ -553,30 +572,66 @@
   // ---------------------------------------------------------------
 
   var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
+  // Set when a hello was refused because the cov slot was taken, so the
+  // NEXT hello asks the hub to evict the incumbent. Cleared on welcome,
+  // so a later reconnect starts polite again.
+  var pendingTakeover = false;
+  // The hub kicked this tab out because a NEWER coverage tab registered.
+  // Racing back would only kick that tab out in turn — two tabs evicting
+  // each other every retry is exactly the defect this state exists to
+  // stop — so auto-reconnect stands down until the user asks for the
+  // slot back.
+  var superseded = false;
+
+  // >>> hello-payload
+  // The hello payload, built rather than inlined so the takeover rule is
+  // one pure function.
+  //
+  // `takeover` is opt-in PER HELLO. The first hello of a connection is
+  // polite — the field is omitted entirely, which `_run_handshake` in
+  // hub/server.py reads as false — and only a retry, after the hub
+  // answered `not_connected: cov client already registered`, asks it to
+  // evict whoever holds the slot. Sending it unconditionally is what
+  // made two tabs of this pane supersede each other in a loop.
+  //
+  // Same flow as the schematic SPA (rtl-buddy-view,
+  // viewer/src/composables/useHub.js — its `_pendingTakeover` /
+  // `superseded` handling), hand-duplicated here because a pane is a
+  // self-contained single file by design; graph_page.html carries the
+  // same helper with its own client and capabilities. Change the rule in
+  // one and change it in all three, or the tabs start fighting again.
+  function helloPayload(takeover) {
+    var payload = {
+      client: 'cov', version: '1.0.0', capabilities: ['cov_focus']
+    };
+    if (takeover) { payload.takeover = true; }
+    return payload;
+  }
+  // <<< hello-payload
+
+  function sendHello() {
+    return send({
+      v: 1, id: uuid(), origin: 'cov', kind: 'request', type: 'hello',
+      payload: helloPayload(pendingTakeover)
+    });
+  }
 
   function connect() {
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
     catch (e) { scheduleReconnect(); return; }
 
-    ws.addEventListener('open', function () {
-      send({
-        v: 1, id: uuid(), origin: 'cov', kind: 'request', type: 'hello',
-        payload: {
-          client: 'cov', version: '1.0.0',
-          capabilities: ['cov_focus'],
-          // A refreshed tab supersedes the stale one. The pane has its
-          // own origin, so this never evicts the schematic or the graph.
-          takeover: true
-        }
-      });
-    });
+    ws.addEventListener('open', sendHello);
     ws.addEventListener('message', function (ev) {
       var env; try { env = JSON.parse(ev.data); } catch (e) { return; }
       applyEnvelope(env);
     });
     ws.addEventListener('close', function () {
       wsReady = false;
+      // The hub closes the socket right after superseding us. That close
+      // must not repaint the strip over the take-back affordance, and
+      // must not restart the retry loop.
+      if (superseded) { return; }
       els.wsDot.className = 'dot offline';
       els.wsStatus.textContent = 'offline';
       els.wsStatus.title = 'lost /ws — retrying';
@@ -586,6 +641,7 @@
   }
 
   function scheduleReconnect() {
+    if (superseded) { return; }
     setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10000);
   }
@@ -615,9 +671,12 @@
     switch (env.type) {
       case 'welcome':
         wsReady = true; retryMs = 500;
+        // Hello accepted — the next reconnect starts polite again.
+        pendingTakeover = false;
+        clearTakeBack();
         els.wsDot.className = 'dot connected';
         els.wsStatus.textContent = 'connected';
-        els.wsStatus.title = 'hub ' + (env.payload && env.payload.server_version || '');
+        setHubVersion(env.payload && env.payload.server_version);
         setPeers(env.payload && env.payload.registered_clients);
         break;
       case 'peer_joined':
@@ -646,14 +705,192 @@
       default:
         break;
     }
-    if (env.kind === 'error' && env.payload) {
+    if (env.kind === 'error' && env.payload && !handleHubError(env.payload)) {
       note('hub error: ' + env.payload.code + ': ' + env.payload.message, 'error');
     }
   }
 
+  // The two hub errors that are about this tab's REGISTRATION rather
+  // than about a request it made. Returns true when the error has been
+  // dealt with here, in which case the message area stays out of it —
+  // one event, one surface.
+  //
+  // Mirrors the schematic SPA's `error` case (rtl-buddy-view,
+  // viewer/src/composables/useHub.js); graph_page.html carries the same
+  // handler. One one-client-per-origin rule, three apps that have to
+  // obey it identically.
+  function handleHubError(payload) {
+    // Superseded: a newer coverage tab owns the slot now. The strip says
+    // so and offers the way back; auto-reconnect stops, because winning
+    // the race back would only evict that tab.
+    if (payload.code === 'superseded') {
+      superseded = true;
+      showSuperseded();
+      if (ws) { try { ws.close(); } catch (e) { /* already gone */ } }
+      return true;
+    }
+    // The polite hello lost to an incumbent. Ask once more, this time
+    // asking the hub to evict it. Once, not in a loop: if the takeover
+    // hello fails too, the next error falls through to the message area.
+    // The hub drops the socket after refusing a hello, so this send
+    // usually goes nowhere and the flag rides the reconnect instead —
+    // both routes end in the same takeover hello.
+    if (payload.code === 'not_connected' && !pendingTakeover &&
+        /already registered/i.test(payload.message || '')) {
+      pendingTakeover = true;
+      sendHello();
+      return true;
+    }
+    return false;
+  }
+
+  var SUPERSEDED_TEXT =
+    'another coverage tab took this connection — click to take back';
+  var SUPERSEDED_HINT =
+    'A newer coverage tab registered with the hub, and the hub allows ' +
+    'one client per origin. Click to take the slot back — that tab goes ' +
+    'offline instead.';
+
+  function showSuperseded() {
+    els.wsDot.className = 'dot offline';
+    els.wsStatus.textContent = SUPERSEDED_TEXT;
+    els.wsStatus.title = SUPERSEDED_HINT;
+    els.wsStatus.className = 'take-back';
+    els.wsStatus.setAttribute('role', 'button');
+    els.wsStatus.setAttribute('tabindex', '0');
+  }
+
+  function clearTakeBack() {
+    els.wsStatus.className = '';
+    els.wsStatus.removeAttribute('role');
+    els.wsStatus.removeAttribute('tabindex');
+  }
+
+  // The user asking for the slot back. The other tab still holds it, so
+  // the hello that reclaims it has to ask for the takeover the first
+  // hello deliberately did not.
+  function takeBack() {
+    if (!superseded) { return; }
+    superseded = false;
+    pendingTakeover = true;
+    retryMs = 500;
+    clearTakeBack();
+    els.wsDot.className = 'dot connecting';
+    els.wsStatus.textContent = 'connecting…';
+    els.wsStatus.title = hubTitle;
+    connect();
+  }
+
+  // >>> origin-labels
+  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
+  // WIRE vocabulary and it does not move for a rebrand: the schematic
+  // app registers as `view` and the graph pane as `graph`, and both
+  // keep doing so until protocol v2. Their DISPLAY names are `sch` and
+  // `gph` (rtl-buddy-sch, rtl-buddy-gph), so this map is the seam, and
+  // every place an origin reaches a user goes through it -- the peer
+  // strip below, the header switcher's sibling labels and the
+  // `send -> X` buttons. An origin with no entry is shown verbatim
+  // (this pane's own `cov` among them), which is what keeps a peer from
+  // a newer hub legible instead of blank.
+  //
+  // It is also the one knob for a short name: change `gph` here and
+  // every graph label in this file follows.
+  //
+  // A pane is a self-contained single file by design, so this helper is
+  // hand-duplicated into graph_page.html and landing_page.html beside
+  // it, and the SPA keeps its own copy under the same contract
+  // (rtl-buddy-view, viewer/src/components/HubStatus.vue). Change the
+  // map in one and change it in all four, or the tabs start calling the
+  // same peer different things.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
+
+  function originLabel(origin) {
+    var key = String(origin == null ? '' : origin);
+    return Object.prototype.hasOwnProperty.call(ORIGIN_LABELS, key)
+      ? ORIGIN_LABELS[key] : key;
+  }
+  // <<< origin-labels
+
+  // The switcher's sibling links carry `data-origin`, so their labels
+  // come from the map too (outside the markers: this one touches the
+  // DOM). The text in the markup is what a person reading the file
+  // sees; this is what the browser shows.
+  function relabelSwitcher() {
+    var links = document.querySelectorAll('.switcher a[data-origin]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].textContent = originLabel(links[i].getAttribute('data-origin')) + ' \u2197';
+    }
+  }
+
+  // The latest peer list, kept rather than only printed: the file
+  // header's cross-app row asks it which sibling apps are open, and
+  // "send" to an app nobody is running is a click with no effect and no
+  // explanation.
+  var peers = [];
+
+  function hasPeer(origin) { return peers.indexOf(origin) >= 0; }
+
   function setPeers(list) {
     if (!Array.isArray(list)) { return; }
-    els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+    var next = list.slice().sort();
+    var changed = next.join('') !== peers.join('');
+    peers = next;
+    els.peers.textContent =
+      'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
+    // An app that just opened (or just closed) changes which of the file
+    // header's buttons are live, and the user is looking at that row
+    // right now — repaint it rather than leaving it a click behind.
+    // Only the row: re-rendering the file would throw away the scroll
+    // position and the open detail panel over a peer coming and going.
+    if (changed) { refreshActions(); }
+  }
+
+  // >>> version-label
+  // One version label, said the same way by all three hub apps: this
+  // pane, graph_page.html beside it, and the schematic SPA (rtl-buddy-view,
+  // viewer/src/buildInfo.js). A pane is a self-contained single file by
+  // design, so this helper is hand-duplicated from graph_page.html
+  // rather than shared, and the SPA keeps its own copy under the same
+  // contract. Change the rule in one and change it in all three, or the
+  // three tabs start disagreeing about which build is running.
+  //
+  // The input is rtl_buddy's own version as setuptools-scm writes it:
+  // `6.26.2` from a release tag, `6.26.2.dev13+g3f5b890e3.d20260806`
+  // from anything built past one. Everything before `+` is the version
+  // a person quotes. The local segment after it carries the git SHA as
+  // a `g`-prefixed hex run, alongside a `.dYYYYMMDD` build date that
+  // says nothing the SHA does not — so the SHA is the payload, the date
+  // is dropped, and nine hex digits is as much of a SHA as anyone
+  // actually reads.
+  //
+  // A local segment with no `g<hex>` run is not an error — `1.0+local`
+  // is a legal version — it simply has no build to point at, and the
+  // base alone is the label.
+  function versionLabel(raw) {
+    var text = String(raw == null ? '' : raw);
+    var plus = text.indexOf('+');
+    var base = plus < 0 ? text : text.slice(0, plus);
+    if (!base) { return null; }
+    var local = plus < 0 ? '' : text.slice(plus + 1);
+    var found = /(^|[.\-_])g([0-9a-fA-F]{4,})(?=$|[.\-_])/.exec(local);
+    return found ? base + ' @ ' + found[2].slice(0, 9) : base;
+  }
+  // <<< version-label
+
+  // Re-read on every welcome, not just the first: a reconnect can land
+  // on a hub that was restarted on a newer build, and a label frozen at
+  // the version of the first connection would then be quietly wrong.
+  // Kept so the strip's tooltip can be restored after a state that
+  // borrowed it (`showSuperseded` explains itself there instead).
+  var hubTitle = '';
+
+  function setHubVersion(raw) {
+    var full = raw ? String(raw) : '';
+    var label = versionLabel(full);
+    els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';
+    els.hubVersion.title = full;
+    hubTitle = 'hub ' + full;
+    els.wsStatus.title = hubTitle;
   }
 
   // ---------------------------------------------------------------
@@ -789,12 +1026,11 @@
   // suffix.
   //
   // The python end of this wire is rtl_buddy/graph/coverage.py
-  // (`_design_entries`), which today joins model module names onto
-  // `module:<name>` graph ids by plain equality and reports the
-  // leftovers in `summary.unmatched_modules` — i.e. every parameterised
-  // module misses there for the same reason the pill used to miss here.
-  // If that side grows the rule, it must be THIS rule; if it changes,
-  // this changes with it.
+  // (`base_module_name` / `_resolve_module_node`, used by
+  // `_design_entries` to join model module names onto `module:<name>`
+  // graph ids and to report the leftovers in
+  // `summary.unmatched_modules`). It is THIS rule, exact-first and
+  // stripped-second; if one side changes, the other changes with it.
   function baseModuleName(name) {
     var text = String(name == null ? '' : name);
     var base = text.replace(/__[A-Za-z0-9]+$/, '');
@@ -1783,7 +2019,12 @@
     // you are looking at — and carries the elaborated names it stands
     // for in its tooltip; the graph is sent the source name, which is
     // the only one it has a node for.
+    // The first chip is the file's primary module: chips come out in the
+    // model's first-seen order, so this is what the header reads left to
+    // right, and the send buttons must agree with the row above them.
+    var primary = null;
     moduleChips(row.modules).forEach(function (chip) {
+      if (primary === null) { primary = chip.base; }
       var pill = elem('span', 'pill act', chip.base);
       var elaborated = chip.names.length > 1 || chip.names[0] !== chip.base
         ? 'elaborated as ' + chip.names.join(', ') + '\n' : '';
@@ -1792,6 +2033,9 @@
       pill.addEventListener('click', function () { focusModuleElsewhere(chip.base); });
       els.fileHead.appendChild(pill);
     });
+    actionsBase = primary;
+    actionsEl = renderActions(actionsBase);
+    els.fileHead.appendChild(actionsEl);
     // The elaboration lens, and only when there is a choice to make: a
     // segmented control on a file with one elaboration is a control
     // that can only say what is already true.
@@ -1994,9 +2238,76 @@
     var name = baseModuleName(base);
     if (emit('graph_focus', { node: 'module:' + name })) {
       note('graph-focus module:' + name);
-    } else {
-      note('hub not connected', 'error');
+      return true;
     }
+    note('hub not connected', 'error');
+    return false;
+  }
+
+  // ---------------------------------------------------------------
+  // cross-app actions
+  // ---------------------------------------------------------------
+
+  // Two controls per sibling app, because they answer two different
+  // questions. `send → X` puts the open file's module on the X tab that
+  // is already open and does not navigate. `open X ↗` emits the same
+  // envelope and THEN opens X in a new tab: the hub caches the latest
+  // graph_focus and replays it to each peer as it registers
+  // (`_replay_cached_state` in hub/server.py), so the fresh tab comes up
+  // already on that module. No deep links, no new wire types.
+  //
+  // Both apps are sent the SAME envelope, deliberately. `graph_focus
+  // {node:'module:<name>'}` is the graph pane's own vocabulary and the
+  // schematic SPA resolves `module:` targets as well, so the pair of buttons
+  // differ only in which tab they assume or open — the broadcast reaches
+  // whichever of the two is listening. The tooltips say so.
+  var APPS = [
+    { origin: 'graph', prose: 'the graph pane' },
+    { origin: 'view', prose: 'the schematic' }
+  ];
+
+  var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +
+    'the graph pane AND the schematic, whichever of them is open.';
+  var NO_MODULE = 'This file records no module, so there is nothing to ' +
+    'point the other apps at.';
+
+  function actionButton(label, title, disabled, onClick) {
+    var b = elem('button', null, label);
+    b.title = title;
+    if (disabled) { b.disabled = true; } else { b.addEventListener('click', onClick); }
+    return b;
+  }
+
+  // Sends only: opening an app fresh is the header switcher's job, so
+  // there is no open-↗ variant here (it was redundant with those links,
+  // and the hub replays its cached focus to late joiners anyway — send
+  // first, then open from the header, lands the same way).
+  function renderActions(base) {
+    var box = elem('div', 'actions');
+    APPS.forEach(function (app) {
+      var live = hasPeer(app.origin);
+      box.appendChild(actionButton(
+        'send → ' + originLabel(app.origin),
+        !base ? NO_MODULE
+           : !live ? app.prose + ' is not connected — open it from the header links'
+           : 'Send module:' + baseModuleName(base) + ' to ' + app.prose +
+             ', without leaving this tab. ' + OVERLAP,
+        !base || !live,
+        function () { focusModuleElsewhere(base); }));
+    });
+    return box;
+  }
+
+  // Rebuilt in place when the peer list moves. Only the row: re-rendering
+  // the file would throw away the scroll position and the open detail
+  // panel over a peer coming and going.
+  var actionsEl = null, actionsBase = null;
+
+  function refreshActions() {
+    if (!actionsEl || !actionsEl.parentNode) { return; }
+    var next = renderActions(actionsBase);
+    actionsEl.parentNode.replaceChild(next, actionsEl);
+    actionsEl = next;
   }
 
   // ---------------------------------------------------------------
@@ -2048,11 +2359,23 @@
     });
   }
 
+  // The wire spells a test `test:<suite>#<name>` — that is the schema's
+  // own example, what `rb hub send cov-focus` documents, and the id the
+  // graph pane carries. The coverage model keys tests by the BARE name
+  // (`cov/model.py` writes `artefacts.name`), so the qualified form is
+  // matched by its fragment rather than missed outright. Exact first, so
+  // a run whose test really is called `a#b` still wins.
   function focusTest(name) {
-    var known = ((state.payload && state.payload.tests) || []).some(function (row) {
-      return row.name === name;
-    });
-    if (!known) { return false; }
+    var rows = (state.payload && state.payload.tests) || [];
+    function known(candidate) {
+      return rows.some(function (row) { return row.name === candidate; });
+    }
+    if (!known(name)) {
+      var hash = String(name).lastIndexOf('#');
+      var bare = hash < 0 ? null : String(name).slice(hash + 1);
+      if (!bare || !known(bare)) { return false; }
+      name = bare;
+    }
     state.test = name;
     renderTests();
     if (state.file) { renderFile(); }
@@ -2087,7 +2410,7 @@
     if (Array.isArray(ip)) { ip = ip[0]; }
     if (typeof ip !== 'string' || !ip || !state.payload) { return; }
     // A naming-convention heuristic, and a soft miss when it fails: the
-    // coverage model has modules, the design view has instances, and
+    // coverage model has modules, the schematic has instances, and
     // nothing in either says which module an instance is of. Stripping
     // the usual instance prefixes off the leaf is right often enough to
     // be worth the zero cost of being wrong (nothing happens).
@@ -2129,7 +2452,15 @@
     state.sources = Object.create(null);
     load();
   });
+  // The strip's status word doubles as the take-back control while this
+  // tab is superseded; `takeBack` no-ops in every other state, so the
+  // listener is bound once here rather than added and removed.
+  els.wsStatus.addEventListener('click', takeBack);
+  els.wsStatus.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
+  });
 
+  relabelSwitcher();
   connect();
   load();
 })();

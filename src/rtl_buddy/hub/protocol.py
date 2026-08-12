@@ -57,7 +57,7 @@ class Origin(str, Enum):
 
     Its own origin rather than a second ``view``: the graph pane and the
     schematic SPA are meant to be open at the same time (clicking a
-    module in the graph *selects it in the design view*), and the hub
+    module in the graph *selects it in the schematic*), and the hub
     allows one client per origin — sharing ``view`` would make the two
     panes evict each other."""
 
@@ -66,7 +66,7 @@ class Origin(str, Enum):
 
     Its own origin for the same reason ``GRAPH`` has one: the point of
     the pane is to drive the *other* panes — clicking a cold line opens
-    it in the editor and selects the instance in the design view — so it
+    it in the editor and selects the instance in the schematic — so it
     has to be open alongside them, and one client per origin means a
     shared slot would evict whichever tab you looked at second."""
 

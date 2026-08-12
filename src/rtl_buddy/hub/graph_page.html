@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>rtl-buddy-graph</title>
+  <title>rtl-buddy-gph</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
   <!--
@@ -49,6 +49,11 @@
       --col-cdc-config:    #0e7490;
       --col-test-cocotb:   #557c0b;
       --col-other:         #6b7688;
+      /* Coverage ramp, shared with the /cov app and the schematic
+         overlay: hsl(pct * 1.2, --tint-s, --cov-l). */
+      --tint-s:   70%;
+      --cov-l:    82%;
+      --cov-none: #e5e7eb;
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       --fs-base:  13px;
@@ -128,6 +133,22 @@
        .body stroke above, which presentation attributes cannot. */
     .node circle.body.dangling { stroke: var(--col-other); stroke-width: 1.4; stroke-dasharray: 3 2; }
     .node circle.ring { fill: none; stroke-width: 2.4; }
+    /* Coverage tint. The ramp lives in the token sheet so the graph
+       pane, the /cov app and the schematic overlay cannot drift apart;
+       only the hue is per node, and it is set inline from the ratio. */
+    .node circle.body.cov { fill: hsl(var(--h), var(--tint-s), var(--cov-l)); }
+    .node circle.body.cov.none { fill: var(--cov-none); }
+    .node text.badge {
+      fill: var(--fg-muted); font-size: 10px;
+      stroke: var(--bg); stroke-width: 3px; paint-order: stroke;
+      pointer-events: none; user-select: none;
+    }
+    .cov-swatch {
+      width: .7rem; height: .7rem; border-radius: 2px; flex: none;
+      display: inline-block; border: 1px solid var(--line-strong);
+      background: hsl(var(--h), var(--tint-s), var(--cov-l));
+    }
+    .cov-swatch.none { background: var(--cov-none); }
     .node text {
       fill: var(--fg); font-size: 11px; paint-order: stroke;
       stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round;
@@ -150,6 +171,13 @@
       display: inline-block; padding: 0 .4rem; border-radius: 999px;
       border: 1px solid currentColor; font-size: 11px;
     }
+    /* The cross-app row at the top of the inspector. Same buttons as the
+       header, one size down, because they are about the selection rather
+       than about the pane. */
+    .actions {
+      display: flex; gap: .25rem; flex-wrap: wrap; margin: 0 0 .6rem;
+    }
+    .actions button { font-size: var(--fs-small); padding: .15rem .4rem; }
     .edges { list-style: none; margin: .35rem 0 0; padding: 0; }
     .edges li { padding: .1rem 0; overflow-wrap: anywhere; }
     .edges a { color: var(--accent); text-decoration: none; cursor: pointer; }
@@ -169,6 +197,14 @@
     .dot.connected { background: var(--ok); }
     .dot.connecting { background: var(--warn); }
     .dot.offline { background: var(--err); }
+    /* A fourth strip state, and the only one that is also a control:
+       another tab of THIS pane took the hub slot, and the words are the
+       way back (`showSuperseded`). Not a status word — it says what
+       happened and what a click will do. */
+    .take-back {
+      color: var(--err); font-weight: 600;
+      cursor: pointer; text-decoration: underline;
+    }
     nav.switcher { display: flex; gap: .35rem; align-items: center; }
     nav.switcher a {
       background: var(--panel-2); color: var(--fg); font: inherit;
@@ -191,15 +227,19 @@
 </head>
 <body>
   <header>
-    <h1>rtl-buddy-graph <small id="counts"></small></h1>
+    <h1>rtl-buddy-gph <small id="counts"></small></h1>
     <div class="legend" id="legend"></div>
     <span class="grow"></span>
     <input type="search" id="search" placeholder="filter by id, label or file…" spellcheck="false">
-    <label class="chk" title="Clicking a node also highlights it in the schematic design view — open the viewer at / in another tab to see it. Does nothing when no viewer is connected.">
-      <input type="checkbox" id="opt-select" checked> sync design view
+    <label class="chk" title="Clicking a node also highlights it in the schematic — open it from the header links to see it. Nodes without a concrete instance (project-tier models, un-instantiated modules) highlight all instances of their module instead. Does nothing when no schematic tab is connected.">
+      <input type="checkbox" id="opt-select" checked> sync schematic
     </label>
     <label class="chk" title="Clicking a node also jumps your editor to its source file and line — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
       <input type="checkbox" id="opt-open" checked> open in editor
+    </label>
+    <label class="chk" id="opt-cov-wrap" hidden
+      title="Fill design nodes with their line-coverage ratio instead of their column colour, badge each test with the coverage it produced, and ring each spec coverage item by whether the run exercised it. Needs `rb graph results` after a coverage run.">
+      <input type="checkbox" id="opt-cov"> coverage
     </label>
     <label class="chk" title="How far the highlight reaches from the selected or hovered node: 1 = direct neighbours only, higher values follow the edges outward N hops.">
       hops <select id="opt-hops">
@@ -209,19 +249,19 @@
     </label>
     <button id="reload" title="Re-fetch /graph.json (after rb graph build / rb graph results)">reload</button>
     <button id="fix-view" disabled
-       title="Enabled when the selected node is not in the design view's active model — click to switch the view to the model that contains it.">switch view model</button>
+       title="Enabled when the selected node is not in the schematic's active model — click to switch the schematic to the model that contains it.">switch model</button>
     <nav class="switcher" aria-label="hub apps">
       <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
-      <a href="/cov" target="_blank" rel="noopener"
-         title="Open the coverage pane in a new tab.">coverage ↗</a>
-      <a href="/view" target="_blank" rel="noopener"
-         title="Open the schematic design view in a new tab. Once it is open, clicking a node here highlights the instance there (the sync design view toggle).">design view ↗</a>
+      <a href="/view" target="_blank" rel="noopener" data-origin="view"
+         title="Open the schematic in a new tab. Once it is open, clicking a node here highlights the instance there (the sync schematic toggle).">sch ↗</a>
+      <a href="/cov" target="_blank" rel="noopener" data-origin="cov"
+         title="Open the coverage pane in a new tab.">cov ↗</a>
     </nav>
   </header>
 
   <main>
     <div id="canvas-wrap">
-      <svg id="canvas" aria-label="rtl-buddy-graph">
+      <svg id="canvas" aria-label="rtl-buddy-gph">
         <g id="scene">
           <g id="bands"></g>
           <g id="links"></g>
@@ -239,6 +279,7 @@
   <footer>
     <span><span class="dot connecting" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
     <span id="peers" class="muted"></span>
+    <span id="hub-version" class="muted"></span>
     <span class="grow"></span>
     <span id="msg" class="muted"></span>
   </footer>
@@ -300,6 +341,7 @@
     search: document.getElementById('search'),
     inspector: document.getElementById('inspector'),
     peers: document.getElementById('peers'),
+    hubVersion: document.getElementById('hub-version'),
     msg: document.getElementById('msg'),
     wsDot: document.getElementById('ws-dot'),
     wsStatus: document.getElementById('ws-status'),
@@ -308,6 +350,8 @@
     optSelect: document.getElementById('opt-select'),
     optOpen: document.getElementById('opt-open'),
     optHops: document.getElementById('opt-hops'),
+    optCov: document.getElementById('opt-cov'),
+    optCovWrap: document.getElementById('opt-cov-wrap'),
     fixView: document.getElementById('fix-view')
   };
 
@@ -315,7 +359,7 @@
     nodes: [], links: [], byId: Object.create(null),
     out: Object.create(null), inc: Object.create(null),
     hiddenCols: Object.create(null), filter: '',
-    selected: null, hovered: null,
+    selected: null, hovered: null, coverage: null, categories: {},
     view: { x: 0, y: 0, k: 1 }, ticks: 0, raf: 0
   };
 
@@ -341,6 +385,49 @@
   function radiusOf(node) { return RADIUS[node.type] || 6; }
   function statusOf(node) {
     return node.results && node.results.status ? String(node.results.status) : null;
+  }
+  // ---- coverage -------------------------------------------------
+  // The overlay's coverage join (rtl-buddy/rtl_buddy#402): a design
+  // node carries a ratio, a `covitem:` node carries a verdict, and a
+  // test carries the scalars its own run produced.
+  var ITEM_COLOR = {
+    'exercised': 'var(--ok)',
+    'declared-only': 'var(--warn)',
+    'observed-but-undeclared': 'var(--err)'
+  };
+  function covOf(node) {
+    return node && node.coverage ? node.coverage : null;
+  }
+  function lineRatio(totals) {
+    var t = totals && totals.line;
+    return t && t.ratio != null ? t.ratio : null;
+  }
+  function designRatio(node) {
+    var c = covOf(node);
+    return c && c.kind === 'design' ? (c.ratio == null ? null : c.ratio) : null;
+  }
+  function testRatio(node) {
+    return node.results ? lineRatio(node.results.coverage &&
+      node.results.coverage.totals) : null;
+  }
+  function itemStatus(node) {
+    var c = covOf(node);
+    return c && c.kind === 'item' ? c.status : null;
+  }
+  function pct(ratio) {
+    return ratio == null ? '\u2014' : (ratio * 100).toFixed(1) + '%';
+  }
+  // Same formula as the /cov app and the schematic overlay: only the
+  // hue moves, saturation and lightness come from the token sheet, so
+  // one palette edit reaches all three.
+  function tintHue(el, ratio) {
+    if (ratio == null) { el.classList.add('none'); return el; }
+    el.classList.remove('none');
+    el.style.setProperty('--h', String(Math.round(ratio * 120)));
+    return el;
+  }
+  function coverageOn() {
+    return !!(state.coverage && els.optCov.checked);
   }
   function labelOf(node) {
     return node.label || String(node.id).replace(/^[a-z_]+:/, '');
@@ -369,10 +456,53 @@
 
   var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
   var activeModel = null;
+  // Set when a hello was refused because the graph slot was taken, so
+  // the NEXT hello asks the hub to evict the incumbent. Cleared on
+  // welcome, so a later reconnect starts polite again.
+  var pendingTakeover = false;
+  // The hub kicked this tab out because a NEWER graph tab registered.
+  // Racing back would only kick that tab out in turn — two tabs evicting
+  // each other every retry is exactly the defect this state exists to
+  // stop — so auto-reconnect stands down until the user asks for the
+  // slot back.
+  var superseded = false;
 
   function refreshActiveModel() {
     request('state_snapshot', {}, function (reply) {
       if (reply.kind === 'response') { activeModel = reply.payload.active_model; }
+    });
+  }
+
+  // >>> hello-payload
+  // The hello payload, built rather than inlined so the takeover rule is
+  // one pure function.
+  //
+  // `takeover` is opt-in PER HELLO. The first hello of a connection is
+  // polite — the field is omitted entirely, which `_run_handshake` in
+  // hub/server.py reads as false — and only a retry, after the hub
+  // answered `not_connected: graph client already registered`, asks it
+  // to evict whoever holds the slot. Sending it unconditionally is what
+  // made two tabs of this pane supersede each other in a loop.
+  //
+  // Same flow as the schematic SPA (rtl-buddy-view,
+  // viewer/src/composables/useHub.js — its `_pendingTakeover` /
+  // `superseded` handling), hand-duplicated here because a pane is a
+  // self-contained single file by design; cov_page.html carries the same
+  // helper with its own client and capabilities. Change the rule in one
+  // and change it in all three, or the tabs start fighting again.
+  function helloPayload(takeover) {
+    var payload = {
+      client: 'graph', version: '1.0.0', capabilities: ['graph_focus']
+    };
+    if (takeover) { payload.takeover = true; }
+    return payload;
+  }
+  // <<< hello-payload
+
+  function sendHello() {
+    return send({
+      v: 1, id: uuid(), origin: 'graph', kind: 'request', type: 'hello',
+      payload: helloPayload(pendingTakeover)
     });
   }
 
@@ -381,25 +511,17 @@
     try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
     catch (e) { scheduleReconnect(); return; }
 
-    ws.addEventListener('open', function () {
-      send({
-        v: 1, id: uuid(), origin: 'graph', kind: 'request', type: 'hello',
-        payload: {
-          client: 'graph', version: '1.0.0',
-          capabilities: ['graph_focus'],
-          // A refreshed tab supersedes the stale one, the same way the
-          // SPA's tab does. The graph pane has its own origin, so this
-          // never evicts the schematic view.
-          takeover: true
-        }
-      });
-    });
+    ws.addEventListener('open', sendHello);
     ws.addEventListener('message', function (ev) {
       var env; try { env = JSON.parse(ev.data); } catch (e) { return; }
       applyEnvelope(env);
     });
     ws.addEventListener('close', function () {
       wsReady = false;
+      // The hub closes the socket right after superseding us. That close
+      // must not repaint the strip over the take-back affordance, and
+      // must not restart the retry loop.
+      if (superseded) { return; }
       els.wsDot.className = 'dot offline';
       els.wsStatus.textContent = 'offline';
       els.wsStatus.title = 'lost /ws — retrying';
@@ -409,6 +531,7 @@
   }
 
   function scheduleReconnect() {
+    if (superseded) { return; }
     setTimeout(connect, retryMs);
     retryMs = Math.min(retryMs * 2, 10000);
   }
@@ -440,10 +563,13 @@
     switch (env.type) {
       case 'welcome':
         wsReady = true; retryMs = 500;
+        // Hello accepted — the next reconnect starts polite again.
+        pendingTakeover = false;
         refreshActiveModel();
+        clearTakeBack();
         els.wsDot.className = 'dot connected';
         els.wsStatus.textContent = 'connected';
-        els.wsStatus.title = 'hub ' + (env.payload && env.payload.server_version || '');
+        setHubVersion(env.payload && env.payload.server_version);
         setPeers(env.payload && env.payload.registered_clients);
         break;
       case 'peer_joined':
@@ -467,14 +593,191 @@
       default:
         break;
     }
-    if (env.kind === 'error' && env.payload) {
+    if (env.kind === 'error' && env.payload && !handleHubError(env.payload)) {
       note('hub error: ' + env.payload.code + ': ' + env.payload.message, 'error');
     }
   }
 
+  // The two hub errors that are about this tab's REGISTRATION rather
+  // than about a request it made. Returns true when the error has been
+  // dealt with here, in which case the message area stays out of it —
+  // one event, one surface.
+  //
+  // Mirrors the schematic SPA's `error` case (rtl-buddy-view,
+  // viewer/src/composables/useHub.js); cov_page.html carries the same
+  // handler. One one-client-per-origin rule, three apps that have to
+  // obey it identically.
+  function handleHubError(payload) {
+    // Superseded: a newer graph tab owns the slot now. The strip says so
+    // and offers the way back; auto-reconnect stops, because winning the
+    // race back would only evict that tab.
+    if (payload.code === 'superseded') {
+      superseded = true;
+      showSuperseded();
+      if (ws) { try { ws.close(); } catch (e) { /* already gone */ } }
+      return true;
+    }
+    // The polite hello lost to an incumbent. Ask once more, this time
+    // asking the hub to evict it. Once, not in a loop: if the takeover
+    // hello fails too, the next error falls through to the message area.
+    // The hub drops the socket after refusing a hello, so this send
+    // usually goes nowhere and the flag rides the reconnect instead —
+    // both routes end in the same takeover hello.
+    if (payload.code === 'not_connected' && !pendingTakeover &&
+        /already registered/i.test(payload.message || '')) {
+      pendingTakeover = true;
+      sendHello();
+      return true;
+    }
+    return false;
+  }
+
+  var SUPERSEDED_TEXT =
+    'another graph tab took this connection — click to take back';
+  var SUPERSEDED_HINT =
+    'A newer graph tab registered with the hub, and the hub allows one ' +
+    'client per origin. Click to take the slot back — that tab goes ' +
+    'offline instead.';
+
+  function showSuperseded() {
+    els.wsDot.className = 'dot offline';
+    els.wsStatus.textContent = SUPERSEDED_TEXT;
+    els.wsStatus.title = SUPERSEDED_HINT;
+    els.wsStatus.className = 'take-back';
+    els.wsStatus.setAttribute('role', 'button');
+    els.wsStatus.setAttribute('tabindex', '0');
+  }
+
+  function clearTakeBack() {
+    els.wsStatus.className = '';
+    els.wsStatus.removeAttribute('role');
+    els.wsStatus.removeAttribute('tabindex');
+  }
+
+  // The user asking for the slot back. The other tab still holds it, so
+  // the hello that reclaims it has to ask for the takeover the first
+  // hello deliberately did not.
+  function takeBack() {
+    if (!superseded) { return; }
+    superseded = false;
+    pendingTakeover = true;
+    retryMs = 500;
+    clearTakeBack();
+    els.wsDot.className = 'dot connecting';
+    els.wsStatus.textContent = 'connecting…';
+    els.wsStatus.title = hubTitle;
+    connect();
+  }
+
+  // >>> origin-labels
+  // Wire origin -> the name a user sees. The hub's `Origin` enum is the
+  // WIRE vocabulary and it does not move for a rebrand: the schematic
+  // app registers as `view` and the graph pane as `graph`, and both
+  // keep doing so until protocol v2. Their DISPLAY names are `sch` and
+  // `gph` (rtl-buddy-sch, rtl-buddy-gph), so this map is the seam, and
+  // every place an origin reaches a user goes through it -- the peer
+  // strip below, the header switcher's sibling labels, the `send -> X`
+  // buttons and the cross-model button. An origin with no entry is
+  // shown verbatim, which is what keeps a peer from a newer hub legible
+  // instead of blank.
+  //
+  // It is also the one knob for a short name: change `gph` here and
+  // every graph label in this file follows.
+  //
+  // A pane is a self-contained single file by design, so this helper is
+  // hand-duplicated into cov_page.html and landing_page.html beside it,
+  // and the SPA keeps its own copy under the same contract
+  // (rtl-buddy-view, viewer/src/components/HubStatus.vue). Change the
+  // map in one and change it in all four, or the tabs start calling the
+  // same peer different things.
+  var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };
+
+  function originLabel(origin) {
+    var key = String(origin == null ? '' : origin);
+    return Object.prototype.hasOwnProperty.call(ORIGIN_LABELS, key)
+      ? ORIGIN_LABELS[key] : key;
+  }
+  // <<< origin-labels
+
+  // The switcher's sibling links carry `data-origin`, so their labels
+  // come from the map too (outside the markers: this one touches the
+  // DOM). The text in the markup is what a person reading the file
+  // sees; this is what the browser shows.
+  function relabelSwitcher() {
+    var links = document.querySelectorAll('.switcher a[data-origin]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].textContent = originLabel(links[i].getAttribute('data-origin')) + ' \u2197';
+    }
+  }
+
+  // The latest peer list, kept rather than only printed: the inspector's
+  // cross-app row asks it which sibling apps are open, and "send" to an
+  // app nobody is running is a click with no effect and no explanation.
+  var peers = [];
+
+  function hasPeer(origin) { return peers.indexOf(origin) >= 0; }
+
   function setPeers(list) {
     if (!Array.isArray(list)) { return; }
-    els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+    var next = list.slice().sort();
+    var changed = next.join('') !== peers.join('');
+    peers = next;
+    els.peers.textContent =
+      'peers: ' + (list.length ? list.map(originLabel).join(', ') : 'none');
+    // An app that just opened (or just closed) changes which of the
+    // inspector's buttons are live, and the user is looking at that row
+    // right now — repaint it rather than leaving it a click behind.
+    // Only the row: re-rendering the inspector would throw its scroll
+    // position away over a peer coming and going.
+    if (changed) { refreshActions(); }
+  }
+
+  // >>> version-label
+  // One version label, said the same way by all three hub apps: this
+  // pane, cov_page.html beside it, and the schematic SPA (rtl-buddy-view,
+  // viewer/src/buildInfo.js). A pane is a self-contained single file by
+  // design, so this helper is hand-duplicated into cov_page.html rather
+  // than shared, and the SPA keeps its own copy under the same
+  // contract. Change the rule in one and change it in all three, or the
+  // three tabs start disagreeing about which build is running.
+  //
+  // The input is rtl_buddy's own version as setuptools-scm writes it:
+  // `6.26.2` from a release tag, `6.26.2.dev13+g3f5b890e3.d20260806`
+  // from anything built past one. Everything before `+` is the version
+  // a person quotes. The local segment after it carries the git SHA as
+  // a `g`-prefixed hex run, alongside a `.dYYYYMMDD` build date that
+  // says nothing the SHA does not — so the SHA is the payload, the date
+  // is dropped, and nine hex digits is as much of a SHA as anyone
+  // actually reads.
+  //
+  // A local segment with no `g<hex>` run is not an error — `1.0+local`
+  // is a legal version — it simply has no build to point at, and the
+  // base alone is the label.
+  function versionLabel(raw) {
+    var text = String(raw == null ? '' : raw);
+    var plus = text.indexOf('+');
+    var base = plus < 0 ? text : text.slice(0, plus);
+    if (!base) { return null; }
+    var local = plus < 0 ? '' : text.slice(plus + 1);
+    var found = /(^|[.\-_])g([0-9a-fA-F]{4,})(?=$|[.\-_])/.exec(local);
+    return found ? base + ' @ ' + found[2].slice(0, 9) : base;
+  }
+  // <<< version-label
+
+  // Re-read on every welcome, not just the first: a reconnect can land
+  // on a hub that was restarted on a newer build, and a label frozen at
+  // the version of the first connection would then be quietly wrong.
+  // Kept so the strip's tooltip can be restored after a state that
+  // borrowed it (`showSuperseded` explains itself there instead).
+  var hubTitle = '';
+
+  function setHubVersion(raw) {
+    var full = raw ? String(raw) : '';
+    var label = versionLabel(full);
+    els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';
+    els.hubVersion.title = full;
+    hubTitle = 'hub ' + full;
+    els.wsStatus.title = hubTitle;
   }
 
   // ---------------------------------------------------------------
@@ -540,8 +843,15 @@
 
     var hub = (payload.graph && payload.graph.hub) || {};
     if (Array.isArray(hub.columns) && hub.columns.length) { COLUMNS = hub.columns; }
+    state.coverage = hub.coverage || null;
+    // The control appears only when there is coverage to show, and
+    // arrives ticked: a run that produced coverage is a run whose
+    // coverage is the reason the pane was opened.
+    els.optCovWrap.hidden = !state.coverage;
+    if (state.coverage && !els.optCov.dataset.touched) { els.optCov.checked = true; }
     renderHeader(hub);
-    renderLegend(hub.categories || {});
+    state.categories = hub.categories || {};
+    renderLegend(state.categories);
     layoutInit();
     render();
     fit();
@@ -562,6 +872,15 @@
       if (st.length) { parts.push(st.join(' / ')); }
     } else if (hub.overlay_path == null) {
       parts.push('no results overlay');
+    }
+    var cs = hub.coverage && hub.coverage.summary;
+    if (cs) {
+      parts.push(pct((hub.coverage.totals && hub.coverage.totals.line || {}).ratio) +
+        ' line');
+      parts.push(cs.exercised + '/' + cs.items + ' items exercised');
+      if (cs['observed-but-undeclared']) {
+        parts.push(cs['observed-but-undeclared'] + ' undeclared');
+      }
     }
     els.counts.textContent = '· ' + parts.join(' · ');
   }
@@ -589,6 +908,22 @@
       label.appendChild(document.createTextNode(col + ' ' + count));
       els.legend.appendChild(label);
     });
+    if (!coverageOn()) { return; }
+    var ramp = document.createElement('span');
+    ramp.className = 'legend';
+    ramp.title = 'Design nodes are filled by line coverage; a coverage item is ' +
+      'ringed by whether the run exercised it.';
+    [['0%', 0], ['50%', 0.5], ['100%', 1], ['no data', null]].forEach(function (stop) {
+      var sw = document.createElement('span');
+      sw.className = 'cov-swatch';
+      tintHue(sw, stop[1]);
+      var wrap = document.createElement('span');
+      wrap.className = 'chk';
+      wrap.appendChild(sw);
+      wrap.appendChild(document.createTextNode(stop[0]));
+      ramp.appendChild(wrap);
+    });
+    els.legend.appendChild(ramp);
   }
 
   // ---------------------------------------------------------------
@@ -739,23 +1074,44 @@
       gfx.links.push(line);
     });
 
+    var cov = coverageOn();
     state.nodes.forEach(function (n) {
       var g = el('g', { class: 'node' });
       var r = radiusOf(n);
       var status = statusOf(n);
-      if (status) {
-        g.appendChild(el('circle', {
-          class: 'ring', r: r + 3.5, stroke: STATUS_COLOR[status] || 'var(--warn)'
-        }));
+      // A test's ring is its last verdict; a coverage item's ring is
+      // whether the run exercised it. Both answer "how did this go",
+      // so they share the ring rather than competing for the fill.
+      var item = cov ? itemStatus(n) : null;
+      var ringColor = item
+        ? ITEM_COLOR[item]
+        : (status ? (STATUS_COLOR[status] || 'var(--warn)') : null);
+      if (ringColor) {
+        g.appendChild(el('circle', { class: 'ring', r: r + 3.5, stroke: ringColor }));
       }
+      // Coverage mode repaints the design column with the ramp; the
+      // column bands behind the nodes still carry the column identity,
+      // so nothing is lost by borrowing the fill.
+      var tinted = cov && categoryOf(n) === 'design' && !n.dangling;
       var body = el('circle', {
-        class: n.dangling ? 'body dangling' : 'body', r: r,
-        fill: n.dangling ? 'none' : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)')
+        class: (n.dangling ? 'body dangling' : 'body') + (tinted ? ' cov' : ''), r: r,
+        fill: (n.dangling || tinted)
+          ? null
+          : (COLUMN_COLOR[categoryOf(n)] || 'var(--col-other)')
       });
+      if (tinted) { tintHue(body, designRatio(n)); }
       g.appendChild(body);
       var label = el('text', { x: r + 5, y: 4 });
       label.textContent = labelOf(n);
       g.appendChild(label);
+      // Only where there is a number: a badge reading "—" on every test
+      // that ran without coverage is nine labels saying nothing.
+      var ratio = n.type === 'test' ? testRatio(n) : (tinted ? designRatio(n) : null);
+      if (cov && ratio != null) {
+        var bt = el('text', { class: 'badge', x: r + 5, y: 15 });
+        bt.textContent = pct(ratio);
+        g.appendChild(bt);
+      }
       g.addEventListener('click', function (ev) {
         ev.stopPropagation();
         activate(n, { emit: true });
@@ -962,7 +1318,7 @@
       if (slash >= 0) { return rest.slice(slash + 1); }
     }
     if (n.type === 'module') {
-      // A module is not a coordinate the design view can select — its
+      // A module is not a coordinate the schematic can select — its
       // instances are. Pick the shallowest instance of it, which is the
       // one a person means by "show me this module".
       var best = null;
@@ -976,28 +1332,116 @@
     return null;
   }
 
-  // A selection whose root is not the design view's active model
-  // highlights nothing there — which reads as "the view is stuck".
+  // >>> module-name
+  // The coarser identity, for a node `instancePathFor` cannot place.
+  // A project-tier graph — the common case, and all you get before a
+  // design tier is built — carries its design content on `model:`
+  // nodes, so every click on one broadcast nothing at all and the pane
+  // looked inert. A module name is the fallback the schematic can
+  // still act on: it highlights every instance of that module.
+  //
+  // A model is named after its top module, so the fragment after `#`
+  // in `model:design/common/models.yaml#ip_async_fifo` IS the module
+  // name. A `module:` node only reaches here when no `instance_of`
+  // link was extracted for it, and then its id minus the prefix is the
+  // name. Everything else — tests, suites, covitems, testbenches — is
+  // not a design coordinate at all, and returning a name for those
+  // would move the schematic on every click that had nothing to do
+  // with it.
+  //
+  // The name goes out verbatim: no `baseModuleName` strip, which is
+  // the rule cov_page.html needs because COVERAGE speaks the
+  // simulator's elaborated names (`ip_async_fifo__DB13`). Both ends of
+  // this wire speak the SOURCE vocabulary instead — the graph is built
+  // from the source, and so is the schematic's hierarchy — so there
+  // is no suffix to remove here, and stripping one would corrupt a
+  // real module whose name happens to end in `__<alnum>`.
+  function moduleNameFor(n) {
+    if (!n) { return null; }
+    var id = String(n.id == null ? '' : n.id);
+    if (n.type === 'model') {
+      var hash = id.indexOf('#');
+      return hash < 0 ? null : (id.slice(hash + 1) || null);
+    }
+    if (n.type === 'module') {
+      return id.indexOf('module:') === 0 ? (id.slice(7) || null) : null;
+    }
+    return null;
+  }
+  // <<< module-name
+
+  // >>> cov-target
+  // A graph node's coordinate in the COVERAGE model, or null when it has
+  // none. The vocabulary is `cov_focus.target` from the wire schema —
+  // `test:`, `module:` or `file:` — and the rule is "send what the cov
+  // pane's `applyFocus` can actually resolve", which is why each branch
+  // below names the thing it resolves against:
+  //
+  // * a `test:` node → the run's per-test attribution. The graph's id is
+  //   `test:<suite>#<name>`; the coverage model keys tests by the BARE
+  //   name (`cov/model.py` writes `artefacts.name`), so the fragment
+  //   after the last `#` is what lands. The id goes out whole anyway —
+  //   `focusTest` falls back to the fragment — because the suite is real
+  //   information the schema's own example carries.
+  // * a `model:`/`module:` node → the module, via the same derivation
+  //   the schematic is sent (`moduleNameFor`); the cov pane resolves
+  //   the source name onto its elaborated keys itself.
+  // * a `coverage_item` node → its spec block read as a module, with the
+  //   metric pinned to `cover` and the item id as the point name. Both
+  //   narrowings are soft misses at the far end, so the worst case is
+  //   landing on the module with the cover column up.
+  // * anything else that has a `file` → that file, at its line. The
+  //   graph stores paths project-root-relative (`_rel(project_root, …)`
+  //   in the tier builders) and `/cov.json` keys files the same way, so
+  //   the path crosses verbatim.
+  //
+  // Order matters: a `module:` node has a `file` too, and the module is
+  // the better answer.
+  function covTargetFor(n) {
+    if (!n) { return null; }
+    var id = String(n.id == null ? '' : n.id);
+    if (n.type === 'test') {
+      return id.indexOf('test:') === 0 && id.length > 5 ? { target: id } : null;
+    }
+    var mod = moduleNameFor(n);
+    if (mod) { return { target: 'module:' + mod }; }
+    if (n.type === 'coverage_item') {
+      var block = n.block == null ? '' : String(n.block);
+      var item = n.label == null ? '' : String(n.label);
+      if (!block || !item) { return null; }
+      return { target: 'module:' + block, metric: 'cover', item: item };
+    }
+    var file = n.file == null ? '' : String(n.file);
+    if (!file) { return null; }
+    var out = { target: 'file:' + file };
+    var line = Number(n.line);
+    if (line >= 1) { out.line = Math.floor(line); }
+    return out;
+  }
+  // <<< cov-target
+
+  // A selection whose root is not the schematic's active model
+  // highlights nothing there — which reads as "the schematic is stuck".
   // The cached model can be stale (the SPA picker switches without
   // telling us), so reconfirm before accusing the click.
   //
   // The fix is one hub request away (`GET /view.json?model=` builds and
   // activates, and the hub broadcasts `view_changed` to the SPA), so
-  // the warning arms the `switch view model` button instead of telling
+  // the warning arms the `switch model` button instead of telling
   // the user to go find the SPA's model picker.
   var crossModel = null;
   function setCrossModel(target) {
     crossModel = target;
     if (target) {
       els.fixView.disabled = false;
-      els.fixView.textContent = 'view → ' + target.model;
-      els.fixView.title = 'Switch the design view to model ' + target.model +
+      els.fixView.textContent = originLabel('view') + ' → ' + target.model;
+      els.fixView.title = 'Switch the schematic to model ' + target.model +
         ' (builds its view.json if needed), then re-highlight ' + target.ip + '.';
     } else {
       els.fixView.disabled = true;
-      els.fixView.textContent = 'switch view model';
-      els.fixView.title = 'Enabled when the selected node is not in the design ' +
-        "view's active model — click to switch the view to the model that contains it.";
+      els.fixView.textContent = 'switch model';
+      els.fixView.title = "Enabled when the selected node is not in the schematic's " +
+        'active model — click to switch the schematic to the model that contains it.';
     }
   }
 
@@ -1009,8 +1453,9 @@
       activeModel = reply.payload.active_model;
       if (activeModel && root !== activeModel) {
         setCrossModel({ model: root, ip: ip });
-        note('selected ' + ip + ' — not in the active design-view model (' + activeModel +
-             '); click “view → ' + root + '” above to switch', 'warn');
+        note('selected ' + ip + " — not in the schematic's active model (" + activeModel +
+             '); click “' + originLabel('view') + ' → ' + root +
+             '” above to switch', 'warn');
       } else {
         setCrossModel(null);
       }
@@ -1041,14 +1486,44 @@
         // Re-send the selection so the freshly switched view lands on
         // the node the user actually clicked.
         emit('selection_changed', { instance_path: target.ip });
-        note('design view switched to ' + target.model);
+        note('schematic switched to ' + target.model);
         setCrossModel(null);
       })
       .catch(function (err) {
-        note('design view switch failed: ' + err.message, 'error');
+        note('schematic switch failed: ' + err.message, 'error');
         setCrossModel(target); // re-arm for a retry
       });
   });
+
+  // The envelope that puts the schematic on a node, or null when the
+  // node is not a design coordinate at all. The instance path is the
+  // exact answer; without one the coarser module name still moves the
+  // schematic (it highlights every instance of that module — see
+  // `moduleNameFor`). The echo back from the hub is ignored either way:
+  // inbound graph_focus breaks on `origin === 'graph'`.
+  //
+  // Spelled as a value rather than inline, because two callers take this
+  // same decision: the click path below (gated on the `sync schematic`
+  // checkbox) and the inspector's explicit `send → sch` button
+  // (which is not).
+  function viewTargetFor(n) {
+    var ip = instancePathFor(n);
+    if (ip) {
+      return {
+        type: 'selection_changed', payload: { instance_path: ip },
+        ip: ip, coord: ip, note: 'select ' + ip
+      };
+    }
+    var mod = moduleNameFor(n);
+    if (mod) {
+      return {
+        type: 'graph_focus', payload: { node: 'module:' + mod },
+        ip: null, coord: 'module:' + mod,
+        note: 'focus module:' + mod + ' in the schematic'
+      };
+    }
+    return null;
+  }
 
   function activate(n, opts) {
     opts = opts || {};
@@ -1058,15 +1533,15 @@
     if (!opts.emit) { return; }
     var did = [];
     if (els.optSelect.checked) {
-      var ip = instancePathFor(n);
-      if (ip && emit('selection_changed', { instance_path: ip })) {
-        did.push('select ' + ip);
-        maybeWarnCrossModel(ip);
-      } else {
-        // No instance to select — a stale "view → X" would fix the
-        // wrong click.
-        setCrossModel(null);
-      }
+      var view = viewTargetFor(n);
+      var sent = !!view && emit(view.type, view.payload);
+      if (sent) { did.push(view.note); }
+      // The cross-model warning is about a selected INSTANCE. Anything
+      // else — a module fallback, an undeliverable send, a node the
+      // schematic cannot place — must clear it, or a stale "sch → X" fixes the
+      // wrong click.
+      if (sent && view.ip) { maybeWarnCrossModel(view.ip); }
+      else { setCrossModel(null); }
     }
     if (els.optOpen.checked && n.file) {
       var payload = { file: String(n.file), line: n.line ? Number(n.line) : 1, col: 1 };
@@ -1111,6 +1586,93 @@
   }
 
   // ---------------------------------------------------------------
+  // cross-app actions
+  // ---------------------------------------------------------------
+
+  // One control per sibling app: `send → X` puts the current selection
+  // on the X tab that is already open and does not navigate. Opening an
+  // app fresh is the header switcher's job — and a tab opened AFTER a
+  // send still lands on the selection, because the hub caches the
+  // latest selection_changed / graph_focus / cov_focus and replays them
+  // to each peer as it registers (`_replay_cached_state` in
+  // hub/server.py). No deep links, no new wire types.
+  var APPS = [
+    {
+      origin: 'view', prose: 'the schematic',
+      targetFor: viewTargetFor,
+      send: function (t) { return emit(t.type, t.payload); },
+      label: function (t) { return t.coord; },
+      after: function (t) { if (t.ip) { maybeWarnCrossModel(t.ip); } },
+      // Broadcast, not point-to-point: the coverage pane reads
+      // selection_changed too (it guesses a module off the leaf name).
+      overlap: 'This is a hub broadcast — an instance-path send also ' +
+        'nudges the coverage pane, which resolves instance paths onto ' +
+        'modules of its own accord.',
+      why: 'this node is not a design coordinate — no instance path and no module name'
+    },
+    {
+      origin: 'cov', prose: 'the coverage pane',
+      targetFor: covTargetFor,
+      send: function (t) { return emit('cov_focus', t); },
+      label: function (t) {
+        return t.target + (t.line ? ':' + t.line : '') + (t.item ? ' ' + t.item : '');
+      },
+      after: function () {},
+      overlap: 'cov_focus is read by the coverage pane only.',
+      why: 'nothing the coverage pane can focus on this node — no test, module or file'
+    }
+  ];
+
+  function sendTo(app, n) {
+    var t = app.targetFor(n);
+    if (!t) { note(app.why, 'warn'); return false; }
+    if (!app.send(t)) { note('hub not connected', 'error'); return false; }
+    note('sent to ' + originLabel(app.origin) + ': ' + app.label(t));
+    app.after(t);
+    return true;
+  }
+
+  function actionButton(label, title, disabled, onClick) {
+    var b = document.createElement('button');
+    b.textContent = label;
+    b.title = title;
+    if (disabled) { b.disabled = true; } else { b.addEventListener('click', onClick); }
+    return b;
+  }
+
+  // Sends only: opening an app fresh is the header switcher's job, so
+  // there is no open-↗ variant here (it was redundant with those links,
+  // and the hub replays its cached focus to late joiners anyway — send
+  // first, then open from the header, lands the same way).
+  function renderActions(n) {
+    var box = document.createElement('div');
+    box.className = 'actions';
+    APPS.forEach(function (app) {
+      var t = app.targetFor(n);
+      var live = hasPeer(app.origin);
+      box.appendChild(actionButton(
+        'send → ' + originLabel(app.origin),
+        !t ? app.why
+           : !live ? app.prose + ' is not connected — open it from the header links'
+           : 'Send ' + app.label(t) + ' to ' + app.prose +
+             ', without leaving this tab. ' + app.overlap,
+        !t || !live,
+        function () { sendTo(app, n); }));
+    });
+    return box;
+  }
+
+  // Rebuilt in place when the peer list moves — see `setPeers`.
+  var actionsEl = null, actionsNode = null;
+
+  function refreshActions() {
+    if (!actionsEl || !actionsEl.parentNode || !actionsNode) { return; }
+    var next = renderActions(actionsNode);
+    actionsEl.parentNode.replaceChild(next, actionsEl);
+    actionsEl = next;
+  }
+
+  // ---------------------------------------------------------------
   // inspector
   // ---------------------------------------------------------------
 
@@ -1129,6 +1691,7 @@
 
   function renderInspector(n) {
     els.inspector.textContent = '';
+    actionsEl = null; actionsNode = n || null;
     if (!n) {
       var hint = document.createElement('p');
       hint.className = 'muted';
@@ -1136,6 +1699,11 @@
       els.inspector.appendChild(hint);
       return;
     }
+    // First, above the identity: the row is about what you can DO with
+    // the selection, and it must not need a scroll on a node with fifty
+    // edges to be found.
+    actionsEl = renderActions(n);
+    els.inspector.appendChild(actionsEl);
     var dl = document.createElement('dl');
     dl.className = 'kv';
     row(dl, 'id', n.id);
@@ -1164,8 +1732,13 @@
       });
       var art = n.results.artefacts || {};
       Object.keys(art).sort().forEach(function (k) { row(rl, k, art[k]); });
+      if (n.results.coverage && n.results.coverage.totals) {
+        row(rl, 'coverage', metricLine(n.results.coverage.totals));
+      }
       els.inspector.appendChild(rl);
     }
+
+    renderCoverage(n);
 
     var edges = (state.out[n.id] || []).map(function (l) { return { dir: '→', l: l, peer: l.target }; })
       .concat((state.inc[n.id] || []).map(function (l) { return { dir: '←', l: l, peer: l.source }; }));
@@ -1189,6 +1762,74 @@
     els.inspector.appendChild(ul);
   }
 
+  var METRIC_INITIAL = {
+    line: 'L', branch: 'B', toggle: 'T', expression: 'E', cover: 'C'
+  };
+
+  function metricLine(totals) {
+    return Object.keys(METRIC_INITIAL).filter(function (m) {
+      return totals[m] && totals[m].found;
+    }).map(function (m) {
+      return METRIC_INITIAL[m] + ' ' + pct(totals[m].ratio);
+    }).join('  ') || '\u2014';
+  }
+
+  // The declared-vs-observed answer, spelled out: which cover points a
+  // spec item correlated with (and off which rung of the match ladder),
+  // which tests declared they cover it, and how those tests did.
+  function renderCoverage(n) {
+    var c = covOf(n);
+    if (!c) { return; }
+    els.inspector.appendChild(document.createElement('hr'));
+    var h = document.createElement('h2');
+    h.textContent = c.kind === 'item' ? 'coverage item' : 'coverage';
+    els.inspector.appendChild(h);
+    var dl = document.createElement('dl'); dl.className = 'kv';
+    if (c.kind === 'design') {
+      row(dl, 'module', c.module);
+      row(dl, 'line', pct(c.ratio));
+      row(dl, 'metrics', metricLine(c.totals || {}));
+      if ((c.tests || []).length) { row(dl, 'tests', c.tests.join(', ')); }
+      (c.files || []).forEach(function (f, i) { row(dl, i ? '' : 'files', f); });
+      // Cover points in this module that no `covers:` entry claims —
+      // they have no node of their own to be selected, so the module
+      // they live in is where they can be seen at all.
+      ((state.coverage && state.coverage.undeclared) || [])
+        .filter(function (u) { return u.module === c.module; })
+        .forEach(function (u, i) {
+          row(dl, i ? '' : 'undeclared',
+            u.name + ':' + (u.line == null ? '?' : u.line) + ' \u00d7' + u.hits);
+        });
+    } else {
+      var pill = document.createElement('span');
+      pill.className = 'pill';
+      pill.style.color = ITEM_COLOR[c.status] || 'var(--warn)';
+      pill.textContent = c.status;
+      row(dl, 'status', pill);
+      row(dl, 'hits', c.hits);
+      if ((c.hit_by || []).length) { row(dl, 'hit by', c.hit_by.join(', ')); }
+      (c.declared_by || []).forEach(function (t, i) {
+        row(dl, i ? '' : 'declared by', t);
+      });
+      var st = c.declared_by_status || {};
+      var keys = Object.keys(st).sort();
+      if (keys.length) {
+        row(dl, 'their status', keys.map(function (k) {
+          return st[k] + ' ' + k;
+        }).join(', '));
+      }
+      (c.observed || []).forEach(function (o, i) {
+        row(dl, i ? '' : 'observed',
+          o.name + ' @ ' + (o.file || '?') + ':' + (o.line == null ? '?' : o.line) +
+          ' \u00d7' + o.hits + ' [' + o.match + ']');
+      });
+      if (!(c.observed || []).length) {
+        row(dl, 'observed', 'no cover point in the run\u2019s model');
+      }
+    }
+    els.inspector.appendChild(dl);
+  }
+
   // ---------------------------------------------------------------
   // wiring
   // ---------------------------------------------------------------
@@ -1198,6 +1839,14 @@
     applyClasses();
   });
   els.optHops.addEventListener('change', applyClasses);
+  els.optCov.addEventListener('change', function () {
+    // Remembered so a payload refresh does not re-tick a box the
+    // person just unticked. Not persisted: a new tab starts ticked.
+    els.optCov.dataset.touched = '1';
+    renderLegend(state.categories);
+    render();
+    renderInspector(state.selected ? state.byId[state.selected] : null);
+  });
   els.search.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Enter') { return; }
     for (var i = 0; i < state.nodes.length; i++) {
@@ -1206,7 +1855,15 @@
   });
   document.getElementById('reload').addEventListener('click', load);
   window.addEventListener('resize', applyClasses);
+  // The strip's status word doubles as the take-back control while this
+  // tab is superseded; `takeBack` no-ops in every other state, so the
+  // listener is bound once here rather than added and removed.
+  els.wsStatus.addEventListener('click', takeBack);
+  els.wsStatus.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); takeBack(); }
+  });
 
+  relabelSwitcher();
   connect();
   load();
 })();

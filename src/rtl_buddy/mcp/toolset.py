@@ -871,7 +871,11 @@ def build_toolset(
                 "Everything the graph knows about one node: its attributes, "
                 "every incoming and outgoing edge with the far endpoint "
                 "resolved, and — for a test node — its last regression status, "
-                "seed and artefact paths from the results overlay."
+                "seed and artefact paths from the results overlay. When the "
+                "overlay carries a coverage join, a module or instance node "
+                "also returns its coverage ratio and a coverage_item node "
+                "returns whether the run exercised it, which cover points it "
+                "correlated with, and how the tests declaring it fared."
             ),
             input_schema=_obj(
                 {
@@ -892,10 +896,12 @@ def build_toolset(
             title="Regression results overlay",
             command="rb graph results",
             description=(
-                "Last recorded status, seed, run token and artefact paths per "
-                "test, straight from artefacts/graph/results-overlay.json. Use "
-                "when the question is only about results; graph_query already "
-                "joins the same data onto the nodes it returns."
+                "Last recorded status, seed, run token, artefact paths and — "
+                "when the run wrote coverage — the per-test line/branch/"
+                "toggle/expression scalars, straight from "
+                "artefacts/graph/results-overlay.json. Use when the question "
+                "is only about results; graph_query already joins the same "
+                "data onto the nodes it returns."
             ),
             input_schema=_obj(
                 {

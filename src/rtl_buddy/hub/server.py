@@ -1107,11 +1107,19 @@ class HubServer:
             conn.close()
             return
 
-        registered = self._registry.pop(conn.origin, None)
+        registered = self._registry.get(conn.origin)
         if registered is not conn:
-            # Already cleaned up by a prior bye / disconnect.
+            # This connection no longer owns its origin slot — either a
+            # prior bye/disconnect cleaned it up, or a takeover replaced
+            # it and the slot now belongs to the NEWER connection. Leave
+            # the registry alone: the old pop-first-check-later shape
+            # deregistered the takeover winner as collateral (the evicted
+            # socket's close always lands after the winner registers), so
+            # every takeover left the surviving tab a silent zombie —
+            # off the broadcast list, invisible to later takeover hellos.
             conn.close()
             return
+        self._registry.pop(conn.origin, None)
 
         self.state.registered_clients = set(self._registry.keys())
         log_event(

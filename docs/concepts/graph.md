@@ -218,6 +218,8 @@ rb graph results          # refresh artefacts/graph/results-overlay.json
 | `-o, --out-dir` | Output directory (default `artefacts/graph`) |
 | `--graph` | `graph.json` to cross-check ids against; read, never written |
 | `--strict` | Exit non-zero on an unreadable envelope, a test node with no result, or a result matching no node |
+| `--coverage` / `--no-coverage` | Join the run's coverage model in (default on) — see [Coverage on the Graph](#coverage-on-the-graph) |
+| `--cov-dir` / `--cov-manifest` | Which run's coverage to join (default: the newest `cov_dir/` under the project) |
 
 ### Where the numbers come from
 
@@ -254,7 +256,126 @@ annotate_graph(graph, overlay)                  # attach entries in memory, for 
 
 ### Machine mode
 
-`rb --machine graph results` emits the standard [envelope](../agents.md#machine-mode). `payload` carries `overlay` (repo-relative), `graph` (the linkage block), `tests`, `with_results`, `statuses`, `missing`, `unmatched` and `problems`. Exit code 0 unless `--strict` turned one of the last three into a failure.
+`rb --machine graph results` emits the standard [envelope](../agents.md#machine-mode). `payload` carries `overlay` (repo-relative), `graph` (the linkage block), `tests`, `with_results`, `statuses`, `missing`, `unmatched`, `problems` and `coverage` (the join's summary, or `null`). Exit code 0 unless `--strict` turned one of the last three into a failure.
+
+## Coverage on the Graph
+
+The graph knows what a suite **meant** to cover: a `covers:` entry in `tests.yaml` becomes a `test:<suite>#<name> --covers--> covitem:<block>#<id>` edge. The [coverage model](coverage.md) knows what the simulator **observed**: SVA cover points with hits and per-test attribution. `rb graph results` correlates the two and writes the answer into the same overlay.
+
+Nothing is re-run. The numbers are read out of `cov_dir/manifest.json` and the model it names — never by invoking `verilator_coverage` — so the overlay stays a function of the tree, and refreshing it with nothing re-run still rewrites identical bytes. `graph.json` is untouched, as always.
+
+The overlay grows a `coverage` block and a `coverage` key on each test entry:
+
+```json
+{
+  "coverage": {
+    "schema_version": 1,
+    "manifest": "verif/demo_tiny_alu/cov_dir/manifest.json",
+    "model": "verif/demo_tiny_alu/cov_dir/coverage-model.json",
+    "generated_at": "2026-08-06T11:04:12+08:00",
+    "run_command": "regression",
+    "simulator": "verilator",
+    "totals": {"line": {"found": 812, "hit": 731, "ratio": 0.900}, "...": {}},
+    "tint_metric": "line",
+    "summary": {
+      "tests": 4, "modules": 6, "items": 16,
+      "exercised": 11, "declared-only": 5, "observed-but-undeclared": 2,
+      "unjoined_tests": [], "unmatched_modules": []
+    },
+    "nodes": {
+      "module:demo_tiny_alu": {
+        "kind": "design", "module": "demo_tiny_alu",
+        "elaborations": ["demo_tiny_alu"], "ratio": 0.88,
+        "totals": {"...": {}}, "files": ["design/demo_tiny_alu/demo_tiny_alu.sv"],
+        "tests": ["basic", "random"]
+      },
+      "covitem:demo_tiny_alu#SAND-FUNC-OP-ADD": {
+        "kind": "item", "status": "exercised",
+        "item": "SAND-FUNC-OP-ADD", "block": "demo_tiny_alu", "hits": 42,
+        "declared_by": ["test:verif/demo_tiny_alu#basic"],
+        "declared_by_status": {"PASS": 1},
+        "hit_by": ["basic"],
+        "observed": [{"name": "cov_op_add", "module": "demo_tiny_alu",
+                      "file": "design/demo_tiny_alu/demo_tiny_alu.sv",
+                      "line": 61, "hits": 42, "match": "affix"}]
+      }
+    },
+    "undeclared": [
+      {"kind": "cover", "status": "observed-but-undeclared", "name": "cov_overflow",
+       "module": "demo_tiny_alu", "file": "…", "line": 74, "hits": 9,
+       "hit_by": ["random"]}
+    ]
+  },
+  "tests": {
+    "test:verif/demo_tiny_alu#random": {
+      "coverage": {
+        "totals": {"line": {"found": 812, "hit": 690, "ratio": 0.849}, "...": {}},
+        "raw": "verif/demo_tiny_alu/artefacts/random/coverage.dat"
+      }
+    }
+  }
+}
+```
+
+### Three statuses
+
+| Status | Meaning |
+| --- | --- |
+| `exercised` | A declared item correlated with an observed cover point that fired. |
+| `declared-only` | A declared item nothing exercised. `observed: []` means the RTL has no such cover point at all; a non-empty `observed` with `hits: 0` means the cover exists and never fired — different bugs, same verdict. |
+| `observed-but-undeclared` | A cover point in the RTL that no `covers:` entry claims. These have no node in the graph, so they are listed under `undeclared` rather than keyed by an id nothing can look up. |
+
+### The match ladder
+
+A spec item id (`SAND-FUNC-OP-ADD`) and an SVA cover label (`cov_op_add`) are written by different people in different files, so the correlation is heuristic. It is a four-rung ladder, strongest first, and every match records the rung it came off in its `match` field:
+
+| Rung | Matches |
+| --- | --- |
+| `exact` | The label is the item id. |
+| `nocase` | Same, ignoring case. |
+| `normalized` | Same, ignoring case and punctuation (`A_COV_1` ≡ `a-cov-1`). |
+| `affix` | Same after dropping a leading/trailing `cov`/`cvr`/`c` token from the **label**, and after taking the last dotted component. |
+
+Affixes are stripped from the observed label only, never from the declared id: an id is what a human wrote in `specs.yaml`, and stripping both sides would let `SHARED-COV` and `SHARED` collide as if they were one item. A `match` of `affix` on an item you did not expect is the signal that the correlation guessed — rename one side and it moves up the ladder. Note that the bottom rung covers two loosenings at once, decoration stripping and the hierarchy tail, so `tb_top.A_COV_1` reports `affix` even though no `cov` token was dropped.
+
+An id declared by two blocks has two `covitem:` nodes, and `covers:` already fans out to both; the observation does too, so the two nodes never disagree.
+
+### Which nodes carry a ratio
+
+Module coverage reaches every node that *is* that module: `module:<name>` (including its suite-qualified form), every `instance` node whose `module` attribute names it, and the `model:` node that `maps_to` it — the `maps_to` stitch is an identity, so a model node is its module under another name. Ports and parameters are deliberately left out: a per-port tint says nothing anyone can act on.
+
+#### Elaborated names vs source names
+
+The two sides do not spell modules the same way. The coverage model keys on the name the **simulator elaborated** — verilator appends a mangled parameterisation suffix, so one `ip_async_fifo` in the source is `ip_async_fifo__DB13` in the model, and an `ip_cdc_handshake` instantiated with two parameter sets is `ip_cdc_handshake__W13` *and* `ip_cdc_handshake__Wc`. The graph keys on the **source** name, `module:ip_cdc_handshake`, which is what you read in the file.
+
+One trailing `__<alnum>` group is the whole difference, so the join is a two-rung ladder:
+
+| Rung | Matches |
+| --- | --- |
+| exact | The model's name is the graph's name. |
+| stripped | Same after dropping one trailing `__<alnum>` group from each — and only when a non-empty base survives, since `__A8` on its own is a whole name, not a suffix. |
+
+Exact comes first and it matters: a model can hold both `ip_cdc_sync` and `ip_cdc_sync__W4`, and only exact-first keeps the plain one off the parameterised one's node. It is also the mitigation for the obvious caveat — a module a project really did call `axi__lite` strips to `axi`, but it matches its own node before it can be offered `axi`'s.
+
+Several elaborations of one module therefore land on one node, and their coverage is **aggregated** there: counts summed per metric, ratios recomputed from the sums, file and test lists unioned. The entry names the elaborations it was built from in `elaborations`, so the aggregate can be taken apart again. The aggregate is computed over the whole set of elaborations at once rather than by adding up per-elaboration totals — verilator's line points carry no module at all, so they belong to *every* elaboration of their file, and adding would count them once per elaboration.
+
+The same rule runs client-side on the `/cov` pane (the `module-names` block in `cov_page.html`); the two ends cite each other, and neither may change alone.
+
+A module whose name matches no node either way still gets an entry, keyed by the `module:<name>` id the design tier would have emitted, and is listed in `summary.unmatched_modules` under its elaborated name — the name that is in the coverage model, and so the name you can grep for. Coverage that exists is never silently dropped.
+
+The ratio itself is `rb cov module`'s — one implementation, so the tint on the pane cannot contradict the number in the verb. The one place they legitimately differ is a multi-elaboration module: `rb cov module ip_cdc_handshake__W13` answers for *that* elaboration, because the model's vocabulary is what the verb takes, while the graph node answers for the source module and so for both. Same arithmetic, different question — and `elaborations` says which.
+
+### Reading it back
+
+```python
+from rtl_buddy.graph import load_overlay, coverage_for_node, annotate_coverage
+
+overlay = load_overlay("/path/to/project")
+coverage_for_node(overlay, "covitem:demo_tiny_alu#SAND-FUNC-OP-ADD")["status"]
+annotate_coverage(graph, overlay)     # attach entries in memory, like annotate_graph
+```
+
+`rb graph explain` returns the node's entry as `coverage` and the manifest behind it as `coverage_run`; `rb graph query` puts it on every node it returns; the MCP `test_status` tool returns the per-test scalars and its own `coverage_run`. The `/graph` pane reads the same block — see [the graph pane](#coverage-on-the-pane).
 
 ## Querying the Graph
 
@@ -326,7 +447,14 @@ Both endpoints accept a full node id or a bare name. A bare name that matches mo
 
 ### `rb graph explain`
 
-One node's attributes, every edge on it with the far endpoint already resolved (so no second lookup is needed to know what the peer is), the in/out degree per edge type, and the node's last regression result.
+One node's attributes, every edge on it with the far endpoint already resolved (so no second lookup is needed to know what the peer is), the in/out degree per edge type, the node's last regression result, and — when the overlay carries a [coverage join](#coverage-on-the-graph) — its `coverage` entry plus the `coverage_run` that produced it. On a `covitem:` node that is the answer to "is this spec item actually exercised, by which tests, and did they pass":
+
+```console
+$ rb graph explain covitem:demo_tiny_alu#SAND-FUNC-OP-ADD
+covitem:demo_tiny_alu#SAND-FUNC-OP-ADD  (coverage_item, tier config)
+  cov:    exercised (42 hit(s); cov_op_add ×42 [affix])
+  from:   verif/demo_tiny_alu/cov_dir/manifest.json
+```
 
 Every node summary these verbs return carries a `cite` block wherever the source can be quoted: `file` and `line` from the node's tier, plus — for an instance node — the exact command that quotes it, built from the id:
 
@@ -342,7 +470,7 @@ That is the "locate in the graph, cite from source" contract in [agent use](../a
 
 ### Machine mode
 
-All three verbs emit the standard [envelope](../agents.md#machine-mode). `payload` always carries `schema_version`, `graph`, `overlay` (or `null`) and `counts`; then `matches` for `query`, `paths` for `path`, and `node` / `attributes` / `degree` / `outgoing` / `incoming` for `explain`. An unresolvable node reference exits 2 with `payload.error` and `payload.candidates`.
+All three verbs emit the standard [envelope](../agents.md#machine-mode). `payload` always carries `schema_version`, `graph`, `overlay` (or `null`) and `counts`; then `matches` for `query`, `paths` for `path`, and `node` / `attributes` / `degree` / `outgoing` / `incoming` / `coverage` / `coverage_run` for `explain`. An unresolvable node reference exits 2 with `payload.error` and `payload.candidates`. Every node summary any of the three returns carries `coverage` when the join knows about it, so the numbers never need a second call.
 
 ## Looking at the Graph
 
@@ -377,18 +505,30 @@ What it shows:
   The column is computed server-side into a `category` attribute on `GET /graph.json` — two of its inputs are graph-wide joins not worth redoing per render — and is deliberately **not** written into `graph.json`, for the same reason the results overlay is not: the layout is a presentation choice and must never make the built graph churn.
 - **Pass/fail from the overlay.** Test nodes get a status ring straight from `results-overlay.json`, so a failing test is visible in the picture and its `desc`, seed, timestamp and artefact paths are one click away in the inspector. The join happens in memory — `graph.json` on disk is never rewritten (see [Results Overlay](#results-overlay)).
 - **Dangling targets.** A link into a tier that was never exported (a config-to-design stitch → a module whose design tier was skipped) is drawn as a hollow node rather than dropped, matching what [`merge.dangling_targets`](#merging) records.
+- **Coverage, when there is any.** See below.
+
+### Coverage on the pane
+
+A **coverage** checkbox appears in the toolbar only when the served payload carries a coverage block, and arrives ticked — a run that produced coverage is usually the reason the pane was opened. With it on:
+
+- **Design-column nodes are filled by their line ratio** instead of their column colour, using the [shared `--cov-*` ramp](hub.md#design-tokens-hubthemecss) — `hsl(ratio × 120, var(--tint-s), var(--cov-l))`, the same formula the `/cov` app and the schematic overlay use, so one palette edit reaches all three. A node with no coverage gets `--cov-none`. The column bands behind the nodes still carry the column identity, so nothing is lost by borrowing the fill; the legend grows a 0 / 50 / 100 / no-data ramp.
+- **Tests and modules wear a percentage badge** under their label — only where there is a number, since a badge reading `—` on every test that ran without coverage is a row of labels saying nothing.
+- **A `coverage_item` node's ring becomes its verdict**: green `exercised`, amber `declared-only`, and the run's `observed-but-undeclared` count sits in the header. Tests keep their pass/fail ring; the two never collide, because a node is one or the other.
+- **The inspector spells the join out.** For an item: its status, its hit count, which tests hit it, which tests *declared* they cover it and how those tests fared, and each observed cover point with the [match rung](#the-match-ladder) it came off. For a module: its ratio, its per-metric totals, its files, the tests that touched it, and the cover points inside it that nothing declares — those have no node of their own, so the module they live in is where they can be seen at all.
+
+The header line reports the run's line ratio, the exercised-of-declared count and the undeclared count. Everything comes from the overlay's coverage block, joined in memory by the same `annotate_coverage` the query verbs use: the pane ingests no LCOV of its own, and `graph.json` is not written.
 
 What it does:
 
 | Click target | Envelope | Effect |
 |---|---|---|
 | `instance` node | `selection_changed {instance_path}` | The SPA pans/highlights that instance. The id *is* the coordinate: `inst:<top>/<dot.path>`. |
-| `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the design view can select, its instances are. |
+| `module` node | `selection_changed {instance_path}` | Same, via the shallowest instance of that module — a module is not a coordinate the schematic can select, its instances are. |
 | any node with `file` | `open_source {file, line, col}` | The `src` peer (nvim) opens it. Test, coverage-item, spec-block and Python-module nodes all carry `file`/`line`. |
 
 Both actions are individually toggleable in the toolbar, and both are the *same* envelopes the SPA sends — the pane is a hub peer (`origin: graph`), not a special case in the protocol.
 
-A selection can land outside the design view's *active model* — clicking `module:blk_b` while the view shows `blk_a` highlights nothing there. The pane detects this (reconfirming against a fresh `state_snapshot`, since the SPA's picker can move without telling it) and arms the **switch view model** button in the toolbar, greyed out until then. Clicking it issues the same `GET /view.json?model=NAME` the SPA's own picker uses — the hub builds that model's view if needed, activates it, broadcasts `view_changed` — and then re-sends the selection so the freshly switched view lands on the node that was clicked. From the other direction:
+A selection can land outside the schematic's *active model* — clicking `module:blk_b` while the schematic shows `blk_a` highlights nothing there. The pane detects this (reconfirming against a fresh `state_snapshot`, since the SPA's picker can move without telling it) and arms the **switch model** button in the toolbar, greyed out until then. Clicking it issues the same `GET /view.json?model=NAME` the SPA's own picker uses — the hub builds that model's view if needed, activates it, broadcasts `view_changed` — and then re-sends the selection so the freshly switched view lands on the node that was clicked. From the other direction:
 
 ```bash
 rb hub send graph-focus test:verif/dma#smoke

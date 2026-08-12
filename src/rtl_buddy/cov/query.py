@@ -282,37 +282,71 @@ def module_names(ctx: CovContext) -> list[str]:
     return sorted((ctx.model.get("modules") or {}).keys())
 
 
-def module_payload(ctx: CovContext, module: str) -> dict:
-    """Per-file, per-point coverage for one module's sources.
+def resolve_module_name(model: dict, module: str, *, where=None) -> str:
+    """A user's module name -> the name the model spells it with.
 
-    Raises :class:`CovQueryError` with near misses when the module is
-    not in the model — an unknown name is a typo far more often than it
-    is a coverage hole, and the near-miss list is the cheaper fix.
+    Raises :class:`CovQueryError` with near misses when there is no such
+    module — an unknown name is a typo far more often than it is a
+    coverage hole, and the near-miss list is the cheaper fix.
     """
-    model = ctx.model
     modules = model.get("modules") or {}
-    resolved = module
-    if module not in modules:
-        lowered = {name.lower(): name for name in modules}
-        if module.lower() in lowered:
-            resolved = lowered[module.lower()]
-        else:
-            raise CovQueryError(
-                f"cov: no module {module!r} in {ctx.model_path}",
-                candidates=difflib.get_close_matches(
-                    module, sorted(modules), n=10, cutoff=0.4
-                )
-                or sorted(modules)[:10],
-            )
+    if module in modules:
+        return module
+    lowered = {name.lower(): name for name in modules}
+    if module.lower() in lowered:
+        return lowered[module.lower()]
+    raise CovQueryError(
+        f"cov: no module {module!r} in {where or 'the coverage model'}",
+        candidates=difflib.get_close_matches(module, sorted(modules), n=10, cutoff=0.4)
+        or sorted(modules)[:10],
+    )
 
-    paths = set(modules[resolved])
-    file_rows = [row for row in model.get("files", []) if row["path"] in paths]
 
+def module_coverage(model: dict, module: str) -> dict:
+    """One module's files, points, totals and per-test hit counts.
+
+    The join every module-scoped consumer needs: ``rb cov module``
+    prints it, and the graph's coverage overlay (#402) keys it to
+    ``module:<name>`` nodes. One implementation, so a module's ratio on
+    the graph pane cannot disagree with the same module's ratio in the
+    coverage verbs.
+
+    ``module`` must already be spelled the model's way — see
+    :func:`resolve_module_name`.
+    """
+    joined = modules_coverage(model, [module])
+    joined.pop("modules", None)
+    return {"module": module, **joined}
+
+
+def modules_coverage(model: dict, modules) -> dict:
+    """:func:`module_coverage` over a *set* of elaborated module names.
+
+    The simulator keys its records on the module it **elaborated**, so
+    one source module compiled with two parameterisations is two model
+    modules (``ip_cdc_handshake__W13`` and ``__Wc``) over one file. The
+    design graph has one node for them, so
+    :func:`~rtl_buddy.graph.coverage._design_entries` has to fold them
+    back together — and folding by adding up two
+    :func:`module_coverage` results would count the file's LINE points
+    twice, because line points carry no module at all and so belong to
+    every elaboration of the file. Selecting the points once, for the
+    whole set, is the same arithmetic in the only order that cannot
+    double-count.
+
+    Returns the same shape as :func:`module_coverage` with ``module``
+    replaced by a sorted ``modules`` list.
+    """
+    names = frozenset(str(name) for name in modules)
+    known = model.get("modules") or {}
+    paths = {path for name in names for path in known.get(name, ())}
     totals = {metric: {"found": 0, "hit": 0, "ratio": None} for metric in METRICS}
     tests: dict[str, int] = {}
     files = []
-    for row in file_rows:
-        file_entry = _module_file(row, resolved, tests)
+    for row in model.get("files", []):
+        if row["path"] not in paths:
+            continue
+        file_entry = _module_file(row, names, tests)
         files.append(file_entry)
         for metric in METRICS:
             entry = file_entry["totals"][metric]
@@ -321,28 +355,42 @@ def module_payload(ctx: CovContext, module: str) -> dict:
     for metric in METRICS:
         entry = totals[metric]
         entry["ratio"] = None if entry["found"] == 0 else entry["hit"] / entry["found"]
+    return {
+        "modules": sorted(names),
+        "totals": totals,
+        "files": files,
+        "tests": dict(sorted(tests.items())),
+    }
+
+
+def module_payload(ctx: CovContext, module: str) -> dict:
+    """Per-file, per-point coverage for one module's sources."""
+    resolved = resolve_module_name(ctx.model, module, where=ctx.model_path)
+    joined = module_coverage(ctx.model, resolved)
 
     payload = _run_block(ctx)
     payload.update(
         {
             "module": resolved,
-            "totals": totals,
-            "files": files,
-            "tests": sorted(tests),
+            "totals": joined["totals"],
+            "files": joined["files"],
+            "tests": sorted(joined["tests"]),
             "artefacts": artefacts_block(ctx),
         }
     )
     return payload
 
 
-def _module_file(file_row: dict, module: str, tests: dict) -> dict:
-    """One file's points, keeping only the points that belong to ``module``.
+def _module_file(file_row: dict, modules: frozenset[str], tests: dict) -> dict:
+    """One file's points, keeping only the points that belong to ``modules``.
 
     A header included into several modules records its points once per
     containing module; reporting the whole file would attribute another
-    block's misses to this one. Points with no module recorded (an
-    ``.info``-only fallback) are kept, since dropping them would report
-    a file with no lines at all.
+    block's misses to this one. Points with no module recorded (a line
+    point, or an ``.info``-only fallback) are kept, since dropping them
+    would report a file with no lines at all — and kept **once**, which
+    is why the whole set of elaborations is selected in one pass rather
+    than one pass each.
     """
     entry = {
         "path": file_row["path"],
@@ -353,7 +401,7 @@ def _module_file(file_row: dict, module: str, tests: dict) -> dict:
         points = [
             point
             for point in file_row.get(metric, [])
-            if point.get("module") in (None, module)
+            if point.get("module") is None or point.get("module") in modules
         ]
         entry[metric] = points
         found = len(points)

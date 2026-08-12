@@ -1,7 +1,7 @@
 """Tests for the hub-served coverage pane (rtl-buddy/rtl_buddy#400).
 
 Modelled on ``test_hub_graph_page.py``, because the pane is modelled on
-the graph pane. Five surfaces, in the order a user meets them:
+the graph pane. Six surfaces, in the order a user meets them:
 
 1. ``GET /cov.json`` — the newest run's coverage model + manifest,
    assembled by the *same* builders ``rb cov summary`` uses. The point
@@ -21,6 +21,9 @@ the graph pane. Five surfaces, in the order a user meets them:
    schema-valid, broadcast to peers, and replayed to a pane that
    connects after the fact, which is what makes "send it before the tab
    is open" work.
+6. The version label in the status strip — one wording of "which build
+   am I looking at" shared with the graph pane and the schematic SPA, so its
+   cases are asserted identically in all three.
 
 The page is static HTML plus one inline script, so what can be asserted
 server-side is its *structure*: the markup and the code are in the body
@@ -460,7 +463,9 @@ def test_page_carries_the_pieces_the_issue_asks_for():
     # The envelope vocabulary: it registers as its own origin, handles
     # the focus, and drives the other panes.
     assert "'cov'" in body
-    assert "takeover: true" in body
+    # …politely: the first hello asks for the slot, it does not seize it.
+    # See the registration section below.
+    assert "takeover: true" not in body
     assert "cov_focus" in body
     assert "source_focused" in body
     assert "open_source" in body
@@ -525,6 +530,147 @@ def _node(script: str) -> str:
     )
     assert done.returncode == 0, done.stderr
     return done.stdout
+
+
+# ---------------------------------------------------------------------------
+# hub registration: the polite hello, one takeover retry, and the way back
+#
+# One client per origin. ``HubServer._run_handshake`` (hub/server.py)
+# refuses a hello for an occupied slot with ``not_connected`` /
+# ``"<client> client already registered"`` unless the hello sets
+# ``takeover``, and sends the tab it evicts ``superseded`` /
+# ``"<client> client replaced by a newer registration"`` before closing
+# its socket. This pane used to send ``takeover: true`` on EVERY hello
+# and reconnect from every close, so two tabs of it evicted each other
+# every ~500 ms. The flow below is the schematic SPA's, mirrored: its
+# ``_pendingTakeover`` / ``superseded`` handling in
+# ``viewer/src/composables/useHub.js`` (rtl-buddy-view). The graph pane
+# carries the same flow, and ``tests/test_hub_graph_page.py`` asserts it
+# in the same words.
+# ---------------------------------------------------------------------------
+
+
+def test_the_first_hello_is_polite():
+    """The common case is no other coverage tab open, and a polite hello
+    wins that outright. Asking for a takeover unconditionally is what
+    turned a second tab into an eviction war."""
+
+    out = _node(
+        _marked_js("hello-payload")
+        + """
+        console.log(JSON.stringify(
+          [helloPayload(false), helloPayload(true), helloPayload(undefined)]));
+        """
+    )
+    polite, takeover, unset = json.loads(out)
+    assert polite == {
+        "client": "cov",
+        "version": "1.0.0",
+        "capabilities": ["cov_focus"],
+    }
+    # Omitted, not `false`: the hub reads a missing field the same way,
+    # and the wire carries only what the tab is actually asking for.
+    assert "takeover" not in polite
+    assert unset == polite
+    assert takeover["takeover"] is True
+
+    js = _page_js()
+    # Every hello on the wire comes from that helper, flagged only by the
+    # state a refusal sets — there is no `takeover: true` literal left.
+    assert "payload: helloPayload(pendingTakeover)" in js
+    assert "ws.addEventListener('open', sendHello);" in js
+    assert "var pendingTakeover = false;" in js
+    assert "takeover: true" not in js
+
+
+def test_an_occupied_slot_is_retried_once_with_takeover():
+    """A stale tab must not be able to block this one forever, so the
+    refusal is answered with exactly one takeover hello — once, because
+    looping on it would be the old war with an extra round-trip."""
+
+    js = _page_js()
+    handler = js.split("function handleHubError(payload) {")[1].split("\n  }")[0]
+    assert "payload.code === 'not_connected' && !pendingTakeover &&" in handler
+    assert "/already registered/i.test(payload.message || '')" in handler
+    assert "pendingTakeover = true;" in handler
+    assert "sendHello();" in handler
+    # Cleared on welcome, so a later reconnect starts polite again.
+    welcome = js.split("case 'welcome':")[1].split("break;")[0]
+    assert "pendingTakeover = false;" in welcome
+    # A registration error the handler dealt with stays out of the
+    # message area — one event, one surface.
+    assert (
+        "if (env.kind === 'error' && env.payload && !handleHubError(env.payload)) {"
+        in js
+    )
+
+
+def test_superseded_stops_reconnecting_and_offers_the_slot_back():
+    """Losing the slot to a NEWER tab is the one drop worth not retrying:
+    reconnecting would evict the tab the user just opened. The strip says
+    so in its own words and is the way back."""
+
+    js = _page_js()
+    handler = js.split("function handleHubError(payload) {")[1].split("\n  }")[0]
+    assert "payload.code === 'superseded'" in handler
+    assert "superseded = true;" in handler
+    assert "showSuperseded();" in handler
+    assert "var superseded = false;" in js
+    # Disarmed at the timer AND at the close that follows the eviction,
+    # which would otherwise repaint the strip over the affordance.
+    sched = js.split("function scheduleReconnect() {")[1].split("\n  }")[0]
+    assert "if (superseded) { return; }" in sched
+    close = js.split("ws.addEventListener('close', function () {")[1].split(
+        "\n    });"
+    )[0]
+    assert close.index("if (superseded) { return; }") < close.index(
+        "scheduleReconnect();"
+    )
+    # A distinct strip state: offline dot, its own wording, clickable.
+    show = js.split("function showSuperseded() {")[1].split("\n  }")[0]
+    assert "els.wsDot.className = 'dot offline';" in show
+    assert "els.wsStatus.textContent = SUPERSEDED_TEXT;" in show
+    assert "els.wsStatus.className = 'take-back';" in show
+    assert "els.wsStatus.setAttribute('role', 'button');" in show
+    assert "another coverage tab took this connection — click to take back" in js
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert ".take-back {" in body
+    assert "cursor: pointer;" in body.split(".take-back {")[1].split("}")[0]
+
+
+def test_taking_the_slot_back_hellos_with_takeover():
+    """The other tab still holds the slot, so the hello that reclaims it
+    is the one hello that MUST ask for a takeover — a polite one would be
+    refused and the tab would go straight back to offline."""
+
+    js = _page_js()
+    back = js.split("function takeBack() {")[1].split("\n  }")[0]
+    assert "if (!superseded) { return; }" in back
+    assert "superseded = false;" in back
+    assert "pendingTakeover = true;" in back
+    # Backoff starts over: this is a fresh, deliberate connection.
+    assert "retryMs = 500;" in back
+    assert "connect();" in back
+    # The status word IS the control while superseded; `takeBack` no-ops
+    # in every other state, so the listener is bound once.
+    assert "els.wsStatus.addEventListener('click', takeBack);" in js
+
+
+def test_an_ordinary_drop_still_reconnects():
+    """A hub restart or a flaky network is not a supersede, and nothing
+    about the fix may change what those look like."""
+
+    js = _page_js()
+    close = js.split("ws.addEventListener('close', function () {")[1].split(
+        "\n    });"
+    )[0]
+    assert "els.wsDot.className = 'dot offline';" in close
+    assert "els.wsStatus.textContent = 'offline';" in close
+    assert "els.wsStatus.title = 'lost /ws — retrying';" in close
+    assert "scheduleReconnect();" in close
+    sched = js.split("function scheduleReconnect() {")[1].split("\n  }")[0]
+    assert "setTimeout(connect, retryMs);" in sched
+    assert "retryMs = Math.min(retryMs * 2, 10000);" in sched
 
 
 def test_page_javascript_parses(tmp_path: Path):
@@ -1117,6 +1263,125 @@ def test_inbound_focus_resolves_before_it_filters():
 
 
 # ---------------------------------------------------------------------------
+# cross-app send
+#
+# One control per sibling app in the file header: `send → X` puts the
+# open file's module on the tab already open. Opening an app fresh is
+# the header switcher's job — no open-↗ variants (they were redundant
+# with those links, and ``HubServer._replay_cached_state`` lands a
+# late-opened tab on the current focus anyway).
+# ---------------------------------------------------------------------------
+
+
+def test_the_file_header_offers_a_send_for_every_sibling_app():
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    apps = js.split("var APPS = [")[1].split("\n  ];")[0]
+    assert "{ origin: 'graph', prose: 'the graph pane' }," in apps
+    assert "{ origin: 'view', prose: 'the schematic' }" in apps
+    for route in ("/graph", "/view"):
+        assert f'<a href="{route}" target="_blank" rel="noopener"' in body
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert "'send → ' + originLabel(app.origin)," in row
+    assert "'open ' + " not in row
+    assert "window.open(" not in row
+    # The row lands in the file header, beside the module pills.
+    head = js.split("function renderFile() {")[1].split("\n  }")[0]
+    assert "actionsEl = renderActions(actionsBase);" in head
+    assert "els.fileHead.appendChild(actionsEl);" in head
+    assert head.index("moduleChips(row.modules).forEach") < head.index(
+        "els.fileHead.appendChild(actionsEl);"
+    )
+    assert ".actions { display: inline-flex; gap: .25rem; flex-wrap: wrap; }" in body
+
+
+def test_the_send_row_speaks_for_the_first_module_pill():
+    """Chips come out in the model's first-seen order, so the first one
+    is what the header reads left to right — and a button row that
+    disagreed with the pills beside it would be answering about a module
+    the reader cannot see it chose."""
+
+    js = _page_js()
+    head = js.split("function renderFile() {")[1].split("\n  }")[0]
+    assert "var primary = null;" in head
+    assert "if (primary === null) { primary = chip.base; }" in head
+    assert "actionsBase = primary;" in head
+    # The send goes through the pill's own path, so the wire carries
+    # the SOURCE name exactly as a pill click does.
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert row.count("focusModuleElsewhere(base)") == 1
+    assert "emit('graph_focus', { node: 'module:' + name })" in js
+    assert "var name = baseModuleName(base);" in js
+
+
+def test_both_sends_emit_the_one_broadcast_and_say_so():
+    """`send → gph` and `send → sch` are the same envelope.
+    That is not a bug — hub events are broadcasts and the SPA resolves
+    `module:` targets too — but two buttons that do one thing have to
+    admit it in their tooltips."""
+
+    js = _page_js()
+    assert (
+        "var OVERLAP = 'Hub events are broadcasts: this same graph_focus moves ' +\n"
+        "    'the graph pane AND the schematic, whichever of them is open.';" in js
+    )
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert row.count("OVERLAP") == 1
+    # No second wire type invented for the SPA's benefit.
+    assert row.count("emit(") == 0
+    assert "selection_changed" not in row
+
+
+def test_a_send_is_dark_when_its_app_is_not_connected():
+    js = _page_js()
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert "var live = hasPeer(app.origin);" in row
+    assert "!base || !live," in row
+    assert "app.prose + ' is not connected — open it from the header links'" in row
+    # A file the model records no module for can address neither app.
+    assert "!base ? NO_MODULE" in row
+    assert "var NO_MODULE = 'This file records no module" in js
+    # The peer list is kept, not merely printed, and only the row
+    # repaints when it moves — re-rendering the file would throw the
+    # scroll position and the open detail panel away.
+    assert "function hasPeer(origin) { return peers.indexOf(origin) >= 0; }" in js
+    assert "if (changed) { refreshActions(); }" in js
+    refresh = js.split("function refreshActions() {")[1].split("\n  }")[0]
+    assert "actionsEl.parentNode.replaceChild(next, actionsEl);" in refresh
+
+
+def test_the_action_row_has_no_open_buttons():
+    """``open <app> ↗`` was redundant with the header switcher's links
+    and is gone; the row is sends-only. The header keeps the open links,
+    and the hub's replay still lands a late-opened tab on the current
+    focus — send first, then open from the header."""
+
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
+    assert "window.open(" not in row
+    assert "'open '" not in row
+    for route in ("/graph", "/view"):
+        assert f'<a href="{route}" target="_blank" rel="noopener"' in body
+
+
+def test_a_qualified_test_target_matches_the_models_bare_name():
+    """The wire spells a test ``test:<suite>#<name>`` — the schema's own
+    example and what ``rb hub send cov-focus`` documents — while
+    ``/cov.json`` keys tests by the bare name. Without the fragment
+    fallback the documented form is a guaranteed soft miss."""
+
+    js = _page_js()
+    focus = js.split("function focusTest(name) {")[1].split("\n  }")[0]
+    assert "if (!known(name)) {" in focus
+    assert "var hash = String(name).lastIndexOf('#');" in focus
+    assert "var bare = hash < 0 ? null : String(name).slice(hash + 1);" in focus
+    assert "if (!bare || !known(bare)) { return false; }" in focus
+    # Exact first, so a run whose test really is called `a#b` still wins.
+    assert focus.index("if (!known(name)) {") < focus.index("lastIndexOf('#')")
+
+
+# ---------------------------------------------------------------------------
 # the elaboration lens
 # ---------------------------------------------------------------------------
 
@@ -1325,6 +1590,124 @@ def test_an_inbound_elaborated_name_also_sets_the_lens():
     # selectFile owns the reset, so every route into a file agrees.
     assert "if (opts.elab !== undefined) { state.elab = opts.elab; }" in js
     assert "state.elab = null;" in js
+
+
+# ---------------------------------------------------------------------------
+# the hub version label
+#
+# The same contract in three places — this pane, graph_page.html, and the
+# view SPA's ``viewer/src/buildInfo.js`` — so the cases below are the
+# cases ``tests/test_hub_graph_page.py`` asserts, deliberately word for
+# word. If one of the three drifts, exactly one of these suites goes red.
+# ---------------------------------------------------------------------------
+
+
+def test_a_dev_build_is_labelled_with_its_git_sha():
+    """``server_version`` is setuptools-scm's, and on anything built past
+    a tag the ``g``-prefixed run in the local segment IS the git SHA.
+    The ``.dYYYYMMDD`` beside it is a build date the SHA already
+    implies, so it does not reach the label."""
+
+    out = _node(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel('6.26.2.dev13+g3f5b890e3.d20260806'),
+          versionLabel('6.26.2.dev13+g3f5b890e3'),
+          versionLabel('6.26.2.dev1+g0abcdef12.d20260101.dirty'),
+          versionLabel('6.26.2.dev13+d20260806.g3f5b890e3')
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        "6.26.2.dev13 @ 3f5b890e3",
+        "6.26.2.dev13 @ 3f5b890e3",
+        "6.26.2.dev1 @ 0abcdef12",
+        # Order inside the local segment is not ours to assume: the run
+        # is found wherever it sits, not only at the front.
+        "6.26.2.dev13 @ 3f5b890e3",
+    ]
+
+
+def test_a_release_is_labelled_by_its_version_alone():
+    """A tagged build has no local segment and so no SHA to show —
+    ``6.26.2`` is the whole truth about it, and a bare ``@`` with
+    nothing after it would only look broken."""
+
+    out = _node(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify(
+          ['6.26.2', '6.26.2.dev13', '0.0.0'].map(versionLabel)));
+        """
+    )
+    assert json.loads(out) == ["6.26.2", "6.26.2.dev13", "0.0.0"]
+
+
+def test_a_local_segment_without_a_sha_still_labels_the_version():
+    """``1.0+local`` is a legal version; it simply names no build. The
+    base is still worth showing, so a missing SHA drops the ``@`` and
+    nothing else."""
+
+    out = _node(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel('1.0+local'),
+          versionLabel('1.0+d20260806'),
+          versionLabel('1.0+gitlab'),
+          versionLabel('1.0+'),
+          versionLabel('1.0+gabc')
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        "1.0",
+        "1.0",
+        # `gitlab` starts with a g but `itlab` is not hex — no SHA here.
+        "1.0",
+        "1.0",
+        # fewer than 4 hex digits is not a SHA — pinned in lockstep with
+        # the SPA copy (rtl-buddy-view viewer/src/buildInfo.js).
+        "1.0",
+    ]
+
+
+def test_no_version_means_no_label_at_all():
+    """A welcome without ``server_version`` (an older hub, or a payload
+    that lost the field) renders nothing rather than the word
+    ``undefined`` in the status strip."""
+
+    out = _node(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel(''), versionLabel(undefined), versionLabel(null),
+          versionLabel('+g3f5b890e3')
+        ]));
+        """
+    )
+    # A version that is nothing but a local segment names no release,
+    # so there is no label to hang the SHA off.
+    assert json.loads(out) == [None, None, None, None]
+
+
+def test_the_footer_carries_the_version_and_every_welcome_rewrites_it():
+    """The label lives beside the peers it shares a tier with, and is
+    re-read on every welcome: a reconnect can land on a hub restarted
+    on a newer build."""
+
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert '<span id="hub-version" class="muted"></span>' in body
+    # After the peers span, before the flexible gap.
+    peers = body.index('<span id="peers"')
+    version = body.index('<span id="hub-version"')
+    assert peers < version < body.index('<span class="grow"></span>', peers)
+
+    js = _page_js()
+    assert "setHubVersion(env.payload && env.payload.server_version);" in js
+    assert "els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';" in js
+    assert "els.hubVersion.title = full;" in js
 
 
 # ---------------------------------------------------------------------------
@@ -1713,3 +2096,59 @@ async def test_hub_state_reset_clears_the_cov_slot(bare_hub: HubServer):
     bare_hub.state.cov_focus = CovFocus(target="module:blk", origin=Origin.CLI)
     bare_hub.state.reset()
     assert bare_hub.state.cov_focus is None
+
+
+# ---------------------------------------------------------------------------
+# display names vs wire origins
+#
+# See the same section in ``tests/test_hub_graph_page.py``: the apps were
+# renamed, the ``Origin`` enum was not, and the origin→label map is the
+# seam between the two vocabularies. Each pane carries its own copy, so
+# each pane is tested for it.
+# ---------------------------------------------------------------------------
+
+
+def test_the_origin_label_map_renames_only_the_display():
+    out = _node(
+        _marked_js("origin-labels")
+        + """
+        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+                       'notebook', 'quantum'];
+        console.log(JSON.stringify(origins.map(originLabel)));
+        console.log(JSON.stringify([originLabel(null), originLabel(undefined),
+                                    originLabel('')]));
+        console.log(JSON.stringify(originLabel('toString')));
+        """
+    )
+    labelled, nullish, inherited = out.strip().splitlines()
+    assert json.loads(labelled) == [
+        "sch",
+        "gph",
+        "cov",
+        "wave",
+        "src",
+        "cli",
+        "notebook",
+        "quantum",
+    ]
+    assert json.loads(nullish) == ["", "", ""]
+    assert json.loads(inherited) == "toString"
+
+
+def test_every_rendered_origin_goes_through_the_map():
+    js = _page_js()
+    # The same map, word for word, as the graph pane's and the landing's.
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    assert "list.map(originLabel).join(', ')" in js
+    assert "originLabel(links[i].getAttribute('data-origin'))" in js
+    assert "'send → ' + originLabel(app.origin)," in js
+
+
+def test_the_rename_did_not_leak_into_the_wire():
+    body = cov_page.render_cov_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    js = _page_js()
+    assert "origin: 'cov', kind: 'request', type: 'hello'," in js
+    assert "origin: 'graph'," in js  # the APPS entries address wire values
+    assert "origin: 'view'," in js
+    assert 'href="/view"' in body
+    assert 'href="/graph"' in body

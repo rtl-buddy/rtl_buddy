@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import shutil
+import subprocess
 import time
 import urllib.request
 from pathlib import Path
@@ -279,7 +282,7 @@ async def test_root_serves_the_landing(hub_and_viewer: ViewerServer):
     assert "text/html" in headers.get("Content-Type", "")
     assert b"rtl-buddy hub" in body
     # ...and it is NOT the SPA any more.
-    assert b"viewer placeholder" not in body
+    assert b"schematic placeholder" not in body
 
 
 @pytest.mark.asyncio
@@ -311,3 +314,139 @@ async def test_state_json_sees_a_graph_built_after_startup(
     graph = _apps(json.loads(body))["graph"]
     assert graph["available"] is True
     assert json.loads(body)["graph"]["path"] == "artefacts/graph/graph.json"
+
+
+# ---------------------------------------------------------------------------
+# display names vs wire origins
+#
+# The landing is where an app's LONG name is introduced (the cards); the
+# short name it is then navigated by rides in the same payload and fills
+# the switcher. Neither is the wire value: the schematic still registers
+# as ``view``, so the peer list goes through the same origin→label map
+# the panes carry.
+# ---------------------------------------------------------------------------
+
+
+def _page_js() -> str:
+    body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    return body.split("<script>")[-1].split("</script>")[0]
+
+
+def _marked_js(marker: str) -> str:
+    match = re.search(rf"// >>> {marker}\n(.*?)// <<< {marker}", _page_js(), re.S)
+    assert match, f"the {marker} markers moved"
+    return match.group(1)
+
+
+def _node(script: str) -> str:
+    node = shutil.which("node")
+    if node is None:  # pragma: no cover - depends on the dev machine
+        pytest.skip("node not installed")
+    done = subprocess.run(
+        [node, "-e", script], capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def test_the_origin_label_map_renames_only_the_display():
+    out = _node(
+        _marked_js("origin-labels")
+        + """
+        var origins = ['view', 'graph', 'cov', 'wave', 'src', 'cli',
+                       'notebook', 'quantum'];
+        console.log(JSON.stringify(origins.map(originLabel)));
+        console.log(JSON.stringify([originLabel(null), originLabel(undefined),
+                                    originLabel('')]));
+        console.log(JSON.stringify(originLabel('toString')));
+        """
+    )
+    labelled, nullish, inherited = out.strip().splitlines()
+    assert json.loads(labelled) == [
+        "sch",
+        "gph",
+        "cov",
+        "wave",
+        "src",
+        "cli",
+        "notebook",
+        "quantum",
+    ]
+    assert json.loads(nullish) == ["", "", ""]
+    assert json.loads(inherited) == "toString"
+
+
+def test_both_peer_lists_go_through_the_map():
+    js = _page_js()
+    # Word for word the panes' map — see their copies of this test.
+    assert "var ORIGIN_LABELS = { view: 'sch', graph: 'gph' };" in js
+    assert "peers.map(originLabel).join(', ')" in js  # the "this hub" table
+    assert "peers.map(originLabel).join(' ')" in js  # the bottom strip
+
+
+def test_each_card_carries_a_long_name_and_a_short_one():
+    """Long name introduces the app, short name is what every other
+    surface then calls it. The wire origin is neither."""
+
+    apps = _apps(landing_page.build_state_payload(hub_addr="h:1"))
+    assert (apps["view"]["name"], apps["view"]["short"]) == (
+        "rtl-buddy-schematic",
+        "sch",
+    )
+    assert (apps["graph"]["name"], apps["graph"]["short"]) == ("rtl-buddy-graph", "gph")
+    assert (apps["cov"]["name"], apps["cov"]["short"]) == ("rtl-buddy-coverage", "cov")
+    # The rename did not reach the wire, or the "already open" join breaks.
+    assert [app["origin"] for app in (apps["view"], apps["graph"], apps["cov"])] == [
+        "view",
+        "graph",
+        "cov",
+    ]
+    assert apps["view"]["route"] == "/view"
+
+
+def test_the_card_shows_the_long_name_and_the_switcher_the_short_one():
+    js = _page_js()
+    card = js.split("function renderCard(app) {")[1].split("\n  }")[0]
+    assert "appLine.appendChild(el('span', 'short', app.short));" in card
+    assert "app.route ? app.name + '  ' + app.route : app.name));" in card
+    switcher = js.split("function renderSwitcher(apps) {")[1].split("\n  }")[0]
+    assert "var a = el('a', null, app.short || app.name);" in switcher
+    assert "app.name" not in switcher.split("app.short || app.name")[1]
+
+
+def test_the_footer_carries_the_family_version_label():
+    """The three apps show `rtl-buddy <base> @ <sha>` in their strips;
+    the landing joins them, fed from /hub/state.json's
+    ``hub.server_version`` rather than a welcome (it is not a peer)."""
+
+    body = landing_page.render_landing_html(hub_addr="127.0.0.1:1").decode("utf-8")
+    assert '<span id="hub-version" class="muted"></span>' in body
+    js = _page_js()
+    assert "hubVersion: document.getElementById('hub-version')," in js
+    assert "var label = versionLabel(hub.server_version);" in js
+    assert "els.hubVersion.textContent = label ? 'rtl-buddy ' + label : '';" in js
+
+
+def test_version_label_agrees_with_the_pane_copies():
+    """Same lockstep cases as tests/test_hub_graph_page.py /
+    test_hub_cov_page.py pin — four copies of one rule."""
+
+    out = _node(
+        _marked_js("version-label")
+        + """
+        console.log(JSON.stringify([
+          versionLabel('6.26.2.dev13+g3f5b890e3.d20260806'),
+          versionLabel('6.26.2'),
+          versionLabel('1.0+gabc'),
+          versionLabel(''),
+          versionLabel('+g3f5b890e3')
+        ]));
+        """
+    )
+    assert json.loads(out) == [
+        "6.26.2.dev13 @ 3f5b890e3",
+        "6.26.2",
+        "1.0",
+        None,
+        None,
+    ]

@@ -4,7 +4,7 @@
 #
 """The hub's landing page (rtl-buddy/rtl_buddy#398).
 
-``GET /`` used to be the view SPA, which made the schematic the hub's
+``GET /`` used to be the schematic SPA, which made it the hub's
 whole identity: nothing told a user the graph pane existed, and the next
 app would have been just as invisible. ``/`` is now a landing that names
 the *tasks* ("explore the design", "navigate the knowledge graph") and
@@ -46,7 +46,9 @@ LANDING_PAGE_ROUTE = "/"
 #: Route serving the landing page's live state.
 STATE_JSON_ROUTE = "/hub/state.json"
 
-#: Route serving the view SPA (``/`` before #398).
+#: Route serving the schematic SPA (``/`` before #398). A WIRE route:
+#: the app is displayed as ``sch`` but ``/view`` does not move until a
+#: protocol v2 renames the ``view`` origin with it.
 VIEW_PAGE_ROUTE = "/view"
 
 
@@ -54,14 +56,25 @@ VIEW_PAGE_ROUTE = "/view"
 class AppCard:
     """One task-oriented card, and one entry in every app switcher.
 
+    Two names, because the two surfaces read differently. ``name`` is the
+    app's **long** name (``rtl-buddy-schematic``) and only the landing's
+    cards and the docs use it; ``short`` is the chrome label (``sch``)
+    that every switcher, peer strip and ``send →`` button carries. The
+    long name introduces the app once; the short one is what a person
+    then navigates by.
+
     ``origin`` is the hub :class:`~rtl_buddy.hub.protocol.Origin` the app
-    registers as — the join that lets the landing say "already open".
+    registers as — the join that lets the landing say "already open", and
+    a WIRE value: it stays ``view`` for the schematic (and ``graph`` for
+    ``rtl-buddy-gph``) until protocol v2, which is exactly why the
+    display names live here rather than being read off the origin.
     ``status`` is ``"live"`` for an app this build ships and ``"planned"``
     for one that is announced but not routable yet.
     """
 
     id: str
     name: str
+    short: str
     task: str
     why: str
     route: str
@@ -73,10 +86,16 @@ class AppCard:
 #: app switcher. Every one of them is routable; a card is *muted* when
 #: the app has nothing to show yet, carrying the command that would give
 #: it something, rather than disappearing.
+#:
+#: This tuple is the one place the family's display names are written
+#: down on the server side — the panes carry their own copy of the
+#: origin→short-name map, since a pane is a self-contained single file.
+#: Renaming an app is an edit here plus that map in each pane.
 APPS: tuple[AppCard, ...] = (
     AppCard(
         id="view",
-        name="design view",
+        name="rtl-buddy-schematic",
+        short="sch",
         task="Explore the design",
         why=(
             "Schematic hierarchy for a model or testbench, cross-highlighted "
@@ -87,18 +106,20 @@ APPS: tuple[AppCard, ...] = (
     ),
     AppCard(
         id="graph",
-        name="graph",
+        name="rtl-buddy-graph",
+        short="gph",
         task="Navigate the knowledge graph",
         why=(
             "Spec, design, suites and tests as one picture — click a node to "
-            "select it in the design view and open it in your editor."
+            "select it in the schematic and open it in your editor."
         ),
         route="/graph",
         origin="graph",
     ),
     AppCard(
         id="cov",
-        name="coverage",
+        name="rtl-buddy-coverage",
+        short="cov",
         task="Inspect coverage",
         why=(
             "Line, branch and toggle coverage per module, test and run — "
@@ -177,6 +198,7 @@ def build_state_payload(
             {
                 "id": card.id,
                 "name": card.name,
+                "short": card.short,
                 "task": card.task,
                 "why": card.why,
                 "route": card.route,

@@ -31,6 +31,7 @@ from .cov import query as cov_query_mod
 from .cov.raw import METRICS as cov_metrics
 from .docs_access import get_page, get_section, list_pages
 from .graph import build as graph_build_mod
+from .graph import coverage as graph_coverage_mod
 from .graph import extract as extract_mod
 from .graph import query as graph_query_mod
 from .graph import results as graph_results_mod
@@ -138,6 +139,41 @@ def _graph_where(node: dict) -> str:
         return "-"
     line = node.get("line")
     return f"{file_path}:{line}" if line is not None else str(file_path)
+
+
+def _line_ratio_text(coverage: dict | None) -> str:
+    """One test's line coverage as a percentage, or ``-`` (#402)."""
+    ratio = ((coverage or {}).get("totals") or {}).get("line", {}).get("ratio")
+    return "-" if ratio is None else f"{ratio * 100:.1f}%"
+
+
+def _explain_coverage_lines(entry: dict | None, run: dict | None) -> list[str]:
+    """`rb graph explain`'s coverage lines, or none at all (#402).
+
+    Machine mode returns the whole entry; the console gets the verdict
+    and the manifest behind it, because an answer that does not name the
+    run it came from can be mistaken for a fresher one than it is.
+    """
+    if not entry:
+        return []
+    if entry.get("kind") == "design":
+        head = f"  cov:    {_line_ratio_text(entry)} line ({entry.get('module')})"
+    else:
+        observed = entry.get("observed") or []
+        detail = ", ".join(
+            f"{record.get('name')} ×{record.get('hits', 0)} [{record.get('match')}]"
+            for record in observed
+        )
+        head = (
+            f"  cov:    {entry.get('status')} "
+            f"({entry.get('hits', 0)} hit(s)"
+            f"{'; ' + detail if detail else '; no cover point in the model'})"
+        )
+    lines = [head]
+    manifest = (run or {}).get("manifest")
+    if manifest:
+        lines.append(f"  from:   {manifest}")
+    return lines
 
 
 class RtlBuddy:
@@ -3763,10 +3799,37 @@ class RtlBuddy:
                 ),
             ),
         ] = False,
+        coverage: Annotated[
+            bool,
+            typer.Option(
+                "--coverage/--no-coverage",
+                help=(
+                    "join the run's coverage model onto the graph's ids "
+                    "(read from cov_dir/manifest.json; nothing is re-run)"
+                ),
+            ),
+        ] = True,
+        cov_dir: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-dir",
+                help=(
+                    "coverage artefact directory to join from "
+                    "(default: the newest cov_dir/ under the project)"
+                ),
+            ),
+        ] = None,
+        cov_manifest: Annotated[
+            str | None,
+            typer.Option(
+                "--cov-manifest",
+                help="coverage manifest.json to join from, instead of discovery",
+            ),
+        ] = None,
     ):
         """
         refresh the results overlay beside graph.json: last status, run token,
-        seed and artefact paths per test node
+        seed, artefact paths and coverage per test node
         """
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root)
@@ -3778,6 +3841,7 @@ class RtlBuddy:
             command="graph results",
             verif_dir=verif_dir,
             strict=strict,
+            coverage=coverage,
         )
 
         overlay = graph_results_mod.refresh_results_overlay(
@@ -3785,6 +3849,9 @@ class RtlBuddy:
             verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
             out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
             graph_path=str(ctx.resolve_input(graph)) if graph else None,
+            coverage=coverage,
+            cov_dir=str(ctx.resolve_input(cov_dir)) if cov_dir else None,
+            cov_manifest=str(ctx.resolve_input(cov_manifest)) if cov_manifest else None,
         )
 
         exit_code = 0
@@ -3803,6 +3870,7 @@ class RtlBuddy:
                 missing=overlay.missing,
                 unmatched=overlay.unmatched,
                 problems=overlay.problems,
+                coverage=overlay.coverage_summary(),
             )
             raise typer.Exit(exit_code)
 
@@ -3813,6 +3881,7 @@ class RtlBuddy:
                 ("status", "Status"),
                 ("run", "Run"),
                 ("when", "When"),
+                ("line", "Line%"),
                 ("artefacts", "Artefacts"),
             ],
             rows=[
@@ -3823,6 +3892,7 @@ class RtlBuddy:
                     if entry.get("run_id") is not None
                     else "-",
                     "when": entry.get("timestamp") or "-",
+                    "line": _line_ratio_text(entry.get("coverage")),
                     "artefacts": ", ".join(
                         k for k in sorted(entry.get("artefacts", {})) if k != "dir"
                     )
@@ -3840,6 +3910,18 @@ class RtlBuddy:
             f"{' (' + counts + ')' if counts else ''}",
             stream="stdout",
         )
+        cov_summary = overlay.coverage_summary()
+        if cov_summary is not None:
+            emit_console_text(
+                "coverage: "
+                f"{cov_summary['tests']} test(s) scored, "
+                f"{cov_summary['modules']} module(s), "
+                f"{cov_summary[graph_coverage_mod.STATUS_EXERCISED]}/"
+                f"{cov_summary['items']} spec item(s) exercised, "
+                f"{cov_summary[graph_coverage_mod.STATUS_OBSERVED_UNDECLARED]} "
+                "observed but undeclared",
+                stream="stdout",
+            )
         if overlay.missing:
             emit_console_text(
                 f"no results for {len(overlay.missing)} test node(s): "
@@ -4159,7 +4241,7 @@ class RtlBuddy:
     ):
         """
         report one node's attributes, every edge on it with the far endpoint
-        resolved, and its last regression result
+        resolved, its last regression result and its coverage
         """
         root = str(discover_project_root(fallback_cwd=True))
         # Lock-free, as `graph query` is — see there.
@@ -4209,6 +4291,13 @@ class RtlBuddy:
                 f"({entry.get('timestamp', 'unknown time')})",
                 stream="stdout",
             )
+        for line in _explain_coverage_lines(
+            payload.get("coverage"), payload.get("coverage_run")
+        ):
+            # The match rung is printed as `[affix]`, and an SVA label can
+            # itself carry brackets (`gen[0].cov_x`) — Rich would eat both
+            # as style tags, so this line is never markup.
+            emit_console_text(line, stream="stdout", markup=False)
         rows = [
             {
                 "dir": edge["direction"],

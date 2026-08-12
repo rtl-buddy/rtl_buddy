@@ -34,6 +34,14 @@ A test directory with no envelope still gets an entry: its artefact
 paths are real and useful, its status is ``UNKNOWN``. That is the
 honest answer for a tree written by an rtl_buddy older than the envelope,
 or a run that died before POST.
+
+Since #402 the overlay also carries the run's **coverage** join —
+per-test scalars beside the ``artefacts.coverage`` path, per-module
+ratios keyed to design node ids, and a declared-vs-observed verdict per
+``covitem:`` node. Those numbers are read out of the coverage model
+(#399) that the run already wrote; nothing here ever invokes
+``verilator_coverage``, which is what keeps a refresh with nothing
+re-run byte-identical. See :mod:`rtl_buddy.graph.coverage`.
 """
 
 from __future__ import annotations
@@ -60,6 +68,7 @@ from .config_tier import (
     default_graph_dir,
     test_id,
 )
+from .coverage import CoverageJoin, join_coverage
 
 
 logger = logging.getLogger(__name__)
@@ -340,6 +349,8 @@ class ResultsOverlay:
         refreshed against (only populated when a graph was supplied).
       missing (list[str]): test nodes in that graph with no result at all.
       path (Path | None): where the overlay was written, once it has been.
+      coverage (CoverageJoin | None): the coverage join, when one was
+        attempted. ``None`` means coverage was not asked for.
     """
 
     overlay: dict
@@ -348,6 +359,7 @@ class ResultsOverlay:
     unmatched: list[str] = dc_field(default_factory=list)
     missing: list[str] = dc_field(default_factory=list)
     path: Path | None = None
+    coverage: CoverageJoin | None = None
 
     def status_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -357,6 +369,11 @@ class ResultsOverlay:
 
     def with_results(self) -> int:
         return sum(1 for e in self.entries.values() if e.get("source") == FROM_ENVELOPE)
+
+    def coverage_summary(self) -> dict | None:
+        """The coverage block's summary, or ``None`` when there is none."""
+        block = (self.coverage.block if self.coverage else None) or {}
+        return block.get("summary")
 
 
 def _declared_test_names(tests_yaml: str) -> dict[str, str]:
@@ -398,6 +415,9 @@ def collect_results(
     *,
     verif_dir: str | os.PathLike | None = None,
     graph: dict | None = None,
+    coverage: bool = True,
+    cov_dir: str | os.PathLike | None = None,
+    cov_manifest: str | os.PathLike | None = None,
 ) -> ResultsOverlay:
     """Scan every suite's artefacts and build the results overlay.
 
@@ -410,6 +430,13 @@ def collect_results(
       graph: An already-loaded ``graph.json``. Optional; when given, each
         entry is cross-checked against it (``in_graph``) and the tests it
         declares with no result at all are reported in ``missing``.
+      coverage: Join the run's coverage model in (#402). A tree with no
+        coverage artefacts is not an error — the ``coverage`` block is
+        simply absent, which is also what keeps an overlay written
+        before this feature byte-identical.
+      cov_dir / cov_manifest: read coverage from here rather than from
+        the newest ``cov_dir/manifest.json`` under the project. Naming
+        either makes a failure to read it a reported problem.
 
     Returns:
       ResultsOverlay: the payload plus the bookkeeping the CLI reports.
@@ -473,6 +500,24 @@ def collect_results(
                 unmatched.append(node_id)
         missing = sorted(graph_tests - set(entries))
 
+    ordered = {k: entries[k] for k in sorted(entries)}
+    join = None
+    if coverage:
+        join = join_coverage(
+            root,
+            entries=ordered,
+            graph=graph,
+            cov_dir=cov_dir,
+            manifest=cov_manifest,
+        )
+        problems.extend(join.problems)
+        # Beside `artefacts.coverage` — the path to the raw database was
+        # all an entry carried, and a path is not a number.
+        for node_id, scalars in join.per_test.items():
+            entry = ordered.get(node_id)
+            if entry is not None:
+                entry["coverage"] = scalars
+
     overlay = {
         "rtl-buddy-filetype": OVERLAY_FILETYPE,
         "schema_version": OVERLAY_SCHEMA_VERSION,
@@ -486,14 +531,17 @@ def collect_results(
         # file reads the verdict first. Filled in below; the key's
         # position is fixed by this insertion, not by that assignment.
         "summary": {},
-        "tests": {k: entries[k] for k in sorted(entries)},
+        "tests": ordered,
     }
+    if join is not None and join.block is not None:
+        overlay["coverage"] = join.block
     result = ResultsOverlay(
         overlay=overlay,
         entries=overlay["tests"],
         problems=problems,
         unmatched=sorted(unmatched),
         missing=missing,
+        coverage=join,
     )
     overlay["summary"] = {
         "tests": len(result.entries),
@@ -503,6 +551,8 @@ def collect_results(
         "missing": result.missing,
         "problems": problems,
     }
+    if result.coverage_summary() is not None:
+        overlay["summary"]["coverage"] = result.coverage_summary()
     log_event(
         logger,
         logging.DEBUG,
@@ -679,11 +729,15 @@ def refresh_results_overlay(
     verif_dir: str | os.PathLike | None = None,
     out_dir: str | os.PathLike | None = None,
     graph_path: str | os.PathLike | None = None,
+    coverage: bool = True,
+    cov_dir: str | os.PathLike | None = None,
+    cov_manifest: str | os.PathLike | None = None,
 ) -> ResultsOverlay:
     """Collect results and write ``results-overlay.json``.
 
     The one call behind ``rb graph results``. ``graph.json`` is read (for
-    the id cross-check and the fingerprint linkage) and never written.
+    the id cross-check, the fingerprint linkage and the coverage join)
+    and never written.
     """
     root = Path(os.path.realpath(str(project_root)))
     out = Path(out_dir) if out_dir is not None else default_graph_dir(root)
@@ -696,15 +750,27 @@ def refresh_results_overlay(
     except (OSError, json.JSONDecodeError):
         graph = None
 
-    result = collect_results(root, verif_dir=verif_dir, graph=graph)
+    result = collect_results(
+        root,
+        verif_dir=verif_dir,
+        graph=graph,
+        coverage=coverage,
+        cov_dir=cov_dir,
+        cov_manifest=cov_manifest,
+    )
     linkage = {**graph_linkage(graph_file.parent), "path": _rel(root, graph_file)}
     # Rebuilt rather than assigned into, so the linkage sits with the
-    # other header keys instead of trailing the per-test block.
+    # other header keys instead of trailing the per-test block, and the
+    # two long blocks (coverage, tests) come last in reading order.
     collected = result.overlay
+    header = {
+        k: v for k, v in collected.items() if k not in ("summary", "tests", "coverage")
+    }
     result.overlay = {
-        **{k: v for k, v in collected.items() if k not in ("summary", "tests")},
+        **header,
         "graph": linkage,
         "summary": collected["summary"],
+        **({"coverage": collected["coverage"]} if "coverage" in collected else {}),
         "tests": collected["tests"],
     }
     target = write_overlay(result.overlay, out / RESULTS_OVERLAY_NAME)
