@@ -340,7 +340,8 @@ differing reservations split into separate arrays.
 
 ## Sizing the reservations
 
-Right-sizing (below) tunes these numbers from real usage, but it can only
+[Right-sizing](#reservation-right-sizing) tunes these numbers from real
+usage, but it can only
 report on jobs that survived long enough to be measured. Four things decide
 the first sizing, and each has bitten someone:
 
@@ -353,9 +354,10 @@ array waits behind it, since every sim job is gated on that one job with
 way to get a build job killed at its limit and a suite of dispatch failures
 pointing at a build log that just stops. Two ways to shrink the number
 rather than raise it: collapse compile keys (tests differing only in
-plusdefines each cost a key — see
+`plusdefines:` each cost a key — see
 [How arrays interact with the shared build](#how-arrays-interact-with-the-shared-build)),
-or split the suite.
+or split the suite. Full consequences in
+[Known Issues](../known-issues.md#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation).
 
 **A job that compiles inside itself must be reserved for the compile.**
 Where the builder cannot share a build, the compile happens under the
@@ -368,10 +370,12 @@ peak of the entire flow, so size `compile.mem` from a real elaboration, not
 from a simulation.
 
 **Give a VCS build job headroom for the license queue.** `-licqueue` waits
-count against `--time` (rtl_buddy cannot pause the scheduler's clock) and a
-`compile.time` sized for compute alone will eventually land on a busy
-license server. `compile.license_queued` in the log is what tells you a
-killed build job was queueing rather than under-reserved.
+count against `--time`, so a `compile.time` sized for compute alone will
+eventually land on a busy license server — see [A VCS compile can wait for a
+license](#builders-that-compile-inside-the-job). `compile.license_queued` is
+logged when a compile *completes* after queueing, so a build job killed at
+its limit produces no such event of its own: the evidence comes from the
+keys that finished before it, or from a previous run.
 
 **Ask for accounting fine enough to advise from.** Dispatch requests
 `--acctg-freq=task=1` for you unless your `sbatch-args` already set

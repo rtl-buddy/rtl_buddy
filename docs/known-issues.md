@@ -251,9 +251,10 @@ two consequences that are easy to miss when sizing `cfg-dispatch.compile`:
   tests whose own compile key finished first. There is no partial release.
 
 The lever is the compile-key count, not the reservation: tests that differ
-only in `pd` plusdefines each cost a key. `rb --machine` logs one
-`compile.start` per key from inside the build job, which is the cheapest way
-to count them.
+only in their `plusdefines:` each cost a key. The build job logs one
+`compile.start` per key, which is the cheapest way to count them (a key
+already valid in the shared dir short-circuits before that event, so the
+count is of real compiles).
 
 ## Memory right-sizing depends on the accounting sampling interval
 
