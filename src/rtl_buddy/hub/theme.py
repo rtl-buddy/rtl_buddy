@@ -147,6 +147,19 @@ def read_theme_source() -> str:
     return _THEME_CSS_PATH.read_text(encoding="utf-8")
 
 
+def in_source_checkout() -> bool:
+    """Whether ``theme.css`` sits inside a git working tree.
+
+    The regenerate entry point is meaningful only in a source checkout;
+    against an installed wheel it would rewrite (or fail to rewrite)
+    ``site-packages`` in place.
+    """
+
+    return any(
+        (parent / ".git").exists() for parent in _THEME_CSS_PATH.resolve().parents
+    )
+
+
 def write_theme_css() -> Path:
     """Regenerate ``theme.css`` in place; return its path."""
 
@@ -193,6 +206,11 @@ def favicon_link_tags(prefix: str = ASSETS_ROUTE_PREFIX) -> str:
 
 
 def main() -> None:  # pragma: no cover - developer entry point
+    if not in_source_checkout():
+        raise SystemExit(
+            "theme.css is not inside a git working tree — refusing to rewrite an "
+            "installed copy. Run this from a source checkout."
+        )
     path = write_theme_css()
     print(f"regenerated {path}")
 
@@ -214,6 +232,7 @@ __all__ = [
     "asset_names",
     "build_theme_css",
     "favicon_link_tags",
+    "in_source_checkout",
     "parse_palettes",
     "read_theme_source",
     "theme_css_bytes",

@@ -75,6 +75,15 @@ def test_override_blocks_cover_every_dark_token():
         assert light_by_name[name] in light_block, name
 
 
+def test_regenerate_entry_point_is_source_checkout_only():
+    """``python -m rtl_buddy.hub.theme`` rewrites the sheet in place, which
+    is only meaningful (or safe) in a git checkout — against an installed
+    wheel it would rewrite site-packages. The guard the entry point uses
+    must say yes here, in the source tree the tests run from."""
+
+    assert theme.in_source_checkout() is True
+
+
 def test_theme_tokens_the_apps_consume_exist():
     """The vocabulary #398 fixed, by name. Renaming one is a two-repo
     change (the view SPA adopts the same sheet in Phase 0b), so it must

@@ -141,6 +141,15 @@ def build_state_payload(
     it available) instead of vanishing: "the graph pane exists and you
     have not built a graph" is the useful message, and it is the one a
     hidden card cannot deliver.
+
+    A ``planned`` card is never advertised as available: the page gates
+    routability on ``status``, so ``status: "planned"`` plus
+    ``available: true`` would be a self-contradictory row (unroutable
+    card, "coming soon" badge, note suppressed). ``cov_available`` is
+    accepted here for forward-compatibility only — it takes effect in
+    Phase 2 (rtl-buddy/rtl_buddy#400), which flips the cov card's
+    ``status`` to ``"live"`` and wires this flag up as the
+    data-presence half, the same shape as ``graph_present``.
     """
 
     now = time.time() if now is None else now
@@ -150,9 +159,8 @@ def build_state_payload(
     for card in APPS:
         note: str | None = None
         if card.status == "planned":
-            available = cov_available and card.id == "cov"
-            if not available:
-                note = "lands with `rb cov` (rtl-buddy/rtl_buddy#400)"
+            available = False
+            note = "lands with `rb cov` (rtl-buddy/rtl_buddy#400)"
         elif card.id == "view":
             available = view_available
             note = view_note
@@ -223,10 +231,13 @@ def graph_state(
 
     if project_root is None:
         return False, None, None
-    from ..graph.config_tier import GRAPH_JSON_NAME, default_graph_dir
+    from . import graph_page
 
     root = Path(project_root)
-    path = default_graph_dir(project_root) / GRAPH_JSON_NAME
+    # Same coordinate the /graph.json route serves from: the landing can
+    # never advertise a graph the pane would 404 on (drift guard — the
+    # predicate is derived, not re-spelled).
+    path = graph_page.graph_json_path(project_root)
     try:
         mtime = path.stat().st_mtime
     except OSError:

@@ -86,10 +86,19 @@ def test_cov_card_is_announced_but_not_routable_yet():
     assert cov["available"] is False
     assert "#400" in cov["note"]
 
-    # Phase 2 flips one flag.
+
+def test_planned_card_never_claims_available():
+    """The page gates routability on ``status``, so a planned card that
+    said ``available: true`` would be a contradiction the page renders
+    as an unroutable, note-less card with a "coming soon" badge. Phase 2
+    (#400) makes the card usable by flipping ``status`` to live and
+    wiring ``cov_available`` as the data-presence half — until then the
+    flag must not leak into the payload."""
+
     ready = _apps(landing_page.build_state_payload(hub_addr="h:1", cov_available=True))
-    assert ready["cov"]["available"] is True
-    assert ready["cov"]["note"] is None
+    assert ready["cov"]["status"] == "planned"
+    assert ready["cov"]["available"] is False
+    assert "#400" in ready["cov"]["note"]
 
 
 def test_already_open_comes_from_the_peer_registry():
@@ -162,6 +171,24 @@ def test_graph_state_reads_mtime(tmp_path: Path):
     assert mtime is not None
 
     assert landing_page.graph_state(None) == (False, None, None)
+
+
+def test_graph_state_agrees_with_the_graph_route(tmp_path: Path):
+    """One predicate, two consumers: the landing's ``graph_state`` and the
+    ``/graph.json`` route's ``graph_files_present`` must derive from the
+    same path, or the landing could advertise a graph the route 404s on."""
+
+    from rtl_buddy.hub import graph_page
+
+    assert landing_page.graph_state(tmp_path)[0] is graph_page.graph_files_present(
+        tmp_path
+    )
+
+    path = graph_page.graph_json_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_text("{}", encoding="utf-8")
+    assert landing_page.graph_state(tmp_path)[0] is True
+    assert graph_page.graph_files_present(tmp_path) is True
 
 
 # ---------------------------------------------------------------------------
