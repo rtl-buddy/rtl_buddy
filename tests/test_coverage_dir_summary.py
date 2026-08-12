@@ -120,8 +120,16 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
     }
     # merge_info_process returns (metrics, coverview_zip, dataset_files,
     # description_files) — four values, as its docstring says. The caller
-    # unpacks all four and reads `description_files["line"]`.
-    description_files = {"line": str(tmp_path / "line.desc.json")}
+    # unpacks all four and reads `description_files["line"]`. The mapping
+    # carries a key per description type (`dict(rby_description_files)`
+    # plus `line`), so the stub does too: a one-key stub would silently
+    # exercise the empty case if the manifest ever iterates them.
+    description_files = {
+        "line": str(tmp_path / "line.desc.json"),
+        "branch": None,
+        "expression": None,
+        "toggle": None,
+    }
     monkeypatch.setattr(
         reporter,
         "merge_info_process",
