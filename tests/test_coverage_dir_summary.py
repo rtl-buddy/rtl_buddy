@@ -118,6 +118,18 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
         "toggle": None,
         "expression": None,
     }
+    # merge_info_process returns (metrics, coverview_zip, dataset_files,
+    # description_files) — four values, as its docstring says. The caller
+    # unpacks all four and reads `description_files["line"]`. The mapping
+    # carries a key per description type (`dict(rby_description_files)`
+    # plus `line`), so the stub does too: a one-key stub would silently
+    # exercise the empty case if the manifest ever iterates them.
+    description_files = {
+        "line": str(tmp_path / "line.desc.json"),
+        "branch": None,
+        "expression": None,
+        "toggle": None,
+    }
     monkeypatch.setattr(
         reporter,
         "merge_info_process",
@@ -125,6 +137,7 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
             CoverageMetrics(lcov_path=fake_lcov_path),
             "cv.zip",
             dataset_files,
+            description_files,
         ),
     )
 
@@ -147,6 +160,14 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
         reporter, "_dir_summary_records_from_dataset_files", _fake_dataset_records
     )
 
+    artefact_calls = {}
+
+    def _fake_write_artefacts(suite_results, **kwargs):
+        artefact_calls.update(kwargs)
+        return None
+
+    monkeypatch.setattr(reporter, "write_artefacts", _fake_write_artefacts)
+
     metadata, coverage = reporter.build_metadata(
         _suite_results(),
         outdir=str(tmp_path),
@@ -164,6 +185,10 @@ def test_build_metadata_coverview_present_uses_dataset_files_summary(
     # The LCOV-based summary must not run at all in the coverview flow.
     assert lcov_calls == []
     assert coverage["dir_summary"] == _FAKE_RECORDS
+    # The fourth return value is not decoration: the line description file
+    # is what the manifest records as the merge's `desc`.
+    assert artefact_calls["merged"]["desc"] == description_files["line"]
+    assert artefact_calls["descriptions"] == description_files
 
 
 def test_build_metadata_no_coverview_uses_lcov_summary(monkeypatch, tmp_path):
