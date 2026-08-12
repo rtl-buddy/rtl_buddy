@@ -61,6 +61,15 @@ class Origin(str, Enum):
     allows one client per origin — sharing ``view`` would make the two
     panes evict each other."""
 
+    COV = "cov"
+    """The hub-served coverage pane (``GET /cov``).
+
+    Its own origin for the same reason ``GRAPH`` has one: the point of
+    the pane is to drive the *other* panes — clicking a cold line opens
+    it in the editor and selects the instance in the design view — so it
+    has to be open alongside them, and one client per origin means a
+    shared slot would evict whichever tab you looked at second."""
+
 
 class Kind(str, Enum):
     """``kind`` field — envelope category."""

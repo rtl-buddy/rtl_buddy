@@ -51,6 +51,7 @@ from .protocol import (
 )
 from .resolver import Resolver
 from .state import (
+    CovFocus,
     CursorTime,
     DiagnosticsBundle,
     GraphFocus,
@@ -74,6 +75,7 @@ STATE_EVENT_TYPES: frozenset[str] = frozenset(
         "diagnostics_set",
         "wave_values_changed",
         "graph_focus",
+        "cov_focus",
     }
 )
 """Event ``type`` strings that broadcast to all clients except origin.
@@ -595,6 +597,14 @@ class HubServer:
                 self.state.graph_focus = GraphFocus(
                     node=env.payload["node"], origin=env.origin
                 )
+            elif env.type == "cov_focus":
+                self.state.cov_focus = CovFocus(
+                    target=env.payload["target"],
+                    origin=env.origin,
+                    metric=env.payload.get("metric"),
+                    line=env.payload.get("line"),
+                    item=env.payload.get("item"),
+                )
             elif env.type == "diagnostics_set":
                 source = env.payload["source"]
                 items = tuple(env.payload["items"])
@@ -1012,6 +1022,18 @@ class HubServer:
                     type="graph_focus",
                     id=new_id(),
                     payload={"node": s.graph_focus.node},
+                ),
+            )
+
+        if s.cov_focus is not None:
+            await self._safe_send(
+                conn,
+                Envelope(
+                    origin=s.cov_focus.origin,
+                    kind=Kind.EVENT,
+                    type="cov_focus",
+                    id=new_id(),
+                    payload=s.cov_focus.payload(),
                 ),
             )
 

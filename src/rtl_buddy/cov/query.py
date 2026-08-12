@@ -181,8 +181,21 @@ def _file_summary(file_row: dict) -> dict:
     }
 
 
-def _coldest(file_rows, limit):
-    """Files ordered coldest first: lowest line ratio, then most misses."""
+def coldest_first(file_rows, limit=None):
+    """Files ordered coldest first: lowest line ratio, then most misses.
+
+    Files with no line points at all go last. They are not cold, they
+    are silent — a header, a package, a file whose lines the database
+    never recorded — and reading their ``null`` ratio as 1.0 filed them
+    among the fully covered ones, where a reader scanning up from the
+    bottom for "what is left" met them first.
+
+    Public because the ``/cov`` pane orders its file list the same way
+    the summary does — two orderings for "which file should I look at
+    first" would be one too many. The pane applies this same rule to
+    whichever metric its picker has selected; on ``line`` the two agree
+    exactly.
+    """
 
     def sort_key(row):
         totals = row.get("totals", {}).get("line", {})
@@ -190,6 +203,7 @@ def _coldest(file_rows, limit):
         found = totals.get("found", 0)
         hit = totals.get("hit", 0)
         return (
+            0 if found else 1,
             ratio if ratio is not None else 1.0,
             -(found - hit),
             row["path"],
@@ -204,8 +218,13 @@ def _coldest(file_rows, limit):
 # ---------------------------------------------------------------------------
 
 
-def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict:
-    """Run-level scalars, per-test scalars and the coldest files."""
+def _payload_around_files(ctx: CovContext, files: list) -> dict:
+    """Everything both payloads share, wrapped around a ``files`` list.
+
+    The summary and the detail differ only in the depth of ``files``, so
+    the caller builds that list and this builds the rest — the detail
+    used to call the summary and throw its file rows away.
+    """
     model = ctx.model
     payload = _run_block(ctx)
     payload.update(
@@ -220,9 +239,7 @@ def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict
                 }
                 for row in model.get("tests", [])
             ],
-            "files": [
-                _file_summary(row) for row in _coldest(model.get("files", []), limit)
-            ],
+            "files": files,
             "modules": sorted((model.get("modules") or {}).keys()),
             "artefacts": artefacts_block(ctx),
         }
@@ -231,6 +248,33 @@ def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict
     if covers:
         payload["covers"] = covers
     return payload
+
+
+def summary_payload(ctx: CovContext, *, limit: int = DEFAULT_FILE_LIMIT) -> dict:
+    """Run-level scalars, per-test scalars and the coldest files."""
+    return _payload_around_files(
+        ctx,
+        [
+            _file_summary(row)
+            for row in coldest_first(ctx.model.get("files", []), limit)
+        ],
+    )
+
+
+def detail_payload(ctx: CovContext, *, limit: int | None = None) -> dict:
+    """:func:`summary_payload`, but with every file's points included.
+
+    The summary truncates its file list and reports only each file's
+    totals, because a terminal reading 40 000 points is a terminal
+    nobody reads. A pane is the other case: it renders the points, so
+    dropping them would force a second request per file and put the
+    "which tests hit this line" join on the client.
+
+    Same run block, same ``artefacts`` block, same coldest-first
+    ordering — the only difference is the depth of ``files``.
+    """
+
+    return _payload_around_files(ctx, coldest_first(ctx.model.get("files", []), limit))
 
 
 def module_names(ctx: CovContext) -> list[str]:

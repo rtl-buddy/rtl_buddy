@@ -1,0 +1,2138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rtl-buddy-cov</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/hub/assets/rtl-buddy-favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/hub/assets/rtl-buddy-favicon-16.png">
+  <!--
+    Served by rtl_buddy.hub.cov_page at GET /cov (rtl-buddy/rtl_buddy#400).
+
+    Offline on purpose: no CDN, no web font, no build step — the hub is
+    routinely run on machines with no route off localhost. The one
+    stylesheet link is same-origin (/hub/theme.css, served by this same
+    hub process, rtl-buddy/rtl_buddy#398); the block below repeats only
+    the tokens the page cannot render without, as a fallback for a sheet
+    that 404s (an old hub serving a new pane).
+
+    ORDER MATTERS: the fallback block comes BEFORE the sheet link. Both
+    select :root, so they tie on specificity and document order decides
+    — a fallback placed after the link would permanently shadow the
+    sheet, including its @media (prefers-color-scheme: dark) block, and
+    every later palette edit would silently stop reaching this pane.
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg:          #f8fafc;
+      --panel:       #ffffff;
+      --panel-2:     #f1f5f9;
+      --line:        #e2e8f0;
+      --line-strong: #cbd5e1;
+      --fg:          #1e293b;
+      --fg-muted:    #64748b;
+      --fg-faint:    #94a3b8;
+      --accent:      #2563eb;
+      --ok:          #16a34a;
+      --warn:        #b45309;
+      --err:         #dc2626;
+      /* Coverage ramp: the continuous fill is
+         hsl(pct * 1.2, 70%, var(--cov-l)), so --cov-l is the one token
+         that has to survive a missing sheet or every tint goes black. */
+      --cov-l:       82%;
+      --cov-none:    #e5e7eb;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --fs-base:  13px;
+      --fs-small: 11px;
+      --radius-1: 3px;
+      --radius-2: 4px;
+    }
+  </style>
+  <link rel="stylesheet" href="/hub/theme.css">
+  <style>
+    /* Page-local derivations of the shared tokens. Nothing here may
+       re-declare a sheet token: both blocks select :root, so a
+       re-declaration after the link would out-rank the sheet. */
+    :root {
+      --tint-s:   70%;    /* saturation of the coverage ramp */
+      --gutter:   3.2rem; /* line-number column */
+      --markcol:  8rem;   /* hard cap on ONE metric column */
+      /* The two ends of the same ramp `.tint` uses, named so a bit cell
+         can paint one direction per half. Derived from --cov-l rather
+         than taken from the sheet's --cov-0/--cov-100 for the reason
+         the fallback block exists: --cov-l is the token the page
+         repeats, so these still track the theme when the sheet 404s. */
+      --tgl-hit:  hsl(120, var(--tint-s), var(--cov-l));
+      --tgl-miss: hsl(0,   var(--tint-s), var(--cov-l));
+    }
+    * { box-sizing: border-box; }
+    /* The panes below set `display` on the very elements the script
+       toggles with `hidden`, and an id beats the UA sheet's [hidden]. */
+    [hidden] { display: none !important; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font: var(--fs-base)/1.45 var(--font-mono);
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    header {
+      display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+      padding: .5rem .75rem; border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    header h1 {
+      font-size: 13px; font-weight: 600; margin: 0; letter-spacing: .02em;
+      white-space: nowrap;
+    }
+    header h1 small { color: var(--fg-muted); font-weight: 400; }
+    .grow { flex: 1 1 auto; }
+    input[type="search"], select {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: var(--radius-2);
+      padding: .25rem .5rem;
+    }
+    input[type="search"] { min-width: 12rem; }
+    input[type="search"]:focus, select:focus { outline: 1px solid var(--accent); }
+    button {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line); border-radius: var(--radius-2);
+      padding: .25rem .55rem; cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    label.chk { display: inline-flex; align-items: center; gap: .3rem; cursor: pointer; }
+    nav.switcher { display: flex; gap: .35rem; align-items: center; }
+    nav.switcher a {
+      background: var(--panel-2); color: var(--fg); font: inherit;
+      border: 1px solid var(--line-strong); border-radius: var(--radius-2);
+      padding: .25rem .55rem; text-decoration: none; white-space: nowrap;
+    }
+    nav.switcher a:hover { border-color: var(--accent); color: var(--accent); }
+
+    main { flex: 1 1 auto; display: flex; min-height: 0; }
+    aside {
+      width: 24rem; flex: none; border-right: 1px solid var(--line);
+      background: var(--panel); overflow: auto; padding: .6rem .5rem;
+    }
+    /* #content no longer scrolls as a whole: the file view owns its own
+       scroller so the docked detail panel can sit outside it. */
+    section#content {
+      flex: 1 1 auto; min-width: 0; min-height: 0; position: relative;
+      display: flex; flex-direction: column;
+    }
+    #dash { flex: 1 1 auto; overflow: auto; min-height: 0; }
+    #file { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+    #src-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; }
+    h2 {
+      font-size: 12px; margin: .8rem 0 .4rem; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--fg-muted);
+    }
+    h2:first-child { margin-top: 0; }
+    .muted { color: var(--fg-muted); }
+    .faint { color: var(--fg-faint); }
+    .msg-error { color: var(--err); font-weight: 600; }
+    .msg-warn { color: var(--warn); font-weight: 600; }
+
+    /* -- coverage ramp: one rule, both themes, driven by --h ---------- */
+    .tint { background: hsl(var(--h), var(--tint-s), var(--cov-l)); }
+    .tint.none { background: var(--cov-none); }
+
+    /* -- lists + tables ---------------------------------------------- */
+    ul.files { list-style: none; margin: 0; padding: 0; }
+    ul.files li {
+      display: grid; grid-template-columns: 1fr 4.5rem 3.2rem;
+      gap: .4rem; align-items: center; padding: .15rem .3rem;
+      border-radius: var(--radius-1); cursor: pointer;
+    }
+    ul.files li:hover { background: var(--panel-2); }
+    ul.files li.sel { background: var(--panel-2); outline: 1px solid var(--accent); }
+    ul.files li .path {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      direction: rtl; text-align: left;
+    }
+    .bar {
+      height: .55rem; border-radius: var(--radius-1);
+      background: var(--panel-2); overflow: hidden;
+    }
+    .bar > span { display: block; height: 100%; }
+    .pct { text-align: right; font-size: var(--fs-small); color: var(--fg-muted); }
+    table { border-collapse: collapse; width: 100%; font-size: var(--fs-small); }
+    table th {
+      text-align: right; font-weight: 600; color: var(--fg-muted);
+      padding: .15rem .35rem; border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; background: var(--panel);
+    }
+    table th:first-child, table td:first-child { text-align: left; }
+    table td { padding: .12rem .35rem; text-align: right; }
+    tr.row { cursor: pointer; }
+    tr.row:hover td { background: var(--panel-2); }
+    tr.row.sel td { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
+
+    /* -- dashboard ---------------------------------------------------- */
+    #dash { padding: .75rem; }
+    .cards { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .card {
+      border: 1px solid var(--line); border-radius: var(--radius-3, 6px);
+      background: var(--panel); padding: .5rem .6rem; min-width: 9rem;
+    }
+    .card .k { font-size: var(--fs-small); color: var(--fg-muted); text-transform: uppercase; letter-spacing: .08em; }
+    .card .v { font-size: 20px; font-weight: 600; }
+    .card .n { font-size: var(--fs-small); color: var(--fg-muted); }
+    dl.kv { display: grid; grid-template-columns: 8rem 1fr; gap: .1rem .5rem; margin: 0; }
+    dl.kv dt { color: var(--fg-muted); }
+    dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+
+    /* -- source annotation -------------------------------------------- */
+    #file-head {
+      position: sticky; top: 0; z-index: 2; background: var(--panel);
+      border-bottom: 1px solid var(--line); padding: .5rem .75rem;
+      display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap;
+    }
+    #file-head .path { font-weight: 600; }
+    .pill {
+      display: inline-block; padding: 0 .4rem; border-radius: 999px;
+      border: 1px solid var(--line-strong); font-size: var(--fs-small);
+      color: var(--fg-muted); white-space: nowrap;
+    }
+    .pill.hot { border-color: var(--accent); color: var(--accent); }
+    /* The elaboration lens: buttons joined into one strip, so it reads
+       as one choice with one answer rather than as three actions. */
+    .seg { display: inline-flex; }
+    .seg button {
+      padding: 0 .4rem; font-size: var(--fs-small); color: var(--fg-muted);
+      border-radius: 0; border-right-width: 0;
+    }
+    .seg button:first-child { border-radius: 999px 0 0 999px; padding-left: .55rem; }
+    .seg button:last-child {
+      border-radius: 0 999px 999px 0; border-right-width: 1px; padding-right: .55rem;
+    }
+    .seg button.on {
+      border-color: var(--accent); color: var(--accent); background: var(--panel);
+    }
+    .elab-head {
+      display: flex; gap: .4rem; align-items: baseline;
+      margin: .45rem 0 .2rem; font-size: var(--fs-small);
+    }
+    .elab-head:first-child { margin-top: 0; }
+    /* A clickable pill answers on hover the way the buttons and the
+       switcher links do, so "this does something" is visible before
+       the click rather than after it. */
+    .pill.act { cursor: pointer; }
+    .pill.act:hover { border-color: var(--accent); color: var(--accent); }
+    /* Pinned first row of the tests table: the merged view is a
+       destination, not one of the tests. */
+    tr.row.all-tests td { border-bottom: 1px solid var(--line-strong); }
+    tr.row.all-tests td:first-child { font-style: italic; }
+    table#src { font-size: var(--fs-base); }
+    table#src td { text-align: left; padding: 0 .4rem; white-space: pre; }
+    table#src td.no {
+      width: var(--gutter); text-align: right; color: var(--fg-faint);
+      user-select: none; border-right: 1px solid var(--line);
+    }
+
+    table#src td.marks { width: 1%; white-space: nowrap; }
+    table#src td.code { width: 100%; overflow-wrap: normal; }
+    table#src tr.hot td.code { box-shadow: inset 0 0 0 1px var(--accent); }
+    /* Every metric gets a column, and every column is capped and
+       clipped on purpose. One 32-bit bus declaration is 64 toggle
+       points on a single line; rendering a chip each pushed the code
+       column off the right of the screen. The cap lives on an inner
+       block because a max-width on a `td` is advisory in auto table
+       layout — as an inner block's it caps the column's intrinsic
+       contribution, so nothing in a cell can widen it. */
+    table#src td.marks { text-align: right; padding: 0 .3rem; }
+    table#src td.marks .marks-in {
+      display: flex; gap: .15rem; align-items: center; justify-content: flex-end;
+      max-width: var(--markcol); overflow: hidden; white-space: nowrap;
+    }
+    /* The `L` column is a count, not a badge. Hover is the peek (the
+       title lists the per-test hits), the click is the read — the same
+       docked panel every other column's badge opens. */
+    table#src td.hits {
+      color: var(--fg-muted); font-size: var(--fs-small); padding: 0 .35rem;
+    }
+    table#src td.hits.act { cursor: pointer; }
+
+    /* -- the source table's own header: per-file totals, per column --- */
+    table#src thead th {
+      font-size: var(--fs-small); font-weight: 600; line-height: 1.2;
+      padding: .1rem .3rem .15rem; vertical-align: top; white-space: nowrap;
+      border-bottom: 1px solid var(--line-strong);
+    }
+    table#src thead th.no { width: var(--gutter); }
+    table#src thead th.mh { text-align: right; cursor: pointer; width: 1%; }
+    table#src thead th.mh:hover, table#src thead th.mh.sort { color: var(--accent); }
+    table#src thead th.mh .mh-num { font-weight: 400; color: var(--fg-faint); }
+    table#src thead th.mh.sort .mh-num { color: var(--accent); }
+    table#src thead th.code {
+      text-align: left; font-weight: 400; color: var(--fg-faint);
+    }
+    .mark {
+      display: inline-block; margin-right: .15rem; padding: 0 .25rem;
+      border-radius: var(--radius-1); font-size: var(--fs-small);
+      border: 1px solid var(--line-strong); cursor: pointer;
+      color: var(--fg); max-width: 12rem; overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mark.miss { border-color: var(--err); color: var(--err); font-weight: 600; }
+    .mark.sel { outline: 1px solid var(--accent); }
+    .mark.badge { font-variant-numeric: tabular-nums; }
+    .mark.badge.open { outline: 1px solid var(--accent); }
+
+    /* -- docked detail panel: what the marks column no longer carries --
+       Docked rather than inline under the line: a badge on the last
+       visible line of a long file would otherwise open its detail below
+       the fold, and reading it meant scrolling the line away. */
+    #detail {
+      flex: none; display: flex; flex-direction: column; min-height: 0;
+      max-height: 40vh; background: var(--panel);
+      border-top: 1px solid var(--line-strong);
+    }
+    #detail-head {
+      flex: none; display: flex; gap: .5rem; align-items: center;
+      flex-wrap: wrap; padding: .3rem .75rem; font-size: var(--fs-small);
+      border-bottom: 1px solid var(--line); color: var(--fg-muted);
+    }
+    #detail-head .where { font-weight: 600; color: var(--fg); }
+    #detail-head button { padding: 0 .35rem; line-height: 1.3; }
+    #detail-scroll { flex: 1 1 auto; overflow: auto; min-height: 0; padding: 0 .75rem .5rem; }
+    /* The open line keeps its place in the code while its panel is up —
+       on the code cell only, or it would paint over the hit tint in the
+       very column the panel may have been opened from. */
+    table#src tr.open td.code { background: var(--panel-2); }
+    table#src tr.open td.no { box-shadow: inset 2px 0 0 var(--accent); }
+    /* A declaration line can carry a dozen signals; wrapping keeps the
+       panel a few lines tall instead of a dozen. */
+    .tgs { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0 1.6rem; }
+    .tg { margin: .3rem 0 0; }
+    .tg-head {
+      display: flex; gap: .4rem; align-items: baseline;
+      font-size: var(--fs-small);
+    }
+    .tg-name { font-weight: 600; color: var(--fg); }
+    .tg-range, .tg-sum { color: var(--fg-muted); }
+    .tg-rows { margin-top: .15rem; }
+    .tg-row { display: flex; gap: 1px; margin-bottom: 2px; }
+    /* One cell per bit, both directions in it: the top half is 0→1 and
+       the bottom half 1→0, each half either the ramp's covered end or
+       its uncovered end. A bit covered both ways therefore reads as one
+       solid block, and a half-toggled bit is visibly half. */
+    .bit {
+      width: .72rem; height: .72rem; flex: none; border-radius: 1px;
+      cursor: pointer;
+      --dir-up: var(--tgl-miss); --dir-down: var(--tgl-miss);
+      background: linear-gradient(to bottom,
+        var(--dir-up) 0 50%, var(--dir-down) 50% 100%);
+    }
+    .bit.up { --dir-up: var(--tgl-hit); }
+    .bit.down { --dir-down: var(--tgl-hit); }
+    .bit.absent { background: var(--cov-none); cursor: default; }
+    /* Byte boundary, so a wide bus is countable without a ruler. */
+    .bit.sep { margin-right: .3rem; }
+    .bit:hover { outline: 1px solid var(--fg-muted); }
+    .bit.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .tg-chips { margin-top: .35rem; }
+    /* The attribution of a point clicked in the grid above it: same
+       panel, so the grid you clicked in stays on screen. */
+    #point {
+      border-top: 1px dashed var(--line); margin-top: .4rem;
+      padding: .35rem 0 0; font-size: var(--fs-small);
+    }
+    #point table { width: auto; min-width: 10rem; }
+    #point table td { padding-right: .75rem; }
+
+    footer {
+      border-top: 1px solid var(--line); background: var(--panel);
+      padding: .3rem .75rem; color: var(--fg-muted);
+      display: flex; gap: .75rem; align-items: center; flex-wrap: wrap;
+    }
+    /* Shared hub chrome: connection dot + one vocabulary
+       (connected / connecting… / offline) — docs/concepts/hub.md. */
+    .dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
+    .dot.connected { background: var(--ok); }
+    .dot.connecting { background: var(--warn); }
+    .dot.offline { background: var(--err); }
+
+    #empty {
+      position: absolute; inset: 0; display: none; place-items: center;
+      text-align: center; padding: 2rem;
+    }
+    #empty.show { display: grid; }
+    #empty code {
+      background: var(--panel-2); padding: .1rem .35rem; border-radius: var(--radius-1);
+    }
+  </style>
+  <script>
+    %HUB_INJECTION%
+  </script>
+</head>
+<body>
+  <header>
+    <h1>rtl-buddy-cov <small id="counts"></small></h1>
+    <label class="chk" title="Which metric the FILE LIST is ranked and barred on — coldest first, files with no points of that kind last — and which the cold-only filter reads. It opens on toggle, where the holes usually are, and clicking a column header in the source view sets it too. The source view itself always shows all five. Toggle, expression and cover detail only exists when the run's raw database survived — an .info-only fallback carries line and branch alone.">
+      metric <select id="metric"></select>
+    </label>
+    <label class="chk" title="Restrict the FILE LIST and the tests table to one module's sources. These are the ELABORATED names the simulator compiled (ip_async_fifo__DB13), because that is what the coverage model is keyed on and two parameterisations of one module are two entries here; the source name is what the module chips in the file header show. To count only one elaboration's points INSIDE an open file, use the elaboration lens in the file header.">
+      module <select id="module"><option value="">all</option></select>
+    </label>
+    <input type="search" id="search" placeholder="filter files by path…" spellcheck="false">
+    <label class="chk" title="Hide files that are fully covered for the selected metric.">
+      <input type="checkbox" id="opt-cold"> cold only
+    </label>
+    <span class="grow"></span>
+    <label class="chk" title="Clicking a line also broadcasts source_focused; the hub resolves it to a design-view instance and highlights it there. Does nothing when no viewer is connected.">
+      <input type="checkbox" id="opt-select" checked> sync design view
+    </label>
+    <label class="chk" title="Clicking a line also jumps your editor to it — needs nvim with the rtl-buddy plugin (rb nvim-install) running in this project. Untick if no editor is connected.">
+      <input type="checkbox" id="opt-open" checked> open in editor
+    </label>
+    <button id="reload" title="Re-fetch /cov.json (after another coverage run)">reload</button>
+    <nav class="switcher" aria-label="hub apps">
+      <a href="/" title="Every app this hub serves, plus its live state.">⌂ hub</a>
+      <a href="/graph" target="_blank" rel="noopener"
+         title="Open the design knowledge graph in a new tab. Selecting a module here focuses it there.">graph ↗</a>
+      <a href="/view" target="_blank" rel="noopener"
+         title="Open the schematic design view in a new tab.">design view ↗</a>
+    </nav>
+  </header>
+
+  <main>
+    <aside>
+      <h2>files</h2>
+      <ul class="files" id="files"></ul>
+      <h2>tests</h2>
+      <div id="tests"><p class="muted">no per-test attribution in this run.</p></div>
+    </aside>
+    <section id="content">
+      <div id="dash"></div>
+      <div id="file" hidden>
+        <div id="file-head"></div>
+        <div id="src-scroll"><table id="src">
+          <thead id="src-head"></thead><tbody id="src-body"></tbody>
+        </table></div>
+        <!--
+          Docked, i.e. OUTSIDE #src-scroll: the detail of a line near the
+          bottom of a long file used to open below that line, inside the
+          same scroller, so opening it scrolled it out of sight. It is a
+          sibling of the code area instead, and the attribution of a
+          point clicked inside it stacks in the same panel — one home for
+          "what is on this line", not two panels racing for the bottom.
+        -->
+        <div id="detail" hidden>
+          <div id="detail-head"></div>
+          <div id="detail-scroll">
+            <div id="detail-body"></div>
+            <div id="point" hidden></div>
+          </div>
+        </div>
+      </div>
+      <div id="empty"><div id="empty-msg"></div></div>
+    </section>
+  </main>
+
+  <footer>
+    <span><span class="dot connecting" id="ws-dot"></span> <span id="ws-status">connecting…</span></span>
+    <span id="peers" class="muted"></span>
+    <span class="grow"></span>
+    <span id="msg" class="muted"></span>
+  </footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var COV_URL = window.__RTL_BUDDY_COV_URL__ || '/cov.json';
+  var SOURCE_URL = window.__RTL_BUDDY_COV_SOURCE_URL__ || '/cov/source';
+
+  // Metric order is authoritative from `hub.metrics` when served; this
+  // is the fallback for a payload from an older hub.
+  var METRICS = ['line', 'branch', 'toggle', 'expression', 'cover'];
+  //: The metric the pane opens on. Toggle is where the holes are on a
+  //  real run — line and branch are usually near 100% by the time
+  //  anybody opens this — so it is the useful first ranking.
+  var DEFAULT_METRIC = 'toggle';
+  var METRIC_INITIAL = {
+    line: 'L', branch: 'B', toggle: 'T', expression: 'E', cover: 'C'
+  };
+
+  var els = {
+    counts: document.getElementById('counts'),
+    metric: document.getElementById('metric'),
+    module: document.getElementById('module'),
+    search: document.getElementById('search'),
+    cold: document.getElementById('opt-cold'),
+    optSelect: document.getElementById('opt-select'),
+    optOpen: document.getElementById('opt-open'),
+    files: document.getElementById('files'),
+    tests: document.getElementById('tests'),
+    dash: document.getElementById('dash'),
+    file: document.getElementById('file'),
+    fileHead: document.getElementById('file-head'),
+    srcHead: document.getElementById('src-head'),
+    srcBody: document.getElementById('src-body'),
+    srcScroll: document.getElementById('src-scroll'),
+    detail: document.getElementById('detail'),
+    detailHead: document.getElementById('detail-head'),
+    detailBody: document.getElementById('detail-body'),
+    point: document.getElementById('point'),
+    empty: document.getElementById('empty'),
+    emptyMsg: document.getElementById('empty-msg'),
+    peers: document.getElementById('peers'),
+    msg: document.getElementById('msg'),
+    wsDot: document.getElementById('ws-dot'),
+    wsStatus: document.getElementById('ws-status')
+  };
+
+  var state = {
+    payload: null,
+    byPath: Object.create(null),
+    modules: Object.create(null),
+    metric: null,      // chosen on the first ingest, the user's pick after
+    module: '',
+    filter: '',
+    coldOnly: false,
+    file: null,        // selected file path
+    test: null,        // selected test name (attribution filter)
+    elab: null,        // one elaborated module, or null for all of them
+
+    focusLine: null,   // line to scroll to / highlight in the file view
+    focusItem: null,   // point name to highlight in the file view
+    expandedLine: null, // the line the docked detail panel is showing
+    expandedMetric: null, // which of that line's columns it is showing
+    sources: Object.create(null),
+    pending: null      // cov_focus that arrived before the model did
+  };
+
+  // ---------------------------------------------------------------
+  // small helpers
+  // ---------------------------------------------------------------
+
+  function note(text, level) {
+    els.msg.textContent = text || '';
+    els.msg.className =
+      level === 'error' ? 'msg-error' : level === 'warn' ? 'msg-warn' : 'muted';
+  }
+  function clear(node) { while (node.firstChild) { node.removeChild(node.firstChild); } }
+  function elem(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) { n.className = cls; }
+    if (text != null) { n.textContent = String(text); }
+    return n;
+  }
+  function pct(ratio) {
+    return ratio == null ? '—' : (ratio * 100).toFixed(1) + '%';
+  }
+  // The shared ramp: hue 0 (red) at nothing covered, 120 (green) at all
+  // of it. Saturation and lightness come from the token sheet, which is
+  // what makes the same fill legible in both themes.
+  function tint(node, ratio) {
+    if (ratio == null) { node.classList.add('tint', 'none'); return node; }
+    node.classList.add('tint');
+    node.classList.remove('none');
+    node.style.setProperty('--h', String(Math.round(ratio * 120)));
+    return node;
+  }
+  function totalsOf(row, metric) {
+    return (row && row.totals && row.totals[metric]) || { found: 0, hit: 0, ratio: null };
+  }
+  function uuid() {
+    if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); }
+    var b = new Uint8Array(16);
+    (window.crypto || {}).getRandomValues
+      ? crypto.getRandomValues(b)
+      : (function () { for (var i = 0; i < 16; i++) { b[i] = Math.floor(Math.random() * 256); } })();
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    var h = []; for (var i = 0; i < 16; i++) { h.push((b[i] + 0x100).toString(16).slice(1)); }
+    return h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' +
+           h.slice(6, 8).join('') + '-' + h.slice(8, 10).join('') + '-' + h.slice(10).join('');
+  }
+
+  // ---------------------------------------------------------------
+  // hub WebSocket — same /ws the SPA and the graph pane use
+  // ---------------------------------------------------------------
+
+  var ws = null, wsReady = false, retryMs = 500, pending = Object.create(null);
+
+  function connect() {
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    try { ws = new WebSocket(proto + '//' + location.host + '/ws'); }
+    catch (e) { scheduleReconnect(); return; }
+
+    ws.addEventListener('open', function () {
+      send({
+        v: 1, id: uuid(), origin: 'cov', kind: 'request', type: 'hello',
+        payload: {
+          client: 'cov', version: '1.0.0',
+          capabilities: ['cov_focus'],
+          // A refreshed tab supersedes the stale one. The pane has its
+          // own origin, so this never evicts the schematic or the graph.
+          takeover: true
+        }
+      });
+    });
+    ws.addEventListener('message', function (ev) {
+      var env; try { env = JSON.parse(ev.data); } catch (e) { return; }
+      applyEnvelope(env);
+    });
+    ws.addEventListener('close', function () {
+      wsReady = false;
+      els.wsDot.className = 'dot offline';
+      els.wsStatus.textContent = 'offline';
+      els.wsStatus.title = 'lost /ws — retrying';
+      scheduleReconnect();
+    });
+    ws.addEventListener('error', function () { /* close handles it */ });
+  }
+
+  function scheduleReconnect() {
+    setTimeout(connect, retryMs);
+    retryMs = Math.min(retryMs * 2, 10000);
+  }
+
+  function send(env) {
+    if (!ws || ws.readyState !== 1) { return false; }
+    ws.send(JSON.stringify(env));
+    return true;
+  }
+  function emit(type, payload) {
+    return send({ v: 1, id: uuid(), origin: 'cov', kind: 'event', type: type, payload: payload });
+  }
+  function request(type, payload, onReply) {
+    var id = uuid();
+    if (onReply) { pending[id] = onReply; }
+    return send({ v: 1, id: id, origin: 'cov', kind: 'request', type: type, payload: payload });
+  }
+
+  function applyEnvelope(env) {
+    if (!env || typeof env !== 'object') { return; }
+    // Correlation is by echoed `id`: a response carries the request's
+    // own id (there is no separate in_reply_to field on the wire).
+    if ((env.kind === 'response' || env.kind === 'error') && pending[env.id]) {
+      var cb = pending[env.id]; delete pending[env.id];
+      cb(env);
+    }
+    switch (env.type) {
+      case 'welcome':
+        wsReady = true; retryMs = 500;
+        els.wsDot.className = 'dot connected';
+        els.wsStatus.textContent = 'connected';
+        els.wsStatus.title = 'hub ' + (env.payload && env.payload.server_version || '');
+        setPeers(env.payload && env.payload.registered_clients);
+        break;
+      case 'peer_joined':
+      case 'bye':
+        // Cheap refresh: ask the hub who is connected rather than
+        // maintaining a shadow registry that can drift.
+        request('state_snapshot', {}, function (reply) {
+          if (reply.kind === 'response' && reply.payload) { setPeers(reply.payload.peers); }
+        });
+        break;
+      case 'cov_focus':
+        if (env.origin === 'cov') { break; }
+        applyFocus(env.payload || {});
+        break;
+      case 'source_focused':
+        if (env.origin === 'cov') { break; }
+        // Exact: the editor's cursor is a file and a line, which is
+        // precisely how this model is keyed.
+        focusFile(env.payload && env.payload.file,
+                  { line: env.payload && env.payload.line, emit: false });
+        break;
+      case 'selection_changed':
+        if (env.origin === 'cov') { break; }
+        focusByInstancePath(env.payload && env.payload.instance_path);
+        break;
+      default:
+        break;
+    }
+    if (env.kind === 'error' && env.payload) {
+      note('hub error: ' + env.payload.code + ': ' + env.payload.message, 'error');
+    }
+  }
+
+  function setPeers(list) {
+    if (!Array.isArray(list)) { return; }
+    els.peers.textContent = 'peers: ' + (list.length ? list.join(', ') : 'none');
+  }
+
+  // ---------------------------------------------------------------
+  // loading
+  // ---------------------------------------------------------------
+
+  function load() {
+    note('loading ' + COV_URL + '…');
+    fetch(COV_URL, { cache: 'no-store' }).then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    }).then(function (res) {
+      if (!res.ok) { showEmpty(res.body && res.body.error); return; }
+      ingest(res.body);
+    }).catch(function (e) {
+      showEmpty('could not read ' + COV_URL + ': ' + e);
+    });
+  }
+
+  function showEmpty(message) {
+    els.empty.classList.add('show');
+    els.file.hidden = true;
+    clear(els.dash);
+    clear(els.emptyMsg);
+    // The one piece of artwork this pane carries: a small mascot on the
+    // "no data yet" panel, per the hub's identity-marks-only rule.
+    var art = document.createElement('img');
+    art.src = '/hub/assets/rtl-buddy-mascot-240.png';
+    art.width = 120; art.height = 120; art.alt = '';
+    els.emptyMsg.appendChild(art);
+    els.emptyMsg.appendChild(elem('p', null, message || 'no coverage to show.'));
+    var q = elem('p', 'muted');
+    q.appendChild(document.createTextNode('Produce some with '));
+    q.appendChild(elem('code', null, 'rb regression --coverage-merge'));
+    q.appendChild(document.createTextNode(' (or any coverage flag on '));
+    q.appendChild(elem('code', null, 'rb test'));
+    q.appendChild(document.createTextNode('), then press reload.'));
+    els.emptyMsg.appendChild(q);
+    note('');
+  }
+
+  function ingest(payload) {
+    els.empty.classList.remove('show');
+    state.payload = payload;
+    state.byPath = Object.create(null);
+    (payload.files || []).forEach(function (row) { state.byPath[row.path] = row; });
+    state.modules = Object.create(null);
+    (payload.modules || []).forEach(function (name) { state.modules[name] = true; });
+    (payload.files || []).forEach(function (row) {
+      (row.modules || []).forEach(function (name) { state.modules[name] = true; });
+    });
+    var hub = payload.hub || {};
+    if (Array.isArray(hub.metrics) && hub.metrics.length) { METRICS = hub.metrics; }
+    if (hub.source_route) { SOURCE_URL = hub.source_route; }
+    // Only when the user has not picked one: a reload must not undo a
+    // choice, but a first load has to land on something with points in
+    // it (an .info-only run has no toggles at all, and opening on an
+    // empty column reads as a broken pane, not as a missing metric).
+    if (!state.metric || METRICS.indexOf(state.metric) < 0) {
+      state.metric = initialMetric(payload);
+    }
+
+    renderMetricPicker();
+    renderModulePicker();
+    renderHeader();
+    renderFiles();
+    renderTests();
+    renderDashboard();
+    state.file = null;
+    els.file.hidden = true;
+    els.dash.hidden = false;
+
+    var counts = payload.counts || {};
+    note((counts.files || 0) + ' files, ' + (counts.tests || 0) + ' tests, ' +
+         (counts.modules || 0) + ' modules');
+    if (state.pending) {
+      var focus = state.pending; state.pending = null;
+      applyFocus(focus);
+    }
+  }
+
+  function renderHeader() {
+    var p = state.payload || {};
+    var totals = p.totals || {};
+    var parts = [];
+    METRICS.forEach(function (metric) {
+      var t = totals[metric];
+      if (!t || !t.found) { return; }
+      parts.push(METRIC_INITIAL[metric] + ' ' + pct(t.ratio));
+    });
+    if (p.simulator) { parts.push(p.simulator); }
+    els.counts.textContent = parts.length ? '· ' + parts.join(' · ') : '';
+    els.counts.title = p.manifest ? 'from ' + p.manifest : '';
+  }
+
+  function initialMetric(payload) {
+    var totals = (payload && payload.totals) || {};
+    function has(metric) {
+      return METRICS.indexOf(metric) >= 0 && (totals[metric] || {}).found;
+    }
+    if (has(DEFAULT_METRIC)) { return DEFAULT_METRIC; }
+    for (var i = 0; i < METRICS.length; i++) {
+      if (has(METRICS[i])) { return METRICS[i]; }
+    }
+    return METRICS[0];
+  }
+
+  function renderMetricPicker() {
+    clear(els.metric);
+    METRICS.forEach(function (metric) {
+      var opt = elem('option', null, metric);
+      opt.value = metric;
+      var t = (state.payload.totals || {})[metric] || {};
+      // A metric no record carried is kept but marked: "0 found" is a
+      // fact about the run (an .info-only fallback has no toggles), not
+      // a coverage hole, and hiding it would look like the latter.
+      if (!t.found) { opt.textContent = metric + ' (none)'; }
+      els.metric.appendChild(opt);
+    });
+    els.metric.value = state.metric;
+  }
+
+  // --- pure helpers, no DOM and no state -----------------------------
+  // >>> module-names
+  // The coverage model keys modules on the name the SIMULATOR
+  // elaborated — verilator appends a mangled parameterisation suffix,
+  // so `ip_async_fifo` compiled once is `ip_async_fifo__DB13` and
+  // compiled twice is `ip_cdc_handshake__W13` and `ip_cdc_handshake__Wc`.
+  // The design graph keys on the SOURCE name (`module:ip_async_fifo`),
+  // which is also the name a person reads in `design/common/*.sv`. One
+  // trailing `__<alnum>` group is the entire difference between the two
+  // vocabularies, so it is stripped exactly once, and only when a
+  // non-empty base survives — `__A8` on its own is a whole name, not a
+  // suffix.
+  //
+  // The python end of this wire is rtl_buddy/graph/coverage.py
+  // (`_design_entries`), which today joins model module names onto
+  // `module:<name>` graph ids by plain equality and reports the
+  // leftovers in `summary.unmatched_modules` — i.e. every parameterised
+  // module misses there for the same reason the pill used to miss here.
+  // If that side grows the rule, it must be THIS rule; if it changes,
+  // this changes with it.
+  function baseModuleName(name) {
+    var text = String(name == null ? '' : name);
+    var base = text.replace(/__[A-Za-z0-9]+$/, '');
+    return base || text;
+  }
+
+  // The elaborated names of one file, collapsed onto the source names a
+  // reader recognises: two parameterisations of one module are one chip
+  // that remembers both, in first-seen order.
+  function moduleChips(names) {
+    var chips = [], byBase = Object.create(null);
+    (names || []).forEach(function (name) {
+      var base = baseModuleName(name);
+      var chip = byBase[base];
+      if (!chip) { chip = byBase[base] = { base: base, names: [] }; chips.push(chip); }
+      if (chip.names.indexOf(name) < 0) { chip.names.push(name); }
+    });
+    return chips;
+  }
+
+  // Which elaborated module a sender's `module:<name>` means, or null.
+  // Exact first, so a project whose module really is called `a__b`
+  // still wins over any stripped near-miss; stripped equality second,
+  // so a sender speaking the graph's source vocabulary lands. Ties go
+  // to the first name given, which is why callers pass a sorted list.
+  function resolveModuleName(known, name) {
+    var wanted = String(name == null ? '' : name);
+    if (!wanted) { return null; }
+    var names = known || [];
+    if (names.indexOf(wanted) >= 0) { return wanted; }
+    var base = baseModuleName(wanted);
+    for (var i = 0; i < names.length; i++) {
+      if (baseModuleName(names[i]) === base) { return names[i]; }
+    }
+    return null;
+  }
+  // <<< module-names
+
+  // >>> elaboration-lens
+  // Builds on `baseModuleName` above — sliced separately, evaluated
+  // together.
+  //
+  // The elaborated modules one file's points were recorded against.
+  // Verilator's LINE points carry no module at all — line coverage is
+  // per source line, merged across every elaboration — so `line` never
+  // contributes and is never scoped by the lens below.
+  function elaborationsOf(row, metrics) {
+    var names = [], seen = Object.create(null);
+    (metrics || []).forEach(function (metric) {
+      if (metric === 'line') { return; }
+      ((row && row[metric]) || []).forEach(function (point) {
+        var name = point && point.module;
+        if (!name || seen[name]) { return; }
+        seen[name] = true; names.push(name);
+      });
+    });
+    return names.sort();
+  }
+
+  // Labels for the elaboration lens. When every elaboration in the file
+  // is of the SAME module the base is the same word repeated on every
+  // segment, so the label is the parameterisation suffix alone (`W13`)
+  // and the un-parameterised one keeps its plain name; when the file
+  // holds several modules the base is the information, so the label is
+  // the whole name. The full name is the tooltip either way.
+  function elaborationSegments(names) {
+    var uniq = [], seen = Object.create(null);
+    (names || []).forEach(function (name) {
+      var text = String(name == null ? '' : name);
+      if (!text || seen[text]) { return; }
+      seen[text] = true; uniq.push(text);
+    });
+    uniq.sort();
+    var bases = Object.create(null), count = 0;
+    uniq.forEach(function (name) {
+      var base = baseModuleName(name);
+      if (!bases[base]) { bases[base] = true; count += 1; }
+    });
+    return uniq.map(function (name) {
+      var base = baseModuleName(name);
+      var suffix = name.length > base.length ? name.slice(base.length + 2) : '';
+      return { name: name, label: count > 1 ? name : (suffix || base) };
+    });
+  }
+
+  function pointsOfElaboration(points, elab) {
+    if (!elab) { return points || []; }
+    return (points || []).filter(function (point) {
+      return point && point.module === elab;
+    });
+  }
+
+  // One cell's entries split per elaboration, each with its own hit
+  // count — the breakdown the detail panel heads its groups with.
+  // `hits` is passed in rather than closed over so this stays pure:
+  // what counts as a hit depends on the test lens.
+  function elaborationGroups(entries, hits) {
+    var groups = [], byName = Object.create(null);
+    (entries || []).forEach(function (entry) {
+      var name = ((entry && entry.point) || {}).module || '';
+      var group = byName[name];
+      if (!group) {
+        group = byName[name] = { module: name, entries: [], hit: 0 };
+        groups.push(group);
+      }
+      group.entries.push(entry);
+      if (hits(entry.point) > 0) { group.hit += 1; }
+    });
+    return groups.sort(function (a, b) {
+      return a.module < b.module ? -1 : a.module > b.module ? 1 : 0;
+    });
+  }
+  // <<< elaboration-lens
+
+  function renderModulePicker() {
+    var current = state.module;
+    clear(els.module);
+    var all = elem('option', null, 'all');
+    all.value = '';
+    els.module.appendChild(all);
+    Object.keys(state.modules).sort().forEach(function (name) {
+      var opt = elem('option', null, name);
+      opt.value = name;
+      els.module.appendChild(opt);
+    });
+    els.module.value = state.modules[current] ? current : '';
+    state.module = els.module.value;
+  }
+
+  // ---------------------------------------------------------------
+  // file list
+  // ---------------------------------------------------------------
+
+  // --- pure helper, no DOM and no state ------------------------------
+  // >>> file-ordering
+  // The file list ranks by the SELECTED metric, not by the one the
+  // payload happened to be ordered on. Same rule as `coldest_first` in
+  // rtl_buddy/cov/query.py — files with no points of the metric last
+  // (silent, not cold), then ratio ascending, then absolute misses
+  // descending — so on `line`, the metric the builder ranks on, the
+  // pane and `rb cov summary` produce the same list.
+  //
+  // The one difference is the final tie-break: ties keep the payload's
+  // own order rather than re-deciding on path. For `line` that IS the
+  // builder's path tie-break, because the payload arrives in the
+  // builder's order; for every other metric it means the list cannot
+  // jitter between renders.
+  function coldestFirst(rows, metric) {
+    return (rows || []).map(function (row, index) {
+      var totals = (row && row.totals && row.totals[metric]) || {};
+      var found = totals.found || 0;
+      return {
+        row: row,
+        index: index,
+        silent: found ? 0 : 1,
+        ratio: totals.ratio == null ? 1 : totals.ratio,
+        misses: found - (totals.hit || 0)
+      };
+    }).sort(function (a, b) {
+      return (a.silent - b.silent) || (a.ratio - b.ratio) ||
+             (b.misses - a.misses) || (a.index - b.index);
+    }).map(function (entry) { return entry.row; });
+  }
+  // <<< file-ordering
+
+  function visibleFiles() {
+    var rows = (state.payload && state.payload.files) || [];
+    return coldestFirst(rows.filter(function (row) {
+      if (state.module && (row.modules || []).indexOf(state.module) < 0) { return false; }
+      if (state.filter && row.path.toLowerCase().indexOf(state.filter) < 0) { return false; }
+      if (state.coldOnly) {
+        var t = totalsOf(row, state.metric);
+        if (!t.found || t.hit >= t.found) { return false; }
+      }
+      return true;
+    }), state.metric);
+  }
+
+  function renderFiles() {
+    clear(els.files);
+    var rows = visibleFiles();
+    if (!rows.length) {
+      els.files.appendChild(elem('li', 'muted', 'no files match.'));
+      return;
+    }
+    rows.forEach(function (row) {
+      var t = totalsOf(row, state.metric);
+      var li = elem('li');
+      li.classList.toggle('sel', state.file === row.path);
+      // The path is rendered right-to-left so a long path truncates at
+      // its useless end: `…/rtl/fifo/fifo_wr.sv`, not `design/rtl/fi…`.
+      var path = elem('span', 'path', row.path);
+      path.title = row.path + (row.modules && row.modules.length
+        ? '  ·  ' + row.modules.join(', ') : '');
+      var bar = elem('span', 'bar');
+      var fill = elem('span');
+      tint(fill, t.ratio);
+      fill.style.width = (t.ratio == null ? 0 : t.ratio * 100) + '%';
+      bar.appendChild(fill);
+      var num = elem('span', 'pct', t.found ? t.hit + '/' + t.found : '—');
+      li.appendChild(path); li.appendChild(bar); li.appendChild(num);
+      li.addEventListener('click', function () { selectFile(row.path, {}); });
+      els.files.appendChild(li);
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // tests table — the attribution the Coverview fork existed to render
+  // ---------------------------------------------------------------
+
+  // The attribution filter is a lens, and a lens you cannot take off is
+  // a mode — every way of changing it goes through here.
+  function setLens(name) {
+    if (state.test === name) { return; }
+    state.test = name;
+    renderTests();
+    if (state.file) { renderFile(); }
+    note(state.test
+      ? 'attribution: showing what ' + state.test + ' hit'
+      : 'attribution: all tests (merged)');
+  }
+
+  // The second lens: one elaboration of a parameterised module. A file
+  // compiled twice (`ip_cdc_handshake__W13` and `__Wc`) has two sets of
+  // branch/toggle/expression/cover points on the same source lines, and
+  // merged they answer "is this line covered somewhere" when the
+  // question was "is it covered in the configuration I care about".
+  // Composes with the test lens: both on intersects them.
+  function setElab(name) {
+    if (state.elab === name) { return; }
+    state.elab = name || null;
+    if (state.file) { renderFile(); }
+    note(state.elab
+      ? 'elaboration: counting only ' + state.elab
+      : 'elaboration: all of them (merged)');
+  }
+
+  function elabControl(segs) {
+    var wrap = elem('span', 'seg');
+    var all = elem('button', state.elab ? null : 'on', 'all');
+    all.title = 'Count every elaboration together — the model’s own numbers, ' +
+      'which is what rb cov summary reports.';
+    all.addEventListener('click', function () { setElab(null); });
+    wrap.appendChild(all);
+    segs.forEach(function (seg) {
+      var b = elem('button', state.elab === seg.name ? 'on' : null, seg.label);
+      b.title = seg.name +
+        '\nCount only this elaboration’s points. Line coverage stays merged: ' +
+        'verilator records it per source line, with no module on it.';
+      b.addEventListener('click', function () { setElab(seg.name); });
+      wrap.appendChild(b);
+    });
+    return wrap;
+  }
+
+  function elabPill() {
+    var pill = elem('span', 'pill hot act', 'elab: ' + baseElabLabel(state.elab) + ' ×');
+    pill.title = 'Only ' + state.elab + '’s points are counted. ' +
+      'Click for all elaborations (merged).';
+    pill.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setElab(null);
+    });
+    return pill;
+  }
+
+  function baseElabLabel(name) {
+    var seg = elaborationSegments([name])[0];
+    return seg ? seg.label : String(name || '');
+  }
+
+  // Wearing the lens is the abnormal state, so say so where the numbers
+  // are, and make saying it the way out.
+  function lensPill() {
+    var pill = elem('span', 'pill hot act', 'lens: ' + state.test + ' ×');
+    pill.title = 'Only what ' + state.test +
+      ' hit is counted. Click for all tests (merged).';
+    pill.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setLens(null);
+    });
+    return pill;
+  }
+
+  function renderTests() {
+    clear(els.tests);
+    var rows = (state.payload && state.payload.tests) || [];
+    if (!rows.length) {
+      els.tests.appendChild(elem('p', 'muted', 'no per-test attribution in this run.'));
+      return;
+    }
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var htr = document.createElement('tr');
+    htr.appendChild(elem('th', null, 'test'));
+    METRICS.forEach(function (m) { htr.appendChild(elem('th', null, METRIC_INITIAL[m])); });
+    thead.appendChild(htr); table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    // Merged is what the pane shows by default, and "click the selected
+    // test again" was the only way back to it — a gesture you had to
+    // already know. This row is the way back, and it is always there.
+    var all = elem('tr', 'row all-tests');
+    all.classList.toggle('sel', !state.test);
+    var allName = elem('td', null, 'all tests (merged)');
+    allName.title = 'Every test in the run, merged — what the pane shows by default. ' +
+      'Pick a test below to see its contribution alone.';
+    all.appendChild(allName);
+    METRICS.forEach(function (m) {
+      var t = totalsOf(state.payload, m);
+      all.appendChild(elem('td', null, t.found ? pct(t.ratio) : '—'));
+    });
+    all.addEventListener('click', function () { setLens(null); });
+    tbody.appendChild(all);
+    rows.forEach(function (row) {
+      var tr = elem('tr', 'row');
+      tr.classList.toggle('sel', state.test === row.name);
+      var name = elem('td', null, row.name);
+      name.title = row.suite ? 'from ' + row.suite : '';
+      tr.appendChild(name);
+      METRICS.forEach(function (m) {
+        var t = totalsOf(row, m);
+        var td = elem('td', null, t.found ? pct(t.ratio) : '—');
+        tr.appendChild(td);
+      });
+      // Second click clears too: the gesture predates the row above and
+      // people have it in their fingers.
+      tr.addEventListener('click', function () {
+        setLens(state.test === row.name ? null : row.name);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    els.tests.appendChild(table);
+  }
+
+  // ---------------------------------------------------------------
+  // dashboard
+  // ---------------------------------------------------------------
+
+  function renderDashboard() {
+    clear(els.dash);
+    var p = state.payload || {};
+    var cards = elem('div', 'cards');
+    METRICS.forEach(function (metric) {
+      var t = (p.totals || {})[metric];
+      if (!t) { return; }
+      var card = elem('div', 'card');
+      card.appendChild(elem('div', 'k', metric));
+      var v = elem('div', 'v', t.found ? pct(t.ratio) : '—');
+      card.appendChild(v);
+      card.appendChild(elem('div', 'n', t.found ? t.hit + ' / ' + t.found + ' points' : 'not collected'));
+      var bar = elem('div', 'bar');
+      var fill = elem('span');
+      tint(fill, t.ratio);
+      fill.style.width = (t.ratio == null ? 0 : t.ratio * 100) + '%';
+      bar.appendChild(fill);
+      card.appendChild(bar);
+      cards.appendChild(card);
+    });
+    els.dash.appendChild(cards);
+
+    els.dash.appendChild(elem('h2', null, 'run'));
+    var dl = elem('dl', 'kv');
+    [['manifest', p.manifest], ['generated', p.generated_at], ['command', p.run_command],
+     ['suite', p.suite], ['builder', p.builder], ['simulator', p.simulator],
+     ['merge mode', p.merge_mode], ['model', (p.hub || {}).model]
+    ].forEach(function (pair) {
+      if (pair[1] == null) { return; }
+      dl.appendChild(elem('dt', null, pair[0]));
+      dl.appendChild(elem('dd', null, pair[1]));
+    });
+    els.dash.appendChild(dl);
+
+    if ((p.covers || []).length) {
+      els.dash.appendChild(elem('h2', null, 'cover points'));
+      var table = document.createElement('table');
+      var thead = document.createElement('thead');
+      var htr = document.createElement('tr');
+      ['name', 'module', 'file', 'hits'].forEach(function (h) {
+        htr.appendChild(elem('th', null, h));
+      });
+      thead.appendChild(htr); table.appendChild(thead);
+      var tbody = document.createElement('tbody');
+      p.covers.forEach(function (row) {
+        var tr = elem('tr', 'row');
+        tr.appendChild(elem('td', null, row.name || '—'));
+        var mod = elem('td', null, row.module ? baseModuleName(row.module) : '—');
+        if (row.module && baseModuleName(row.module) !== row.module) {
+          mod.title = 'elaborated as ' + row.module;
+        }
+        tr.appendChild(mod);
+        tr.appendChild(elem('td', null, row.file || '—'));
+        var hits = elem('td', null, row.hits);
+        if (!row.hits) { hits.className = 'msg-error'; }
+        tr.appendChild(hits);
+        tr.addEventListener('click', function () {
+          selectFile(row.file, { line: row.line, item: row.name, metric: 'cover' });
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      els.dash.appendChild(table);
+    }
+
+    els.dash.appendChild(elem('h2', null, 'coldest files'));
+    els.dash.appendChild(elem('p', 'muted',
+      'Pick one on the left — the list is ranked coldest first for the metric ' +
+      'selected above, with files that have no points of it last.'));
+  }
+
+  // ---------------------------------------------------------------
+  // per-file source annotation
+  // ---------------------------------------------------------------
+
+  function selectFile(path, opts) {
+    opts = opts || {};
+    var row = path && state.byPath[path];
+    if (!row) {
+      note('no coverage recorded for ' + path, 'warn');
+      return false;
+    }
+    // A line number only means something within one file, so the open
+    // detail panel does not survive a change of file — and neither does
+    // the elaboration lens, which names a module the next file may not
+    // even contain.
+    if (state.file !== path) {
+      state.expandedLine = null;
+      state.expandedMetric = null;
+      state.elab = null;
+    }
+    if (opts.elab !== undefined) { state.elab = opts.elab; }
+    state.file = path;
+    state.focusLine = opts.line || null;
+    state.focusItem = opts.item || null;
+    if (opts.metric && METRICS.indexOf(opts.metric) >= 0) {
+      state.metric = opts.metric;
+      els.metric.value = opts.metric;
+    }
+    renderFiles();
+    els.dash.hidden = true;
+    els.file.hidden = false;
+    ensureSource(path, function () { renderFile(); });
+    return true;
+  }
+
+  function ensureSource(path, done) {
+    if (state.sources[path] !== undefined) { done(); return; }
+    fetch(SOURCE_URL + '?path=' + encodeURIComponent(path), { cache: 'no-store' })
+      .then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+      })
+      .then(function (res) {
+        // A missing source is not a failure of the coverage read: the
+        // points are still worth showing, so the annotation degrades to
+        // line numbers with no text rather than to an error page.
+        state.sources[path] = res.ok && Array.isArray(res.body.lines)
+          ? res.body.lines : null;
+        if (!res.ok) { note((res.body && res.body.error) || ('no source for ' + path), 'warn'); }
+        done();
+      })
+      .catch(function (e) {
+        state.sources[path] = null;
+        note('could not read source for ' + path + ': ' + e, 'warn');
+        done();
+      });
+  }
+
+  function pointsByLine(row) {
+    var index = Object.create(null);
+    METRICS.forEach(function (metric) {
+      pointsOfElaboration(row[metric], state.elab).forEach(function (point) {
+        if (metric === 'line' || point.line == null) { return; }
+        (index[point.line] = index[point.line] || []).push({ metric: metric, point: point });
+      });
+    });
+    return index;
+  }
+
+  // --- pure helpers, no DOM and no state -----------------------------
+  // tests/test_hub_cov_page.py slices the source between these markers
+  // and evaluates it in node, so nothing between them may close over
+  // anything defined outside.
+  // >>> toggle-grouping
+  // A verilator toggle point is `<base>[<bit>]:<dir>` — `clk:0->1`,
+  // `paddr[3]:1->0` — with the bit part absent for scalars. The base may
+  // itself contain brackets (`mem[1].data[0]`), so the bracket that
+  // indexes the bus is the LAST one before the colon, which is what the
+  // lazy first group buys.
+  var TOGGLE_NAME = /^(.*?)(?:\[(\d+)\])?:(0->1|1->0)$/;
+
+  function parseToggleName(name) {
+    var m = TOGGLE_NAME.exec(name == null ? '' : String(name));
+    if (!m) { return null; }
+    return { base: m[1], bit: m[2] == null ? null : parseInt(m[2], 10), dir: m[3] };
+  }
+
+  // Collapse a line's toggle points into one group per base signal, each
+  // carrying one cell per bit ordered MSB first (so the grid reads like
+  // the declaration: LSB on the right). `total` counts DIRECTIONS, since
+  // a direction is what a toggle point actually is.
+  function groupToggles(entries) {
+    var groups = [], byKey = Object.create(null);
+    (entries || []).forEach(function (entry) {
+      var point = (entry && entry.point) || {};
+      var parsed = parseToggleName(point.name);
+      // A name this pane cannot parse still has to be reachable, so it
+      // becomes its own one-cell group rather than being dropped.
+      if (!parsed) { parsed = { base: String(point.name || '(unnamed)'), bit: null, dir: '0->1' }; }
+      var key = (point.module || '') + ' ' + parsed.base;
+      var group = byKey[key];
+      if (!group) {
+        group = byKey[key] = {
+          base: parsed.base, module: point.module || '',
+          scalar: true, min: null, max: null, total: 0,
+          byBit: Object.create(null), cells: []
+        };
+        groups.push(group);
+      }
+      var bitKey = parsed.bit == null ? 's' : String(parsed.bit);
+      var cell = group.byBit[bitKey];
+      if (!cell) { cell = group.byBit[bitKey] = { bit: parsed.bit, up: null, down: null }; }
+      var slot = parsed.dir === '0->1' ? 'up' : 'down';
+      if (cell[slot]) { slot = slot === 'up' ? 'down' : 'up'; }
+      if (cell[slot]) { return; }
+      cell[slot] = point;
+      group.total += 1;
+      if (parsed.bit != null) {
+        group.scalar = false;
+        group.min = group.min == null ? parsed.bit : Math.min(group.min, parsed.bit);
+        group.max = group.max == null ? parsed.bit : Math.max(group.max, parsed.bit);
+      }
+    });
+    groups.forEach(function (group) {
+      if (group.scalar) {
+        group.cells = [group.byBit.s || { bit: null, up: null, down: null }];
+        return;
+      }
+      for (var b = group.max; b >= group.min; b--) {
+        // A bus with a hole in it (a point the database never emitted)
+        // keeps the bit's place, or every index right of the hole would
+        // silently shift.
+        group.cells.push(group.byBit[String(b)] || { bit: b, up: null, down: null, absent: true });
+      }
+    });
+    return groups;
+  }
+
+  // Rows of 32 bits, MSB row first, so a 64-bit bus is two readable
+  // rows rather than one line that scrolls.
+  function chunkBits(cells, per) {
+    var rows = [], i;
+    for (i = 0; i < cells.length; i += per) { rows.push(cells.slice(i, i + per)); }
+    return rows.length ? rows : [[]];
+  }
+  // <<< toggle-grouping
+
+  function hitsFor(point) {
+    // With a test lens on, the number shown is that test's contribution
+    // — which is the whole question "what would I lose by dropping it".
+    if (!state.test) { return point.hits || 0; }
+    return ((point.tests || {})[state.test]) || 0;
+  }
+
+  function attribution(point) {
+    var tests = point.tests || {};
+    var names = Object.keys(tests).sort();
+    if (!names.length) { return 'no per-test attribution'; }
+    return names.map(function (n) { return n + ': ' + tests[n]; }).join('\n');
+  }
+
+  // ---------------------------------------------------------------
+  // the marks column and its docked detail panel
+  // ---------------------------------------------------------------
+
+  //: line number -> the entries of the file currently rendered, so the
+  //  detail panel can be built without re-walking the model.
+  var lineMarks = Object.create(null);
+
+  //: line number -> that line's line-coverage point, same purpose.
+  var linePoints = Object.create(null);
+
+  // Toggle always collapses (a bus is dozens of points per line); other
+  // metrics collapse only when there is more than one of them, because a
+  // lone named chip never pushed anything off-screen and reads better.
+  function collapses(metric, list) {
+    return metric === 'toggle' || list.length > 1;
+  }
+
+  //: one line's points of one metric — one cell's worth.
+  function entriesOn(lineNo, metric) {
+    return (lineMarks[lineNo] || []).filter(function (entry) {
+      return entry.metric === metric;
+    });
+  }
+
+  // The metric is the column (or the panel's header pill), so the chip
+  // carries the name alone — the initial in front of it was the same
+  // letter repeated down the whole column.
+  function namedMark(entry) {
+    var h = hitsFor(entry.point);
+    var mark = elem('span', 'mark' + (h > 0 ? '' : ' miss'),
+      entry.point.name || '(unnamed)');
+    mark.title = entry.metric + ' · ' + (entry.point.name || '(unnamed)') +
+      (entry.point.module ? ' · ' + entry.point.module : '') +
+      ' · hits ' + h + '\n' + attribution(entry.point);
+    if (state.focusItem && entry.point.name === state.focusItem) {
+      mark.classList.add('sel');
+    }
+    mark.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      selectDetail(mark);
+      showPoint(entry.metric, entry.point);
+    });
+    return mark;
+  }
+
+  function metricBadge(metric, list, lineNo) {
+    var hit = 0;
+    list.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
+    var badge = elem('span', 'mark badge' + (hit ? '' : ' miss'),
+      hit + '/' + list.length);
+    tint(badge, list.length ? hit / list.length : null);
+    if (state.expandedLine === lineNo && state.expandedMetric === metric) {
+      badge.classList.add('open');
+    }
+    badge.title = list.length + ' ' + metric + ' point' + (list.length === 1 ? '' : 's') +
+      ' on this line · ' + hit + ' hit' +
+      (state.test ? ' by ' + state.test : '') + '\nclick for the detail panel';
+    badge.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggleDetail(lineNo, metric);
+    });
+    return badge;
+  }
+
+  // One cell: this line's points of one metric, as a badge or — when
+  // there is a single named one — as its name. Empty when the line has
+  // none, which is most cells on most lines.
+  function renderCell(box, lineNo, metric) {
+    var list = entriesOn(lineNo, metric);
+    if (!list.length) { return; }
+    if (!collapses(metric, list)) {
+      list.forEach(function (entry) { box.appendChild(namedMark(entry)); });
+      return;
+    }
+    box.appendChild(metricBadge(metric, list, lineNo));
+  }
+
+  // Exactly one point's attribution is on show at a time, so exactly
+  // one cell or chip carries the selection.
+  function selectDetail(node) {
+    Array.prototype.forEach.call(
+      document.querySelectorAll('.mark.sel, .bit.sel'),
+      function (n) { n.classList.remove('sel'); }
+    );
+    node.classList.add('sel');
+  }
+
+  function bitCell(group, cell) {
+    var label = group.base + (cell.bit == null ? '' : '[' + cell.bit + ']');
+    var node = elem('span', 'bit');
+    if (cell.absent) {
+      node.classList.add('absent');
+      node.title = label + ' — no toggle point in this run';
+      return node;
+    }
+    var up = cell.up, down = cell.down;
+    var upHits = up ? hitsFor(up) : null;
+    var downHits = down ? hitsFor(down) : null;
+    if (upHits > 0) { node.classList.add('up'); }
+    if (downHits > 0) { node.classList.add('down'); }
+    node.title = label + ' — 0→1: ' + (up ? upHits + ' hits' : 'no point') +
+      ' · 1→0: ' + (down ? downHits + ' hits' : 'no point');
+    if (state.focusItem &&
+        ((up && up.name === state.focusItem) || (down && down.name === state.focusItem))) {
+      node.classList.add('sel');
+    }
+    // The uncovered direction is the one worth opening when only one of
+    // them is; otherwise 0→1, so the click is predictable.
+    var pick = up;
+    if (up && down && upHits > 0 && downHits === 0) { pick = down; }
+    else if (up && down && downHits > 0 && upHits === 0) { pick = up; }
+    else if (!up) { pick = down; }
+    node.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (!pick) { return; }
+      selectDetail(node);
+      showPoint('toggle', pick);
+    });
+    return node;
+  }
+
+  function renderToggleGroup(group) {
+    var wrap = elem('div', 'tg');
+    var head = elem('div', 'tg-head');
+    var name = elem('span', 'tg-name', group.base);
+    name.title = group.module ? group.base + ' · ' + group.module : group.base;
+    head.appendChild(name);
+    if (!group.scalar) {
+      head.appendChild(elem('span', 'tg-range', '[' + group.max + ':' + group.min + ']'));
+    }
+    var covered = 0;
+    group.cells.forEach(function (cell) {
+      if (cell.up && hitsFor(cell.up) > 0) { covered += 1; }
+      if (cell.down && hitsFor(cell.down) > 0) { covered += 1; }
+    });
+    head.appendChild(elem('span', 'tg-sum', covered + '/' + group.total + ' dirs'));
+    wrap.appendChild(head);
+    var rows = elem('div', 'tg-rows');
+    chunkBits(group.cells, 32).forEach(function (cells) {
+      var row = elem('div', 'tg-row');
+      cells.forEach(function (cell, i) {
+        var node = bitCell(group, cell);
+        // Byte boundary: the gap goes after the cell whose index is a
+        // multiple of 8, never after the last cell in the row.
+        if (cell.bit != null && cell.bit % 8 === 0 && i < cells.length - 1) {
+          node.classList.add('sep');
+        }
+        row.appendChild(node);
+      });
+      rows.appendChild(row);
+    });
+    wrap.appendChild(rows);
+    return wrap;
+  }
+
+  // One line's points of one metric. With the lens off and the points
+  // coming from more than one elaboration, the panel says so instead of
+  // showing `3/6` and leaving the reader to guess that it is the same
+  // three points counted twice — each elaboration gets a subhead with
+  // its own score, and the subhead is the way into the lens.
+  function renderDetailBody(metric, entries) {
+    var groups = state.elab ? null : elaborationGroups(entries, hitsFor);
+    if (!groups || groups.length < 2) {
+      els.detailBody.appendChild(detailBlock(metric, entries));
+      return;
+    }
+    groups.forEach(function (group) {
+      els.detailBody.appendChild(elabSubhead(group));
+      els.detailBody.appendChild(detailBlock(metric, group.entries));
+    });
+  }
+
+  function detailBlock(metric, entries) {
+    if (metric === 'toggle') {
+      var grid = elem('div', 'tgs');
+      groupToggles(entries).forEach(function (group) {
+        grid.appendChild(renderToggleGroup(group));
+      });
+      return grid;
+    }
+    // Everything that is not a toggle keeps the named chips — they are
+    // few per line, and the name IS the information.
+    var chips = elem('div', 'tg-chips');
+    entries.forEach(function (entry) { chips.appendChild(namedMark(entry)); });
+    return chips;
+  }
+
+  function elabSubhead(group) {
+    var head = elem('div', 'elab-head');
+    var chip = elem('span', 'pill act',
+      group.module ? baseElabLabel(group.module) : '(no module)');
+    chip.title = (group.module || 'points with no module recorded') +
+      '\nclick to count only this elaboration, here and in the columns above';
+    chip.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setElab(group.module || null);
+    });
+    head.appendChild(chip);
+    head.appendChild(elem('span', 'muted', group.hit + '/' + group.entries.length));
+    return head;
+  }
+
+  function detailWhere(lineNo) {
+    var where = elem('span', 'where',
+      (state.file || '').split('/').pop() + ':' + lineNo);
+    where.title = state.file + ':' + lineNo;
+    els.detailHead.appendChild(where);
+  }
+
+  function appendDetailClose() {
+    els.detailHead.appendChild(elem('span', 'grow'));
+    var close = elem('button', null, '×');
+    close.title = 'Close the detail panel';
+    close.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      closeDetail();
+    });
+    els.detailHead.appendChild(close);
+  }
+
+  function closeDetail() {
+    els.detail.hidden = true;
+    clear(els.detailHead);
+    clear(els.detailBody);
+    clear(els.point);
+    els.point.hidden = true;
+    Array.prototype.forEach.call(
+      els.srcBody.querySelectorAll('.mark.badge.open'),
+      function (badge) { badge.classList.remove('open'); }
+    );
+    Array.prototype.forEach.call(
+      els.srcBody.querySelectorAll('tr.open'),
+      function (tr) { tr.classList.remove('open'); }
+    );
+    state.expandedLine = null;
+    state.expandedMetric = null;
+  }
+
+  // The row the panel belongs to keeps its place in the code, and is
+  // pulled back into what the panel left of the code area.
+  // Inspecting a cell must not also drive the editor and the
+  // schematic, which is what the row's own click does.
+  function bindCellClick(node, lineNo, metric) {
+    node.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggleDetail(lineNo, metric);
+    });
+  }
+
+  function bindDetailToRow(host, lineNo, metric, opts) {
+    els.detail.hidden = false;
+    state.expandedLine = lineNo;
+    state.expandedMetric = metric;
+    host.classList.add('open');
+    host.scrollIntoView({ block: opts.scroll ? 'center' : 'nearest' });
+  }
+
+  function openDetail(lineNo, metric, opts) {
+    opts = opts || {};
+    closeDetail();
+    var host = els.srcBody.querySelector('tr[data-line="' + lineNo + '"]');
+    var entries = entriesOn(lineNo, metric);
+    if (!host || !entries.length || !collapses(metric, entries)) { return false; }
+
+    detailWhere(lineNo);
+    var hit = 0;
+    entries.forEach(function (entry) { if (hitsFor(entry.point) > 0) { hit += 1; } });
+    els.detailHead.appendChild(elem('span', 'pill',
+      METRIC_INITIAL[metric] + ' ' + hit + '/' + entries.length));
+    if (state.test) { els.detailHead.appendChild(lensPill()); }
+    if (state.elab) { els.detailHead.appendChild(elabPill()); }
+    appendDetailClose();
+
+    renderDetailBody(metric, entries);
+
+    bindDetailToRow(host, lineNo, metric, opts);
+    var cell = host.querySelector('td.marks[data-metric="' + metric + '"]');
+    Array.prototype.forEach.call((cell || host).querySelectorAll('.mark.badge'),
+      function (badge) { badge.classList.add('open'); });
+    return true;
+  }
+
+  // One panel, and a line has up to five things to show in it, so the
+  // slot is a (line, metric) pair — "click the same badge again" has to
+  // tell `T` on line 19 from `B` on line 19.
+  function toggleDetail(lineNo, metric) {
+    if (state.expandedLine === lineNo && state.expandedMetric === metric) {
+      closeDetail();
+      return;
+    }
+    if (metric === 'line') { openLineDetail(lineNo, {}); }
+    else { openDetail(lineNo, metric, {}); }
+  }
+
+  // The hit-count column opens the same panel as a badge does — the
+  // tooltip is the peek, this is the read.
+  function openLineDetail(lineNo, opts) {
+    opts = opts || {};
+    closeDetail();
+    var host = els.srcBody.querySelector('tr[data-line="' + lineNo + '"]');
+    var point = linePoints[lineNo];
+    if (!host || !point) { return false; }
+    detailWhere(lineNo);
+    els.detailHead.appendChild(elem('span', 'pill', 'line'));
+    els.detailHead.appendChild(elem('span', 'pill', hitsFor(point) + ' hits'));
+    if (state.test) { els.detailHead.appendChild(lensPill()); }
+    appendDetailClose();
+    bindDetailToRow(host, lineNo, 'line', opts);
+    showPoint('line', point);
+    return true;
+  }
+
+  // A cov_focus can name a point (`paddr[3]:0->1`) that now lives inside
+  // a collapsed badge; the line it sits on is the one to open.
+  // Which cell a focused item lives in. Every metric has a column now,
+  // so a `cov_focus` item needs no `metric` hint to land — the point's
+  // own name says which column it is in.
+  function focusedCell() {
+    var found = null;
+    if (!state.focusItem) { return null; }
+    Object.keys(lineMarks).forEach(function (key) {
+      if (found) { return; }
+      (lineMarks[key] || []).forEach(function (entry) {
+        if (found || entry.point.name !== state.focusItem) { return; }
+        found = { line: parseInt(key, 10), metric: entry.metric };
+      });
+    });
+    // A lone named point is its own chip in the cell, already carrying
+    // the selection — there is no panel behind it to open.
+    if (found && !collapses(found.metric, entriesOn(found.line, found.metric))) {
+      return null;
+    }
+    return found;
+  }
+
+  // The ranking metric, from the picker or from a click on a column
+  // header — the only thing the picker still drives is the file list.
+  function setMetric(metric) {
+    if (METRICS.indexOf(metric) < 0 || state.metric === metric) { return; }
+    state.metric = metric;
+    els.metric.value = metric;
+    renderFiles();
+    if (state.file) { renderFile(); }
+  }
+
+  // A file's totals for one metric. Without a lens these are the
+  // model's own numbers, so the header agrees with `rb cov summary`;
+  // with one they are recounted through it, so the header agrees with
+  // the cells underneath it — which is the whole point of a lens.
+  //
+  // The two lenses differ in what they move. The test lens changes who
+  // HIT the points, never how many there are; the elaboration lens
+  // changes which points exist at all, so `found` is recounted too.
+  // Both on is the intersection: that test's hits on that
+  // elaboration's points.
+  function fileTotals(row, metric) {
+    var t = totalsOf(row, metric);
+    // Verilator's line coverage is per source LINE and carries no
+    // module, so it is one number for every elaboration together and
+    // the elaboration lens deliberately leaves this column alone.
+    var elab = metric === 'line' ? null : state.elab;
+    if (!state.test && !elab) { return t; }
+    if (!elab && !t.found) { return t; }
+    var points = pointsOfElaboration(row[metric], elab);
+    var found = elab ? points.length : t.found;
+    var hit = 0;
+    points.forEach(function (point) { if (hitsFor(point) > 0) { hit += 1; } });
+    return { found: found, hit: hit, ratio: found ? hit / found : null };
+  }
+
+  function renderSrcHead(row) {
+    clear(els.srcHead);
+    var tr = document.createElement('tr');
+    tr.appendChild(elem('th', 'no'));
+    METRICS.forEach(function (metric) {
+      var t = fileTotals(row, metric);
+      var th = elem('th', 'mh' + (metric === state.metric ? ' sort' : ''));
+      th.dataset.metric = metric;
+      // Two lines, because five columns of `L 41/55 75%` would push the
+      // code as far right as the per-point chips once did.
+      // Whole percent, not the dashboard's one decimal: five columns of
+      // `100.0%` is 5% of the window spent on a digit nobody reads here.
+      th.appendChild(elem('div', 'mh-top',
+        METRIC_INITIAL[metric] + ' ' +
+        (t.found ? Math.round(t.ratio * 100) + '%' : '—')));
+      if (t.found) { th.appendChild(elem('div', 'mh-num', t.hit + '/' + t.found)); }
+      var scoped = state.elab && metric !== 'line';
+      th.title = metric + (t.found
+        ? ': ' + t.hit + ' of ' + t.found + ' points in this file hit' +
+          (state.test ? ' by ' + state.test : '') +
+          (scoped ? ', counting only ' + state.elab : '')
+        : ': no points in this file' + (scoped ? ' for ' + state.elab : '')) +
+        (state.elab && metric === 'line'
+          ? '\nline coverage is per source line and carries no module, so the ' +
+            'elaboration lens leaves it merged'
+          : '') +
+        '\nclick to rank the file list on ' + metric;
+      th.addEventListener('click', function () { setMetric(metric); });
+      tr.appendChild(th);
+    });
+    tr.appendChild(elem('th', 'code', 'source'));
+    els.srcHead.appendChild(tr);
+  }
+
+  function renderFile() {
+    var row = state.byPath[state.file];
+    if (!row) { return; }
+    clear(els.fileHead);
+    var back = elem('button', null, '← overview');
+    back.title = 'Back to the run dashboard.';
+    back.addEventListener('click', showDashboard);
+    els.fileHead.appendChild(back);
+    els.fileHead.appendChild(elem('span', 'path', row.path));
+    // The chip reads in the design's vocabulary — the name in the file
+    // you are looking at — and carries the elaborated names it stands
+    // for in its tooltip; the graph is sent the source name, which is
+    // the only one it has a node for.
+    moduleChips(row.modules).forEach(function (chip) {
+      var pill = elem('span', 'pill act', chip.base);
+      var elaborated = chip.names.length > 1 || chip.names[0] !== chip.base
+        ? 'elaborated as ' + chip.names.join(', ') + '\n' : '';
+      pill.title = elaborated + 'click to focus module:' + chip.base +
+        ' in the graph pane';
+      pill.addEventListener('click', function () { focusModuleElsewhere(chip.base); });
+      els.fileHead.appendChild(pill);
+    });
+    // The elaboration lens, and only when there is a choice to make: a
+    // segmented control on a file with one elaboration is a control
+    // that can only say what is already true.
+    var elabs = elaborationsOf(row, METRICS);
+    if (state.elab && elabs.indexOf(state.elab) < 0) { state.elab = null; }
+    if (elabs.length > 1) {
+      els.fileHead.appendChild(elabControl(elaborationSegments(elabs)));
+    }
+    // The per-metric totals used to be pills here. They are the source
+    // table's own header row now, directly above the columns they
+    // describe, and printing the same five numbers twice on one screen
+    // is how a reader learns to trust neither.
+    if (state.test) { els.fileHead.appendChild(lensPill()); }
+
+    var lines = state.sources[row.path];
+    var byLine = Object.create(null);
+    (row.line || []).forEach(function (point) {
+      if (point.line != null) { byLine[point.line] = point; }
+    });
+    var marks = pointsByLine(row);
+    lineMarks = marks;
+    linePoints = byLine;
+    // The rows are about to be thrown away, so the panel's line
+    // highlight is too — it is re-opened below against the new rows.
+    var reopen = state.expandedLine;
+    var reopenMetric = state.expandedMetric;
+    state.expandedLine = null;
+    var last = lines ? lines.length : 0;
+    Object.keys(byLine).concat(Object.keys(marks)).forEach(function (n) {
+      last = Math.max(last, parseInt(n, 10) || 0);
+    });
+
+    renderSrcHead(row);
+    clear(els.srcBody);
+    var target = null;
+    for (var n = 1; n <= last; n++) {
+      var tr = elem('tr');
+      tr.dataset.line = String(n);
+      tr.appendChild(elem('td', 'no', n));
+
+      // One column per metric, always, in the order the run reports
+      // them: which coverage a line has is a property of the line, not
+      // of what the picker happens to be ranking on.
+      METRICS.forEach(function (metric) {
+        var cell = elem('td', 'marks' + (metric === 'line' ? ' hits' : ''));
+        cell.dataset.metric = metric;
+        if (metric === 'line') {
+          // The `L` column IS the hit-count gutter: a count, not a
+          // badge, because "how many times did this line run" is the
+          // one number the annotation has always led with.
+          var point = byLine[n];
+          if (point) {
+            var h = hitsFor(point);
+            cell.textContent = h;
+            cell.title = attribution(point) + '\nclick for the detail panel';
+            tint(cell, h > 0 ? 1 : 0);
+            cell.classList.add('act');
+            bindCellClick(cell, n, 'line');
+          }
+          tr.appendChild(cell);
+          return;
+        }
+        var box = elem('div', 'marks-in');
+        renderCell(box, n, metric);
+        cell.appendChild(box);
+        tr.appendChild(cell);
+      });
+
+      var code = elem('td', 'code', lines && lines[n - 1] != null ? lines[n - 1] : '');
+      tr.appendChild(code);
+
+      (function (lineNo) {
+        tr.addEventListener('click', function () { activateLine(lineNo); });
+      })(n);
+      if (state.focusLine === n) { tr.classList.add('hot'); target = tr; }
+      els.srcBody.appendChild(tr);
+    }
+    closeDetail();
+    if (target) { target.scrollIntoView({ block: 'center' }); }
+    // A focused point wins over whatever was open, and otherwise the
+    // panel survives a re-render (a lens change must not close it).
+    var cell = focusedCell();
+    var open = cell ? cell.line : reopen;
+    var metric = cell ? cell.metric : reopenMetric;
+    if (open == null || !metric) { return; }
+    if (metric === 'line') { openLineDetail(open, { scroll: target == null }); }
+    else { openDetail(open, metric, { scroll: target == null }); }
+  }
+
+  function showDashboard() {
+    state.file = null;
+    state.focusLine = null;
+    state.focusItem = null;
+    // The elaboration lens only ever meant something inside one file.
+    state.elab = null;
+    closeDetail();
+    els.file.hidden = true;
+    els.dash.hidden = false;
+    renderFiles();
+  }
+
+  // The attribution of one point, docked in the same panel as the line
+  // detail it was clicked in — the grid you clicked stays on screen, and
+  // clicking another cell updates this section in place.
+  function showPoint(metric, point) {
+    clear(els.point);
+    els.point.hidden = false;
+    els.detail.hidden = false;
+    if (!els.detailHead.firstChild) {
+      // A chip the marks column kept inline has no line panel behind it,
+      // so the panel still needs a header it can be closed from.
+      var where = elem('span', 'where',
+        (state.file || '').split('/').pop() + ':' + point.line);
+      where.title = state.file + ':' + point.line;
+      els.detailHead.appendChild(where);
+      appendDetailClose();
+    }
+    // A line point has no name, and its metric is already in the
+    // panel's header — "line · line 69" reads like a stutter.
+    var parts = [];
+    if (metric !== 'line') { parts.push(metric); }
+    if (point.name) { parts.push(point.name); }
+    // Displayed text is design vocabulary, tooltips carry the model's
+    // own key — the same split the file header's module chips make.
+    if (point.module) { parts.push(baseModuleName(point.module)); }
+    parts.push('line ' + point.line, 'hits ' + (point.hits || 0));
+    var head = elem('strong', null, parts.join(' · '));
+    if (point.module && baseModuleName(point.module) !== point.module) {
+      head.title = 'elaborated as ' + point.module;
+    }
+    els.point.appendChild(head);
+    var tests = point.tests || {};
+    var names = Object.keys(tests).sort();
+    if (!names.length) {
+      els.point.appendChild(elem('div', 'muted', 'no per-test attribution'));
+      return;
+    }
+    var table = document.createElement('table');
+    var tbody = document.createElement('tbody');
+    names.forEach(function (name) {
+      var tr = elem('tr', 'row');
+      tr.appendChild(elem('td', null, name));
+      var td = elem('td', null, tests[name]);
+      if (!tests[name]) { td.className = 'faint'; }
+      tr.appendChild(td);
+      tr.addEventListener('click', function () {
+        setLens(state.test === name ? null : name);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    els.point.appendChild(table);
+  }
+
+  // ---------------------------------------------------------------
+  // clicks → hub envelopes
+  // ---------------------------------------------------------------
+
+  function activateLine(line) {
+    state.focusLine = line;
+    Array.prototype.forEach.call(els.srcBody.children, function (tr) {
+      tr.classList.toggle('hot', tr.dataset.line === String(line));
+    });
+    var did = [];
+    if (els.optSelect.checked) {
+      // `source_focused`, not `selection_changed`: this pane knows files
+      // and modules, never instance paths. The hub's resolver turns a
+      // file+line into the instance(s) whose source range contains it
+      // and broadcasts the derived `selection_changed` itself, which is
+      // the only way to reach the schematic without inventing a
+      // coordinate the coverage model does not have.
+      if (emit('source_focused', { file: state.file, line: line, col: 1 })) {
+        did.push('focus ' + state.file + ':' + line);
+      }
+    }
+    if (els.optOpen.checked) {
+      var payload = { file: state.file, line: line, col: 1 };
+      if (request('open_source', payload, function (reply) {
+        if (reply.kind === 'error') {
+          note(reply.payload.code === 'not_connected'
+            ? 'no editor connected — start nvim with the rtl-buddy plugin (rb nvim-install), or untick "open in editor"'
+            : 'open_source: ' + reply.payload.code + ': ' + reply.payload.message, 'error');
+        }
+      })) {
+        did.push('open ' + payload.file + ':' + line);
+      }
+    }
+    if (did.length) { note(did.join('  ·  ')); }
+    else if (!wsReady) { note('hub not connected', 'error'); }
+  }
+
+  function focusModuleElsewhere(base) {
+    // The graph pane speaks node ids, and `module:<name>` is the id a
+    // design module carries there — so a module chip here lands on the
+    // same module there, and the graph pane's own module→instance rule
+    // takes it the rest of the way to the schematic. The name sent is
+    // the SOURCE name (`baseModuleName`): the graph is built from the
+    // source, so `module:ip_async_fifo__DB13` is a node nothing has,
+    // and a graph_focus miss is silent — the click looked broken.
+    var name = baseModuleName(base);
+    if (emit('graph_focus', { node: 'module:' + name })) {
+      note('graph-focus module:' + name);
+    } else {
+      note('hub not connected', 'error');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // inbound focus
+  // ---------------------------------------------------------------
+
+  function focusFile(path, opts) {
+    opts = opts || {};
+    if (typeof path !== 'string' || !path) { return false; }
+    var row = state.byPath[path];
+    if (!row) {
+      // Absolute paths are accepted per the wire contract: the model
+      // keys files project-relative, so try a suffix match before
+      // calling it a miss.
+      var hit = Object.keys(state.byPath).filter(function (known) {
+        return path.endsWith('/' + known) || known.endsWith('/' + path);
+      });
+      if (hit.length !== 1) { return false; }
+      path = hit[0];
+    }
+    return selectFile(path, { line: opts.line, item: opts.item, metric: opts.metric });
+  }
+
+  // A sender may name the module either way round: the graph and the
+  // editor speak the source name, `rb cov` and this pane's own dropdown
+  // speak the elaborated one. Resolve to the elaborated name the model
+  // is keyed on before anything is filtered on it.
+  function focusModule(name, opts) {
+    var known = Object.keys(state.modules).sort();
+    var resolved = resolveModuleName(known, name);
+    if (resolved === null) { return false; }
+    var rows = ((state.payload && state.payload.files) || []).filter(function (row) {
+      return (row.modules || []).indexOf(resolved) >= 0;
+    });
+    if (!rows.length) { return false; }
+    state.module = resolved;
+    els.module.value = resolved;
+    renderFiles();
+    // Naming an ELABORATION verbatim is asking about that one
+    // configuration, so the lens goes on; naming the module in the
+    // design's own vocabulary is asking about the module, all of it, so
+    // it comes off. On a file with a single elaboration the lens can
+    // only say what is already true — and its control is hidden there —
+    // so it stays off rather than becoming a mode with no way out.
+    var spans = elaborationsOf(rows[0], METRICS).length > 1;
+    var elab = spans && resolved === String(name) ? resolved : null;
+    return selectFile(rows[0].path, {
+      line: opts.line, item: opts.item, metric: opts.metric, elab: elab
+    });
+  }
+
+  function focusTest(name) {
+    var known = ((state.payload && state.payload.tests) || []).some(function (row) {
+      return row.name === name;
+    });
+    if (!known) { return false; }
+    state.test = name;
+    renderTests();
+    if (state.file) { renderFile(); }
+    return true;
+  }
+
+  function applyFocus(payload) {
+    if (!state.payload) {
+      // The hub replays a cached focus on connect, which routinely wins
+      // the race against the model fetch; hold it rather than dropping it.
+      state.pending = payload;
+      return;
+    }
+    var target = payload && payload.target;
+    if (typeof target !== 'string' || !target) { return; }
+    var opts = { line: payload.line, item: payload.item, metric: payload.metric };
+    var ok;
+    if (target.indexOf('module:') === 0) {
+      ok = focusModule(target.slice(7), opts);
+    } else if (target.indexOf('test:') === 0) {
+      ok = focusTest(target.slice(5));
+    } else {
+      ok = focusFile(target.indexOf('file:') === 0 ? target.slice(5) : target, opts);
+    }
+    // A soft miss, like graph_focus: report it and keep the current
+    // focus rather than blanking the pane over a stale target.
+    note(ok ? 'focused ' + target : 'cov-focus: no ' + target + ' in this run',
+         ok ? null : 'warn');
+  }
+
+  function focusByInstancePath(ip) {
+    if (Array.isArray(ip)) { ip = ip[0]; }
+    if (typeof ip !== 'string' || !ip || !state.payload) { return; }
+    // A naming-convention heuristic, and a soft miss when it fails: the
+    // coverage model has modules, the design view has instances, and
+    // nothing in either says which module an instance is of. Stripping
+    // the usual instance prefixes off the leaf is right often enough to
+    // be worth the zero cost of being wrong (nothing happens).
+    var leaf = ip.split('.').pop();
+    var candidates = [leaf, leaf.replace(/^(u|i|inst|dut)_/, '')];
+    var known = Object.keys(state.modules).sort();
+    for (var i = 0; i < candidates.length; i++) {
+      // An instance name is a source-vocabulary name, so it is resolved
+      // the same way an inbound `module:` target is.
+      if (resolveModuleName(known, candidates[i]) !== null) {
+        focusModule(candidates[i], {});
+        return;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // wiring
+  // ---------------------------------------------------------------
+
+  els.metric.addEventListener('change', function () {
+    state.metric = els.metric.value;
+    renderFiles();
+    if (state.file) { renderFile(); }
+  });
+  els.module.addEventListener('change', function () {
+    state.module = els.module.value;
+    renderFiles();
+  });
+  els.search.addEventListener('input', function () {
+    state.filter = els.search.value.trim().toLowerCase();
+    renderFiles();
+  });
+  els.cold.addEventListener('change', function () {
+    state.coldOnly = els.cold.checked;
+    renderFiles();
+  });
+  document.getElementById('reload').addEventListener('click', function () {
+    state.sources = Object.create(null);
+    load();
+  });
+
+  connect();
+  load();
+})();
+</script>
+</body>
+</html>

@@ -218,11 +218,12 @@ The hub serves more than one browser app, so `GET /` is a **landing page** that 
 | `/` | The landing page: task cards, live hub state, "already open" warnings. |
 | `/view` (`/index.html` is an alias) | The rtl-buddy-view SPA (or the placeholder page when no bundle is installed). |
 | `/graph` | The [design knowledge graph pane](#design-knowledge-graph-pane). |
+| `/cov` | The [coverage pane](#coverage-pane). |
 | `/hub/state.json` | The landing page's data: hub identity, active model, connected peers, per-app availability, graph freshness. |
 | `/hub/theme.css` | The shared design tokens (below). |
 | `/hub/assets/<name>` | The vendored brand marks (favicon, chip logo, mascot). |
 
-Cards advertise on **data presence**, the same rule `__RTL_BUDDY_GRAPH_URL__` follows: an app with nothing to show keeps its card, muted, carrying the command that would give it something (`rb graph build`) rather than disappearing. An app whose origin already has a connected peer is badged **already open** — the hub allows one client per origin and a second tab supersedes the first, so the warning belongs before the click.
+Cards advertise on **data presence**, the same rule `__RTL_BUDDY_GRAPH_URL__` follows: an app with nothing to show keeps its card, muted, carrying the command that would give it something (`rb graph build`, a coverage flag) rather than disappearing. An app whose origin already has a connected peer is badged **already open** — the hub allows one client per origin and a second tab supersedes the first, so the warning belongs before the click.
 
 The landing page is deliberately **not** a hub peer: it polls `/hub/state.json` instead of opening `/ws`. A tab that only lists the apps must never hold an origin, or it would be the thing that evicted the app you had open.
 
@@ -269,12 +270,13 @@ Detail that does not fit the vocabulary (the hub's `server_version`, the reason 
 | **`rb wave` bridge** (`tools/wave_hub_bridge.py`) | Line-delimited JSON over TCP on `listen_port` | Started by `rb wave`; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff. |
 | **nvim plugin** ([`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim), installed by `rb nvim-install`) | Line-delimited JSON over TCP on `listen_port` | Auto-connects on startup (the managed setup calls `setup({ auto_connect = true })`). |
 | **graph pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /graph` — see [Design knowledge graph pane](#design-knowledge-graph-pane). Needs no viewer bundle. |
+| **coverage pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /cov` — see [Coverage pane](#coverage-pane). Needs no viewer bundle. |
 
 The **landing page** at `/` is not in this table on purpose: it polls `/hub/state.json` and never registers an origin, so it cannot evict an app you have open.
 
-`rb hub status` lists every origin a user can have open — `view`, `wave`, `src`, `graph` — as `CONNECTED` or `not connected`. `cli` is excluded (it is the status query itself) and so is `notebook` (it peers for one marimo session rather than being an app you keep open).
+`rb hub status` lists every origin a user can have open — `view`, `wave`, `src`, `graph`, `cov` — as `CONNECTED` or `not connected`. `cli` is excluded (it is the status query itself) and so is `notebook` (it peers for one marimo session rather than being an app you keep open).
 
-Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker), and `graph` (the design-knowledge-graph pane). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph pane has its own origin rather than sharing `view` precisely because of that rule: it is meant to be open *alongside* the schematic, since clicking a module in the graph selects it in the design view.
+Each peer has a closed `Origin` enum value: `view` (the SPA), `wave` (the `rb wave` surfer bridge), `src` (editor adapters — the nvim plugin registers as `src`), `cli` (`rb hub send`), `notebook` (the axi-profiler marimo notebook, added so it can peer over the event broker), `graph` (the design-knowledge-graph pane) and `cov` (the coverage pane). The hub allows at most one client per origin; a second `hello` for an already-registered origin is refused unless it sets `takeover: true`, in which case the older peer is evicted (`bye`-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph and coverage panes have their own origins rather than sharing `view` precisely because of that rule: they are meant to be open *alongside* the schematic, since clicking a module in the graph — or a cold line in the coverage pane — selects it in the design view.
 
 ## Protocol
 
@@ -302,6 +304,7 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 - **SPA:** `view-pan INSTANCE_PATH`, `overlay NAME --on/--off` (`clock` / `reset` / `axi-perf` / `wave`), `capture --out PATH [--format png|svg] [--scale …]`.
 - **Source:** `open-source FILE:LINE[:COL]`.
 - **Diagnostics:** `diagnose SOURCE ITEM…` (each `ITEM` is `file:line:severity:code:message`; `--clear`, `--instance`).
+- **Coverage pane:** `cov-focus TARGET [--metric …] [--line N] [--item NAME]` — focus the [coverage pane](#coverage-pane) on one target of the run's model. `TARGET` is prefixed (`file:design/blk.sv`, `module:blk`, `test:verif/blk#basic`); an unprefixed string is read as a file path. Broadcast and cached like `graph-focus`, hints included — a replay that kept only the target would silently downgrade "this branch, on line 84" to "this file".
 - **Graph pane:** `graph-focus NODE` — focus the [design knowledge graph pane](#design-knowledge-graph-pane) on one `graph.json` node id (`module:fifo`, `test:verif/dma#smoke`, `covitem:dma#DMA-COV-1`, …). Broadcast, and cached by the hub, so sending it before the browser tab is open still lands: the focus is replayed to the pane when it registers.
 - **State / resolve:** `state` (snapshot of active model / selection / cursor / scope / peers), and `resolve {view-to-wave|wave-to-view|signal-to-view}`.
 
@@ -320,6 +323,32 @@ Clicking a node sends the same envelopes the SPA sends, over the same `/ws`:
 Both are individually toggleable in the pane's toolbar. The reverse direction works too: `rb hub send graph-focus NODE` centres and selects a node, and a `selection_changed` from the SPA or the editor highlights the matching instance node in the graph.
 
 When a graph exists, the index page also gets a `window.__RTL_BUDDY_GRAPH_URL__ = "/graph.json"` injection alongside `__RTL_BUDDY_VIEW_URL__`, so an SPA overlay can advertise the pane on presence of the global instead of probing the endpoint and handling a 404.
+
+## Coverage pane
+
+`rb hub start --serve-viewer` also serves the run's [coverage](coverage.md) as an interactive page at `GET /cov`, in the same mould as the graph pane. Three routes:
+
+- `GET /cov.json` — the newest `cov_dir/manifest.json` and the model it points at, assembled by **the same builder `rb cov summary` uses** (`rtl_buddy.cov.query.detail_payload`), so the pane and the CLI can differ in presentation but never in numbers. It is the summary payload with `files` deepened to carry every point and its per-test attribution, plus a `hub` block (schema version, the model path, the metric order, the source route). Read per request, so a regression finishing in another terminal shows up on **reload**. Returns 404 with a JSON `error` naming the command that produces coverage when there is none.
+- `GET /cov/source?path=…` — one file's text, one entry per line. Not folded into `/cov.json`: a model on a real design names hundreds of files and inlining them all would send tens of megabytes to render one. `path` must name a file the model itself lists, and is resolved under the project root and nowhere else — the argument comes from a query string, and a browser tab is reachable by anything that can reach the port, so the grant is the file set `/cov.json` already handed the pane rather than anything readable under the root — and a file over the annotation limit is refused with a reason rather than hanging the tab.
+- `GET /cov` — the page. One HTML document with no build step, no CDN and no web font; its only external references are same-origin hub routes (`/hub/theme.css`, `/hub/assets/*`), and it carries an inline fallback for the tokens it cannot render without. It is served even with no coverage collected — its empty state names the command, which is more useful than a blank tab.
+
+What it shows: a dashboard (per-metric scalars from the shared [coverage ramp](#design-tokens-hubthemecss), the run's provenance, observed SVA cover points), a file list with module and path filtering, and per-file **source annotation** — one column per metric (`L B T E C`), always, under a sticky header carrying that file's totals for each: `L 100% 22/22`, `B 96% 75/78`, `—` for a metric the file never collected. `L` is the hit-count gutter itself; the rest carry each line's points. The **metric picker drives the file list only** — its bars, its coldest-first ranking and the cold-only filter — and the pane opens on `toggle`, where the holes usually are, falling back to the first metric the run actually collected. Clicking a column header sets it too. The ranking is lowest ratio, then most absolute misses, the same rule `rb cov summary` uses, with files that have no points of the metric last, since those are silent rather than cold. Every number is **merged across all tests** unless you say otherwise: picking a test in the tests table turns it into a lens, and every number becomes that test's contribution, which is how you answer "what would I lose by dropping it". The table's pinned first row, *all tests (merged)*, is the way back — as is the `lens: <test> ×` pill shown beside the file's totals and in the detail panel, and clicking the selected test again.
+
+A cell is one small badge — `12/16` — tinted on the same ramp, because one 32-bit bus declaration is 64 toggle points and a chip each pushed the code off the right of the screen. A line carrying a single named point of that metric shows the name instead. Every column is capped, so the code stays where you can read it.
+
+Clicking a badge in any column opens the **detail panel**: one panel — keyed on the (line, metric) pair the badge belongs to — docked at the bottom of the file view above the status strip, *outside* the code's scroller — a badge on the last visible line of a long file would otherwise open its detail below the fold. It is headed `apb_intf.sv:19 · T 6/16`, capped at 40% of the window with its own scroll, and closed by its `×` or by clicking the same badge again; the line it belongs to stays marked in the code while it is up, and a lens change updates its counts without closing it. Toggle points in it are drawn as a **bit grid**: one square per bit of each signal, MSB left, rows of 32 with a gap at every byte, the top half of a square being `0→1` and the bottom half `1→0`. A bit covered both ways is a solid block, a half-toggled bit is visibly half, and hovering names the bit and both hit counts under the active lens. Clicking a square shows that bit's per-test attribution in the same panel, under the grid you clicked it in — the uncovered direction when only one of the two is uncovered, since that is the one you came to look at. A `cov_focus` whose `item` names a toggle point (`paddr[3]:0->1`) opens the panel and highlights its square. It needs no `metric` hint to do it: every metric has a column, so the point's own name says which cell it lives in.
+
+The hit-count column opens the same panel, for the same reason: hovering it lists the per-test hits as a peek, and clicking it docks that line's attribution — headed `apb_intf.sv:19 · line · 322 hits` — with the same close-and-replace semantics. That click is not the row's click: inspecting a line's attribution never emits `source_focused` or `open_source`, so reading coverage does not move anybody's editor.
+
+Clicking a line sends the same envelopes the other panes send, over the same `/ws`:
+
+- **`source_focused`** `{file, line, col}`. Not `selection_changed`: this pane knows files and modules, never instance paths. The hub's resolver already turns a file+line into the instance(s) whose source range contains it and broadcasts the derived `selection_changed` itself (see [Protocol](#protocol)) — which is the only way to reach the schematic without inventing a coordinate the coverage model does not have.
+- **`open_source`** (routed to the `src` peer, i.e. nvim) at the clicked line.
+- **`graph_focus`** `{node: "module:<name>"}` when you click a module chip, since `module:<name>` is the id that module carries in the graph.
+
+Both directions work: `rb hub send cov-focus <target>` focuses the pane (replayed on connect, so it lands even before the tab is open), an editor's `source_focused` scrolls it to the matching file and line, and a `selection_changed` from the SPA is matched to a module by the usual instance-prefix convention (`u_`, `i_`, `inst_`, `dut_`) — a soft miss when the convention does not hold, since nothing in either model says which module an instance is of.
+
+When a coverage manifest exists, the SPA index also gets a `window.__RTL_BUDDY_COV_URL__ = "/cov.json"` injection, the same presence-advertisement `__RTL_BUDDY_GRAPH_URL__` uses. Discovery is a bounded walk rather than one `stat` (coverage artefacts land wherever the command ran), so the answer is cached for a few seconds — a run finishing elsewhere shows up on the landing page's next poll but one.
 
 ## Auto-start on macOS (LaunchAgent)
 

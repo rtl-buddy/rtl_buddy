@@ -75,6 +75,14 @@ def _print_response(env: Envelope) -> None:
     sys.stdout.write(json.dumps(payload, indent=2) + "\n")
 
 
+_COV_METRICS = ("line", "branch", "toggle", "expression", "cover")
+"""``cov_focus.metric`` enum, mirroring the wire schema.
+
+Spelled here rather than imported from :data:`rtl_buddy.cov.raw.METRICS`
+so ``rb hub send`` keeps working against a hub whose model vocabulary has
+moved on — the wire contract is the schema, not the local model."""
+
+
 _FILE_LINE_RE = re.compile(r"^(?P<file>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
 """Parses ``path/to/file.sv:42`` and ``path/to/file.sv:42:5``.
 
@@ -219,6 +227,67 @@ def cmd_graph_focus(
         raise typer.BadParameter("node id must be non-empty")
     with _open_or_exit() as h:
         h.emit("graph_focus", {"node": node})
+
+
+@send_app.command(
+    "cov-focus",
+    help=(
+        "Broadcast cov_focus{target} — point the hub's coverage pane "
+        "(http://127.0.0.1:<http_port>/cov) at one target of the run's "
+        "coverage model. TARGET is prefixed: 'file:design/blk.sv', "
+        "'module:blk', or 'test:verif/blk#basic'; an unprefixed string "
+        "is read as a file path. --metric foregrounds one coverage kind, "
+        "--line scrolls a file target to a line, and --item names a "
+        "branch/toggle/expression bin or an SVA cover point. The hub "
+        "caches the focus and replays it to the pane on connect, so "
+        "sending this before the browser tab is open works."
+    ),
+)
+def cmd_cov_focus(
+    target: Annotated[
+        str,
+        typer.Argument(help="coverage target, e.g. module:blk or design/blk.sv"),
+    ],
+    metric: Annotated[
+        Optional[str],
+        typer.Option(
+            "--metric",
+            help="line|branch|toggle|expression|cover — which kind to foreground.",
+        ),
+    ] = None,
+    line: Annotated[
+        Optional[int],
+        typer.Option("--line", help="1-based source line to scroll to.", min=1),
+    ] = None,
+    item: Annotated[
+        Optional[str],
+        typer.Option(
+            "--item",
+            help="Point within the target: a branch/toggle/expression bin name "
+            "as /cov.json spells it, or an SVA cover point name.",
+        ),
+    ] = None,
+) -> None:
+    if not target.strip():
+        raise typer.BadParameter("target must be non-empty")
+    if metric is not None and metric not in _COV_METRICS:
+        raise typer.BadParameter(
+            f"metric must be one of {'/'.join(_COV_METRICS)}, got {metric!r}",
+            param_hint="--metric",
+        )
+    if item is not None and not item.strip():
+        raise typer.BadParameter("--item must be non-empty")
+    # Optional keys are omitted rather than sent as null: the wire schema
+    # is additionalProperties:false with no nullable hints.
+    payload: dict[str, object] = {"target": target}
+    if metric is not None:
+        payload["metric"] = metric
+    if line is not None:
+        payload["line"] = line
+    if item is not None:
+        payload["item"] = item
+    with _open_or_exit() as h:
+        h.emit("cov_focus", payload)
 
 
 @send_app.command(

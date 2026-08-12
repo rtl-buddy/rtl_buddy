@@ -268,12 +268,18 @@ Both verbs emit the standard [envelope](../agents.md#machine-mode). Every payloa
 
 Then:
 
-- `cov summary` adds `counts`, `tests` (per-test `{name, suite, totals}`), `files` (coldest first, truncated to `--limit`), `modules`, and `covers` when the run recorded SVA cover points.
+- `cov summary` adds `counts`, `tests` (per-test `{name, suite, totals}`), `files` (coldest first — lowest line ratio, then most absolute misses, with files that have no line points at all last, since those are silent rather than cold — truncated to `--limit`), `modules`, and `covers` when the run recorded SVA cover points.
 - `cov module` adds `module`, `files` (each with its per-metric point lists) and `tests` (the tests that touched any of its points).
 
 The same `artefacts` block rides on `payload.coverage` of a `test` or `regression` run, so an orchestrator learns where the artefacts landed from the run itself, not from scraping `Merged LCOV: <path>` out of the summary lines. `payload.coverage.merged` gained an `expression` scalar alongside `line`/`branch`/`toggle`/`functional`; the `L/B/T/F` summary string is unchanged, since it is a display contract and expression detail belongs in the model where a consumer can act on it.
 
 An unanswerable question exits 2 with `payload.error` and, for an unknown module, `payload.candidates`.
+
+## Looking at coverage: the `/cov` pane
+
+`rb hub start --serve-viewer` serves the same model as an interactive page at `GET /cov`: a dashboard of the run's scalars, a file list ranked coldest-first **for the metric you pick** (it opens on `toggle`), and **per-file source annotation** — a column per metric under a header of that file's totals, each line's points summarised in it, and the per-test attribution behind every one of them in a docked detail panel. Selecting a test turns it into a lens, so every number becomes that test's contribution.
+
+It is a hub peer, so it drives the rest: clicking a line broadcasts `source_focused` (which the hub resolves into a design-view selection) and opens the line in your editor; clicking a module chip focuses that module in the graph pane. `rb hub send cov-focus <target>` drives it from the other direction, and works before the browser tab is open. See [Coverage pane](hub.md#coverage-pane) for the routes and the wire types.
 
 ## Full flag reference
 
