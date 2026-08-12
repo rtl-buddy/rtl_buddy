@@ -308,8 +308,6 @@ def analyze_suite_reservations(
             and elapsed is not None
             and elapsed < accounting_interval_s
         )
-        if not mem_sampled:
-            unsampled.append(test)
         if req_mem:
             if killed_oom:
                 findings.append(
@@ -324,7 +322,14 @@ def analyze_suite_reservations(
                         **common,
                     )
                 )
-            elif peak_rss and mem_sampled:
+            elif peak_rss and not mem_sampled:
+                # Reported only here, where advice really was withheld. An
+                # OOM kill above still raises, a test with no reservation or
+                # no peak had nothing to advise from anyway, and naming any
+                # of those in "memory advice omitted" would contradict the
+                # message.
+                unsampled.append(test)
+            elif peak_rss:
                 util = peak_rss / req_mem
                 suggested_b = max(
                     int(peak_rss * rightsize_cfg.margin), _MEM_FLOOR_BYTES

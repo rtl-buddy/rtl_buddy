@@ -28,6 +28,7 @@ head process cwd is re-anchored per suite during a regression.
 """
 
 import logging
+import math
 import shlex
 import subprocess
 import time
@@ -136,8 +137,14 @@ def _task_sampling_interval(value: str) -> float | None:
 
     Accepts both forms Slurm takes: a bare interval (``30``) and the
     typed, comma-separated form (``task=5,energy=0``). Only the ``task``
-    datatype samples memory, so the others are ignored; ``0`` disables
-    sampling entirely and is reported as unknown rather than as zero.
+    datatype samples memory, so the others are ignored.
+
+    Returns ``None`` when the value says nothing about task sampling — an
+    unparsable interval, or one naming only other datatypes — and
+    ``math.inf`` when it explicitly *disables* task sampling (``task=0``).
+    Those are different answers: "unknown" leaves the peak trusted, while
+    "never sampled" must distrust every peak, and mapping the explicit
+    disable onto the first is the one reading that cannot be right.
     """
     intervals = []
     for part in value.split(","):
@@ -148,8 +155,10 @@ def _task_sampling_interval(value: str) -> float | None:
             intervals.append(float(interval))
         except ValueError:
             return None
-    if not intervals or min(intervals) <= 0:
+    if not intervals:
         return None
+    if min(intervals) <= 0:
+        return math.inf
     return min(intervals)
 
 
@@ -173,16 +182,39 @@ class SlurmDispatchBackend(DispatchBackend):
         ``--acctg-freq`` in ``sbatch-args`` and be obeyed.
 
         Returns the interval that will actually apply to the jobs this
-        backend submits, or ``None`` when the user's value cannot be
-        parsed; right-sizing uses it to decide whether a job ran long
-        enough to have been sampled at all.
+        backend submits; right-sizing uses it to decide whether a job ran
+        long enough to have been sampled at all.
+
+        The presence check and the interval must be judged at the same
+        granularity, or one flag disarms both guards at once:
+        ``--acctg-freq=energy=30`` says nothing about task sampling, so
+        deferring to it would leave tasks on the site default *and* report
+        the interval as unknown — which reads as "no evidence the peak is
+        untrustworthy", putting #365 straight back. A user value that
+        yields no usable task interval is therefore reported at WARNING and
+        the default is still requested, so the trust decision is visible
+        rather than silently inverted.
         """
         for index, arg in enumerate(self.sbatch_args):
             if arg == _ACCT_FREQ_OPT:
                 following = self.sbatch_args[index + 1 :]
-                return _task_sampling_interval(following[0]) if following else None
-            if arg.startswith(f"{_ACCT_FREQ_OPT}="):
-                return _task_sampling_interval(arg.split("=", 1)[1])
+                value = following[0] if following else ""
+            elif arg.startswith(f"{_ACCT_FREQ_OPT}="):
+                value = arg.split("=", 1)[1]
+            else:
+                continue
+            interval = _task_sampling_interval(value)
+            if interval is not None:
+                return interval
+            log_event(
+                logger,
+                logging.WARNING,
+                "dispatch.accounting_frequency_unusable",
+                backend=self.name,
+                sbatch_arg=f"{_ACCT_FREQ_OPT} {value}".strip(),
+                default=_ACCT_FREQ_DEFAULT,
+            )
+            break
         self.sbatch_args.insert(0, _ACCT_FREQ_DEFAULT)
         log_event(
             logger,

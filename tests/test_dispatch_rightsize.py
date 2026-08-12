@@ -599,15 +599,47 @@ def test_mem_advice_survives_when_the_interval_is_unknown():
     assert "mem" in [f.resource for f in _analyze(rows)]
 
 
-def test_an_oom_kill_still_raises_however_coarse_the_sampling():
+def test_an_oom_kill_still_raises_however_coarse_the_sampling(caplog):
     """A kill is a fact about the reservation, not a measurement of it —
     the same rule the TIMEOUT case follows for time."""
+    import logging
+
     rows = [_row("oom", _short_job(state="OUT_OF_MEMORY"), passing=False)]
 
-    findings = [
-        f for f in _analyze(rows, accounting_interval_s=30) if f.resource == "mem"
-    ]
+    with caplog.at_level(logging.WARNING):
+        findings = [
+            f for f in _analyze(rows, accounting_interval_s=30) if f.resource == "mem"
+        ]
+
     assert [f.direction for f in findings] == ["raise"]
+    # ...and it must not also be reported as an omission: advice was given.
+    assert "memory advice omitted" not in caplog.text
+
+
+def test_nothing_is_reported_omitted_when_there_was_nothing_to_advise(caplog):
+    """No reservation and no peak are unrelated reasons for silence; naming
+    those tests in "memory advice omitted" would blame the wrong cause."""
+    import logging
+
+    rows = [
+        _row(
+            "no_reservation", {"state": "COMPLETED", "elapsed_s": 2, "timelimit_s": 60}
+        ),
+        _row(
+            "no_peak",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 2,
+                "timelimit_s": 60,
+                "req_mem_bytes": 4 * 2**30,
+            },
+        ),
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        _analyze(rows, accounting_interval_s=30)
+
+    assert "memory advice omitted" not in caplog.text
 
 
 def test_the_longest_run_decides_whether_a_test_was_sampled():
