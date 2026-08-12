@@ -900,6 +900,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#apps-the-landing-page-and-hub-chrome" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Apps, the landing page, and hub chrome
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Apps, the landing page, and hub chrome">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#app-names-display-and-origins-wire" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        App names (display) and origins (wire)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design-tokens-hubthemecss" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design tokens (/hub/theme.css)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hub-chrome-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub chrome contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sending-the-selection-to-another-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sending the selection to another app
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#peers-who-connects-to-the-hub" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -937,6 +998,17 @@
     <span class="md-ellipsis">
       
         Design knowledge graph pane
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-pane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage pane
       
     </span>
   </a>
@@ -1770,6 +1842,67 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#apps-the-landing-page-and-hub-chrome" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Apps, the landing page, and hub chrome
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Apps, the landing page, and hub chrome">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#app-names-display-and-origins-wire" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        App names (display) and origins (wire)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#design-tokens-hubthemecss" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design tokens (/hub/theme.css)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hub-chrome-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hub chrome contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sending-the-selection-to-another-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sending the selection to another app
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#peers-who-connects-to-the-hub" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1807,6 +1940,17 @@
     <span class="md-ellipsis">
       
         Design knowledge graph pane
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coverage-pane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Coverage pane
       
     </span>
   </a>
@@ -1913,10 +2057,11 @@
 <h2 id="quick-start">Quick start</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">cd</span><span class="w"> </span>&lt;project_root&gt;
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w">                   </span><span class="c1"># foreground TCP server only</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w">    </span><span class="c1"># also expose the viewer HTTP+WS endpoint</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w">    </span><span class="c1"># also expose the browser apps + WS endpoint</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>status<span class="w">                  </span><span class="c1"># in another shell: who&#39;s connected</span>
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>uv<span class="w"> </span>run<span class="w"> </span>rb<span class="w"> </span>hub<span class="w"> </span>stop<span class="w">                    </span><span class="c1"># graceful shutdown via SIGTERM</span>
 </code></pre></div>
+<p>With <code>--serve-viewer</code>, open <code>http://127.0.0.1:&lt;http_port&gt;/</code> — the <a href="#apps-the-landing-page-and-hub-chrome">landing page</a> lists every app this hub can serve (<code>rtl-buddy-schematic</code>, <code>rtl-buddy-graph</code>, <code>rtl-buddy-coverage</code>), says which one already has a tab attached, and shows the project state.</p>
 <p><code>rb hub start</code> runs in the foreground by default; backgrounding is the caller's job (<code>nohup rb hub start &amp;</code>, a process manager, or — on macOS — the bundled LaunchAgent: see <a href="#auto-start-on-macos-launchagent"><code>rb hub install-launchagent</code></a>). The server binds the OS-assigned port (TCP, and HTTP if <code>--serve-viewer</code> is set) unless <code>hub.toml</code> pins them; the resolved TCP address (and HTTP port, with <code>--serve-viewer</code>) is written to <code>.rtl-buddy/hub.json</code> so peers can discover it.</p>
 <h2 id="cli-surface">CLI surface</h2>
 <table>
@@ -1937,7 +2082,7 @@
 </tr>
 <tr>
 <td><code>rb hub status</code></td>
-<td>Print the current discovery record + liveness. Reports stale records (PID gone) so users know to clear them.</td>
+<td>Print the current discovery record + liveness, the landing (<code>hub_url</code>) and SPA (<code>viewer_url</code>) URLs, and which peers are connected. Reports stale records (PID gone) so users know to clear them.</td>
 </tr>
 <tr>
 <td><code>rb hub log [--lines N] [--follow]</code></td>
@@ -1962,8 +2107,8 @@
 </tbody>
 </table>
 <p><code>--daemon</code> is reserved; today it warns and runs in the foreground. Treat the explicit <code>--foreground</code> as load-bearing; future versions may detach when <code>--daemon</code> is given.</p>
-<p><code>--serve-viewer</code> enables the HTTP + WebSocket layer (<code>/</code>, <code>/ws</code>) used by the browser SPA. When you omit <code>--viewer-bundle</code>, the hub auto-discovers the SPA shipped by <a href="https://github.com/rtl-buddy/rtl-buddy-view"><code>rtl-buddy-view</code></a> via <code>importlib.resources</code> — install it alongside rtl-buddy and <code>rb hub start --serve-viewer</code> is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass <code>--viewer-bundle PATH</code> to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (<code>viewer/dist/</code>) and you don't want the in-wheel copy from the installed package.</p>
-<p>When the hub knows where to find a <code>view.json</code> (via <code>[mapping].view_json</code> in <code>hub.toml</code>, default <code>.rtl-buddy/view.json</code>), the viewer HTTP layer also serves it at <code>GET /view.json</code>. Open the SPA with <code>?view=/view.json</code> to auto-load the design — e.g. <code>http://127.0.0.1:&lt;http_port&gt;/?view=/view.json</code> — instead of drag-and-dropping the file. The index page also gets a <code>window.__RTL_BUDDY_VIEW_URL__ = "/view.json"</code> injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, <code>/view.json</code> returns <code>409 no_active_model</code> (see <a href="#view-errors">View errors</a>) and the SPA shows its "pick a model" placeholder.</p>
+<p><code>--serve-viewer</code> enables the HTTP + WebSocket layer (<code>/</code>, <code>/view</code>, <code>/graph</code>, <code>/ws</code>) used by the browser apps. When you omit <code>--viewer-bundle</code>, the hub auto-discovers the SPA shipped by <a href="https://github.com/rtl-buddy/rtl-buddy-view"><code>rtl-buddy-view</code></a> via <code>importlib.resources</code> — install it alongside rtl-buddy and <code>rb hub start --serve-viewer</code> is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass <code>--viewer-bundle PATH</code> to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (<code>viewer/dist/</code>) and you don't want the in-wheel copy from the installed package.</p>
+<p>When the hub knows where to find a <code>view.json</code> (via <code>[mapping].view_json</code> in <code>hub.toml</code>, default <code>.rtl-buddy/view.json</code>), the viewer HTTP layer also serves it at <code>GET /view.json</code>. Open the SPA with <code>?view=/view.json</code> to auto-load the design — e.g. <code>http://127.0.0.1:&lt;http_port&gt;/view?view=/view.json</code> — instead of drag-and-dropping the file. The index page also gets a <code>window.__RTL_BUDDY_VIEW_URL__ = "/view.json"</code> injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, <code>/view.json</code> returns <code>409 no_active_model</code> (see <a href="#view-errors">View errors</a>) and the SPA shows its "pick a model" placeholder.</p>
 <h3 id="picking-a-model-at-start-time-model-name">Picking a model at start time (<code>--model NAME</code>)</h3>
 <p><code>--model NAME</code> tells the hub to generate <code>view.json</code> on the fly from a model entry in <code>models.yaml</code>, instead of relying on a pre-staged file:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>rb<span class="w"> </span>hub<span class="w"> </span>start<span class="w"> </span>--serve-viewer<span class="w"> </span>--model<span class="w"> </span>ip_demo_tiny_npu
@@ -2120,6 +2265,155 @@
 <a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="n">view</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;tb.dut.clk&quot;</span>
 </code></pre></div>
 <p>Unknown top-level sections fail validation (typo guard). Unknown keys <em>inside</em> known sections are tolerated for forward-compat. <code>rb hub config validate</code> runs the same loader and reports errors with file:line context.</p>
+<h2 id="apps-the-landing-page-and-hub-chrome">Apps, the landing page, and hub chrome</h2>
+<p>The hub serves more than one browser app, so <code>GET /</code> is a <strong>landing page</strong> that names the tasks and routes to the app that does each one. The schematic SPA moved to <code>/view</code> in <a href="https://github.com/rtl-buddy/rtl_buddy/issues/398">rtl-buddy/rtl_buddy#398</a> (it used to be <code>/</code>); <code>rb hub start --serve-viewer</code> prints both URLs, and <code>rb hub status</code> reports <code>hub_url</code> alongside <code>viewer_url</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Serves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/</code></td>
+<td>The landing page: task cards, live hub state, "already open" warnings.</td>
+</tr>
+<tr>
+<td><code>/view</code> (<code>/index.html</code> is an alias)</td>
+<td>The rtl-buddy-view SPA (or the placeholder page when no bundle is installed).</td>
+</tr>
+<tr>
+<td><code>/graph</code></td>
+<td>The <a href="#design-knowledge-graph-pane">design knowledge graph pane</a>.</td>
+</tr>
+<tr>
+<td><code>/cov</code></td>
+<td>The <a href="#coverage-pane">coverage pane</a>.</td>
+</tr>
+<tr>
+<td><code>/hub/state.json</code></td>
+<td>The landing page's data: hub identity, active model, connected peers, per-app availability, graph freshness.</td>
+</tr>
+<tr>
+<td><code>/hub/theme.css</code></td>
+<td>The shared design tokens (below).</td>
+</tr>
+<tr>
+<td><code>/hub/assets/&lt;name&gt;</code></td>
+<td>The vendored brand marks (favicon, chip logo, mascot).</td>
+</tr>
+</tbody>
+</table>
+<p>Cards advertise on <strong>data presence</strong>, the same rule <code>__RTL_BUDDY_GRAPH_URL__</code> follows: an app with nothing to show keeps its card, muted, carrying the command that would give it something (<code>rb graph build</code>, a coverage flag) rather than disappearing. An app whose origin already has a connected peer is badged <strong>already open</strong> — the hub allows one client per origin and a second tab supersedes the first, so the warning belongs before the click.</p>
+<p>The landing page is deliberately <strong>not</strong> a hub peer: it polls <code>/hub/state.json</code> instead of opening <code>/ws</code>. A tab that only lists the apps must never hold an origin, or it would be the thing that evicted the app you had open.</p>
+<h3 id="app-names-display-and-origins-wire">App names (display) and origins (wire)</h3>
+<p>The three browser apps are one family, and each carries two names:</p>
+<table>
+<thead>
+<tr>
+<th>App</th>
+<th>Long name</th>
+<th>Short name</th>
+<th>Wordmark</th>
+<th>Wire origin</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Schematic SPA (<code>/view</code>)</td>
+<td><code>rtl-buddy-schematic</code></td>
+<td><code>sch</code></td>
+<td><code>rtl-buddy-sch</code></td>
+<td><code>view</code></td>
+</tr>
+<tr>
+<td>Knowledge graph pane (<code>/graph</code>)</td>
+<td><code>rtl-buddy-graph</code></td>
+<td><code>gph</code></td>
+<td><code>rtl-buddy-gph</code></td>
+<td><code>graph</code></td>
+</tr>
+<tr>
+<td>Coverage pane (<code>/cov</code>)</td>
+<td><code>rtl-buddy-coverage</code></td>
+<td><code>cov</code></td>
+<td><code>rtl-buddy-cov</code></td>
+<td><code>cov</code></td>
+</tr>
+</tbody>
+</table>
+<p>The <strong>long name introduces an app</strong>: it is what the landing page's cards say, and what these docs say on first mention. Everything after that is the <strong>short name</strong> — every switcher link (<code>sch ↗</code>), every peer strip, every <code>send → gph</code> button, and the wordmark each pane titles itself with. Tooltips and prose use plain English instead ("the schematic", "the graph pane", "the coverage pane"): short names are labels, not sentences.</p>
+<p>The <strong>origin is the wire, and it does not move for a rename.</strong> The schematic still registers as <code>view</code> and the graph pane as <code>graph</code>; <code>view_capture</code>, <code>resolve_signal_to_view</code>, the <code>/view</code> route, <code>view.json</code>, <code>--serve-viewer</code> and every Python identifier keep the names they have until a protocol v2 renames them in lockstep across both repos. The seam between the two vocabularies is a one-line <strong>origin → display label</strong> map — <code>{view: 'sch', graph: 'gph'}</code>, every other origin passed through unchanged — that each app applies wherever an origin would otherwise reach a user. It is hand-duplicated, because a pane is a self-contained single file by design: <code>graph_page.html</code>, <code>cov_page.html</code> and <code>landing_page.html</code> each carry it between <code>&gt;&gt;&gt; origin-labels</code> markers, the SPA keeps its copy in <code>viewer/src/components/HubStatus.vue</code>, and the server-side names live in the <code>name</code>/<code>short</code> columns of <code>hub/landing_page.py</code>'s <code>APPS</code> table. Change one, change all of them. <code>rb hub status</code> is the deliberate exception: it lists raw origins, because it is the tool you reach for when you want to know what the <em>wire</em> says.</p>
+<h3 id="design-tokens-hubthemecss">Design tokens (<code>/hub/theme.css</code>)</h3>
+<p>One sheet, served same-origin, is the source of surfaces (<code>--bg</code> / <code>--panel</code> / <code>--panel-2</code> / <code>--line</code> / <code>--line-strong</code>), text tiers (<code>--fg</code> / <code>--fg-muted</code> / <code>--fg-faint</code>), one accent family (<code>--accent</code> / <code>--accent-contrast</code>), status colours and banner tints (<code>--ok</code> / <code>--warn</code> / <code>--err</code> / <code>--info</code> + <code>--ok-bg</code> / <code>--warn-bg</code> / <code>--err-bg</code>), the eight graph column hues (<code>--col-*</code>), the coverage ramp (<code>--cov-0</code> / <code>--cov-50</code> / <code>--cov-100</code> / <code>--cov-none</code> + <code>--tint-s</code> / <code>--cov-l</code> for the continuous <code>hsl(pct * 1.2, var(--tint-s), var(--cov-l))</code> fill), type (<code>--font-mono</code> / <code>--font-sans</code>, <code>--fs-base</code> 13px / <code>--fs-small</code> 11px), shape (<code>--radius-1/2/3</code>) and elevation (<code>--shadow-1/2</code>).</p>
+<ul>
+<li><strong>Light is the default.</strong> Dark arrives via <code>@media (prefers-color-scheme: dark)</code>; <code>:root[data-theme="light"|"dark"]</code> wins in <em>both</em> directions for an app that pins a theme.</li>
+<li>Those two <code>[data-theme]</code> blocks are <strong>generated</strong> from the other two by <code>python -m rtl_buddy.hub.theme</code>, and <code>tests/test_hub_theme.py</code> fails when the checked-in file is not what the generator writes — three hand-maintained copies of one palette is three chances to drift. Edit the palette in <code>:root</code> or the dark media query, re-run the generator, commit.</li>
+<li><strong>Type rule: mono for data</strong> (ids, paths, signals, numbers, machine values); sans is permitted for chrome and prose.</li>
+<li>Brand tokens (<code>--brand-ink</code>, <code>--brand-green</code>, <code>--brand-red</code>) are for identity marks only. They are never the interactive accent and never a status colour — the brand green is a saturated yellow-green that fails as text on white, which is why <code>--ok</code> stays its own green.</li>
+<li>Linking the sheet does not break the panes' offline rule: it is served by the same hub process, so a machine with no route off localhost still renders everything. Each pane keeps a short inline fallback for the tokens it cannot render without, in case an older hub serves a newer pane.</li>
+<li><strong>A <code>:root</code> fallback block goes <em>before</em> the <code>&lt;link&gt;</code>, never after.</strong> Both selectors are <code>:root</code>, so they tie on specificity and document order decides the winner: a fallback placed after the link out-ranks the sheet permanently — including its <code>@media (prefers-color-scheme: dark)</code> values, so the page is stuck light while a <code>data-theme</code> pin (higher specificity) still appears to work. The alternative that is order-independent is the <code>var(--token, fallback)</code> form, which the viewer placeholder uses. <code>tests/test_hub_theme.py</code> enforces both the ordering and that the fallback values still match the sheet.</li>
+</ul>
+<p>Artwork is deliberately minimal: a favicon on every hub page, a ~40px chip logo beside the landing wordmark, and at most one small (~120px) mascot on an empty-state panel. No hero images, no per-card art, no watermarks. The marks are vendored into <code>src/rtl_buddy/hub/assets/</code> (the art repo is private and panes must stay same-origin) at a few kB each.</p>
+<h3 id="hub-chrome-contract">Hub chrome contract</h3>
+<p>Every hub app implements the same two strips, so moving between them costs nothing:</p>
+<p><strong>Top bar</strong></p>
+<table>
+<thead>
+<tr>
+<th>Position</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>left</td>
+<td>App identity — the app's name, and what it is showing (counts, active model).</td>
+</tr>
+<tr>
+<td>centre</td>
+<td>App-specific controls (search, toggles, reload).</td>
+</tr>
+<tr>
+<td>right</td>
+<td>App switcher: <code>⌂ hub</code> back to the landing, then the sibling apps.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Bottom status strip</strong></p>
+<table>
+<thead>
+<tr>
+<th>Position</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>left</td>
+<td>Connection dot + status word. <strong>One vocabulary: <code>connected</code> / <code>connecting…</code> / <code>offline</code>.</strong> The dot is <code>--ok</code> / <code>--warn</code> / <code>--err</code> respectively.</td>
+</tr>
+<tr>
+<td>middle</td>
+<td>Peer list — who else is attached to this hub right now.</td>
+</tr>
+<tr>
+<td>right</td>
+<td>Message area, using the shared severity tokens (<code>--err</code> for errors, <code>--warn</code> for warnings, <code>--fg-muted</code> for notes).</td>
+</tr>
+</tbody>
+</table>
+<p>Detail that does not fit the vocabulary (the hub's <code>server_version</code>, the reason a socket dropped) belongs in the element's <code>title</code>, not in the status word — a strip that says four different things for "connected" is a strip nobody reads.</p>
+<p><strong>One exception, and it is a control rather than a status word.</strong> The hub allows <a href="#peers-who-connects-to-the-hub">one client per origin</a>, so a second tab of the <em>same</em> app evicts the first, and the hub tells the evicted tab so with an <code>error</code> envelope whose code is <code>superseded</code>. Retrying would only evict the tab the user just opened, so that tab stops reconnecting and its strip reads <strong>"another <em>X</em> tab took this connection — click to take back"</strong> on an <code>--err</code> dot. Clicking re-arms the connection with <code>takeover: true</code>, and the <em>other</em> tab receives the same treatment. Every other drop — hub restart, network — is an ordinary <code>offline</code> with the usual backoff.</p>
+<p>That is also why a tab's <em>first</em> <code>hello</code> never sets <code>takeover</code>. It asks politely, and only if the hub answers <code>not_connected: &lt;origin&gt; client already registered</code> does it retry — once — with <code>takeover: true</code>. All three browser apps implement the identical flow: the SPA in <code>viewer/src/composables/useHub.js</code>, and each pane in its own file.</p>
+<h3 id="sending-the-selection-to-another-app">Sending the selection to another app</h3>
+<p>The switcher opens a sibling app; it does not carry what you were looking at. Each pane therefore offers, beside the thing that is selected, <strong>two controls per sibling app</strong>:</p>
+<ul>
+<li><strong><code>send → X</code></strong> — broadcast the selection in X's vocabulary and stay where you are. This is the whole cross-app interaction: opening an app fresh is the header switcher's job, and there is no <code>open ↗</code> variant in the rows (it was redundant with those links). Send first, then open X from the header, and the new tab still lands focused for free: the hub caches the latest <code>selection_changed</code>, <code>graph_focus</code> and <code>cov_focus</code>, and replays them to every client as it registers. No deep links and no extra wire types are involved.</li>
+</ul>
+<p>Enablement follows the peer list in the status strip: <code>send</code> is dark when nobody is running X, because nothing would see the envelope (the tooltip points at the header links).</p>
+<p>These are <strong>broadcasts, not point-to-point sends</strong>, and the vocabularies overlap on purpose: <code>graph_focus {node:"module:…"}</code> is understood by the graph pane <em>and</em> the schematic view, and <code>selection_changed</code> moves the coverage pane as well as the schematic. So a send aimed at one app may legitimately move another. Where two buttons emit the identical envelope, the tooltips say so rather than pretending the pair are independent.</p>
 <h2 id="peers-who-connects-to-the-hub">Peers (who connects to the hub)</h2>
 <table>
 <thead>
@@ -2133,7 +2427,7 @@
 <tr>
 <td><strong>rtl-buddy-view SPA</strong> (browser)</td>
 <td>WebSocket <code>/ws</code> on the hub's <code>http_port</code></td>
-<td>Loaded from the bundle when <code>rb hub start --serve-viewer</code> is in use. The bundle is injected with <code>window.__RTL_BUDDY_HUB__</code> at serve time.</td>
+<td>Served at <code>/view</code> from the bundle when <code>rb hub start --serve-viewer</code> is in use. The bundle is injected with <code>window.__RTL_BUDDY_HUB__</code> at serve time.</td>
 </tr>
 <tr>
 <td><strong><code>rb wave</code> bridge</strong> (<code>tools/wave_hub_bridge.py</code>)</td>
@@ -2150,9 +2444,16 @@
 <td>WebSocket <code>/ws</code> on the hub's <code>http_port</code></td>
 <td>The page the hub itself serves at <code>GET /graph</code> — see <a href="#design-knowledge-graph-pane">Design knowledge graph pane</a>. Needs no viewer bundle.</td>
 </tr>
+<tr>
+<td><strong>coverage pane</strong> (browser)</td>
+<td>WebSocket <code>/ws</code> on the hub's <code>http_port</code></td>
+<td>The page the hub itself serves at <code>GET /cov</code> — see <a href="#coverage-pane">Coverage pane</a>. Needs no viewer bundle.</td>
+</tr>
 </tbody>
 </table>
-<p>Each peer has a closed <code>Origin</code> enum value: <code>view</code> (the SPA), <code>wave</code> (the <code>rb wave</code> surfer bridge), <code>src</code> (editor adapters — the nvim plugin registers as <code>src</code>), <code>cli</code> (<code>rb hub send</code>), <code>notebook</code> (the axi-profiler marimo notebook, added so it can peer over the event broker), and <code>graph</code> (the design-knowledge-graph pane). The hub allows at most one client per origin; a second <code>hello</code> for an already-registered origin is refused unless it sets <code>takeover: true</code>, in which case the older peer is evicted (<code>bye</code>-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph pane has its own origin rather than sharing <code>view</code> precisely because of that rule: it is meant to be open <em>alongside</em> the schematic, since clicking a module in the graph selects it in the design view.</p>
+<p>The <strong>landing page</strong> at <code>/</code> is not in this table on purpose: it polls <code>/hub/state.json</code> and never registers an origin, so it cannot evict an app you have open.</p>
+<p><code>rb hub status</code> lists every origin a user can have open — <code>view</code>, <code>wave</code>, <code>src</code>, <code>graph</code>, <code>cov</code> — as <code>CONNECTED</code> or <code>not connected</code>. <code>cli</code> is excluded (it is the status query itself) and so is <code>notebook</code> (it peers for one marimo session rather than being an app you keep open).</p>
+<p>Each peer has a closed <code>Origin</code> enum value — a <strong>wire</strong> value, unaffected by the <a href="#app-names-display-and-origins-wire">display names above</a>: <code>view</code> (the schematic SPA, shown as <code>sch</code>), <code>wave</code> (the <code>rb wave</code> surfer bridge), <code>src</code> (editor adapters — the nvim plugin registers as <code>src</code>), <code>cli</code> (<code>rb hub send</code>), <code>notebook</code> (the axi-profiler marimo notebook, added so it can peer over the event broker), <code>graph</code> (the knowledge graph pane, shown as <code>gph</code>) and <code>cov</code> (the coverage pane). The hub allows at most one client per origin; a second <code>hello</code> for an already-registered origin is refused unless it sets <code>takeover: true</code>, in which case the older peer is evicted (<code>bye</code>-broadcast and its socket closed) — used by a new SPA tab to take over from a stale one. The graph and coverage panes have their own origins rather than sharing <code>view</code> precisely because of that rule: they are meant to be open <em>alongside</em> the schematic, since clicking a module in the graph — or a cold line in the coverage pane — selects it in the schematic.</p>
 <h2 id="protocol">Protocol</h2>
 <p>Wire envelope is line-delimited JSON, one record per line, UTF-8. The full spec lives in <a href="https://github.com/rtl-buddy/rtl-buddy-view/issues/19">rtl-buddy/rtl-buddy-view#19</a>; the JSON Schema enforcing it ships at <code>src/rtl_buddy/hub/schema/hub-protocol-v1.json</code>. Encoded and decoded by <code>rtl_buddy.hub.protocol</code>, which validates on both sides — unknown fields are caller bugs, not forward-compat points.</p>
 <p>State events (selection_changed, signal_selected, cursor_moved, …) are broadcast to every connected peer <strong>except</strong> the origin. Requests (<code>resolve_*</code>, <code>goto_declaration</code>, …) are routed to the peer whose origin owns the target coordinate system; if no peer is registered for that origin, the hub replies with <code>error{code: "not_connected"}</code>. The <code>view ↔ wave ↔ src</code> resolver lives in <code>rtl_buddy.hub.resolver</code> and consumes the <code>view.json</code> snapshot pointed at by <code>mapping.view_json</code>.</p>
@@ -2170,22 +2471,44 @@
 <li><strong>SPA:</strong> <code>view-pan INSTANCE_PATH</code>, <code>overlay NAME --on/--off</code> (<code>clock</code> / <code>reset</code> / <code>axi-perf</code> / <code>wave</code>), <code>capture --out PATH [--format png|svg] [--scale …]</code>.</li>
 <li><strong>Source:</strong> <code>open-source FILE:LINE[:COL]</code>.</li>
 <li><strong>Diagnostics:</strong> <code>diagnose SOURCE ITEM…</code> (each <code>ITEM</code> is <code>file:line:severity:code:message</code>; <code>--clear</code>, <code>--instance</code>).</li>
+<li><strong>Coverage pane:</strong> <code>cov-focus TARGET [--metric …] [--line N] [--item NAME]</code> — focus the <a href="#coverage-pane">coverage pane</a> on one target of the run's model. <code>TARGET</code> is prefixed (<code>file:design/blk.sv</code>, <code>module:blk</code>, <code>test:verif/blk#basic</code>); an unprefixed string is read as a file path. Broadcast and cached like <code>graph-focus</code>, hints included — a replay that kept only the target would silently downgrade "this branch, on line 84" to "this file".</li>
 <li><strong>Graph pane:</strong> <code>graph-focus NODE</code> — focus the <a href="#design-knowledge-graph-pane">design knowledge graph pane</a> on one <code>graph.json</code> node id (<code>module:fifo</code>, <code>test:verif/dma#smoke</code>, <code>covitem:dma#DMA-COV-1</code>, …). Broadcast, and cached by the hub, so sending it before the browser tab is open still lands: the focus is replayed to the pane when it registers.</li>
 <li><strong>State / resolve:</strong> <code>state</code> (snapshot of active model / selection / cursor / scope / peers), and <code>resolve {view-to-wave|wave-to-view|signal-to-view}</code>.</li>
 </ul>
 <h2 id="design-knowledge-graph-pane">Design knowledge graph pane</h2>
 <p><code>rb hub start --serve-viewer</code> also serves the <a href="../graph/">design knowledge graph</a> as an interactive page at <code>GET /graph</code>, next to the schematic rather than instead of it. Two routes:</p>
 <ul>
-<li><code>GET /graph.json</code> — <code>artefacts/graph/graph.json</code> joined with <code>artefacts/graph/results-overlay.json</code> <strong>in memory</strong>, using the same <code>annotate_graph()</code> join the query verbs use. <code>graph.json</code> on disk is never written: hash stability across regressions is why the overlay is a separate file to begin with. The body is the node-link envelope with each test node carrying its <code>results</code> entry, each node carrying the <code>category</code> column it renders in, plus a <code>graph.hub</code> block (where the two files were read from, node/link counts, per-tier and per-column counts, the column order, the overlay's status summary) so the page can render a header and a legend without a second round-trip. Read per request, so <code>rb graph build</code> / <code>rb graph results</code> in another terminal shows up on <strong>reload</strong>. Returns 404 with a JSON <code>error</code> naming <code>rb graph build</code> when there is no graph yet.</li>
-<li><code>GET /graph</code> — the page. One self-contained HTML document: no CDN, no external stylesheet, no web font, no build step, because the hub is routinely run on machines with no route off localhost. Nodes are laid out in <a href="../graph/#looking-at-the-graph">flow columns</a> (<code>spec</code> → <code>design</code> → one per verification flow) with a small force relaxation inside each, one colour per column, and test nodes get a pass/fail ring from the overlay. It is served even with no graph built — its empty state names <code>rb graph build</code>, which is more useful than a blank tab.</li>
+<li><code>GET /graph.json</code> — <code>artefacts/graph/graph.json</code> joined with <code>artefacts/graph/results-overlay.json</code> <strong>in memory</strong>, using the same <code>annotate_graph()</code> and <code>annotate_coverage()</code> joins the query verbs use. <code>graph.json</code> on disk is never written: hash stability across regressions is why the overlay is a separate file to begin with. The body is the node-link envelope with each test node carrying its <code>results</code> entry, each node the <a href="../graph/#coverage-on-the-graph">coverage join</a> knows carrying its <code>coverage</code> entry, each node carrying the <code>category</code> column it renders in, plus a <code>graph.hub</code> block (where the two files were read from, node/link counts, per-tier and per-column counts, the column order, the overlay's status summary, and the coverage run's header minus its per-node map) so the page can render a header and a legend without a second round-trip. Read per request, so <code>rb graph build</code> / <code>rb graph results</code> in another terminal shows up on <strong>reload</strong>. Returns 404 with a JSON <code>error</code> naming <code>rb graph build</code> when there is no graph yet.</li>
+<li><code>GET /graph</code> — the page. One HTML document with no build step, no CDN and no web font, because the hub is routinely run on machines with no route off localhost; its only external references are same-origin hub routes (<code>/hub/theme.css</code>, <code>/hub/assets/*</code>), and it carries an inline fallback for the tokens it cannot render without. Nodes are laid out in <a href="../graph/#looking-at-the-graph">flow columns</a> (<code>spec</code> → <code>design</code> → one per verification flow) with a small force relaxation inside each, one colour per column, and test nodes get a pass/fail ring from the overlay. A <strong>coverage</strong> toggle appears when the overlay carries a coverage join and repaints the design column from the shared <a href="#design-tokens-hubthemecss">coverage ramp</a> — see <a href="../graph/#coverage-on-the-pane">Coverage on the pane</a>. It is served even with no graph built — its empty state names <code>rb graph build</code>, which is more useful than a blank tab.</li>
 </ul>
 <p>Clicking a node sends the same envelopes the SPA sends, over the same <code>/ws</code>:</p>
 <ul>
-<li><strong><code>selection_changed</code></strong> for anything that resolves to a design-view instance path. An <code>instance</code> node's id already <em>is</em> the coordinate (<code>inst:&lt;top&gt;/&lt;dot.path&gt;</code> — the resolver's identity); a <code>module</code> node has no instance path of its own, so the pane picks the shallowest instance of it, which is what a person means by "show me this module".</li>
+<li><strong><code>selection_changed</code></strong> for anything that resolves to an instance path in the schematic. An <code>instance</code> node's id already <em>is</em> the coordinate (<code>inst:&lt;top&gt;/&lt;dot.path&gt;</code> — the resolver's identity); a <code>module</code> node has no instance path of its own, so the pane picks the shallowest instance of it, which is what a person means by "show me this module".</li>
 <li><strong><code>open_source</code></strong> (routed to the <code>src</code> peer, i.e. nvim) for any node that knows its <code>file</code>, at its <code>line</code>.</li>
 </ul>
 <p>Both are individually toggleable in the pane's toolbar. The reverse direction works too: <code>rb hub send graph-focus NODE</code> centres and selects a node, and a <code>selection_changed</code> from the SPA or the editor highlights the matching instance node in the graph.</p>
+<p>The inspector heads the selected node with the <a href="#sending-the-selection-to-another-app">cross-app row</a>: <code>send → sch</code> re-sends the coordinate above <em>without</em> the <code>sync schematic</code> toggle having to be on, and <code>send → cov</code> translates the node into a <code>cov_focus</code> target — a <code>test:</code> node to that test's attribution, a <code>model:</code>/<code>module:</code> node to the module, a spec <code>coverage_item</code> to its block with the cover column up and the item named, and anything else that knows its <code>file</code> to that file and line. A node that is none of those leaves both buttons dark and says why.</p>
 <p>When a graph exists, the index page also gets a <code>window.__RTL_BUDDY_GRAPH_URL__ = "/graph.json"</code> injection alongside <code>__RTL_BUDDY_VIEW_URL__</code>, so an SPA overlay can advertise the pane on presence of the global instead of probing the endpoint and handling a 404.</p>
+<h2 id="coverage-pane">Coverage pane</h2>
+<p><code>rb hub start --serve-viewer</code> also serves the run's <a href="../coverage/">coverage</a> as an interactive page at <code>GET /cov</code>, in the same mould as the graph pane. Three routes:</p>
+<ul>
+<li><code>GET /cov.json</code> — the newest <code>cov_dir/manifest.json</code> and the model it points at, assembled by <strong>the same builder <code>rb cov summary</code> uses</strong> (<code>rtl_buddy.cov.query.detail_payload</code>), so the pane and the CLI can differ in presentation but never in numbers. It is the summary payload with <code>files</code> deepened to carry every point and its per-test attribution, plus a <code>hub</code> block (schema version, the model path, the metric order, the source route). Read per request, so a regression finishing in another terminal shows up on <strong>reload</strong>. Returns 404 with a JSON <code>error</code> naming the command that produces coverage when there is none.</li>
+<li><code>GET /cov/source?path=…</code> — one file's text, one entry per line. Not folded into <code>/cov.json</code>: a model on a real design names hundreds of files and inlining them all would send tens of megabytes to render one. <code>path</code> must name a file the model itself lists, and is resolved under the project root and nowhere else — the argument comes from a query string, and a browser tab is reachable by anything that can reach the port, so the grant is the file set <code>/cov.json</code> already handed the pane rather than anything readable under the root — and a file over the annotation limit is refused with a reason rather than hanging the tab.</li>
+<li><code>GET /cov</code> — the page. One HTML document with no build step, no CDN and no web font; its only external references are same-origin hub routes (<code>/hub/theme.css</code>, <code>/hub/assets/*</code>), and it carries an inline fallback for the tokens it cannot render without. It is served even with no coverage collected — its empty state names the command, which is more useful than a blank tab.</li>
+</ul>
+<p>What it shows: a dashboard (per-metric scalars from the shared <a href="#design-tokens-hubthemecss">coverage ramp</a>, the run's provenance, observed SVA cover points), a file list with module and path filtering, and per-file <strong>source annotation</strong> — one column per metric (<code>L B T E C</code>), always, under a sticky header carrying that file's totals for each: <code>L 100% 22/22</code>, <code>B 96% 75/78</code>, <code>—</code> for a metric the file never collected. <code>L</code> is the hit-count gutter itself; the rest carry each line's points. The <strong>metric picker drives the file list only</strong> — its bars, its coldest-first ranking and the cold-only filter — and the pane opens on <code>toggle</code>, where the holes usually are, falling back to the first metric the run actually collected. Clicking a column header sets it too. The ranking is lowest ratio, then most absolute misses, the same rule <code>rb cov summary</code> uses, with files that have no points of the metric last, since those are silent rather than cold. Every number is <strong>merged across all tests</strong> unless you say otherwise: picking a test in the tests table turns it into a lens, and every number becomes that test's contribution, which is how you answer "what would I lose by dropping it". The table's pinned first row, <em>all tests (merged)</em>, is the way back — as is the <code>lens: &lt;test&gt; ×</code> pill shown beside the file's totals and in the detail panel, and clicking the selected test again.</p>
+<p>A cell is one small badge — <code>12/16</code> — tinted on the same ramp, because one 32-bit bus declaration is 64 toggle points and a chip each pushed the code off the right of the screen. A line carrying a single named point of that metric shows the name instead. Every column is capped, so the code stays where you can read it.</p>
+<p>Clicking a badge in any column opens the <strong>detail panel</strong>: one panel — keyed on the (line, metric) pair the badge belongs to — docked at the bottom of the file view above the status strip, <em>outside</em> the code's scroller — a badge on the last visible line of a long file would otherwise open its detail below the fold. It is headed <code>apb_intf.sv:19 · T 6/16</code>, capped at 40% of the window with its own scroll, and closed by its <code>×</code> or by clicking the same badge again; the line it belongs to stays marked in the code while it is up, and a lens change updates its counts without closing it. Toggle points in it are drawn as a <strong>bit grid</strong>: one square per bit of each signal, MSB left, rows of 32 with a gap at every byte, the top half of a square being <code>0→1</code> and the bottom half <code>1→0</code>. A bit covered both ways is a solid block, a half-toggled bit is visibly half, and hovering names the bit and both hit counts under the active lens. Clicking a square shows that bit's per-test attribution in the same panel, under the grid you clicked it in — the uncovered direction when only one of the two is uncovered, since that is the one you came to look at. A <code>cov_focus</code> whose <code>item</code> names a toggle point (<code>paddr[3]:0-&gt;1</code>) opens the panel and highlights its square. It needs no <code>metric</code> hint to do it: every metric has a column, so the point's own name says which cell it lives in.</p>
+<p>The hit-count column opens the same panel, for the same reason: hovering it lists the per-test hits as a peek, and clicking it docks that line's attribution — headed <code>apb_intf.sv:19 · line · 322 hits</code> — with the same close-and-replace semantics. That click is not the row's click: inspecting a line's attribution never emits <code>source_focused</code> or <code>open_source</code>, so reading coverage does not move anybody's editor.</p>
+<p>Clicking a line sends the same envelopes the other panes send, over the same <code>/ws</code>:</p>
+<ul>
+<li><strong><code>source_focused</code></strong> <code>{file, line, col}</code>. Not <code>selection_changed</code>: this pane knows files and modules, never instance paths. The hub's resolver already turns a file+line into the instance(s) whose source range contains it and broadcasts the derived <code>selection_changed</code> itself (see <a href="#protocol">Protocol</a>) — which is the only way to reach the schematic without inventing a coordinate the coverage model does not have.</li>
+<li><strong><code>open_source</code></strong> (routed to the <code>src</code> peer, i.e. nvim) at the clicked line.</li>
+<li><strong><code>graph_focus</code></strong> <code>{node: "module:&lt;name&gt;"}</code> when you click a module chip, since <code>module:&lt;name&gt;</code> is the id that module carries in the graph.</li>
+</ul>
+<p>The file header carries the <a href="#sending-the-selection-to-another-app">cross-app row</a> beside those chips, for the open file's first module: <code>send → gph</code> and <code>send → sch</code> both broadcast that one <code>graph_focus</code>, since the graph pane and the schematic read the same <code>module:</code> vocabulary — the two buttons differ only in which tab they assume or open, and their tooltips say so.</p>
+<p>Both directions work: <code>rb hub send cov-focus &lt;target&gt;</code> focuses the pane (replayed on connect, so it lands even before the tab is open), an editor's <code>source_focused</code> scrolls it to the matching file and line, and a <code>selection_changed</code> from the SPA is matched to a module by the usual instance-prefix convention (<code>u_</code>, <code>i_</code>, <code>inst_</code>, <code>dut_</code>) — a soft miss when the convention does not hold, since nothing in either model says which module an instance is of. A <code>test:</code> target is matched on the model's bare test name, and a qualified <code>test:&lt;suite&gt;#&lt;name&gt;</code> — the form the schema and <code>rb hub send cov-focus</code> document — falls back to its <code>#</code> fragment.</p>
+<p>When a coverage manifest exists, the SPA index also gets a <code>window.__RTL_BUDDY_COV_URL__ = "/cov.json"</code> injection, the same presence-advertisement <code>__RTL_BUDDY_GRAPH_URL__</code> uses. Discovery is a bounded walk rather than one <code>stat</code> (coverage artefacts land wherever the command ran), so the answer is cached for a few seconds — a run finishing elsewhere shows up on the landing page's next poll but one.</p>
 <h2 id="auto-start-on-macos-launchagent">Auto-start on macOS (LaunchAgent)</h2>
 <p>On macOS, <code>rb hub install-launchagent</code> writes <code>~/Library/LaunchAgents/com.rtl-buddy.hub.plist</code> (with <code>RunAtLoad</code> + <code>KeepAlive</code>) and <code>launchctl load</code>s it, so the hub starts at login and restarts if it dies. The agent runs <code>rb hub start --foreground</code> from the project directory and routes stdout/stderr to <code>.rtl-buddy/hub.log</code>. <code>rb hub uninstall-launchagent</code> unloads and removes the plist. On non-macOS platforms both commands error with <code>LaunchAgentUnsupportedError</code>.</p>
 <h2 id="axi-perf-overlay-and-notebook-spawning">AXI-perf overlay and notebook spawning</h2>
