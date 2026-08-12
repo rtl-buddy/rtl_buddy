@@ -25,9 +25,12 @@ Raw file reads are the fallback for finding things, not the default: read a file
 
 Where that rule stops, measured over six tasks in [Token Efficiency](concepts/graph.md#token-efficiency) — a hop through the graph is worth it when the file it saves you is bigger than the payload that replaces it, which today means:
 
-- **Ask the graph for relations grep cannot compute.** "Which tops contain `ip_cdc_sync`?" is one `explain` on the module node, exact, with the whole transitive closure already flattened by elaboration. Grep needs an iterative fixpoint over mentions, gets false positives from comments, and is quietly wrong if you stop a round early.
-- **Do not ask it a config-tier question.** Which tests exercise a block, at which `reglvl`, claiming which coverage items — the `tests.yaml` that answers it is smaller than the `explain` payloads that would replace it, every time.
+- **Ask the graph for relations grep cannot compute.** "Which tops contain `ip_cdc_sync`?" is one `explain` on the module node, exact, with the whole transitive closure already flattened by elaboration. Grep needs an iterative fixpoint over mentions, gets false positives from comments, and is quietly wrong if you stop a round early. Measured at token parity and roughly half the calls.
+- **Ask it for chains that cross tiers.** Coverage item to tests to testbenches to model to DUT to spec doc to golden model is two calls and the cheapest of the two routes.
+- **Do not ask it to enumerate a config tier.** Which tests exercise a block, at which `reglvl`, claiming which coverage items — the `tests.yaml` that answers it is smaller than the `explain` payloads that would replace it, every time.
 - **Do not ask it a single-file question.** A module's port list, one instance's connections: let the graph name the file and the line range, then read those lines.
+
+Edges come back lean by default — the peer's id, label and type, enough to decide whether to hop. `--expand` (CLI) / `"expand": true` (MCP) restores a full node summary per peer; it costs about a peer summary each, so prefer a second lean call on the one peer you need.
 
 ```bash
 rb --machine graph build                                    # once per source change

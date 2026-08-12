@@ -4108,6 +4108,16 @@ class RtlBuddy:
                 ),
             ),
         ] = graph_query_mod.DEFAULT_DEPTH,
+        max_neighbors: Annotated[
+            int,
+            typer.Option(
+                "--max-neighbors",
+                help=(
+                    "neighbours reported per match; anything beyond is "
+                    "counted in neighbors_truncated rather than dropped silently"
+                ),
+            ),
+        ] = graph_query_mod.DEFAULT_MAX_NEIGHBORS,
         results: Annotated[
             bool,
             typer.Option(
@@ -4115,6 +4125,16 @@ class RtlBuddy:
                 help="join the regression-results overlay onto every node",
             ),
         ] = True,
+        expand: Annotated[
+            bool,
+            typer.Option(
+                "--expand",
+                help=(
+                    "full node summaries for every neighbour instead of the "
+                    "lean id/label/type references"
+                ),
+            ),
+        ] = False,
         graph: Annotated[
             str | None,
             typer.Option(
@@ -4159,7 +4179,9 @@ class RtlBuddy:
             tier=tier,
             limit=limit,
             depth=depth,
+            max_neighbors=max_neighbors,
             results=results,
+            expand=expand,
         )
         # A question nobody can answer is not a crash: exit 1 (the
         # "graceful no" code) so a shell loop can branch on it, and 0
@@ -4214,6 +4236,17 @@ class RtlBuddy:
                     f"  {arrow} {via.get('type', '?')} {neighbor['id']}"
                     f"{f' ({status})' if status else ''}",
                     stream="stdout",
+                    markup=False,
+                )
+            truncated = match.get("neighbors_truncated")
+            if truncated:
+                kinds = ", ".join(
+                    f"{count} {kind}" for kind, count in truncated["kinds"].items()
+                )
+                emit_console_text(
+                    f"  ... {truncated['dropped']} more neighbour(s) beyond "
+                    f"--max-neighbors: {kinds}",
+                    style="yellow",
                     markup=False,
                 )
         raise typer.Exit(exit_code)
@@ -4332,6 +4365,16 @@ class RtlBuddy:
                 help="join the regression-results overlay onto every node",
             ),
         ] = True,
+        expand: Annotated[
+            bool,
+            typer.Option(
+                "--expand",
+                help=(
+                    "full node summaries for every edge peer instead of the "
+                    "lean id/label/type references"
+                ),
+            ),
+        ] = False,
         graph: Annotated[
             str | None,
             typer.Option("--graph", help="graph.json to query"),
@@ -4343,7 +4386,8 @@ class RtlBuddy:
     ):
         """
         report one node's attributes, every edge on it with the far endpoint
-        resolved, its last regression result and its coverage
+        named (--expand for full peer summaries), its last regression result
+        and its coverage
         """
         root = str(discover_project_root(fallback_cwd=True))
         # Lock-free, as `graph query` is — see there.
@@ -4359,7 +4403,9 @@ class RtlBuddy:
             ctx, root, graph=graph, overlay=overlay, results=results
         )
         try:
-            payload = graph_query_mod.explain(gctx, node, results=results)
+            payload = graph_query_mod.explain(
+                gctx, node, results=results, expand=expand
+            )
         except graph_query_mod.GraphQueryError as exc:
             if self.machine:
                 self._emit_machine_result(
@@ -4402,13 +4448,17 @@ class RtlBuddy:
             emit_console_text(line, stream="stdout", markup=False)
         rows = [
             {
-                "dir": edge["direction"],
+                "dir": direction,
                 "type": str(edge.get("type")),
                 "peer": edge["peer"],
-                "peer_type": edge["node"].get("type", "-"),
+                "peer_type": edge.get("peer_type", "-"),
                 "confidence": str(edge.get("confidence", "-")),
             }
-            for edge in payload["outgoing"] + payload["incoming"]
+            for direction, bucket in (
+                ("out", payload["outgoing"]),
+                ("in", payload["incoming"]),
+            )
+            for edge in bucket
         ]
         if rows:
             render_summary(
@@ -4425,6 +4475,26 @@ class RtlBuddy:
             )
         else:
             emit_console_text("  (no edges)", stream="stdout")
+        truncated = payload.get("truncated")
+        if truncated:
+            # A cut answer that does not say what it lost is how you get a
+            # confident wrong answer cheaply — so the human surface says it
+            # too, not just the machine payload.
+            kinds = ", ".join(
+                f"{count} {kind}" for kind, count in truncated["kinds"].items()
+            )
+            buckets = truncated.get("buckets") or {}
+            where = (
+                " (" + ", ".join(f"{name} {n}" for name, n in buckets.items()) + ")"
+                if buckets
+                else ""
+            )
+            emit_console_text(
+                f"  ... {truncated['dropped']} more edge(s) not shown{where}: {kinds}",
+                style="yellow",
+                stream="stdout",
+                markup=False,
+            )
         raise typer.Exit(0)
 
     # ------------------------------------------------------------------

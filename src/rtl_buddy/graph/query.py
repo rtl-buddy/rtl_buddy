@@ -17,7 +17,19 @@ prose:
 * ``explain`` — "what is this node?" One node's attributes, every edge
   on it with the far endpoint resolved, and its last regression result.
 
-Three rules hold this module together.
+Three rules hold this module together — plus one about size.
+
+**Payloads are lean by default, expanded on request (#388).** The #381
+measurement found the graph route losing to grep on every task for one
+reason: an ``explain`` payload embedded a complete node summary for
+every edge endpoint, so it cost ~1k tokens whatever it described.
+``explain`` and the ``query`` neighbourhood therefore report an edge as
+its type plus the peer's id/label/type — enough to decide whether to
+hop — and ``expand=True`` (CLI ``--expand``) restores the full peer
+summaries for the caller who wants one round-trip. A node's *own*
+type-specific attributes, by contrast, are cheap (tens of tokens) and
+were previously only reachable through a whole ``explain`` call, so
+every full node summary now carries them.
 
 **Deterministic, never a model.** Matching is keyword scoring with a
 fixed rubric and ties broken on the node id, so the same question over
@@ -64,7 +76,10 @@ logger = logging.getLogger(__name__)
 
 #: Bumped when a payload's shape changes incompatibly. Rides on every
 #: envelope so an agent surface (``--machine``, ``rb mcp``) can tell.
-QUERY_SCHEMA_VERSION = 1
+#: 2: lean edges/neighbours by default — peer id/label/type instead of a
+#: full embedded summary (#388); full node summaries carry their own
+#: ``attributes``; neighbour truncation reports what it dropped.
+QUERY_SCHEMA_VERSION = 2
 
 #: Matches returned by ``rb graph query`` before truncation.
 DEFAULT_LIMIT = 10
@@ -528,10 +543,30 @@ def match_nodes(
 # payload building blocks
 # ---------------------------------------------------------------------------
 
-#: Node attributes lifted into every summary. Everything else stays in
-#: ``attributes`` on ``explain`` only — a query answer that repeated the
-#: whole node would cost the tokens the graph exists to save.
+#: Node attributes lifted into the top level of every summary. The rest
+#: of a node — its type-specific attributes (a port's ``dir``, a test's
+#: ``reglvl``) — rides under ``attributes`` when the summary is a full
+#: one, because those fields are tens of tokens and reading one of them
+#: used to cost a whole ``explain`` call (#388).
 _SUMMARY_KEYS = ("id", "type", "label", "base_label", "tier", "file", "line")
+
+#: The keys a *lean* reference to a peer node carries: enough to know
+#: what it is and whether to hop, nothing that repeats its tier's data.
+_LEAN_KEYS = ("id", "type", "label", "base_label")
+
+
+def _node_attributes(node: dict) -> dict:
+    """The node's own type-specific attributes — never a peer's.
+
+    ``None`` values are dropped: a tier that records ``"width": null``
+    is saying it knows nothing, and repeating that on every port summary
+    is exactly the payload padding #388 removes.
+    """
+    return {
+        key: value
+        for key, value in sorted(node.items())
+        if key not in _SUMMARY_KEYS and key != "dangling" and value is not None
+    }
 
 
 def cite_hint(node: dict, models_yaml: str | None = None) -> dict | None:
@@ -565,8 +600,21 @@ def cite_hint(node: dict, models_yaml: str | None = None) -> dict | None:
     return hint or None
 
 
-def node_summary(ctx: GraphContext, node: dict, *, results: bool = True) -> dict:
-    """The compact form of a node used everywhere but ``explain``."""
+def node_summary(
+    ctx: GraphContext,
+    node: dict,
+    *,
+    results: bool = True,
+    attributes: bool = False,
+) -> dict:
+    """The full form of a node: summary keys, cite, joins, own attributes.
+
+    ``attributes=True`` adds the node's *own* type-specific attributes
+    (#388) — they are small, and without them a single ``reglvl`` or
+    port ``dir`` costs a whole ``explain`` round-trip. ``explain`` keeps
+    reporting them at the payload's top level instead, so it passes
+    ``False`` for its own node.
+    """
     summary = {key: node[key] for key in _SUMMARY_KEYS if node.get(key) is not None}
     if node.get("dangling"):
         summary["dangling"] = True
@@ -577,16 +625,43 @@ def node_summary(ctx: GraphContext, node: dict, *, results: bool = True) -> dict
             node_id[len("inst:") :].split("/", 1)[0]
         )
     cite = cite_hint(node, models_yaml)
-    if cite:
+    # ``file``/``line`` already sit on the summary; a cite block earns
+    # its bytes only when it adds the runnable command (#388).
+    if cite and cite.get("command"):
         summary["cite"] = cite
-    if results:
-        entry = ctx.results_for(str(node.get("id", "")))
-        if entry is not None:
-            summary["results"] = entry
-        coverage = ctx.coverage_for(str(node.get("id", "")))
-        if coverage is not None:
-            summary["coverage"] = coverage
+    if attributes:
+        extra = _node_attributes(node)
+        if extra:
+            summary["attributes"] = extra
+    _join_overlay(ctx, summary, node_id, results=results)
     return summary
+
+
+def _lean_summary(ctx: GraphContext, node: dict, *, results: bool = True) -> dict:
+    """A reference to a node: id, label, type — decide, then hop (#388).
+
+    The results/coverage join stays even here: "which tests cover X and
+    did they pass" must remain one round-trip, and a status is a few
+    tokens where a repeated ``cite``/attribute block is a few hundred.
+    """
+    summary = {key: node[key] for key in _LEAN_KEYS if node.get(key) is not None}
+    if node.get("dangling"):
+        summary["dangling"] = True
+    _join_overlay(ctx, summary, str(node.get("id", "")), results=results)
+    return summary
+
+
+def _join_overlay(
+    ctx: GraphContext, summary: dict, node_id: str, *, results: bool
+) -> None:
+    if not results:
+        return
+    entry = ctx.results_for(node_id)
+    if entry is not None:
+        summary["results"] = entry
+    coverage = ctx.coverage_for(node_id)
+    if coverage is not None:
+        summary["coverage"] = coverage
 
 
 def _link_summary(direction: str, link: dict, peer_id: str) -> dict:
@@ -603,6 +678,73 @@ def _link_summary(direction: str, link: dict, peer_id: str) -> dict:
     return {k: v for k, v in summary.items() if v is not None}
 
 
+def _edge_entry(
+    ctx: GraphContext,
+    direction: str,
+    link: dict,
+    peer_id: str,
+    *,
+    expand: bool,
+    results: bool,
+) -> dict:
+    """One edge of an ``explain`` payload: lean triple, or expanded peer.
+
+    Lean is the default (#388): the link's own facts plus the peer's
+    id/label/type. ``expand`` adds the full peer summary — attributes,
+    cite, joins — which is the pre-#388 payload for the caller who would
+    otherwise ``explain`` every peer anyway.
+    """
+    peer = ctx.index.node(peer_id) or {"id": peer_id, "dangling": True}
+    entry = _link_summary(direction, link, peer_id)
+    # The ``outgoing`` / ``incoming`` bucket already says which way the
+    # edge points; repeating it on every entry is padding (#388).
+    entry.pop("direction", None)
+    if peer.get("label") is not None:
+        entry["peer_label"] = peer["label"]
+    if peer.get("type") is not None:
+        entry["peer_type"] = peer["type"]
+    if expand:
+        entry["node"] = node_summary(ctx, peer, results=results, attributes=True)
+    return entry
+
+
+def _truncation(**buckets: list[dict]) -> dict | None:
+    """What a limit cut off — count and kinds, never a silent flag (#388).
+
+    None when nothing was dropped, so the key is simply absent from the
+    payload: ``neighbors_truncated`` and ``explain``'s ``truncated``
+    spell "nothing was cut" the same way, rather than one omitting the
+    key and the other saying ``false``.
+
+    ``kinds`` counts by the entry's own ``type``, and **which vocabulary
+    that is depends on the caller**: :func:`neighborhood` drops node
+    summaries, so its kinds are *node* types (``test``, ``module``);
+    :func:`explain` drops edge entries, so its kinds are *edge* types
+    (``covers``, ``runs_on``). One key, two vocabularies — read it
+    against the verb that produced it. ``peer_type`` is the fallback for
+    an entry carrying no ``type`` of its own.
+
+    Where a verb cuts more than one bucket, ``buckets`` names what each
+    lost: an ``explain`` that hits the limit on ``outgoing`` alone is a
+    different answer from one that lost both ways, and a single total
+    cannot tell them apart.
+    """
+    total = sum(len(entries) for entries in buckets.values())
+    if not total:
+        return None
+    kinds: dict[str, int] = {}
+    for entries in buckets.values():
+        for entry in entries:
+            key = str(entry.get("type") or entry.get("peer_type") or "unknown")
+            kinds[key] = kinds.get(key, 0) + 1
+    block = {"dropped": total, "kinds": dict(sorted(kinds.items()))}
+    if len(buckets) > 1:
+        block["buckets"] = {
+            name: len(entries) for name, entries in sorted(buckets.items()) if entries
+        }
+    return block
+
+
 def neighborhood(
     ctx: GraphContext,
     node_id: str,
@@ -610,16 +752,22 @@ def neighborhood(
     depth: int = DEFAULT_DEPTH,
     limit: int = DEFAULT_MAX_NEIGHBORS,
     results: bool = True,
-) -> tuple[list[dict], bool]:
+    expand: bool = False,
+) -> tuple[list[dict], dict | None]:
     """Breadth-first expansion around one node, both directions.
 
     Both directions on purpose: "which tests cover this coverage item"
     reads ``covers`` backwards, and an expansion that only followed
     edges forwards would answer half the questions asked of it.
+
+    Returns ``(neighbours, truncation)`` where ``truncation`` is
+    ``None`` when nothing was cut, else ``{"dropped": N, "kinds": {...}}``
+    describing what the ``limit`` threw away — a truncated answer that
+    does not say *what* it lost invites a wrong conclusion cheaply.
     """
     depth = max(0, min(depth, MAX_DEPTH))
     if depth == 0:
-        return [], False
+        return [], None
     seen = {node_id}
     found: list[dict] = []
     queue: deque[tuple[str, int]] = deque([(node_id, 0)])
@@ -639,14 +787,16 @@ def neighborhood(
                 continue
             seen.add(peer)
             node = ctx.index.node(peer) or {"id": peer, "dangling": True}
-            entry = node_summary(ctx, node, results=results)
+            if expand:
+                entry = node_summary(ctx, node, results=results, attributes=True)
+            else:
+                entry = _lean_summary(ctx, node, results=results)
             entry["distance"] = distance + 1
             entry["via"] = _link_summary(direction, link, current)
             found.append(entry)
             queue.append((peer, distance + 1))
     found.sort(key=lambda entry: (entry["distance"], str(entry.get("id", ""))))
-    truncated = len(found) > limit
-    return found[:limit], truncated
+    return found[:limit], _truncation(neighbors=found[limit:])
 
 
 # ---------------------------------------------------------------------------
@@ -713,14 +863,21 @@ def query(
     depth: int = DEFAULT_DEPTH,
     max_neighbors: int = DEFAULT_MAX_NEIGHBORS,
     results: bool = True,
+    expand: bool = False,
 ) -> dict:
-    """``rb graph query`` — keyword match plus neighbourhood expansion."""
+    """``rb graph query`` — keyword match plus neighbourhood expansion.
+
+    Matches are full summaries (the node asked about earns its
+    attributes and cite); neighbours are lean references unless
+    ``expand`` says otherwise (#388). A truncated neighbourhood says
+    what it dropped.
+    """
     scored, terms, type_hints, total = match_nodes(
         ctx, question, node_type=node_type, tier=tier, limit=limit
     )
     matches = []
     for score, node in scored:
-        entry = node_summary(ctx, node, results=results)
+        entry = node_summary(ctx, node, results=results, attributes=True)
         entry["score"] = score
         neighbors, truncated = neighborhood(
             ctx,
@@ -728,10 +885,11 @@ def query(
             depth=depth,
             limit=max_neighbors,
             results=results,
+            expand=expand,
         )
         entry["neighbors"] = neighbors
         if truncated:
-            entry["neighbors_truncated"] = True
+            entry["neighbors_truncated"] = truncated
         matches.append(entry)
 
     log_event(
@@ -836,7 +994,22 @@ def path(
     max_paths: int = DEFAULT_MAX_PATHS,
     results: bool = True,
 ) -> dict:
-    """``rb graph path`` — the shortest chain of edges between two nodes."""
+    """``rb graph path`` — the shortest chain of edges between two nodes.
+
+    ``path`` spends where ``explain`` saves: every node on every walk
+    carries its full summary *including* ``attributes``. That is the one
+    payload in #388 that grew, and deliberately — a path is already
+    bounded by ``max_paths`` and by the hop count (the benchmark's
+    longest is five), so the attribute blocks are tens of tokens against
+    an answer the caller asked to be given whole, and they are precisely
+    what the caller would spend an ``explain`` round-trip on next. The
+    saving in ``explain`` comes from the opposite case: an unbounded
+    fan-out (44 edges on ``module:ip_cdc_sync``) where the peer data is
+    a menu to choose from, not the answer.
+
+    Stated rather than measured: none of the benchmark's six tasks calls
+    ``graph path``, so this is a reasoned trade and not a number.
+    """
     src = resolve_node(ctx, source)
     dst = resolve_node(ctx, target)
     src_id, dst_id = str(src.get("id")), str(dst.get("id"))
@@ -854,6 +1027,7 @@ def path(
                         ctx,
                         ctx.index.node(node_id) or {"id": node_id, "dangling": True},
                         results=results,
+                        attributes=True,
                     )
                     for node_id in walk
                 ],
@@ -878,8 +1052,8 @@ def path(
     )
     return {
         **ctx.envelope(),
-        "source": node_summary(ctx, src, results=results),
-        "target": node_summary(ctx, dst, results=results),
+        "source": node_summary(ctx, src, results=results, attributes=True),
+        "target": node_summary(ctx, dst, results=results, attributes=True),
         "directed": directed,
         "found": bool(payload_paths),
         "length": payload_paths[0]["length"] if payload_paths else None,
@@ -893,8 +1067,16 @@ def explain(
     *,
     results: bool = True,
     limit: int = 200,
+    expand: bool = False,
 ) -> dict:
     """``rb graph explain`` — one node, its edges, its result, its coverage.
+
+    Edges are lean by default (#388): the link's own facts plus the
+    peer's id/label/type, because a payload that embedded a full summary
+    per endpoint cost ~1k tokens whatever it described — the single
+    constant that lost the #381 benchmark. ``expand=True`` restores the
+    full peer summaries for the caller who would otherwise ``explain``
+    each peer next.
 
     ``coverage`` is what this node's row of the coverage join says: a
     ratio for a module or instance, an exercised / declared-only
@@ -909,11 +1091,9 @@ def explain(
     outgoing, incoming = [], []
     for direction, link in ctx.index.edges(node_id):
         peer_id = link["target"] if direction == "out" else link["source"]
-        peer = ctx.index.node(peer_id) or {"id": peer_id, "dangling": True}
-        entry = {
-            **_link_summary(direction, link, peer_id),
-            "node": node_summary(ctx, peer, results=results),
-        }
+        entry = _edge_entry(
+            ctx, direction, link, peer_id, expand=expand, results=results
+        )
         (outgoing if direction == "out" else incoming).append(entry)
     for bucket in (outgoing, incoming):
         bucket.sort(key=lambda e: (str(e.get("type")), str(e.get("peer"))))
@@ -924,11 +1104,7 @@ def explain(
             key = str(entry.get("type"))
             degree[direction][key] = degree[direction].get(key, 0) + 1
 
-    attributes = {
-        key: value
-        for key, value in sorted(node.items())
-        if key not in _SUMMARY_KEYS and key != "dangling"
-    }
+    attributes = _node_attributes(node)
     summary = node_summary(ctx, node, results=results)
 
     log_event(
@@ -939,6 +1115,7 @@ def explain(
         out_edges=len(outgoing),
         in_edges=len(incoming),
     )
+    truncated = _truncation(outgoing=outgoing[limit:], incoming=incoming[limit:])
     return {
         **ctx.envelope(),
         "node": summary,
@@ -949,7 +1126,9 @@ def explain(
         "degree": degree,
         "outgoing": outgoing[:limit],
         "incoming": incoming[:limit],
-        "truncated": len(outgoing) > limit or len(incoming) > limit,
+        # Absent when nothing was cut — the spelling `neighbors_truncated`
+        # already uses, rather than a second way to say the same thing.
+        **({"truncated": truncated} if truncated else {}),
     }
 
 

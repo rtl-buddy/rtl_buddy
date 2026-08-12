@@ -464,13 +464,13 @@ IFACE_MODULE = "demo_tiny_alu"
 
 
 def interface_graph(route: Route) -> dict:
-    """Locate the ports in the graph, then cite the one span that declares them.
+    """Locate the ports in the graph; their `dir` rides on the match.
 
     `--depth 0` because the neighbourhood of a port is its instance
-    connections, which this question does not ask about. A port's `dir`
-    and width are not in a match summary, so the route takes the
-    documented "locate in the graph, cite from source" path: the port
-    nodes hand over the file and the exact line range to read.
+    connections, which this question does not ask about. Since #388 a
+    match summary carries the node's own attributes, so a port's `dir`
+    arrives with the match and the route no longer reads the source
+    span it used to need for the directions.
 
     `--limit 20` for ten ports is not slack: no edge ties a port to its
     module, so this is a substring search, and every
@@ -514,13 +514,11 @@ def interface_graph(route: Route) -> dict:
     if not port_nodes:
         raise RouteError(f"no port nodes for {IFACE_MODULE}")
 
-    files = {m["file"] for m in port_nodes}
-    lines = [m["line"] for m in port_nodes if m.get("line")]
-    file = sorted(files)[0]
-    text = route.read_lines(file, min(lines), max(lines))
-    declared = _port_decls(text)
     return {
-        "ports": sorted(f"{name}:{direction}" for name, direction, _t in declared),
+        "ports": sorted(
+            f"{m['id'][len(prefix) :]}:{m.get('attributes', {}).get('dir', '?')}"
+            for m in port_nodes
+        ),
         "params": param_names,
     }
 
@@ -613,17 +611,22 @@ def deep_chain_graph(route: Route) -> dict:
             if edge.get("type") == "exercises"
         ]
 
-    duts: list[tuple[str, str]] = []
+    dut_modules: list[str] = []
     specs: list[str] = []
     for model in sorted(set(models)):
         payload = route.machine("graph", "explain", model, "--no-results")
         for edge in payload.get("outgoing", []):
             if edge.get("type") == "maps_to":
-                # The peer summary carries the module's file — the design
-                # tier's whole contribution to this chain, for free.
-                duts.append((edge["node"]["label"], edge["node"]["file"]))
+                dut_modules.append(edge["peer"])
             elif edge.get("type") == "specified_by":
                 specs.append(edge["peer"])
+
+    duts: list[tuple[str, str]] = []
+    for module in sorted(set(dut_modules)):
+        # A lean edge names the peer but not its file (#388); the file is
+        # one more lean explain of the module node itself.
+        payload = route.machine("graph", "explain", module, "--no-results")
+        duts.append((payload["node"]["label"], payload["node"]["file"]))
 
     docs: list[str] = []
     goldens: list[str] = []
