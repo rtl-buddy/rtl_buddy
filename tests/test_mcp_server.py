@@ -388,6 +388,51 @@ def test_cov_reads_a_named_cov_dir_instead_of_the_newest(cov_project: Path):
     assert "manifest.json" in missing["error"]
 
 
+def test_cov_reads_a_relative_cov_dir_against_the_project_root(
+    cov_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An MCP client has no invocation cwd; the payload speaks repo paths.
+
+    The host spawns ``rb mcp`` in a directory the agent never sees, so the
+    natural argument is the repo-relative one the payload itself hands
+    back (``artefacts.manifest``). Resolving it against the server's cwd
+    would answer a path nobody named — hence the chdir here.
+    """
+    ts = _toolset(cov_project)
+    elsewhere = tmp_path / "somewhere_else"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    relative = ts.call("cov_summary", {"cov_dir": "verif/blk_a/cov_dir"})
+    absolute = ts.call(
+        "cov_summary", {"cov_dir": str(cov_project / "verif" / "blk_a" / "cov_dir")}
+    )
+
+    assert relative["ok"] is True, relative.get("error")
+    assert relative["payload"] == absolute["payload"]
+    assert relative["payload"]["artefacts"]["manifest"] == (
+        "verif/blk_a/cov_dir/manifest.json"
+    )
+
+
+def test_cov_reads_a_relative_manifest_against_the_project_root(
+    cov_project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """``manifest`` is the path the summary reports back, verbatim."""
+    ts = _toolset(cov_project)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    envelope = ts.call(
+        "cov_module",
+        {"module": "blk_a", "manifest": "verif/blk_a/cov_dir/manifest.json"},
+    )
+
+    assert envelope["ok"] is True, envelope.get("error")
+    assert envelope["payload"]["tests"] == ["t_basic"]
+
+
 def test_a_project_with_no_coverage_run_names_the_command_that_makes_one(
     empty_project: Path,
 ):
@@ -415,6 +460,55 @@ def test_cov_focus_omits_the_hints_it_was_not_given(
 
     assert sent["type"] == "cov_focus"
     assert sent["payload"] == {"target": "module:blk_a", "metric": "toggle"}
+
+
+def test_cov_focus_puts_the_same_bytes_on_the_wire_as_its_cli_verb(
+    mcp_project: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Padded input, one payload: the MCP tool and ``rb hub send``.
+
+    The pane matches ``target``/``item`` as strings, so a trailing space
+    is a miss rather than a near miss, and a rule spelled one way on one
+    surface and another way on the other is observable on the wire.
+    Both validate *and* emit the stripped value.
+    """
+    from rtl_buddy.hub import send as hub_send
+
+    padded = {"target": "  module:blk_a  ", "metric": "toggle", "item": "  q[0] \t"}
+
+    ts = _toolset(mcp_project, hub=HubHandle(present=True, tcp="127.0.0.1:9999"))
+    from_mcp: dict = {}
+    monkeypatch.setattr(
+        ts,
+        "_hub_emit",
+        lambda type_, payload: (
+            from_mcp.update({"type": type_, "payload": payload}) or {}
+        ),
+    )
+    ts.call("cov_focus", dict(padded))
+
+    from_cli: dict = {}
+
+    class _Recorder:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def emit(self, type_, payload):
+            from_cli.update({"type": type_, "payload": payload})
+
+    monkeypatch.setattr(hub_send, "_open_or_exit", _Recorder)
+    hub_send.cmd_cov_focus(
+        padded["target"], metric=padded["metric"], item=padded["item"]
+    )
+
+    assert from_mcp == from_cli
+    assert from_cli == {
+        "type": "cov_focus",
+        "payload": {"target": "module:blk_a", "metric": "toggle", "item": "q[0]"},
+    }
 
 
 def test_cov_focus_validates_before_dialling(mcp_project: Path):

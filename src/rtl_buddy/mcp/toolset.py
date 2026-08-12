@@ -387,11 +387,27 @@ class Toolset:
         Re-read per call, like the graph: an agent that runs a coverage
         regression in one turn asks about it in the next, and the
         alternative is answering from a run that no longer exists.
+
+        A relative ``cov_dir``/``manifest`` is anchored on the project
+        root, not on the process cwd. An MCP client has no invocation
+        directory to speak from — the host spawns ``rb mcp`` wherever it
+        happens to sit, and the agent never sees where that is — while
+        the paths the payloads hand back are repo-relative
+        (``artefacts.manifest`` is ``verif/blk_a/cov_dir/manifest.json``).
+        Reading a relative argument against the server's cwd would answer
+        a path the agent never named.
         """
+
+        def rooted(value: str | None) -> str | None:
+            if value is None:
+                return None
+            path = Path(value)
+            return str(path if path.is_absolute() else self.project_root / path)
+
         return cov_query.load_context(
             self.project_root,
-            cov_dir=args.get("cov_dir"),
-            manifest=args.get("manifest"),
+            cov_dir=rooted(args.get("cov_dir")),
+            manifest=rooted(args.get("manifest")),
         )
 
     def _h_cov_summary(self, args: dict) -> dict:
@@ -627,9 +643,13 @@ class Toolset:
             payload["line"] = line
         item = args.get("item")
         if item is not None:
-            if not str(item).strip():
+            # Emit what was validated: the pane matches these strings, so
+            # a trailing space is a miss, not a near miss. Mirrors
+            # ``rb hub send cov-focus``.
+            item = str(item).strip()
+            if not item:
                 raise ToolError("cov_focus: 'item' must be non-empty")
-            payload["item"] = str(item)
+            payload["item"] = item
         return self._hub_emit("cov_focus", payload)
 
 
@@ -682,15 +702,20 @@ _RESULTS_PROP = {
 _COV_DIR_PROP = {
     "type": "string",
     "description": (
-        "Coverage artefact directory to read. Default: the newest "
-        "cov_dir/manifest.json under the project root, which is the run "
-        "that finished last."
+        "Coverage artefact directory to read; a relative path resolves "
+        "against the project root, e.g. verif/blk_a/cov_dir. Default: the "
+        "newest cov_dir/manifest.json under the project root, which is the "
+        "run that finished last."
     ),
 }
 
 _COV_MANIFEST_PROP = {
     "type": "string",
-    "description": "A manifest.json to read directly, bypassing discovery.",
+    "description": (
+        "A manifest.json to read directly, bypassing discovery; a relative "
+        "path resolves against the project root, e.g. "
+        "verif/blk_a/cov_dir/manifest.json."
+    ),
 }
 
 
