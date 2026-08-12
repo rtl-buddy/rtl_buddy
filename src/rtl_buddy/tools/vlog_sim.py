@@ -685,8 +685,23 @@ class VlogSim:
 
     @classmethod
     def _shared_build_is_valid(cls, build_dir, fingerprint, *, test_name=None):
-        simv_path = Path(build_dir) / "simv"
-        stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+        return cls._build_stamp_is_valid(
+            build_dir, Path(build_dir) / "simv", fingerprint, test_name=test_name
+        )
+
+    @classmethod
+    def _build_stamp_is_valid(
+        cls, stamp_dir, simv_path, fingerprint, *, test_name=None
+    ):
+        """Does the stamp in ``stamp_dir`` still describe ``simv_path``?
+
+        ``stamp_dir`` and the executable are separate arguments because an
+        unshared build does not put the executable inside a directory
+        rtl_buddy chose: the stamp goes in the test's compile work dir while
+        ``builder-simv:`` decides where the binary lands (#369).
+        """
+        simv_path = Path(simv_path)
+        stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
         if not simv_path.is_file() or not stamp_path.is_file():
             return False
         try:
@@ -932,6 +947,39 @@ class VlogSim:
                     simulator=self._get_simulator_family(),
                     reason=unsupported,
                 )
+                # The build cannot be *shared*, but it can still be *reused*
+                # by the next process to ask for this test — which is what
+                # lets a dispatched fan-out compile once in the build job and
+                # have its elements short-circuit instead of racing each
+                # other into one directory (#369). Same fingerprint, same
+                # stamp file; only the scope differs, so the stamp lives in
+                # the test's own compile work dir.
+                key_cmd = (
+                    [rtl_builder_cfg.get_exe()]
+                    + builder_opts
+                    + extra_compile_flags
+                    + assertion_flags
+                    + plusdefines
+                )
+                fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
+                if self._build_stamp_is_valid(
+                    compile_work_dir,
+                    self._get_simv_path(),
+                    fingerprint,
+                    test_name=self.test_name,
+                ):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "compile.build_reused",
+                        test=self.test_name,
+                        build_dir=compile_work_dir,
+                        shared=False,
+                    )
+                    return 0
+                (Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME).unlink(
+                    missing_ok=True
+                )
 
         shared = self._shared_build_dir is not None
         run_cmd = [rtl_builder_cfg.get_exe()]
@@ -1058,11 +1106,16 @@ class VlogSim:
             if self._get_simulator_family() == "icarus":
                 self._write_icarus_simv_wrapper()
             if fingerprint is not None:
+                # A shared build owns its directory and stamps it; an
+                # unshared one has no directory of its own (`build_dir` is a
+                # bare relative name the builder interprets), so its stamp
+                # goes beside the rest of the test's compile outputs.
+                stamp_dir = self._shared_build_dir or compile_work_dir
                 # Recorded from the finished build, not predicted from the
                 # filelist: the builder is the only thing that knows which
                 # headers it actually opened (#303).
-                deps = self._collect_build_deps(build_dir, compile_work_dir)
-                stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+                deps = self._collect_build_deps(stamp_dir, compile_work_dir)
+                stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
                 stamp_path.write_text(
                     json.dumps({**fingerprint, "deps": deps}, sort_keys=True)
                 )

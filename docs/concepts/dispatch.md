@@ -137,16 +137,31 @@ build once per compile key and short-circuit on the stamp.
 
 Any other builder — and a builder configured with an *absolute*
 `builder-simv:`, which pins the executable somewhere a per-compile-key dir
-cannot honour — has no shared stamp, so **each array element recompiles
-inside its own job**. That is correct, just unshared, and it has two
-consequences dispatch handles for you:
+cannot honour — cannot put its build where other tests would find it, so
+**the build stays inside the test's own `artefacts/<test>/`**. Under
+`--share-build` it is still stamped there, which means it can be *reused*
+by the next process to compile that same test even though it can never be
+*shared* with a different one. That is what lets a build job compile it once
+and the sim jobs skip their own compile. Two further consequences dispatch
+handles for you:
 
 - **No build job is submitted** when nothing in the suite can share a
-  build. The build pass would compile on a compute node and produce
-  something no sim job can read, so it is skipped and the elements run
-  ungated (logged as `dispatch.build_job_skipped`). A suite mixing
-  builders still gets one, and only the groups that actually read it are
-  gated on it with `afterok`.
+  build *and* no test is fanned out over several runs. The build pass would
+  compile on a compute node and produce something no sim job needs, so it
+  is skipped and the elements run ungated (logged as
+  `dispatch.build_job_skipped`). That is safe because each test owns its own
+  `artefacts/<test>/`, so there is exactly one writer per directory.
+- **A fanned-out test gets one anyway**, because there the one-writer
+  property does not hold: `artefacts/<test>/` is keyed on the *test*, not on
+  the run, so `randtest <test> N --dispatch` would otherwise run N full
+  compiles into one directory at once and the losers would report
+  `Compile failed` with nothing wrong
+  ([#369](https://github.com/rtl-buddy/rtl_buddy/issues/369)). The build job
+  is the single writer: it compiles once, and every element waits for it and
+  short-circuits on the stamp it leaves. So whenever a build job exists,
+  **every** group is gated on it with `afterok` — including the
+  self-compiling ones, since the build job runs PRE+COMPILE for the whole
+  plan and therefore writes into their directories too.
 - **The job's reservation covers both phases.** A compile is frequently
   hungrier than the sim it precedes — a VCS elaboration usually is — so a
   sim-sized reservation would be killed during it. One allocation cannot
@@ -155,7 +170,10 @@ consequences dispatch handles for you:
   `cfg-dispatch.compile` is used, field by field, and logged as
   `dispatch.compile_in_job`. Tests whose builder *can* share a build are
   unaffected: they keep the sim-sized reservation, and the compile
-  reservation stays with the build job where it belongs.
+  reservation stays with the build job where it belongs. The combined size
+  is kept even where a build job exists and the element expects to skip its
+  compile — a stamp that fails to validate for any reason puts the compile
+  back inside the job, and being over-reserved is cheaper than being killed.
 
 !!! note "A VCS compile can wait for a license"
     `vcs` elaboration honours `-licqueue` exactly as `simv` does, so part

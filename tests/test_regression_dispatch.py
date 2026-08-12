@@ -447,7 +447,12 @@ class _RecordingBackend(_FakeBackend):
 
     def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
         self.array_calls.append(
-            {"n": len(specs), "max_parallel": max_parallel, "array_dir": array_dir}
+            {
+                "n": len(specs),
+                "max_parallel": max_parallel,
+                "array_dir": array_dir,
+                "dependency": dependency,
+            }
         )
         return [self.submit(spec) for spec in specs]
 
@@ -773,6 +778,67 @@ def test_share_build_capable_builder_keeps_the_sim_sized_reservation(
     # ...while the build job it depends on carries the compile reservation.
     build = fake_backend.build_submitted[0].resources
     assert (build.cpus, build.mem, build.time) == (8, "16G", "02:00:00")
+
+
+def test_fanned_out_in_job_compile_gets_a_build_job_to_serialize_it(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """The reported defect (#369): a dispatched randtest on a builder with no
+    shared-build support ran N full compiles into one `artefacts/<test>/` at
+    once, and the losers reported `Compile failed` with nothing wrong.
+
+    The fix is a single writer — the build job compiles once and every
+    element waits for it, then short-circuits on the stamp it left.
+    """
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert [spec.run_id for spec in fake_backend.submitted] == [1, 2, 3]
+    # No element starts before the compile it would otherwise have raced.
+    assert fake_backend.dependencies == ["fake-build"] * 3
+
+
+def test_single_run_in_job_compiles_still_skip_the_build_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One writer per directory already: distinct tests each own their own
+    `artefacts/<test>/`, so serializing them behind a build job would only
+    trade parallel compiles for serial ones."""
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic", "extra"]
+    assert fake_backend.dependencies == [None, None]
+
+
+def test_every_group_waits_for_the_build_job_that_writes_its_directory(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    """The build job runs PRE+COMPILE for the whole plan, so it writes into a
+    self-compiling test's artefact dir too — an ungated element would be the
+    second writer there."""
+    tests_yaml = minimal_project / "tests.yaml"
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n",
+            "  - name: extra\n    resources: { mem: 24G }\n",
+        )
+    )
+    result, _ = _invoke(["randtest", "basic", "2", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert len(recording_backend.build_submitted) == 1
+    assert [call["dependency"] for call in recording_backend.array_calls] == [
+        "fake-build"
+    ]
 
 
 # --------------------------------------------------- P3: reservation advice
