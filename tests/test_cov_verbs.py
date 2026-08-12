@@ -250,6 +250,40 @@ def test_manifest_is_not_written_when_nothing_parsed(tmp_path):
     assert not (tmp_path / "cov_dir" / MANIFEST_FILENAME).exists()
 
 
+def test_manifest_is_not_written_for_a_recordless_info(tmp_path):
+    """An `.info` that exists but holds no point is still no coverage.
+
+    The test earns a `tests` row — its `.info` parsed, it just parsed to
+    nothing — so the run must be rejected on the file list alone. A
+    manifest here would name a model describing zero coverage points.
+    """
+    info = tmp_path / "empty.info"
+    # Well-formed LCOV, one source, not a single DA:/BRDA: record.
+    info.write_text("TN:\nSF:/nowhere/blk.sv\nend_of_record\n", encoding="utf-8")
+    reporter = CoverageReporter(_RootCfg(tmp_path))
+    suite_results = [
+        {
+            "test_name": "hollow",
+            "results": TestResults(
+                name="hollow",
+                results={
+                    "result": "PASS",
+                    "desc": "ok",
+                    "coverage": {"raw_paths": [], "lcov_path": str(info)},
+                },
+            ),
+        }
+    ]
+
+    _, coverage = reporter.build_metadata(
+        suite_results, outdir=str(tmp_path), suite_name="suite"
+    )
+
+    assert "artefacts" not in coverage
+    assert not (tmp_path / "cov_dir" / MANIFEST_FILENAME).exists()
+    assert not (tmp_path / "cov_dir" / MODEL_FILENAME).exists()
+
+
 def test_result_side_cars_are_refreshed_after_coverage(project):
     """The durable per-run record names the artefacts, not just the console."""
     rb = RtlBuddy(name="test_cov_verbs")

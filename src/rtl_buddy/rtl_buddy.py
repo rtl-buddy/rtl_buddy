@@ -4249,7 +4249,7 @@ class RtlBuddy:
         exactly when someone asks what the coverage looks like.
         """
         root = str(discover_project_root(fallback_cwd=True))
-        self._enter_command_context(command_root=root, list_only=True)
+        ctx = self._enter_command_context(command_root=root, list_only=True)
         log_event(
             logger,
             logging.INFO,
@@ -4257,7 +4257,11 @@ class RtlBuddy:
             command=verb,
         )
         try:
-            return cov_query_mod.load_context(root, cov_dir=cov_dir, manifest=manifest)
+            return cov_query_mod.load_context(
+                root,
+                cov_dir=str(ctx.resolve_input(cov_dir)) if cov_dir else None,
+                manifest=str(ctx.resolve_input(manifest)) if manifest else None,
+            )
         except cov_query_mod.CovQueryError as exc:
             self._cov_query_failed(verb, exc)
 

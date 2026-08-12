@@ -32,10 +32,6 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 
 - `mode: prove` is k-induction up to `depth`: a true property can still report **`UNKNOWN`** if it is not an *inductive invariant*. In the induction step every `assert P` plays a dual role — proof obligation at step `k`, **and** constraint on the prior `k` states — so the two preferred fixes (per the YosysHQ SBY FAQ) are: strengthen the property's own hypothesis to exclude bad predecessors (`cnt <= 5`, not `cnt != 26`), or **add a companion assertion that marks an unreachable predecessor state bad** so other properties can use it as a constraint. Raising `depth` is sound but fragile; reach for it last. Keep a known-non-inductive case in regression with `xfail`/`xfail_strict`. Details: `rtl-buddy docs show concepts/fpv`.
 
-## Coverage
-
-- Never re-run a regression to look at coverage again. Every run that produced any writes `cov_dir/manifest.json` plus a per-file/per-point model beside it (no `--coverage-*` flag needed), and the run envelope's `payload.coverage.artefacts` names both. Read them with `rb --machine cov summary` (run + per-test scalars, coldest files first) and `rb --machine cov module <name>` (that module's uncovered line/branch/toggle/expression/cover points, each with the tests behind it — `tests: {basic: 0, extra: 7}` is how you tell "cold everywhere" from "covered by exactly one test you were about to delete"). Both read artefacts only, take no lock, and run while a regression is in flight; exit 2 = no artefacts yet (run with a coverage builder mode first) or an unknown module (`payload.candidates` has the near misses). Toggle/expression detail and SVA cover labels exist only in the raw `coverage.dat` — the `.info` export erases all three — so they are Verilator-only, and absent means "not collected". Details: `rtl-buddy docs show concepts/coverage`.
-
 ## Mutation testing
 
 - `rb mut list|run|score` drive a campaign from `mut.yaml` (needs `rtl-buddy-xeno`; a non-empty `scope` also needs `rtl-buddy-view` on `PATH`). Score is `killed / (killed + survived)`; errored mutants are dropped; survivors are verification holes. Details: `rtl-buddy docs show concepts/mut`.
@@ -56,9 +52,9 @@ Exact fields: `rtl-buddy --machine docs show reference/yaml`.
 
 Outputs anchor on the **config file**, not your shell's cwd. `rb test -c path/to/tests.yaml` puts `artefacts/<test>/...` and `rtl_buddy.log` under `dirname(tests.yaml)`; same rule for `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, `models.yaml`. For `regression`, each suite anchors on its own `tests.yaml`; orchestration log under `regression.yaml`. Explicit CLI input/output paths (`-o out.svg`, `rb filelist <model> out.f`) follow shell semantics — relative to your cwd. Discover multi-suite layouts with `rg --files -g '**/tests.yaml'`; summarize per suite. Reference: `rtl-buddy docs show concepts/execution-context`.
 
-## Artefacts and waveforms
+## Artefacts, coverage and waveforms
 
-- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for one run (`artefacts/<test>/run-0001/...` per iteration for `randtest`).
+- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for one run (`artefacts/<test>/run-0001/...` per iteration for `randtest`). A run that produced coverage also writes `cov_dir/manifest.json` and a per-file/per-point model beside it with **no `--coverage-*` flag asked for** (the envelope's `payload.coverage.artefacts` names both), and `rb --machine cov summary` / `rb --machine cov module <name>` read those artefacts lock-free — so never re-run a regression to look at coverage again, and either verb answers while one is still in flight. Details: `rtl-buddy docs show concepts/coverage`.
 - `rb wave <test>` opens `artefacts/<test>/dump.fst` (FST from debug-mode builds, `-M debug`) in Surfer, running a debug sim first if no FST exists; needs `cfg-surfer` in `root_config.yaml` (`rtl-buddy docs show concepts/root-config`).
 - With a hub running, curate the open wave view from the CLI: `rb hub send wave-items` (list), then `wave-add` / `wave-remove` / `wave-move` / `wave-comment`; each reports success/error (non-zero exit on a surfer rejection). See `rtl-buddy docs show concepts/hub`.
 - Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`

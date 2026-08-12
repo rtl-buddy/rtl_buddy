@@ -378,11 +378,14 @@ class CoverageReporter:
             simulator=simulator_family,
             merged_info=merged.get("info"),
         )
-        if not model["files"] and not model["tests"]:
+        if not model["files"]:
             # Artefacts were named but none of them parsed into a single
             # point — a simulator with no coverage support, or databases
             # that have since been cleaned. A manifest here would
-            # advertise coverage that cannot be read.
+            # advertise coverage that cannot be read. The test list alone
+            # does not redeem it: a test whose `.info` exists but holds no
+            # `DA:`/`BRDA:` record still earns a `tests` entry, and no file
+            # means no coverage point whatever that list says.
             return None
         model_path = model_mod.write_model(model, cov_dir)
         manifest = manifest_mod.build_manifest(
@@ -592,7 +595,7 @@ class CoverageReporter:
 
         metrics = CoverageMetrics()
         metrics.lcov_path = merged_lcov
-        metrics.line, metrics.branch = cov._parse_lcov_summary(merged_lcov)
+        metrics.line, metrics.branch = cov.parse_lcov_summary(merged_lcov)
 
         safe_dataset = cov._sanitize_artifact_name(
             self._coverview_dataset_name(suite_name)
@@ -668,7 +671,7 @@ class CoverageReporter:
             )
             if merged_branch is not None:
                 merged_dataset_files["branch"] = merged_branch
-                metrics.branch = cov._parse_lcov_summary(merged_branch)[1]
+                metrics.branch = cov.parse_lcov_summary(merged_branch)[1]
                 if os.path.exists(merged_branch_desc):
                     rby_description_files["branch"] = merged_branch_desc
         elif (
@@ -693,7 +696,7 @@ class CoverageReporter:
             )
             if merged_toggle is not None:
                 merged_dataset_files["toggle"] = merged_toggle
-                metrics.toggle, _ = cov._parse_lcov_summary(merged_toggle)
+                metrics.toggle, _ = cov.parse_lcov_summary(merged_toggle)
                 if os.path.exists(merged_toggle_desc):
                     rby_description_files["toggle"] = merged_toggle_desc
 
@@ -711,10 +714,14 @@ class CoverageReporter:
             )
             if merged_expression is not None:
                 merged_dataset_files["expression"] = merged_expression
-                # The expression `.info` records one `DA:` per term, so its
-                # line ratio *is* the expression ratio — the same reading
+                # This is the per-type expression dataset the info-process
+                # route writes (`coverage_expression_*.info`), not the merged
+                # LCOV — which is what `summary_str` and docs/concepts/
+                # coverage.md mean when they say an `.info` carries no
+                # expression detail. This one records one `DA:` per term, so
+                # its line ratio *is* the expression ratio — the same reading
                 # the toggle dataset gets above.
-                metrics.expression, _ = cov._parse_lcov_summary(merged_expression)
+                metrics.expression, _ = cov.parse_lcov_summary(merged_expression)
                 if os.path.exists(merged_expression_desc):
                     rby_description_files["expression"] = merged_expression_desc
 

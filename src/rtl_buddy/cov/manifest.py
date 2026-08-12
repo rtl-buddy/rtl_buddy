@@ -32,7 +32,7 @@ Schema (``schema_version`` 1)::
       "suite": "verif/demo/regression.yaml",
       "builder": "verilator",
       "simulator_family": "verilator",
-      "merge_mode": "raw"|"info_process"|"lcov"|null,
+      "merge_mode": "raw"|"info_process"|null,
       "cov_dir": "artefacts/cov_dir",
       "model": "artefacts/cov_dir/coverage-model.json",
       "totals": {"line": {"found": .., "hit": .., "ratio": ..}, ...},

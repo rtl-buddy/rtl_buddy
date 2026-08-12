@@ -17,7 +17,9 @@ root]``**, most specific first, and the project root is always the last
 resort. Resolution order:
 
 1. direct candidates: ``<base dir>/<path>``, ``<hint>/<path>`` for each
-   hint, ``<project root>/<path>``;
+   hint, ``<project root>/<path>`` — **skipped entirely for a path with
+   no ``/``**, since a bare basename says nothing about where the file
+   lives and this stage runs before the generated-tree filter;
 2. project-root-anchored suffixes of the path, trimming leading
    segments (``../../design/blk.sv`` -> ``design/blk.sv``);
 3. a basename search under the hints and then the project root, taking
@@ -125,9 +127,19 @@ class SourcePathResolver:
         stripped = [part for part in parts if part != ".."]
 
         candidates = self._direct_candidates(normalized, parts)
-        for candidate in candidates:
-            if candidate.exists():
-                return self._resolution(candidate, True, stripped=stripped)
+        # A bare basename records no location, so `<base dir>/<name>`
+        # existing is not evidence that it is the file meant — and for a
+        # raw database `base_dir` is the per-run artefact directory, where
+        # a stale copy of `tb_top.sv` beside `coverage.dat` would win here
+        # before `_is_generated` ever saw it. Skip the direct stage for one
+        # and go straight to the filtered basename search, as
+        # `_resolve_source_path`'s `basename_only` did. The candidates stay
+        # as the not-found fallback, which is still `base_dir/<name>`.
+        basename_only = "/" not in normalized
+        if not basename_only:
+            for candidate in candidates:
+                if candidate.exists():
+                    return self._resolution(candidate, True, stripped=stripped)
 
         match = self._search_by_basename(parts)
         if match is not None:

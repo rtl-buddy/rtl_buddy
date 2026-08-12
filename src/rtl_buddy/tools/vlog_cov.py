@@ -515,6 +515,16 @@ class VlogCov:
         branch_cov = None if branch_found == 0 else (branch_hit / branch_found)
         return line_cov, branch_cov
 
+    def parse_lcov_summary(self, lcov_path):
+        """
+        Public reading of one LCOV `.info`: `(line_ratio, branch_ratio)`.
+
+        The whole-file counterpart of `parse_lcov_summary_for_prefix`, for
+        callers outside this class (`CoverageReporter` scoring the datasets
+        it merged) that would otherwise reach into the private parser.
+        """
+        return self._parse_lcov_summary(lcov_path)
+
     def parse_lcov_summary_for_prefix(self, lcov_path, prefix):
         """
         Parse normalized line and branch coverage fractions for files rooted under a

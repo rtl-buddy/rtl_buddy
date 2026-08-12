@@ -59,6 +59,30 @@ def test_generated_trees_never_win_the_basename_search(tmp_path):
     assert resolver.resolve("blk.sv").path == real.resolve()
 
 
+def test_bare_basename_ignores_a_decoy_beside_the_raw_database(tmp_path):
+    """The direct-candidate stage must not run for a bare basename.
+
+    For a raw database `base_dir` is the per-run artefact directory, so
+    `<base dir>/<name>` would hand a stale copy sitting next to
+    `coverage.dat` the win before the generated-tree filter ever looked
+    at it — the exact thing the module docstring forbids.
+    """
+    repo_root, suite_dir, run_dir = _repo(tmp_path)
+    real = suite_dir / "rtl" / "tb_top.sv"
+    real.parent.mkdir(parents=True)
+    real.write_text("module tb_top;\nendmodule\n")
+    # The decoy: an older copy left beside this run's `coverage.dat`.
+    (run_dir / "coverage.dat").write_text("# SystemC::Coverage-3\n")
+    (run_dir / "tb_top.sv").write_text("module tb_top;  // stale\nendmodule\n")
+
+    resolver = SourcePathResolver(repo_root, base_dir=run_dir, source_roots=[suite_dir])
+    resolution = resolver.resolve("tb_top.sv")
+
+    assert resolution.found is True
+    assert resolution.path == real.resolve()
+    assert resolution.project_relative == "verif/sandbox/rtl/tb_top.sv"
+
+
 def test_missing_file_keeps_the_base_anchored_reading_inside_the_project(tmp_path):
     repo_root, _suite_dir, run_dir = _repo(tmp_path)
 
