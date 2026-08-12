@@ -78,7 +78,7 @@ The pre-processing hook runs after sweep expansion but before the compilation st
 | `root_cfg` | RootConfig (mutable) | The loaded root config |
 | `suite_dir` | string | Absolute path to the directory containing `tests.yaml` |
 | `artifact_dir` | string | Artifact root for this test under `suite_dir/artefacts/` — **test-keyed**, so every run of the test shares it |
-| `run_id` | int or None | The run index this hook is preparing (`randtest` iteration / dispatched array element), or `None` when one `preproc` serves the whole invocation |
+| `run_id` | int or None | The run index this hook is preparing — a dispatched array element, or a single `test` — and `None` when one execution of the hook serves several runs, which is what a local `randtest` does (it runs `preproc` and the compile once, then loops the simulation) |
 | `run_artifact_dir` | string | Artifact root for *this run*: `artifact_dir/run-NNNN` when `run_id` is set, otherwise `artifact_dir` itself. Also the simulation's working directory |
 | `__file__` | string | Absolute path to the current pre-processing script |
 
@@ -91,7 +91,7 @@ Plusargs are still passed through verbatim. If a plusarg value should reference 
 `artifact_dir` is keyed on the test name only, so under `randtest` or `--dispatch` every seed of a test resolves to the same path — and dispatched seeds run **concurrently**. Which directory to use follows from what the generated files depend on:
 
 - **Output depends only on the test** (the common case): write to `artifact_dir`, and write **atomically** — a temp file plus `os.replace`, never `open(path, "w")`. Truncate-in-place is not atomic, so a sibling element reading the file mid-write gets a short one, and the mismatch surfaces as a design failure rather than a harness failure.
-- **Output depends on the run or the seed**: write to `run_artifact_dir`. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative.
+- **Output depends on the run or the seed**: write to `run_artifact_dir`. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative. This only separates runs where the hook itself runs per run: under `--dispatch` it does, and `run_id` is set. A **local** `randtest` runs the hook once for all its seeds, so `run_id` is `None` and `run_artifact_dir` is the test directory — a generator that must vary per seed needs the dispatch path (or a `sweep` that expands the seeds into separate tests).
 
 ```python
 # Seed-dependent stimulus: per-run directory, no race to worry about.

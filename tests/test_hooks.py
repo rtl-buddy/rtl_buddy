@@ -13,12 +13,14 @@ These tests exercise both exec() sites (VlogSim.pre() for preproc,
 RtlBuddy._expand_tests_with_sweep() for sweep) plus the helper directly.
 """
 
+import json
 from pathlib import Path
 
 from rtl_buddy.hooks import HOOK_MODULE_NAME, build_hook_namespace, exec_hook_script
 from rtl_buddy.logging_utils import setup_logging
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.test_runner import RunDepth
+from rtl_buddy.runner.test_runner import TestRunner as RtlBuddyTestRunner
 from rtl_buddy.tools.vlog_sim import VlogSim
 
 
@@ -67,10 +69,22 @@ class DummyRootCfg:
     def resolve_rtl_builder_cfg(self, _test_builder_name=None):
         return DummyBuilderCfg()
 
+    def resolve_extra_sim_timeout(self, _builder_cfg):
+        return None
+
+    def get_use_lcov(self, _simulator_name):
+        return False
+
 
 class DummyTestbench:
     def get_filelist(self):
         return []
+
+    def is_cocotb(self):
+        return False
+
+    def is_systemc(self):
+        return False
 
 
 class DummyPreprocTestCfg:
@@ -235,15 +249,85 @@ def test_preproc_run_artifact_dirs_do_not_collide_across_runs(tmp_path):
     assert first["run_artifact_dir"] != second["run_artifact_dir"]
 
 
-def test_preproc_run_artifact_dir_is_where_the_simulation_runs(tmp_path):
-    """The hook's per-run dir must be the sim's cwd, or the sim cannot read it."""
+def test_preproc_run_artifact_dir_is_where_the_simulation_runs(tmp_path, monkeypatch):
+    """The hook's per-run dir must be the sim's cwd, or the sim cannot read it.
+
+    Asserted against the cwd `execute()` actually hands the simulator, not
+    against the helper both sides call — otherwise the docs claim "Also the
+    simulation's working directory" is not what is being tested.
+    """
+    from contextlib import nullcontext
+
+    from rtl_buddy.process_utils import ManagedProcessResult
+    from rtl_buddy.tools import vlog_sim as vlog_sim_module
+
     setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
 
-    sim = _make_preproc_sim(tmp_path, "pass\n", run_id=3)
-
-    assert sim._ensure_artifact_dir(run_id=sim.run_id) == str(
-        tmp_path / "artefacts" / "basic" / "run-0003"
+    ns_out = tmp_path / "ns.json"
+    sim = _make_preproc_sim(
+        tmp_path, f"ns_out = {str(ns_out)!r}\n" + _DUMP_NS, run_id=3
     )
+    assert sim.pre() is None
+    hook_dir = json.loads(ns_out.read_text())["run_artifact_dir"]
+
+    sim_cwd = {}
+
+    def _fake_run(cmd, *args, cwd=None, **kwargs):
+        sim_cwd["cwd"] = cwd
+        return ManagedProcessResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        vlog_sim_module, "task_status", lambda *args, **kwargs: nullcontext()
+    )
+    monkeypatch.setattr(vlog_sim_module, "run_managed_process", _fake_run)
+    sim.execute(run_id=3)
+
+    assert sim_cwd["cwd"] == hook_dir
+
+
+def test_run_multiple_tells_the_hook_it_serves_no_particular_run(tmp_path):
+    """One pre() for N runs must not claim to be preparing run 1 (#415).
+
+    `_run_test_cfg_for_run_ids` builds the runner with `run_ids[0]`, so a
+    hook defaulting to `self.run_id` would be handed `run-0001` while runs
+    2..N simulate elsewhere and never see what it generated. Driven through
+    the real `run_multiple`, with the hook raising after it records the
+    namespace so the flow stops at PRE.
+    """
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    ns_out = tmp_path / "ns.json"
+    script_path = tmp_path / "preproc.py"
+    script_path.write_text(
+        f"ns_out = {str(ns_out)!r}\n" + _DUMP_NS + "raise RuntimeError('stop at PRE')\n"
+    )
+    runner = RtlBuddyTestRunner(
+        name="rtl_buddy/testrunner",
+        root_cfg=DummyRootCfg(),
+        test_cfg=DummyPreprocTestCfg(str(script_path)),
+        rtl_builder_mode="reg",
+        test_runner_mode={"sim_to_stdout": False},
+        suite_dir=str(tmp_path),
+        run_id=1,  # what _run_test_cfg_for_run_ids passes: run_ids[0]
+    )
+
+    results = runner.run_multiple([1, 2, 3])
+
+    assert len(results) == 3
+    ns = json.loads(ns_out.read_text())
+    assert ns["run_id"] is None
+    assert ns["run_artifact_dir"] == ns["artifact_dir"]
+
+
+def test_a_single_run_still_gets_its_own_run_id(tmp_path):
+    """The `run()` path — plain `test`, or one dispatched element — is the
+    case where the hook really is preparing one specific run."""
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+
+    ns = _preproc_namespace(tmp_path, run_id=4)
+
+    assert ns["run_id"] == 4
+    assert ns["run_artifact_dir"].endswith("run-0004")
 
 
 # --- sweep (RtlBuddy._expand_tests_with_sweep()) -----------------------------

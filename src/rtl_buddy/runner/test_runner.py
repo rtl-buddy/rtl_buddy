@@ -181,7 +181,11 @@ class TestRunner:
         )
         vlog_sim = self._create_vlog_sim()
 
-        pre_error = vlog_sim.pre()
+        # One hook execution serves every run_id here, so it is preparing no
+        # particular run — explicitly, because the runner was constructed with
+        # run_ids[0] and the default would otherwise hand the hook run 1's
+        # directory for output that runs 2..N also read (#415).
+        pre_error = vlog_sim.pre(run_id=None)
         if pre_error is not None:
             return [
                 SetupFailResults(name=self.name + "/results", desc=pre_error)

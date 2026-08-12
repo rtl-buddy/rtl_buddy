@@ -65,6 +65,10 @@ def force_symlink(target, link_name):
         raise
 
 
+# Sentinel for "argument not given", where None is a meaningful value the
+# caller may need to pass explicitly (see VlogSim.pre).
+_UNSET = object()
+
 # Stamp written into a shared build dir after a successful compile; records
 # the exact compile inputs the simv was built from so reuse can be validated.
 SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
@@ -559,23 +563,36 @@ class VlogSim:
             return False
         return stored == fingerprint
 
-    def pre(self):
+    def pre(self, run_id=_UNSET):
+        """Run the test's ``preproc`` hook; return a setup-failure string or None.
+
+        ``run_id`` is the run this single execution of the hook is preparing.
+        It defaults to ``self.run_id``, which is right when the hook runs once
+        per run — a plain ``test``, or one dispatched element. A caller that
+        runs the hook **once for several runs** must pass ``None`` explicitly:
+        :meth:`TestRunner.run_multiple` does, because the runner it builds
+        carries ``run_ids[0]`` and the hook it invokes serves all of them.
+        Defaulting there would tell the hook it was preparing run 1 and hand
+        it run 1's directory, which runs 2..N never read.
+        """
         script_path = self.test_cfg.get_preproc_path()
         if script_path is None:
             log_event(logger, logging.DEBUG, "preproc.skipped", test=self.test_name)
             return None
+        if run_id is _UNSET:
+            run_id = self.run_id
 
         with open(script_path, "r") as file:
             code = file.read()
 
         # `artifact_dir` stays test-keyed for backward compatibility, and
         # `run_artifact_dir` is where a generator whose output depends on the
-        # run must write instead (#415). They are the same directory outside a
-        # per-run flow, so a hook can always use the latter. Both are created
-        # here: a hook is handed directories it may write to, not paths it has
-        # to mkdir.
+        # run must write instead (#415). They are the same directory when one
+        # hook run serves the whole invocation, so a hook can always use the
+        # latter. Both are created here: a hook is handed directories it may
+        # write to, not paths it has to mkdir.
         artifact_dir = self._ensure_artifact_dir()
-        run_artifact_dir = self._ensure_artifact_dir(run_id=self.run_id)
+        run_artifact_dir = self._ensure_artifact_dir(run_id=run_id)
 
         # Pass self.test_cfg to the preproc script as root_cfg
         # preproc script can mutate self.test_cfg, which is used for compile and sim
@@ -588,7 +605,7 @@ class VlogSim:
                 root_cfg=self.root_cfg,
                 suite_dir=self.suite_work_dir,
                 artifact_dir=artifact_dir,
-                run_id=self.run_id,
+                run_id=run_id,
                 run_artifact_dir=run_artifact_dir,
             )
         except Exception as e:
