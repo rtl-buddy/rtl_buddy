@@ -230,7 +230,8 @@ rb graph results          # refresh artefacts/graph/results-overlay.json
 | `-o, --out-dir` | Output directory (default `artefacts/graph`) |
 | `--graph` | `graph.json` to cross-check ids against; read, never written |
 | `--strict` | Exit non-zero on an unreadable envelope, a test node with no result, or a result matching no node |
-| `--coverage` / `--no-coverage` | Join the run's coverage model in (default on) — see [Coverage on the Graph](#coverage-on-the-graph) |
+| `--coverage` | Coverage source to join: `auto` (default, and what a bare `--coverage` means — the manifest's model, then the per-test `coverage.dat` databases this scan finds), `model` (the manifest only), `none`, or a path to a merged LCOV `.info` — see [Coverage on the Graph](#coverage-on-the-graph) |
+| `--no-coverage` | Skip the coverage join (same as `--coverage none`) |
 | `--cov-dir` / `--cov-manifest` | Which run's coverage to join (default: the newest `cov_dir/` under the project) |
 
 ### Where the numbers come from
@@ -274,7 +275,17 @@ annotate_graph(graph, overlay)                  # attach entries in memory, for 
 
 The graph knows what a suite **meant** to cover: a `covers:` entry in `tests.yaml` becomes a `test:<suite>#<name> --covers--> covitem:<block>#<id>` edge. The [coverage model](coverage.md) knows what the simulator **observed**: SVA cover points with hits and per-test attribution. `rb graph results` correlates the two and writes the answer into the same overlay.
 
-Nothing is re-run. The numbers are read out of `cov_dir/manifest.json` and the model it names — never by invoking `verilator_coverage` — so the overlay stays a function of the tree, and refreshing it with nothing re-run still rewrites identical bytes. `graph.json` is untouched, as always.
+Nothing is re-run. The numbers come from files already on disk — never by invoking `verilator_coverage` — so the overlay stays a function of the tree, and refreshing it with nothing re-run still rewrites identical bytes. `graph.json` is untouched, as always.
+
+Three sources feed the join, and `--coverage` picks one (the block records it in `source`):
+
+- **`model`** — `cov_dir/manifest.json` and the coverage model it names, written by any coverage-mode run of `rb test` / `rb regression`. The richest source: per-test attribution, SVA cover points, and the simulator's own module names.
+- **`artefacts`** — no manifest, but the overlay's own artefact scan found per-test `coverage.dat` databases: a model is synthesized in memory from those and joined identically. This is where `auto` (the default) falls back to when no manifest is discovered — a cleaned `cov_dir` or an out-of-process run still gets its numbers. `build_model` is not told a simulator family, so the block's `simulator` is `null` on this source where `model` names one.
+- **`info`** — a merged LCOV `.info` named on the command line (`rb graph results --coverage merged.info`). LCOV carries no module names, so the design heat is joined **by file**: an `SF:` record is attributed to a `module:` node only when it resolves to exactly the file that node claims. Two modules declared in one file therefore share that file's numbers; the entry says so with `joined_by: "file"`.
+
+    `SF:` resolution has one rule and one bound. Raw verilator paths are test-workspace-relative (`../../../../design/...`), so a record is absolutized against the `.info`'s own directory, or re-anchored on the project root by trimming leading segments. The bound is that trimming stops before a bare basename: a repo-scope `--coverage-merge` can rewrite duplicate basenames against the wrong suite root, so a basename that happens to exist under your root is never evidence. Records that only resolved after trimming are inferred rather than exact and are listed in `summary.reanchored_files`. Records that resolved to nothing land in `summary.unresolved_files` (with `summary.unmatched_files` for the ones that resolved but match no node) and a `problems` row, instead of being guessed at.
+
+    Per-test badges and `covitem:` verdicts still come from the per-test `coverage.dat` databases when the tree has them, since a merged `.info` carries neither a test column nor cover points. With none present, `summary.items` counts what the graph *declares* while `summary.items_scored` is `0` — the pair is what distinguishes "nothing scored these" from "the run hit none of them".
 
 The overlay grows a `coverage` block and a `coverage` key on each test entry:
 

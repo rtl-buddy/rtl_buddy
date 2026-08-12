@@ -883,3 +883,351 @@ def test_the_pane_renders_the_ramp_from_the_shared_tokens(cov_project: Path):
     # The fallback tokens, for a sheet that 404s.
     for token in ("--cov-l:", "--cov-none:", "--tint-s:"):
         assert token in body, token
+
+
+# ---------------------------------------------------------------------------
+# #390 — manifest-less sources: per-test raw databases and a merged .info
+# ---------------------------------------------------------------------------
+
+
+def _drop_manifest(project: Path) -> None:
+    shutil.rmtree(project / "verif" / "blk_a" / "cov_dir")
+
+
+def test_auto_falls_back_to_the_per_test_raw_databases(cov_project: Path):
+    """No manifest is not "no coverage": the overlay's own artefact scan
+    already found each test's `coverage.dat`, and a model synthesized
+    from those answers every question the manifest's would have."""
+    _drop_manifest(cov_project)
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source="auto")
+
+    assert join.available()
+    assert join.problems == []
+    assert join.block["source"] == "artefacts"
+    assert join.block["manifest"] is None
+    scalars = join.per_test["test:verif/blk_a#t_basic"]
+    assert scalars["totals"]["line"] == {"found": 3, "hit": 2, "ratio": 2 / 3}
+    nodes = join.block["nodes"]
+    assert nodes["module:blk_a"]["ratio"] == 0.5
+    assert nodes["covitem:blk_a#A-COV-1"]["status"] == STATUS_EXERCISED
+
+
+def test_model_source_never_falls_back(cov_project: Path):
+    """`--coverage model` means the manifest's model or nothing — the
+    escape hatch for a tree whose raw databases are suspect."""
+    _drop_manifest(cov_project)
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source="model")
+
+    assert join.block is None
+    assert join.problems == []
+
+
+def test_the_artefact_fallback_is_byte_stable(cov_project: Path):
+    _drop_manifest(cov_project)
+
+    first = refresh_results_overlay(cov_project).path.read_bytes()
+    second = refresh_results_overlay(cov_project).path.read_bytes()
+
+    assert first == second
+    assert json.loads(first)["coverage"]["source"] == "artefacts"
+
+
+def _write_info(path: Path, blocks: list[tuple[str, list[str]]]) -> Path:
+    """One LCOV .info: ``blocks`` is ``[(SF path, [records...])]``."""
+    text = "TN:\n"
+    for sf, records in blocks:
+        text += f"SF:{sf}\n" + "".join(f"{r}\n" for r in records) + "end_of_record\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_an_explicit_info_joins_module_heat_by_file(cov_project: Path):
+    """The SF paths are test-workspace-relative — pothole (b) from the
+    issue — and must absolutize against the .info's own directory
+    before any matching, or nothing suffix-matches."""
+    run_dir = cov_project / "verif" / "blk_a" / "artefacts" / "t_basic"
+    info = _write_info(
+        run_dir / "merged.info",
+        [
+            (
+                "../../../../" + _BLK_A,
+                ["DA:1,1", "DA:2,0", "BRDA:3,0,0,1", "BRDA:3,0,1,-"],
+            ),
+            ("../../../../" + _BLK_B, ["DA:5,2"]),
+        ],
+    )
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source=str(info))
+
+    assert join.problems == []
+    assert join.block["source"] == "info"
+    assert join.block["info"] == "verif/blk_a/artefacts/t_basic/merged.info"
+    nodes = join.block["nodes"]
+    entry = nodes["module:blk_a"]
+    assert entry["joined_by"] == "file"
+    assert entry["ratio"] == 0.5
+    assert entry["totals"]["branch"] == {"found": 2, "hit": 1, "ratio": 0.5}
+    assert entry["files"] == [_BLK_A]
+    assert nodes["module:blk_b"]["ratio"] == 1.0
+    # The fan-out the model join does: instances and the model alias.
+    assert nodes["inst:blk_a/blk_a"]["ratio"] == 0.5
+    assert join.block["totals"]["line"] == {"found": 3, "hit": 2, "ratio": 2 / 3}
+    assert join.block["summary"]["matched_files"] == 2
+
+
+def test_an_explicit_info_still_badges_tests_and_items_from_the_dats(
+    cov_project: Path,
+):
+    """A merged .info has no test column and no SVA cover points, so the
+    badges and the covitem verdicts come from the per-test raw databases
+    the overlay found — the same data the `artefacts` source reads."""
+    _drop_manifest(cov_project)
+    info = _write_info(
+        cov_project / "merged.info",
+        [(_BLK_A, ["DA:1,1", "DA:2,0"])],
+    )
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source=str(info))
+
+    scalars = join.per_test["test:verif/blk_a#t_basic"]
+    assert scalars["totals"]["line"] == {"found": 3, "hit": 2, "ratio": 2 / 3}
+    assert join.block["nodes"]["covitem:blk_a#A-COV-1"]["status"] == STATUS_EXERCISED
+    # The named file stays authoritative for the design heat.
+    assert join.block["nodes"]["module:blk_a"]["joined_by"] == "file"
+    assert "module:blk_b" not in join.block["nodes"]
+
+
+def test_an_info_without_dats_has_no_item_verdicts(cov_project: Path):
+    """No cover-point source means no verdict: claiming `declared-only`
+    from zero evidence would read as "the run never hit it"."""
+    _drop_manifest(cov_project)
+    run_dir = cov_project / "verif" / "blk_a" / "artefacts" / "t_basic"
+    (run_dir / "coverage.dat").unlink()
+    info = _write_info(cov_project / "merged.info", [(_BLK_A, ["DA:1,1"])])
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source=str(info))
+
+    assert join.per_test == {}
+    assert join.block["summary"]["items"] == 4
+    assert join.block["summary"][STATUS_EXERCISED] == 0
+    # `items` counts what the graph declares; `items_scored` counts what
+    # this source could reach a verdict on. Without the pair, "4 items,
+    # 0 exercised" reads as "the run hit none of them".
+    assert join.block["summary"]["items_scored"] == 0
+    assert not any(k.startswith("covitem:") for k in join.block["nodes"])
+    assert join.block["nodes"]["module:blk_a"]["ratio"] == 1.0
+
+
+def test_items_are_scored_when_the_dats_are_there(cov_project: Path):
+    """The other half of the pair: with cover points, every declared item
+    is scored, so `items_scored` equals `items`."""
+    info = _write_info(cov_project / "merged.info", [(_BLK_A, ["DA:1,1"])])
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source=str(info))
+
+    summary = join.block["summary"]
+    assert summary["items_scored"] == summary["items"] == 4
+
+
+def test_a_bare_basename_under_the_root_is_never_evidence(cov_project: Path):
+    """The trim-leading-segments walk stops before the single-segment
+    candidate. Otherwise its last step IS a basename rung: a
+    wrong-elaboration record would resolve against a same-named file at
+    the project root and be attributed silently — pothole (a) exactly."""
+    (cov_project / "blk_c.sv").write_text("module blk_c; endmodule\n")
+    graph = _design_graph(cov_project)
+    graph["nodes"].append(
+        {
+            "id": "module:blk_c",
+            "type": "module",
+            "label": "blk_c",
+            "tier": "design",
+            "file": "blk_c.sv",
+        }
+    )
+    info = _write_info(
+        cov_project / "merged.info",
+        [(_BLK_A, ["DA:1,1"]), ("verif/other_suite/blk_c.sv", ["DA:9,7"])],
+    )
+
+    join = _join(cov_project, graph=graph, source=str(info))
+
+    assert "module:blk_c" not in join.block["nodes"]
+    assert join.block["summary"]["unresolved_files"] == ["verif/other_suite/blk_c.sv"]
+    assert any("duplicate-basename" in p["error"] for p in join.problems)
+
+
+def test_a_re_anchored_sf_is_recorded_as_inferred(cov_project: Path):
+    """Trimming leading segments is an inference, not an exact match, so
+    the records it rescued are listed rather than left looking exact."""
+    info = _write_info(
+        cov_project / "merged.info",
+        [("other_elab/" + _BLK_A, ["DA:1,1", "DA:2,0"]), (_BLK_B, ["DA:5,2"])],
+    )
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source=str(info))
+
+    assert join.block["nodes"]["module:blk_a"]["ratio"] == 0.5
+    summary = join.block["summary"]
+    assert summary["reanchored_files"] == ["other_elab/" + _BLK_A]
+    # The record that needed no trimming is not in the list.
+    assert summary["matched_files"] == 2
+
+
+def test_a_wrong_elaborations_sf_set_is_reported_not_attributed(cov_project: Path):
+    """Pothole (a): a repo-scope merge can rewrite duplicate basenames
+    against another suite's root. Nothing here matches by basename, so
+    the record attributes to nothing — and the join says why."""
+    info = _write_info(
+        cov_project / "merged.info",
+        [("verif/other_suite/blk_a.sv", ["DA:1,1"])],
+    )
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source=str(info))
+
+    assert join.block["nodes"] == {} or not any(
+        v.get("kind") == "design" for v in join.block["nodes"].values()
+    )
+    (problem,) = join.problems
+    assert "duplicate-basename" in problem["error"]
+    assert "nothing was attributed" in problem["error"]
+
+
+def test_a_suspect_sf_beside_good_ones_is_flagged_but_not_joined(cov_project: Path):
+    info = _write_info(
+        cov_project / "merged.info",
+        [
+            (_BLK_A, ["DA:1,1", "DA:2,0"]),
+            ("verif/other_suite/blk_b.sv", ["DA:5,2"]),
+        ],
+    )
+
+    join = _join(cov_project, graph=_design_graph(cov_project), source=str(info))
+
+    nodes = join.block["nodes"]
+    assert nodes["module:blk_a"]["ratio"] == 0.5
+    assert "module:blk_b" not in nodes
+    assert join.block["summary"]["unresolved_files"] == ["verif/other_suite/blk_b.sv"]
+    (problem,) = join.problems
+    assert "verif/other_suite/blk_b.sv" in problem["error"]
+    assert "duplicate-basename" in problem["error"]
+
+
+def test_an_info_against_a_graph_with_no_design_files_says_so(cov_project: Path):
+    """`--no-design` graphs have no module files to join by; an explicit
+    .info that cannot be used is worth a problem row, not silence."""
+    info = _write_info(cov_project / "merged.info", [(_BLK_A, ["DA:1,1"])])
+
+    join = _join(cov_project, graph=_config_graph(cov_project), source=str(info))
+
+    (problem,) = join.problems
+    assert "no design-tier module files" in problem["error"]
+    # The per-test scalars still joined — they never needed the file.
+    assert join.per_test["test:verif/blk_a#t_basic"]["totals"]["line"]["found"] == 3
+
+
+def test_a_missing_info_path_is_a_problem(cov_project: Path):
+    join = _join(cov_project, source=str(cov_project / "nope.info"))
+
+    assert join.block is None
+    (problem,) = join.problems
+    assert "no .info file" in problem["error"]
+
+
+def test_a_qualified_duplicate_module_stays_on_its_own_node(cov_project: Path):
+    """Two files claimed one name (`module:tb_top@verif/x`): fanning the
+    entry out by name would tint the other suite's copy."""
+    graph = _design_graph(cov_project)
+    graph["nodes"].append(
+        {
+            "id": "module:blk_a@verif/other",
+            "type": "module",
+            "label": "blk_a(1)",
+            "tier": "design",
+            "file": "verif/other/blk_a.sv",
+        }
+    )
+    info = _write_info(cov_project / "merged.info", [(_BLK_A, ["DA:1,1", "DA:2,0"])])
+
+    join = _join(cov_project, graph=graph, source=str(info))
+
+    nodes = join.block["nodes"]
+    assert nodes["module:blk_a"]["ratio"] == 0.5
+    assert "module:blk_a@verif/other" not in nodes
+    # The name is ambiguous, so instances are not guessed at either.
+    assert "inst:blk_a/blk_a" not in nodes
+
+
+def test_cli_coverage_source_flag_end_to_end(cov_project: Path):
+    """`rb graph results --coverage <info|auto|none>` — the issue's CLI
+    shape — and graph.json stays byte-identical through all of it."""
+    runner, rb = _runner()
+    built = runner.invoke(
+        rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
+    )
+    assert built.exit_code == 0, built.output
+    graph_json = cov_project / "artefacts" / "graph" / "graph.json"
+    before = _sha256(graph_json)
+    overlay_path = cov_project / "artefacts" / "graph" / "results-overlay.json"
+    info = _write_info(cov_project / "merged.info", [(_BLK_A, ["DA:1,1"])])
+
+    named = runner.invoke(rb.app, ["graph", "results", "--coverage", str(info)])
+    assert named.exit_code == 0, named.output
+    assert "coverage (from info):" in named.output
+    payload = json.loads(overlay_path.read_text())
+    assert payload["coverage"]["source"] == "info"
+    assert payload["coverage"]["info"] == "merged.info"
+
+    _drop_manifest(cov_project)
+    auto = runner.invoke(rb.app, ["graph", "results", "--coverage", "auto"])
+    assert auto.exit_code == 0, auto.output
+    assert "coverage (from artefacts):" in auto.output
+    assert json.loads(overlay_path.read_text())["coverage"]["source"] == "artefacts"
+
+    off = runner.invoke(rb.app, ["graph", "results", "--coverage", "none"])
+    assert off.exit_code == 0, off.output
+    assert "coverage" not in json.loads(overlay_path.read_text())
+
+    assert _sha256(graph_json) == before
+
+
+def test_the_no_coverage_flag_survives_the_source_rework(cov_project: Path):
+    """`--coverage` now takes a value, so a bare one no longer parses —
+    a loud break, recorded in known-issues. `--no-coverage` is the shape
+    that carries over unchanged, and it must keep working alone."""
+    runner, rb = _runner()
+    built = runner.invoke(
+        rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
+    )
+    assert built.exit_code == 0, built.output
+    overlay_path = cov_project / "artefacts" / "graph" / "results-overlay.json"
+
+    bare = runner.invoke(rb.app, ["graph", "results", "--coverage"])
+    assert bare.exit_code != 0
+    assert "requires an argument" in bare.output
+
+    off = runner.invoke(rb.app, ["graph", "results", "--no-coverage"])
+    assert off.exit_code == 0, off.output
+    assert "coverage" not in json.loads(overlay_path.read_text())
+
+
+def test_an_undocumented_source_keyword_is_read_as_a_path(cov_project: Path):
+    """The accepted keywords are exactly the three the help lists. 'off'
+    was one synonym too many: an accepted value nobody documented is a
+    contract nobody knows they own, so it is a path like anything else
+    and fails as one."""
+    runner, rb = _runner()
+    built = runner.invoke(
+        rb.app, ["graph", "build", "--no-design", "--no-extract", "--no-bind"]
+    )
+    assert built.exit_code == 0, built.output
+
+    result = runner.invoke(
+        rb.app, ["graph", "results", "--coverage", "off", "--strict"]
+    )
+
+    assert result.exit_code != 0
+    assert "no .info file" in result.output

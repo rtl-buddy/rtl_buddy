@@ -39,9 +39,11 @@ Since #402 the overlay also carries the run's **coverage** join —
 per-test scalars beside the ``artefacts.coverage`` path, per-module
 ratios keyed to design node ids, and a declared-vs-observed verdict per
 ``covitem:`` node. Those numbers are read out of the coverage model
-(#399) that the run already wrote; nothing here ever invokes
-``verilator_coverage``, which is what keeps a refresh with nothing
-re-run byte-identical. See :mod:`rtl_buddy.graph.coverage`.
+(#399) that the run already wrote — or, since #390, synthesized from
+the per-test raw databases this scan itself found, or joined by file
+from a merged LCOV ``.info`` named on the command line; nothing here
+ever invokes ``verilator_coverage``, which is what keeps a refresh with
+nothing re-run byte-identical. See :mod:`rtl_buddy.graph.coverage`.
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ from .config_tier import (
     default_graph_dir,
     test_id,
 )
-from .coverage import CoverageJoin, join_coverage
+from .coverage import COVERAGE_SOURCE_AUTO, CoverageJoin, join_coverage
 
 
 logger = logging.getLogger(__name__)
@@ -415,7 +417,7 @@ def collect_results(
     *,
     verif_dir: str | os.PathLike | None = None,
     graph: dict | None = None,
-    coverage: bool = True,
+    coverage: bool | str = True,
     cov_dir: str | os.PathLike | None = None,
     cov_manifest: str | os.PathLike | None = None,
 ) -> ResultsOverlay:
@@ -430,10 +432,14 @@ def collect_results(
       graph: An already-loaded ``graph.json``. Optional; when given, each
         entry is cross-checked against it (``in_graph``) and the tests it
         declares with no result at all are reported in ``missing``.
-      coverage: Join the run's coverage model in (#402). A tree with no
-        coverage artefacts is not an error — the ``coverage`` block is
-        simply absent, which is also what keeps an overlay written
-        before this feature byte-identical.
+      coverage: Join the run's coverage in (#402/#390). ``True`` (or
+        ``"auto"``) reads the newest ``cov_dir/manifest.json`` and falls
+        back to the per-test raw databases this scan itself found;
+        ``"model"`` reads the manifest only; any other string is a path
+        to a merged LCOV ``.info`` to ingest; ``False`` skips the join.
+        A tree with no coverage artefacts is not an error — the
+        ``coverage`` block is simply absent, which is also what keeps an
+        overlay written before this feature byte-identical.
       cov_dir / cov_manifest: read coverage from here rather than from
         the newest ``cov_dir/manifest.json`` under the project. Naming
         either makes a failure to read it a reported problem.
@@ -503,12 +509,14 @@ def collect_results(
     ordered = {k: entries[k] for k in sorted(entries)}
     join = None
     if coverage:
+        source = COVERAGE_SOURCE_AUTO if coverage is True else str(coverage)
         join = join_coverage(
             root,
             entries=ordered,
             graph=graph,
             cov_dir=cov_dir,
             manifest=cov_manifest,
+            source=source,
         )
         problems.extend(join.problems)
         # Beside `artefacts.coverage` — the path to the raw database was
@@ -729,7 +737,7 @@ def refresh_results_overlay(
     verif_dir: str | os.PathLike | None = None,
     out_dir: str | os.PathLike | None = None,
     graph_path: str | os.PathLike | None = None,
-    coverage: bool = True,
+    coverage: bool | str = True,
     cov_dir: str | os.PathLike | None = None,
     cov_manifest: str | os.PathLike | None = None,
 ) -> ResultsOverlay:
