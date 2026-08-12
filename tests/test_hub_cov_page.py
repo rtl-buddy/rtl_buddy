@@ -195,17 +195,21 @@ def covered_project(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _no_presence_cache():
-    """Each test starts with an empty presence cache.
+    """Each test starts with empty module caches.
 
     :func:`cov_page.cov_data_present` memoises for a few seconds so the
     landing poll does not walk the tree on every request; inside a test
     that TTL would leak one project's answer into the next one's
-    ``tmp_path``.
+    ``tmp_path``. :func:`cov_page.model_file_set` memoises per model
+    path, which no two tmp paths share, but it is cleared here too so a
+    test never inherits a set it did not write.
     """
 
     cov_page._presence_cache.clear()
+    cov_page._file_set_cache.clear()
     yield
     cov_page._presence_cache.clear()
+    cov_page._file_set_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -332,11 +336,61 @@ def test_source_accepts_an_absolute_path_inside_the_project(covered_project: Pat
     assert json.loads(body)["lines"][0].startswith("module blk")
 
 
+def test_source_serves_only_what_the_model_names(covered_project: Path):
+    """The grant is the model's file set, not the project root.
+
+    Containment alone made this a read-any-file-under-the-root
+    primitive, while the pane only ever asks for paths ``/cov.json``
+    already listed — so a real, readable, in-root file the model does
+    not name is refused with the same status as one outside the root.
+    """
+
+    (covered_project / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    status, body = cov_page.read_source_lines(covered_project, ".env")
+    assert status == 403
+    assert "not in this run's coverage model" in json.loads(body)["error"]
+    assert b"secret" not in body
+
+    # A file the model DOES name is served, absolute request or not.
+    for requested in ("design/blk.sv", str(covered_project / "design/blk.sv")):
+        status, body = cov_page.read_source_lines(covered_project, requested)
+        assert status == 200
+        assert json.loads(body)["lines"][0].startswith("module blk")
+
+
+def test_source_grant_follows_the_model_on_disk(covered_project: Path):
+    """A rerun that widens the model widens the grant, with no restart.
+
+    The set is memoised on the model file's own ``(mtime, size)`` —
+    the same read-off-disk staleness rule ``/cov.json`` follows, only
+    without re-parsing megabytes of JSON per click.
+    """
+
+    (covered_project / "design" / "other.sv").write_text(
+        "module other; endmodule\n", encoding="utf-8"
+    )
+    assert cov_page.read_source_lines(covered_project, "design/other.sv")[0] == 403
+
+    model = _model()
+    extra = dict(model["files"][0])
+    extra["path"] = "design/other.sv"
+    model["files"].append(extra)
+    model_mod.write_model(model, covered_project / "verif" / "blk" / "cov_dir")
+
+    status, body = cov_page.read_source_lines(covered_project, "design/other.sv")
+    assert status == 200
+    assert json.loads(body)["lines"][0].startswith("module other")
+
+
 def test_source_missing_and_empty_requests(covered_project: Path):
     status, body = cov_page.read_source_lines(covered_project, "")
     assert status == 400 and "?path=" in json.loads(body)["error"]
-    status, body = cov_page.read_source_lines(covered_project, "design/gone.sv")
-    assert status == 404 and "design/gone.sv" in json.loads(body)["error"]
+    # Named by the model but gone from disk — the honest 404. A path the
+    # model never named is a 403 above, whether it exists or not, so the
+    # route is not an existence oracle for the rest of the tree.
+    (covered_project / "design" / "blk.sv").unlink()
+    status, body = cov_page.read_source_lines(covered_project, "design/blk.sv")
+    assert status == 404 and "design/blk.sv" in json.loads(body)["error"]
 
 
 def test_source_refuses_a_file_over_the_annotation_limit(

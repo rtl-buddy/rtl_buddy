@@ -349,7 +349,7 @@ class ViewerServer:
             return False
         return graph_page.graph_files_present(self.project_root)
 
-    def _has_cov_data(self) -> bool:
+    async def _has_cov_data(self) -> bool:
         """Whether any run under this root left a coverage manifest.
 
         Same advertise-on-data-presence rule as ``_has_graph_json``, but
@@ -357,8 +357,17 @@ class ViewerServer:
         artefacts land wherever the command ran), so ``cov_page`` caches
         the answer for a few seconds — see
         :data:`~rtl_buddy.hub.cov_page.PRESENCE_TTL_SECONDS`.
+
+        Awaited in a thread, like every other ``/cov*`` handler here: the
+        TTL bounds how *often* a miss happens, not what one costs, and a
+        walk run on the event loop stalls the whole hub — including the
+        ``/ws`` fan-out — for its duration. On a tree with an
+        ``artefacts/`` directory from a finished regression that is not
+        a bounded pause.
         """
-        return cov_page.cov_data_present(self.project_root)
+        if self.project_root is None:
+            return False
+        return await asyncio.to_thread(cov_page.cov_data_present, self.project_root)
 
     async def start(self) -> tuple[str, int]:
         """Bind the HTTP+WS listener; return ``(host, port)``."""
@@ -441,7 +450,7 @@ class ViewerServer:
             )
 
         if path == landing_page.STATE_JSON_ROUTE:
-            return self._handle_hub_state(connection)
+            return await self._handle_hub_state(connection)
 
         if path == theme.THEME_CSS_ROUTE:
             return _http_response(
@@ -461,6 +470,7 @@ class ViewerServer:
         # through to ``_serve_static`` would serve the bundle's index
         # WITHOUT the hub injection — an SPA that cannot find its hub.
         if path in (landing_page.VIEW_PAGE_ROUTE, "/view/", "/index.html"):
+            cov_available = await self._has_cov_data()
             body = render_index_html(
                 bundle_index=self._bundle_index,
                 hub_addr=self.hub_address,
@@ -468,7 +478,7 @@ class ViewerServer:
                 graph_url=(
                     graph_page.GRAPH_JSON_ROUTE if self._has_graph_json() else None
                 ),
-                cov_url=(cov_page.COV_JSON_ROUTE if self._has_cov_data() else None),
+                cov_url=(cov_page.COV_JSON_ROUTE if cov_available else None),
             )
             return _http_response(
                 connection, 200, body, content_type="text/html; charset=utf-8"
@@ -531,13 +541,18 @@ class ViewerServer:
     # / + /hub/* — landing, tokens, brand marks (issue #398)
     # ------------------------------------------------------------------
 
-    def _handle_hub_state(self, connection: ServerConnection) -> Response:
+    async def _handle_hub_state(self, connection: ServerConnection) -> Response:
         """``GET /hub/state.json`` — what the landing page renders.
 
         Recomputed per request (two ``stat`` calls and a set read) for
         the same reason ``/models`` walks per request: a graph built, or
         a tab opened, while the landing is up must show up on its next
         poll rather than on a hub restart.
+
+        Async because coverage presence is a tree walk on a cache miss
+        (see :meth:`_has_cov_data`), and this is the route the landing
+        page polls several times a minute — running that walk inline
+        would stall every other connection with it.
         """
 
         peers = (
@@ -571,7 +586,7 @@ class ViewerServer:
             graph_present=graph_present,
             graph_path=graph_path,
             graph_mtime=graph_mtime,
-            cov_available=self._has_cov_data(),
+            cov_available=await self._has_cov_data(),
         )
         return _http_response(
             connection,

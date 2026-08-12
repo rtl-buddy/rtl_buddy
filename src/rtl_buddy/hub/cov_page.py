@@ -20,7 +20,10 @@ cast in the same mould as :mod:`~rtl_buddy.hub.graph_page`:
 * :func:`read_source_lines` — ``GET /cov/source?path=…``, the file text
   the annotation renders against. Points carry line numbers, not
   source, and a payload that inlined every covered file would be tens
-  of megabytes on a real design; this is the one lazy edge.
+  of megabytes on a real design; this is the one lazy edge. It serves
+  the model's own file set (:func:`model_file_set`) and nothing else,
+  so the edge grants exactly what ``/cov.json`` already listed rather
+  than any file under the root.
 * :func:`render_cov_html` — the page at ``GET /cov``. One
   self-contained document: no CDN, no bundler, no build step, for the
   same reason the graph pane has none — the hub is routinely run where
@@ -46,6 +49,7 @@ import time
 from pathlib import Path
 
 from ..cov import manifest as manifest_mod
+from ..cov import model as model_mod
 from ..cov import query as cov_query
 from ..cov.raw import METRICS
 from ..logging_utils import log_event
@@ -80,6 +84,16 @@ MAX_SOURCE_BYTES = 4 * 1024 * 1024
 PRESENCE_TTL_SECONDS = 5.0
 
 _presence_cache: dict[str, tuple[float, bool]] = {}
+
+#: ``model path -> ((mtime_ns, size), project-relative source paths)``.
+#: The file set is what ``/cov/source`` grants against, and the model is
+#: the only artefact that carries it — the manifest names totals and
+#: datasets, not files. A model on a real design is megabytes of JSON,
+#: and the pane asks for one source file per click, so the parse is
+#: memoised on the model file's own identity: rewritten model, new
+#: stamp, new set. That is the same staleness rule the route itself
+#: follows (read off disk, no invalidation hook), only cheaper.
+_file_set_cache: dict[str, tuple[tuple[int, int], frozenset[str]]] = {}
 
 
 def build_cov_payload(
@@ -144,16 +158,69 @@ def cov_payload_bytes(
     return 200, json.dumps(payload).encode("utf-8")
 
 
+def model_file_set(
+    project_root: str | os.PathLike,
+    *,
+    cov_dir: str | os.PathLike | None = None,
+    manifest: str | os.PathLike | None = None,
+) -> frozenset[str]:
+    """Every source path the newest run's model names, project-relative.
+
+    This is the grant ``/cov/source`` serves against. Empty when there
+    is no readable coverage on disk, which is the safe direction: with
+    no model there is nothing for the pane to annotate, so there is
+    nothing to serve either.
+
+    The manifest is discovered per call, exactly as ``GET /cov.json``
+    discovers it, so a regression finishing in another terminal is
+    picked up without a restart; the *model parse* behind it is
+    memoised on the model file's ``(mtime_ns, size)`` — see
+    :data:`_file_set_cache`.
+    """
+
+    try:
+        manifest_path = cov_query.resolve_manifest_path(
+            project_root, cov_dir=cov_dir, manifest=manifest
+        )
+        document = manifest_mod.load_manifest(manifest_path)
+        model_path = manifest_mod.resolve(manifest_path, document.get("model"))
+        if model_path is None:
+            return frozenset()
+        stat = os.stat(model_path)
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        cached = _file_set_cache.get(model_path)
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        model = model_mod.load_model(model_path)
+    except (cov_query.CovQueryError, OSError, ValueError) as exc:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "hub.cov_page.no_model_file_set",
+            error=str(exc),
+        )
+        return frozenset()
+    paths = frozenset(
+        row["path"] for row in model.get("files") or [] if row.get("path")
+    )
+    _file_set_cache[model_path] = (stamp, paths)
+    return paths
+
+
 def read_source_lines(
     project_root: str | os.PathLike, requested: str
 ) -> tuple[int, bytes]:
     """``(status, body)`` for ``GET /cov/source?path=<project-relative>``.
 
-    ``path`` is resolved **under the project root and nowhere else**.
-    The coverage model's paths are project-relative by construction, but
-    this route takes its argument from a query string, so containment is
-    checked rather than assumed: a pane is a browser tab, and a browser
-    tab is reachable by anything that can reach the port.
+    ``path`` must name a file **the coverage model itself lists**, and
+    it is resolved **under the project root and nowhere else**. Two
+    checks rather than one because they answer different questions: the
+    membership test is the actual grant — the pane only ever asks for
+    paths ``/cov.json`` handed it — and containment keeps a model that
+    somehow named ``../../etc/hosts`` from turning this into a read of
+    it. Both are checked rather than assumed: the argument comes off a
+    query string, and a browser tab is reachable by anything that can
+    reach the port.
 
     The body is ``{"path", "lines"}`` — the file split into lines, with
     line ``N`` at index ``N-1``, which is the shape the annotation
@@ -169,10 +236,20 @@ def read_source_lines(
     # ignores. ``root / candidate`` is ``candidate`` when it is absolute.
     target = (root / Path(requested)).resolve()
     try:
-        target.relative_to(root)
+        relative = target.relative_to(root)
     except ValueError:
         return 403, json.dumps(
             {"error": f"cov: {requested} is outside the project root"}
+        ).encode("utf-8")
+    # The model's paths are project-relative posix by construction
+    # (:mod:`rtl_buddy.cov.source_paths`), so the request is compared in
+    # that vocabulary — an absolute request inside the root normalises
+    # onto the same key.
+    if relative.as_posix() not in model_file_set(project_root):
+        # Refused before the filesystem is touched: whether a path the
+        # model does not name exists is not this route's to tell.
+        return 403, json.dumps(
+            {"error": f"cov: {requested} is not in this run's coverage model"}
         ).encode("utf-8")
     if not target.is_file():
         return 404, json.dumps({"error": f"cov: no source file at {requested}"}).encode(
@@ -267,6 +344,7 @@ __all__ = [
     "build_cov_payload",
     "cov_data_present",
     "cov_payload_bytes",
+    "model_file_set",
     "read_source_lines",
     "render_cov_html",
 ]

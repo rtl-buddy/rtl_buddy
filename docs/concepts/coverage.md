@@ -268,7 +268,7 @@ Both verbs emit the standard [envelope](../agents.md#machine-mode). Every payloa
 
 Then:
 
-- `cov summary` adds `counts`, `tests` (per-test `{name, suite, totals}`), `files` (coldest first, truncated to `--limit`), `modules`, and `covers` when the run recorded SVA cover points.
+- `cov summary` adds `counts`, `tests` (per-test `{name, suite, totals}`), `files` (coldest first — lowest line ratio, then most absolute misses, with files that have no line points at all last, since those are silent rather than cold — truncated to `--limit`), `modules`, and `covers` when the run recorded SVA cover points.
 - `cov module` adds `module`, `files` (each with its per-metric point lists) and `tests` (the tests that touched any of its points).
 
 The same `artefacts` block rides on `payload.coverage` of a `test` or `regression` run, so an orchestrator learns where the artefacts landed from the run itself, not from scraping `Merged LCOV: <path>` out of the summary lines. `payload.coverage.merged` gained an `expression` scalar alongside `line`/`branch`/`toggle`/`functional`; the `L/B/T/F` summary string is unchanged, since it is a display contract and expression detail belongs in the model where a consumer can act on it.
