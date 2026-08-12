@@ -275,6 +275,12 @@ The same `artefacts` block rides on `payload.coverage` of a `test` or `regressio
 
 An unanswerable question exits 2 with `payload.error` and, for an unknown module, `payload.candidates`.
 
+### From an agent: the MCP tools
+
+`rb mcp` serves the same two verbs as the `cov_summary` and `cov_module` tools, calling the same payload builders — the answer an agent gets over MCP is byte-for-byte the `payload` of `rb --machine cov summary|module`, wrapped in `{tool, ok, meta, payload}`. Both take optional `cov_dir` and `manifest` arguments, exactly as the CLI does, and an unknown module comes back as `ok: false` with `candidates` instead of an exception.
+
+They are **stateless** tools, listed whether or not a hub is running: coverage artefacts are files, so a CI or dispatch node answers "what is cold in `blk`?" with no daemon. When a hub *is* live, one more tool appears — `cov_focus`, the MCP face of `rb hub send cov-focus` — so an agent can point the open `/cov` pane at the file, module, test or point it is talking about. See [The MCP Server](graph.md#the-mcp-server).
+
 ## Looking at coverage: the `/cov` pane
 
 `rb hub start --serve-viewer` serves the same model as an interactive page at `GET /cov`: a dashboard of the run's scalars, a file list ranked coldest-first **for the metric you pick** (it opens on `toggle`), and **per-file source annotation** — a column per metric under a header of that file's totals, each line's points summarised in it, and the per-test attribution behind every one of them in a docked detail panel. Selecting a test turns it into a lens, so every number becomes that test's contribution.

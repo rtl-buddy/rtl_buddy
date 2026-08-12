@@ -424,7 +424,7 @@ Without the extra, `rb mcp` exits 2 with an install hint. Nothing else in rtl_bu
 
 ### No daemon required
 
-The server is spawned per agent session and holds no state: every call re-reads `artefacts/graph/graph.json` and the overlay, and the hierarchy tools shell out to `rtl-buddy-view` exactly as `rb hier-query` does. Requiring a running hub to answer "what instantiates X?" would be a regression against `rb hier-query` on a CI or dispatch node, and it would collide with the hub's dynamic port versus the static `.mcp.json` a host wants. Re-reading rather than caching also means an agent that runs `rb graph build` in one turn sees the new graph in the next, with no restart.
+The server is spawned per agent session and holds no state: every call re-reads `artefacts/graph/graph.json`, the overlay and (for the coverage tools) `cov_dir/manifest.json`, and the hierarchy tools shell out to `rtl-buddy-view` exactly as `rb hier-query` does. Requiring a running hub to answer "what instantiates X?" would be a regression against `rb hier-query` on a CI or dispatch node, and it would collide with the hub's dynamic port versus the static `.mcp.json` a host wants. Re-reading rather than caching also means an agent that runs `rb graph build` in one turn sees the new graph in the next, with no restart.
 
 ### Stateless tools
 
@@ -435,6 +435,8 @@ The server is spawned per agent session and holds no state: every call re-reads 
 | `graph_path` | `rb graph path` |
 | `graph_explain` | `rb graph explain` |
 | `test_status` | `rb graph results` |
+| `cov_summary` | `rb cov summary` |
+| `cov_module` | `rb cov module` |
 | `find_module` | `rb hier-query <model> find-module` |
 | `instances_of` | `rb hier-query <model> instances-of` |
 | `port_connections` | `rb hier-query <model> port-connections` |
@@ -455,7 +457,7 @@ The two surfaces call the same functions on purpose: two agent-facing descriptio
 
 ### Hub tools dial in
 
-When a live hub is discovered — `.rtl-buddy/hub.json`, the very record `rb hub send` reads, including its stale-PID check — five more tools appear in the listing and drive the session the user is actually looking at:
+When a live hub is discovered — `.rtl-buddy/hub.json`, the very record `rb hub send` reads, including its stale-PID check — six more tools appear in the listing and drive the session the user is actually looking at:
 
 | Tool | CLI mirror |
 | --- | --- |
@@ -464,6 +466,9 @@ When a live hub is discovered — `.rtl-buddy/hub.json`, the very record `rb hub
 | `hub_open_source` | `rb hub send open-source` |
 | `hub_resolve` | `rb hub send resolve {view-to-wave,wave-to-view,signal-to-view}` |
 | `hub_diagnose` | `rb hub send diagnose` |
+| `cov_focus` | `rb hub send cov-focus` |
+
+`cov_focus` keeps the coverage name rather than a `hub_` prefix because that is the vocabulary its CLI mirror and its wire type already use; what makes it hub-gated is the pane it drives, not its name. The reads next to it (`cov_summary`, `cov_module`) stay stateless for the same reason in reverse: coverage artefacts are files, so a CI node answers them with no hub at all.
 
 Headless they are simply absent, so an agent on a CI node is never offered a tool that can only fail. The client is the same `rtl_buddy.hub.client.HubClient` every other peer uses, connecting as `origin: cli` and closing after each call — the hub's server-only invariant holds, because this is one more peer dialling in. Discovery happens once, at server start: an MCP host reads the tool list at session start, so a tool set that changed mid-session would not be seen anyway.
 

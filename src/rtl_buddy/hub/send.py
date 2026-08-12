@@ -268,15 +268,22 @@ def cmd_cov_focus(
         ),
     ] = None,
 ) -> None:
-    if not target.strip():
+    # Emit what was validated, not the raw argument: the pane matches
+    # these strings, so a trailing space is a miss rather than a near
+    # miss, and the MCP ``cov_focus`` tool must put the same bytes on the
+    # wire for the same input.
+    target = target.strip()
+    if not target:
         raise typer.BadParameter("target must be non-empty")
     if metric is not None and metric not in _COV_METRICS:
         raise typer.BadParameter(
             f"metric must be one of {'/'.join(_COV_METRICS)}, got {metric!r}",
             param_hint="--metric",
         )
-    if item is not None and not item.strip():
-        raise typer.BadParameter("--item must be non-empty")
+    if item is not None:
+        item = item.strip()
+        if not item:
+            raise typer.BadParameter("--item must be non-empty")
     # Optional keys are omitted rather than sent as null: the wire schema
     # is additionalProperties:false with no nullable hints.
     payload: dict[str, object] = {"target": target}
