@@ -479,7 +479,7 @@ covitem:demo_tiny_alu#SAND-FUNC-OP-ADD  (coverage_item, tier config)
   from:   verif/demo_tiny_alu/cov_dir/manifest.json
 ```
 
-Every node summary these verbs return carries a `cite` block wherever the source can be quoted: `file` and `line` from the node's tier, plus — for an instance node — the exact command that quotes it, built from the id:
+An **instance** node's summary carries a `cite` block, because it is the one node whose source can be quoted by a runnable command — built from the id. Every other node carries `file` and `line` directly on the summary and no `cite` key at all: a block that only repeated two fields already present was padding (#388), so a `test:`, `covitem:` or `spec:` summary has none.
 
 ```json
 "cite": {
@@ -653,11 +653,15 @@ ts.call("graph_query", {"question": "which tests cover SAND-FUNC-FLAG-C-ADD"})
 
 The point of the graph is that an agent should answer a question about the project without reading the project. Knowledge-graph tools advertise large tokens-per-query savings measured on software corpora, so we measured our own on RTL, with `scripts/graph_token_benchmark.py`.
 
-**On the project template the graph route costs about 3x _more_ tokens than grep-and-read — on all six questions, including the two picked to favour it.** That is the honest number. The rest of this section is what it is made of, and the one line that explains every row of the table: an `explain` payload costs about a thousand tokens whatever it describes, and almost nothing in the template costs a thousand tokens to read.
+The first two rounds found the graph route costing about 3x _more_ than grep-and-read on all six questions, and the itemized run blamed one thing: an `explain` payload embedded a full node summary for every edge endpoint, so it cost about a thousand tokens whatever it described. [#388](https://github.com/rtl-buddy/rtl_buddy/issues/388) replaced that with a lean edge — the link's own facts plus the peer's id, label and type — moved a node's own attributes onto every full summary, and put the old shape behind `--expand`.
+
+**The diet cut the graph route by 39% on the same graph, from 0.33x to 0.54x overall: one task now wins outright, a second is at parity, and all twelve route runs still answer correctly.** The graph route is still the more expensive way to answer four of the six questions on a template whose files are tiny. The rest of this section is the measurement that says which four, and what is left to blame.
 
 ### Method
 
 Six questions an agent actually asks are answered twice: once through the **graph route** (`rb --machine graph query|path|explain` against `artefacts/graph/graph.json`) and once through the **raw route** (`grep`, `ls`, whole-file reads — what an agent does in a tree with no graph). Both answers are compared against a key hand-checked against the template sources; a route that answers wrong does not get to be the cheap one. All twelve runs were correct, so the token numbers are comparable.
+
+Before and after #388 were measured against the **same** `graph.json` at the same template commit, so the deltas below are payload shape and nothing else. Where the payload change moved a route's cheapest path — the module interface no longer needs a source read, the deep chain needs one `explain` more — the route in the script moved with it, because the question is what the cheapest correct answer costs, not what the old script costs on new payloads.
 
 Four of the questions are the ones an agent asks all day. The last two were added specifically to test the hypothesis that the graph pays off on *structure* — a chain too long to hold in one grep, and a transitive closure grep cannot compute in one pass:
 
@@ -666,7 +670,7 @@ Four of the questions are the ones an agent asks all day. The last two were adde
 
 The token proxy is `len(text) // 4`, applied to every byte crossing into the agent's context — the command it types plus the output it reads. No tokenizer is imported: a real BPE would pin the published number to one vendor's vocabulary, and the ratio between two routes is insensitive to the constant. Repeating a command is free on both routes, the same way re-reading a file is: an agent does not re-run a query whose answer is still in its transcript.
 
-Two costs are deliberately not charged to the graph route. `rb graph build` is an index — 7.1 s cold and 1.3 s cached on the template, paid once per source change and amortized over every question, like a `ctags` database. And `graph.json` itself (640 KiB, about 164 k tokens) is never read whole; that is what the verbs are for.
+Two costs are deliberately not charged to the graph route. `rb graph build` is an index — 7.1 s cold and 1.3 s cached on the template, paid once per source change and amortized over every question, like a `ctags` database. And `graph.json` itself (641 KiB, about 164 k tokens) is never read whole; that is what the verbs are for.
 
 `--machine` is the only surface measured because it is the only one an agent can use: the human rendering is a Rich table that does not survive a pipe (`rb graph query` prints nothing at all through one) and truncates long ids with an ellipsis where it does render.
 
@@ -686,35 +690,37 @@ One finding falls out of the answer rather than the tokens: `mem_subsys` is affe
 
 ### Results
 
-Measured on [rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template) at `6507c3a` (clean), against a graph of 643 nodes and 1 392 links built from all three tiers by rtl_buddy `feat/design-graph` and rtl-buddy-view `feat/graph-export` (`6d334ed`). "Answer" is the answer itself as compact JSON — the floor either route could hit. Ratio is raw / graph: above 1.00 the graph is cheaper.
+Measured on [rtl-buddy-project-template](https://github.com/rtl-buddy/rtl-buddy-project-template) at `6507c3a` (clean), against a graph of 643 nodes and 1 392 links built from all three tiers by rtl_buddy `feat/graph-lean-explain-388` and rtl-buddy-view 0.5.0. "Answer" is the answer itself as compact JSON — the floor either route could hit. Ratio is raw / graph: above 1.00 the graph is cheaper. The "pre-#388" column is the same benchmark run against `main` on the same graph.
 
-| Task | Answer | Raw tokens | Raw calls | Graph tokens | Graph calls | Ratio (raw / graph) | Both correct |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Trace a signal | 46 | 2979 | 7 | 10913 | 10 | 0.27x | yes |
-| Tests for a block | 66 | 1782 | 5 | 11778 | 14 | 0.15x | yes |
-| Traceability chain | 49 | 1675 | 5 | 2460 | 2 | 0.68x | yes |
-| Module interface | 35 | 800 | 2 | 2014 | 3 | 0.40x | yes |
-| Deep chain | 92 | 1809 | 6 | 8809 | 8 | 0.21x | yes |
-| Change impact on shared IP | 109 | 9021 | 24 | 18549 | 14 | 0.49x | yes |
-| **all 6** | 397 | **18066** | 49 | **54523** | 51 | **0.33x** | |
+| Task | Answer | Raw tokens | Raw calls | Graph tokens, pre-#388 | Graph tokens | Graph calls | Ratio (raw / graph) | Both correct |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Trace a signal | 46 | 2979 | 7 | 11029 | 6775 | 10 | 0.44x (was 0.27x) | yes |
+| Tests for a block | 66 | 1782 | 5 | 11944 | 7385 | 14 | 0.24x (was 0.15x) | yes |
+| Traceability chain | 49 | 1672 | 5 | 2474 | 1493 | 2 | 1.12x (was 0.68x) | yes |
+| Module interface | 35 | 800 | 2 | 2017 | 2064 | 2 | 0.39x (was 0.40x) | yes |
+| Deep chain | 92 | 1806 | 6 | 8909 | 6187 | 9 | 0.29x (was 0.20x) | yes |
+| Change impact on shared IP | 109 | 9021 | 24 | 18816 | 9572 | 14 | 0.94x (was 0.48x) | yes |
+| **all 6** | 397 | **18060** | 49 | **55189** | **33476** | 51 | **0.54x** (was 0.33x) | |
 
 The first four tasks are: what drives `rst_b_n` in `demo_cdc_open_top` and which instances load it; which tests exercise `demo_tiny_alu` and at which `reglvl`; which tests, spec block, spec doc and golden model chain off coverage item `SAND-FUNC-FLAG-C-ADD`; and every port of `demo_tiny_alu` with its direction, plus its parameters.
 
-The two structural tasks did not reverse the result. They did change its shape: change impact is the **only** task where the graph route needs *fewer calls* than the raw route (14 against 24), and it is the best ratio in the table — but the deep chain is the second **worst**, because every hop it adds is a hop through the config tier, where the file an `explain` replaces is a 500-token YAML.
+The two structural tasks are where the diet paid best, which is the result the previous round predicted and could not show. **Traceability chain is the first task the graph wins outright** — 1.12x, in two calls against the raw route's five — and change impact went from half price to parity (0.94x) while still being the only task where the graph needs *fewer* calls than grep (14 against 24). The deep chain improved by less than either, and for the same reason it was the second worst before: every hop it adds is a hop through the config tier, where the file an `explain` replaces is a 200-to-800-token YAML, and no payload diet makes an `explain` cheaper than that.
+
+Module interface is the one row that did not improve, and it is a fair trade rather than a regression: its 20-match port query grew by 185 tokens because a match now carries its own `dir`, and that bought the deletion of the source-span read the route used to need — one call instead of three, 47 tokens more, same answer.
 
 ### Where the tokens went
 
-397 tokens of answer cost the graph route 54 523, and 95% of that (51 964 tokens over 47 of its 51 calls) is `explain`. Four payload effects account for it, and none of them is a property of the graph.
+397 tokens of answer cost the graph route 33 476, down from 55 189 on the identical graph, and `explain` is still where nearly all of it goes: 30 961 tokens over 48 of the 51 calls, 92%. Four effects accounted for the old number. Two are gone, one is smaller, one was never a payload problem.
 
-**Attributes are only reachable through `explain`.** A node summary carries `id`, `type`, `label`, `tier`, `file`, `line` and nothing type-specific, so reading one `reglvl` integer or one port `dir` string costs a whole `explain` call. In the reglvl task, eleven calls are exactly that.
+**Fixed — every peer is no longer repeated in full.** An `explain` edge is now the link's own facts plus `peer`, `peer_label` and `peer_type`; the full summary arrives only under `--expand`. `explain module:ip_cdc_sync` — 44 edges, and the one call that makes the change-impact answer possible — went from 6 192 tokens to **2 357**. `spec:demo_tiny_alu` went 1 927 → 1 042, `test:verif/demo_tiny_alu#basic` 1 206 → 695, `module:demo_tiny_alu_subsys_top` 1 976 → 1 055. The payload still grows with degree, because an edge is still an edge — it grows roughly three times more slowly.
 
-**Every peer is repeated in full.** An `explain` payload embeds a complete node summary for each edge endpoint, including a `cite` block that, for anything but an instance node, only repeats `file`. `test:verif/demo_tiny_alu#basic` costs 1 195 tokens, most of it nine coverage-item summaries the question never asked about; `spec:demo_tiny_alu` costs 1 915, most of it the sixteen coverage items it declares.
+**Fixed — attributes no longer need their own call.** A full node summary carries its own type-specific attributes, so one `reglvl` integer or one port `dir` string no longer costs a whole `explain`. That is what let the module-interface route delete its source-span read. It is also the one place the diet spends rather than saves: the 20-match port query grew 1 613 → 1 798, which is the whole of that row's 47-token regression.
 
-**The payload grows with degree, not with relevance.** `explain module:ip_cdc_sync` — the one call that makes the change-impact answer possible — is 6 174 tokens, a third of that task's whole graph route, because the node has 44 edges on it and each arrives with a full peer summary. The information the walk actually uses from it is ten root names.
+**Smaller — the `cite` block earns its bytes.** A cite that only repeated `file` (everything but an instance node) is dropped; `file` and `line` are already on the summary. Only the instance-node cite, which carries the runnable `rb hier-query … source-snippet` command, survives.
 
-**A module's ports are not a traversal.** No edge ties a `port:` node to its `module:` node — only the `owner` attribute does — so "the ports of `demo_tiny_alu`" is a substring search, and `port:demo_tiny_alu_subsys_compute.*` scores identically. Half the twenty nodes returned were noise.
+**Unchanged — a module's ports are not a traversal.** No edge ties a `port:` node to its `module:` node — only the `owner` attribute does — so "the ports of `demo_tiny_alu`" is still a substring search, and `port:demo_tiny_alu_subsys_compute.*` still scores identically. Half the twenty nodes returned are still noise. This is a graph-shape gap, not a payload one, and #388 did not touch it.
 
-A fifth effect changes shape rather than size: the 25-neighbour budget in `query` is spent breadth-first, so at `--depth 2` from the model node all sixteen sibling coverage items arrive before the tests and the tests are truncated away. The traceability route uses `--depth 1` plus one `explain` for that reason — two calls that terminate beat one call that quietly drops the answer.
+The shape effect from the previous round also survives, now with a receipt: the 25-neighbour budget in `query` is spent breadth-first, so at `--depth 2` from the model node all sixteen sibling coverage items arrive before the tests and the tests are cut. What changed is that the cut is no longer silent — `neighbors_truncated` (and `explain`'s `truncated`) is `{"dropped": N, "kinds": {…}}` instead of a bare `true`, absent entirely when nothing was cut, and `--max-neighbors` raises the budget. `kinds` counts by the entry's own type, which is a *node* type for `query` and an *edge* type for `explain` — the two verbs drop different things. `explain` also carries `buckets`, naming what `outgoing` and `incoming` each lost, since hitting the limit one way is a different answer from hitting it both. It costs a few tokens; an answer that is quietly missing the thing you asked for costs more. The traceability route still uses `--depth 1` plus one `explain` for that reason.
 
 ### When the graph does win
 
@@ -722,24 +728,25 @@ Both routes are linear in the size of the answer; what differs is the unit price
 
 | | count | min | median | mean | max |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `explain` payload | 47 | 440 | 946 | 1 106 | 6 174 |
+| `explain` payload, pre-#388 | 47 | 451 | 957 | 1 120 | 6 192 |
+| `explain` payload | 48 | 334 | 570 | 645 | 2 357 |
 | unique file read, RTL (`.sv`) | 12 | 236 | 632 | 695 | 2 019 |
 | unique file read, config (YAML etc.) | 16 | 133 | 208 | 265 | 831 |
 
-**A hop pays for itself exactly when the file it replaces is bigger than the payload that replaces it.** On this template that is almost never true, and it is true for one file: `demo_tiny_alu_subsys_top.sv` costs 2 019 tokens to read and 1 958 to `explain` — a dead heat. Everything else is smaller than an `explain` payload, and the config tier is *much* smaller: a `tests.yaml` costs 130–830 tokens and always beats the two or three `explain` calls that would replace it.
+**A hop pays for itself exactly when the file it replaces is bigger than the payload that replaces it.** The median `explain` is now 570 tokens against a median RTL file of 632 — so on this template an RTL hop is now, on average, the cheaper move rather than a 50% loss. `demo_tiny_alu_subsys_top.sv` costs 2 019 tokens to read and 1 055 to `explain`, where before the diet it was 1 976 and a dead heat. The config tier is where the rule still bites: a `tests.yaml` costs 130–830 tokens, a median of 208, and no `explain` reaches down there.
 
 Per task, the mean file the raw route opened, against the mean file size at which the two routes would cost the same:
 
-| Task | Files read | Mean file read | Break-even file size | What the files are |
-| --- | ---: | ---: | ---: | --- |
-| Trace a signal | 5 | 558 | 2 145 | RTL |
-| Tests for a block | 4 | 434 | 2 933 | config |
-| Traceability chain | 3 | 522 | 784 | config |
-| Module interface | 1 | 678 | 1 892 | RTL |
-| Deep chain | 3 | 522 | 2 855 | config |
-| Change impact on shared IP | 20 | 429 | 905 | 8 RTL, 12 config |
+| Task | Files read | Mean file read | Break-even file size | Pre-#388 | What the files are |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Trace a signal | 5 | 558 | 1 317 | 2 168 | RTL |
+| Tests for a block | 4 | 434 | 1 834 | 2 974 | config |
+| Traceability chain | 3 | 522 | 462 | 789 | config |
+| Module interface | 1 | 678 | 1 942 | 1 895 | RTL |
+| Deep chain | 3 | 522 | 1 982 | 2 890 | config |
+| Change impact on shared IP | 20 | 429 | 456 | 918 | 8 RTL, 12 config |
 
-Break-even lands between 780 and 2 950 tokens per file — roughly 200 to 750 lines. That is above every file in the template and below a great many files in a real SoC, and it is the single number to carry away: **the graph tier crosses over on designs whose RTL files are large, not on designs whose file *count* is large.** Adding consumers does not help by itself, because each extra consumer costs the graph route an `explain` and the raw route a file read, and on the template the file read is cheaper.
+Break-even now lands between 460 and 1 980 tokens per file, down from 780–2 950 — roughly 115 to 500 lines instead of 200 to 750. Two of the six tasks now break even *below* the template's own median file, which is exactly why those two crossed over. The line to carry away is unchanged in kind and halved in size: **the graph tier crosses over on designs whose files are large, not on designs whose file *count* is large.** Adding consumers still does not help by itself, because each extra consumer costs the graph route an `explain` and the raw route a file read — but a lean `explain` is now within a factor of two of a template RTL file rather than a factor of ten.
 
 Two things the token column does not price, both real and both in the graph's favour, and both clearest in the change-impact task:
 
@@ -748,13 +755,15 @@ Two things the token column does not price, both real and both in the graph's fa
 
 ### What this gates
 
-The measurement is the epic's success gate. Two rounds of it now say the same thing: the graph tier is right and the read surface is not yet, and the fix is a leaner payload — an `explain` that returns edges without expanding every peer, and node summaries that carry their type's own attributes — not more edges.
+The measurement is the epic's success gate. Two rounds said the same thing — the graph tier is right and the read surface is not yet — and named the fix: an `explain` that returns edges without expanding every peer, and node summaries that carry their type's own attributes. That is #388, and the third round says it worked and did not finish the job: 0.33x → 0.54x, one win, one parity, four still-losing rows.
 
-Until that lands, the honest guidance, the one in `docs/agents.md` and in the bundled skill:
+What is left is no longer padding. A lean `explain` is a list of edges and a node's own facts; the remaining gap is that a file in this template costs 200–600 tokens to read, and there is no payload smaller than the relation it describes. So the guidance — the one in `docs/agents.md` and in the bundled skill — narrows rather than reverses:
 
-- **Use the graph to find things and to compute relations grep cannot.** A transitive closure over elaborated hierarchy — which tops contain this IP, what does this instance path resolve to — is one call with no false positives and no iteration, and getting it wrong with grep is easy and quiet.
-- **Do not route a config-tier question through it.** Which tests exercise a block, at which `reglvl`, claiming which coverage items: the YAML that answers that is smaller than the payload that would replace it, measured, every time.
-- **Do not route a single-file question through it.** Let the graph name the file and the line range, then read those lines.
+- **Use the graph for relations grep cannot compute.** A transitive closure over elaborated hierarchy — which tops contain this IP, what does this instance path resolve to — is one call with no false positives and no iteration, and getting it wrong with grep is easy and quiet. It is now also at token parity (0.94x) in 14 calls against grep's 24, so the correctness argument no longer has to be paid for.
+- **Use it for chains that cross tiers.** Coverage item → tests → testbenches → model → DUT → spec doc → golden model is 1.12x in two calls; following it by hand is five reads and a lot of grepping for names.
+- **Do not enumerate a config tier through it.** Which tests exercise a block, at which `reglvl`, claiming which coverage items: the YAML that answers it is 200–800 tokens, and the eleven `explain` calls that replace it are still 0.24x. Read the `tests.yaml`.
+- **Do not route a single-file question through it.** A module's port list is 0.39x. Let the graph name the file and the line range, then read those lines.
+- **`--expand` is for the caller who really does want every peer whole** — a one-round-trip dump for a human or a wide review. It costs about the pre-#388 payload; a second lean call on the one peer you actually need is cheaper nearly every time.
 
 Re-run the benchmark after any change to the query payloads; the script is the regression guard for this number, and `tests/test_graph_benchmark.py` keeps its route logic and hand-checked key honest in CI (correctness only — token counts are not asserted, since they depend on the project you point it at).
 

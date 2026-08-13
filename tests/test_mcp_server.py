@@ -314,6 +314,29 @@ def test_path_and_explain_mirror_their_cli_verbs(mcp_project: Path):
     assert explained["payload"]["degree"]["out"]["runs_on"] == 1
 
 
+def test_graph_tools_are_lean_by_default_and_expand_on_request(mcp_project: Path):
+    """The MCP surface mirrors the CLI's #388 diet: lean edges/neighbours,
+    full peer summaries only when 'expand' asks for them — the two
+    surfaces must not drift apart on payload shape."""
+    ts = _toolset(mcp_project)
+
+    lean = ts.call("graph_explain", {"node": "test:verif/blk_a#t_basic"})
+    expanded = ts.call(
+        "graph_explain", {"node": "test:verif/blk_a#t_basic", "expand": True}
+    )
+
+    assert all("node" not in e for e in lean["payload"]["outgoing"])
+    assert all(e["peer_type"] for e in lean["payload"]["outgoing"])
+    assert all(e["node"]["id"] == e["peer"] for e in expanded["payload"]["outgoing"])
+
+    lean_q = ts.call("graph_query", {"question": "A-COV-1"})
+    expanded_q = ts.call("graph_query", {"question": "A-COV-1", "expand": True})
+    lean_neighbors = lean_q["payload"]["matches"][0]["neighbors"]
+    expanded_neighbors = expanded_q["payload"]["matches"][0]["neighbors"]
+    assert all("tier" not in n for n in lean_neighbors)
+    assert all(n.get("tier") for n in expanded_neighbors)
+
+
 # ---------------------------------------------------------------------------
 # Coverage
 # ---------------------------------------------------------------------------

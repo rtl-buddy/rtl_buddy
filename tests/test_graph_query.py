@@ -289,6 +289,108 @@ def test_expansion_follows_edges_in_both_directions(graph_project: Path):
     }
 
 
+def test_neighbors_are_lean_references_by_default(graph_project: Path):
+    """A neighbour is id/label/type plus the joins — decide, then hop (#388)."""
+    _build(graph_project)
+    _seed_run(graph_project, "t_basic", status="PASS")
+    _refresh_results(graph_project)
+    ctx = load_context(graph_project)
+
+    payload = run_query(ctx, "covitem:blk_a#A-COV-1", depth=1)
+
+    for neighbor in payload["matches"][0]["neighbors"]:
+        assert set(neighbor) <= {
+            "id",
+            "type",
+            "label",
+            "base_label",
+            "dangling",
+            "results",
+            "coverage",
+            "distance",
+            "via",
+        }, neighbor
+    # The overlay join survives the diet: status still costs no second call.
+    covering = {
+        n["id"]: n
+        for n in payload["matches"][0]["neighbors"]
+        if n["via"]["type"] == "covers"
+    }
+    assert covering["test:verif/blk_a#t_basic"]["results"]["status"] == "PASS"
+
+
+def test_query_expand_restores_full_neighbor_summaries(graph_project: Path):
+    _build(graph_project)
+    ctx = load_context(graph_project)
+
+    payload = run_query(ctx, "covitem:blk_a#A-COV-1", depth=1, expand=True)
+
+    neighbor = next(
+        n
+        for n in payload["matches"][0]["neighbors"]
+        if n["id"] == "test:verif/blk_a#t_cocotb"
+    )
+    assert neighbor["tier"] == "config"
+    assert neighbor["file"]
+    assert neighbor["attributes"]["xfail"] is True
+
+
+def test_a_match_carries_its_own_attributes(graph_project: Path):
+    """Reading one reglvl/xfail no longer costs a whole explain (#388)."""
+    _build(graph_project)
+    ctx = load_context(graph_project)
+
+    payload = run_query(ctx, "test:verif/blk_a#t_cocotb", depth=0)
+
+    match = payload["matches"][0]
+    assert match["id"] == "test:verif/blk_a#t_cocotb"
+    assert match["attributes"]["xfail"] is True
+
+
+def test_neighbor_truncation_reports_what_it_dropped(graph_project: Path):
+    """A cut answer must say what it lost — count and kinds, not a flag."""
+    _build(graph_project)
+    ctx = load_context(graph_project)
+
+    payload = run_query(ctx, "covitem:blk_a#A-COV-1", depth=1, max_neighbors=1)
+
+    match = payload["matches"][0]
+    assert len(match["neighbors"]) == 1
+    truncated = match["neighbors_truncated"]
+    assert truncated["dropped"] >= 1
+    assert sum(truncated["kinds"].values()) == truncated["dropped"]
+    assert "test" in truncated["kinds"]
+
+
+def test_explain_truncation_names_the_bucket_that_lost_edges(graph_project: Path):
+    """`explain` and `query` must spell "nothing was cut" the same way,
+    and a total alone cannot say which direction lost edges."""
+    _build(graph_project)
+    ctx = load_context(graph_project)
+
+    whole = graph_query.explain(ctx, "module:blk_a")
+    # Nothing dropped -> the key is absent, exactly as `neighbors_truncated`
+    # is absent, rather than a second spelling (`false`) of the same fact.
+    assert "truncated" not in whole
+
+    cut = graph_query.explain(ctx, "module:blk_a", limit=1)
+    truncated = cut["truncated"]
+    assert truncated["dropped"] == (
+        len(whole["outgoing"])
+        + len(whole["incoming"])
+        - len(cut["outgoing"])
+        - len(cut["incoming"])
+    )
+    assert sum(truncated["kinds"].values()) == truncated["dropped"]
+    # kinds here are EDGE types, not node types — the vocabulary depends
+    # on the verb, which is why the docstring says so.
+    assert set(truncated["kinds"]) <= {
+        str(edge.get("type")) for edge in whole["outgoing"] + whole["incoming"]
+    }
+    assert set(truncated.get("buckets", {})) <= {"outgoing", "incoming"}
+    assert sum(truncated.get("buckets", {}).values()) == truncated["dropped"]
+
+
 def test_depth_zero_returns_the_bare_match(graph_project: Path):
     _build(graph_project)
     ctx = load_context(graph_project)
@@ -378,9 +480,31 @@ def test_explain_resolves_both_edge_directions_and_the_result(graph_project: Pat
     assert payload["degree"]["in"]["declares"] == 1
     peers = {edge["peer"] for edge in payload["outgoing"]}
     assert "tb:verif/blk_a#tb_hdl" in peers
-    # Every edge carries the far endpoint already resolved, so an agent
-    # never needs a second lookup to know what it is looking at.
-    assert all(edge["node"].get("type") for edge in payload["outgoing"])
+    # Every edge names the far endpoint — id, label, type — so an agent
+    # can decide whether to hop without a second lookup; what it does
+    # NOT get by default is a full peer summary (#388).
+    assert all(edge["peer_type"] for edge in payload["outgoing"])
+    assert all(edge["peer_label"] for edge in payload["outgoing"])
+    assert all("node" not in edge for edge in payload["outgoing"])
+
+
+def test_explain_expand_restores_the_full_peer_summaries(graph_project: Path):
+    """`--expand` is the pre-#388 payload: one round-trip, every peer whole."""
+    _build(graph_project)
+    _seed_run(graph_project, "t_basic", status="PASS")
+    _refresh_results(graph_project)
+    ctx = load_context(graph_project)
+
+    payload = explain(ctx, "covitem:blk_a#A-COV-1", expand=True)
+
+    edge = next(e for e in payload["incoming"] if e.get("type") == "covers")
+    assert edge["node"]["type"] == "test"
+    assert edge["node"]["id"] == edge["peer"]
+    # The expanded peer carries its own attributes and its overlay join,
+    # so nothing that used to be in the payload needs a second call.
+    covering = {e["peer"]: e for e in payload["incoming"] if e["type"] == "covers"}
+    assert covering["test:verif/blk_a#t_basic"]["node"]["results"]["status"] == "PASS"
+    assert covering["test:verif/blk_a#t_cocotb"]["node"]["attributes"]["xfail"] is True
 
 
 def test_explain_hands_back_a_runnable_source_snippet_command(graph_project: Path):
@@ -643,6 +767,41 @@ def test_cli_explain_machine_envelope(graph_project: Path):
     payload = json.loads(result.output.strip().splitlines()[-1])["payload"]
     assert payload["node"]["id"] == "test:verif/blk_a#t_cocotb"
     assert payload["degree"]["out"]["runs_on"] == 1
+    assert all("node" not in edge for edge in payload["outgoing"])
+
+
+def test_cli_explain_expand_flag_expands_the_peers(graph_project: Path):
+    _build(graph_project)
+    runner, rb = _runner()
+
+    result = runner.invoke(
+        rb.app,
+        ["--machine", "graph", "explain", "test:verif/blk_a#t_cocotb", "--expand"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output.strip().splitlines()[-1])["payload"]
+    assert all(edge["node"]["id"] == edge["peer"] for edge in payload["outgoing"])
+
+
+def test_cli_query_expand_flag_expands_the_neighbors(graph_project: Path):
+    _build(graph_project)
+    runner, rb = _runner()
+
+    lean = runner.invoke(rb.app, ["--machine", "graph", "query", "A-COV-1"])
+    expanded = runner.invoke(
+        rb.app, ["--machine", "graph", "query", "A-COV-1", "--expand"]
+    )
+
+    assert lean.exit_code == 0 and expanded.exit_code == 0
+    lean_n = json.loads(lean.output.strip().splitlines()[-1])["payload"]["matches"][0][
+        "neighbors"
+    ]
+    exp_n = json.loads(expanded.output.strip().splitlines()[-1])["payload"]["matches"][
+        0
+    ]["neighbors"]
+    assert all("tier" not in n for n in lean_n)
+    assert all(n.get("tier") for n in exp_n)
 
 
 def test_the_read_verbs_do_not_take_the_artefact_lock(graph_project: Path):

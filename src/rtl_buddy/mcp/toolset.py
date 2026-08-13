@@ -346,7 +346,11 @@ class Toolset:
             tier=args.get("tier"),
             limit=int(args.get("limit", graph_query.DEFAULT_LIMIT)),
             depth=int(args.get("depth", graph_query.DEFAULT_DEPTH)),
+            max_neighbors=int(
+                args.get("max_neighbors", graph_query.DEFAULT_MAX_NEIGHBORS)
+            ),
             results=bool(args.get("results", True)),
+            expand=bool(args.get("expand", False)),
         )
 
     def _h_graph_path(self, args: dict) -> dict:
@@ -369,7 +373,12 @@ class Toolset:
         if not node:
             raise ToolError("graph_explain: 'node' is required")
         ctx = self._context(args)
-        return graph_query.explain(ctx, node, results=bool(args.get("results", True)))
+        return graph_query.explain(
+            ctx,
+            node,
+            results=bool(args.get("results", True)),
+            expand=bool(args.get("expand", False)),
+        )
 
     def _h_test_status(self, args: dict) -> dict:
         ctx = self._context({"results": True})
@@ -699,6 +708,16 @@ _RESULTS_PROP = {
     ),
 }
 
+_EXPAND_PROP = {
+    "type": "boolean",
+    "description": (
+        "Embed a full node summary (attributes, cite, joins) for every "
+        "peer instead of the lean id/label/type reference (default false). "
+        "Costs roughly the pre-expansion payload per peer; prefer a second "
+        "lean call on the one peer you actually need."
+    ),
+}
+
 _COV_DIR_PROP = {
     "type": "string",
     "description": (
@@ -780,9 +799,11 @@ def build_toolset(
                 "deterministic keyword scoring, not a model, so phrase the "
                 "question around the identifier you care about "
                 "('which tests cover A-COV-1'). Each match arrives with its "
-                "neighbours, their last regression status, and a 'cite' hint "
-                "naming the file (and, for instances, the exact hier-query "
-                "command) that quotes it."
+                "own attributes, a 'cite' hint naming the file (and, for "
+                "instances, the exact hier-query command) that quotes it, and "
+                "its neighbours as lean id/label/type references with their "
+                "last regression status joined on — set 'expand' for full "
+                "neighbour summaries."
             ),
             input_schema=_obj(
                 {
@@ -820,7 +841,18 @@ def build_toolset(
                         "minimum": 0,
                         "maximum": graph_query.MAX_DEPTH,
                     },
+                    "max_neighbors": {
+                        "type": "integer",
+                        "description": (
+                            "Neighbours reported per match (default "
+                            f"{graph_query.DEFAULT_MAX_NEIGHBORS}); anything "
+                            "beyond is counted in neighbors_truncated "
+                            "(dropped count and kinds), never dropped silently."
+                        ),
+                        "minimum": 1,
+                    },
                     "results": _RESULTS_PROP,
+                    "expand": _EXPAND_PROP,
                 },
                 ["question"],
             ),
@@ -869,8 +901,9 @@ def build_toolset(
             command="rb graph explain",
             description=(
                 "Everything the graph knows about one node: its attributes, "
-                "every incoming and outgoing edge with the far endpoint "
-                "resolved, and — for a test node — its last regression status, "
+                "every incoming and outgoing edge with the far endpoint named "
+                "(peer id/label/type; set 'expand' for full peer summaries), "
+                "and — for a test node — its last regression status, "
                 "seed and artefact paths from the results overlay. When the "
                 "overlay carries a coverage join, a module or instance node "
                 "also returns its coverage ratio and a coverage_item node "
@@ -884,6 +917,7 @@ def build_toolset(
                         "description": "Node id, or a bare name if unambiguous.",
                     },
                     "results": _RESULTS_PROP,
+                    "expand": _EXPAND_PROP,
                 },
                 ["node"],
             ),
