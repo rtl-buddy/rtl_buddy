@@ -120,6 +120,7 @@ from .tools.spec_trace import (
     all_spec_blocks,
     build_coverage_map,
     build_spec_to_models_map,
+    discover_fpv_verifications,
     discover_model_configs,
     discover_spec_configs,
     discover_suite_tests,
@@ -3653,6 +3654,17 @@ class RtlBuddy:
                 ),
             ),
         ] = True,
+        flow_tops: Annotated[
+            bool,
+            typer.Option(
+                "--flow-tops/--no-flow-tops",
+                help=(
+                    "also export each formal/synth/cdc run's top over "
+                    "the flow's own filelist when it is not the model "
+                    "top (default on)"
+                ),
+            ),
+        ] = True,
         bind: Annotated[
             bool,
             typer.Option(
@@ -3748,6 +3760,7 @@ class RtlBuddy:
             frontend=frontend,
             design=design,
             tb=tb,
+            flow_tops=flow_tops,
             bind=bind,
             extract_enabled=extract,
             extract_cross_check=extract_cross_check,
@@ -5273,6 +5286,12 @@ class RtlBuddy:
             suite_tests, suite_load_failures = discover_suite_tests(search_verif)
         else:
             suite_tests, suite_load_failures = [], []
+        # Formal runs may declare `covers:` too (rtl-buddy/rtl_buddy#385);
+        # they live under fpv/, which the verif walk never reaches, so they
+        # are discovered through the root-level fpv_regression.yaml.
+        fpv_entries, fpv_load_failures = discover_fpv_verifications(root)
+        suite_tests = suite_tests + fpv_entries
+        suite_load_failures = suite_load_failures + fpv_load_failures
         blocks = all_spec_blocks(specs)
 
         if block:

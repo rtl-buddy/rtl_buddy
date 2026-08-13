@@ -785,6 +785,7 @@ verifications:
 | `depth` | int | Cycle depth for the proof; defaults to 20 |
 | `engines` | list | Sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
+| `covers` | list of strings | Optional. IDs of spec coverage items this verification addresses, exactly as a test's `covers` in `tests.yaml` (e.g. `["BLOCK-COV-01"]`). Counted by `rb spec check-coverage` and emitted as `covers` edges in the [design knowledge graph](../concepts/graph.md); has no effect on the proof. |
 | `tool_overrides` | dict | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
 | `vacuity` | bool | Optional. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived covers for every `\|->` / `\|=>` antecedent in the property set. Default is false for `cover` / `live` modes. See [Vacuity covers](../concepts/fpv.md#vacuity-covers). |
 | `coi` | bool | Optional. When true (default), run a yosys cone-of-influence pass after the primary proof and report the fraction of design cells reachable from at least one assertion. See [Cone-of-influence coverage](../concepts/fpv.md#cone-of-influence-coverage). |

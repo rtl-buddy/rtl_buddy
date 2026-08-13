@@ -116,6 +116,11 @@ class FpvConfigFile:
     depth: int = 20
     engines: list[str] = field(default_factory=lambda: ["smtbmc yices"])
     reglvl: int | dict | None = field(rename="reglvl", default=None)
+    # IDs of spec coverage items this verification addresses — the same
+    # `covers:` a test declares in `tests.yaml` (see `config/test.py`).
+    # Read by `rb spec check-coverage` and the design knowledge graph's
+    # config tier; has no effect on the proof itself.
+    covers: list[str] | None = None
     tool_overrides: dict | None = None
     # When true (default for `bmc` / `prove`), run a secondary sby pass
     # in `cover` mode after the primary proof using auto-derived cover
@@ -184,6 +189,7 @@ class FpvConfigFile:
             depth=self.depth,
             engines=list(self.engines),
             _reglvl=self.reglvl,
+            covers=self.covers,
             tool_overrides=self.tool_overrides,
             vacuity=self.vacuity,
             coi=self.coi,
@@ -206,6 +212,10 @@ class FpvConfig:
     engines: list[str]
     _reglvl: int | dict | None
     constraints: str | None = dc_field(default=None)
+    # Spec coverage-item ids, mirroring `TestConfig.covers`: consumers
+    # (`build_coverage_map`, the graph's config tier) read the attribute
+    # by the same name on both.
+    covers: list[str] | None = dc_field(default=None)
     tool_overrides: dict | None = dc_field(default=None)
     vacuity: bool | None = dc_field(default=None)
     coi: bool | None = dc_field(default=None)

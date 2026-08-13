@@ -870,6 +870,14 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"that testbench's own hierarchy is missing from the graph, "
                 f"the DUT's is not; see {fields.get('log')}"
             )
+        case "graph_build.run_export_failed":
+            return (
+                f"graph build: rtl-buddy-view graph exited "
+                f"{fields.get('returncode')} for flow run {fields.get('run')} "
+                f"(--tb-top {fields.get('top')}) — that run's checker hierarchy "
+                f"is missing from the graph and its `targets` edge is left "
+                f"dangling, the DUT's hierarchy is not; see {fields.get('log')}"
+            )
         case "graph_build.tb_id_collision":
             return (
                 f"graph build: {fields.get('ids')} design-tier id(s) are "
@@ -898,6 +906,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('module')!r} but no {fields.get('expected')} "
                 "exists — the test still binds to the DUT, but nothing was "
                 "scanned for dut.<signal> accesses or golden-model imports"
+            )
+        case "spec_trace.fpv_reg_load_failed":
+            return (
+                f"{fields.get('path')}: fpv_regression.yaml would not load "
+                f"({fields.get('error')}) — no formal run's `covers:` is "
+                "counted, so `rb spec check-coverage` may report items as "
+                "uncovered that a property does verify"
             )
         case "graph_results.overlay_rejected":
             return (

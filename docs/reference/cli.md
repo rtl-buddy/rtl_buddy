@@ -585,6 +585,13 @@ Usage: rtl-buddy graph build [OPTIONS]
 │                                                             toplevel: (default on;   │
 │                                                             --no-tb is DUT-only)     │
 │                                                             [default: tb]            │
+│ --flow-tops                --no-flow-tops                   also export each         │
+│                                                             formal/synth/cdc run's   │
+│                                                             top over the flow's own  │
+│                                                             filelist when it is not  │
+│                                                             the model top (default   │
+│                                                             on)                      │
+│                                                             [default: flow-tops]     │
 │ --bind                     --no-bind                        run the post-merge       │
 │                                                             binding stage that ties  │
 │                                                             cocotb tests to the DUT  │

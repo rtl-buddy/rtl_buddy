@@ -69,6 +69,19 @@ tests:
 
 A single test can cover multiple items; multiple tests can cover the same item.
 
+Formal runs participate too: an entry in `fpv.yaml` accepts the same `covers:` field, and `check-coverage` counts a verification exactly as it counts a test. FPV suites are discovered through the project root's `fpv_regression.yaml` (they live under `fpv/`, outside the `--verif-dir` walk).
+
+```yaml
+verifications:
+  - name: "my_block_safety"
+    model: "my_block"
+    model_path: "../../design/my_block/models.yaml"
+    tool: "sby"
+    mode: "prove"
+    covers:
+      - "MYBLK-COV-03"
+```
+
 ### 4. Check traceability
 
 ```bash

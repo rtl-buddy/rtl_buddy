@@ -298,6 +298,134 @@ def test_fpv_suite_config_constraints_resolved_relative_to_yaml(tmp_path):
     assert Path(verif.get_constraints()) == tmp_path / "shared_clock_reset.sv"
 
 
+# ---------------------------------------------------------------------------
+# covers: — spec coverage claims on formal runs (rtl-buddy/rtl_buddy#385)
+# ---------------------------------------------------------------------------
+
+_COVERS_SUITE_YAML = dedent("""\
+    rtl-buddy-filetype: fpv_config
+
+    verifications:
+      - name: "fpv_covered"
+        desc: "Bounded proof claiming a spec coverage item"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "sby"
+        top: "mod_a"
+        properties:
+          - "mod_a_props.sv"
+        mode: "bmc"
+        covers:
+          - "A-COV-1"
+          - "A-COV-2"
+      - name: "fpv_uncovered"
+        desc: "No coverage claims"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "sby"
+        top: "mod_a"
+        mode: "bmc"
+""")
+
+
+def _write_covers_project(tmp_path):
+    """A minimal project root with an fpv flow claiming coverage items."""
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    (tmp_path / "fpv.yaml").write_text(_COVERS_SUITE_YAML)
+    (tmp_path / "fpv_regression.yaml").write_text(
+        "rtl-buddy-filetype: fpv_reg_config\nfpv-configs:\n  - fpv.yaml\n"
+    )
+    return tmp_path
+
+
+def test_fpv_config_covers_defaults_to_none():
+    assert _make_fpv_cfg().covers is None
+
+
+def test_fpv_suite_config_parses_covers(tmp_path):
+    """`covers:` mirrors tests.yaml: same field name, same attribute, so
+    `build_coverage_map` reads a run exactly as it reads a test."""
+    _write_covers_project(tmp_path)
+    cfg = FpvSuiteConfig(str(tmp_path / "fpv.yaml"))
+    assert cfg.get_verifications("fpv_covered")[0].covers == ["A-COV-1", "A-COV-2"]
+    assert cfg.get_verifications("fpv_uncovered")[0].covers is None
+
+
+def test_discover_fpv_verifications_feeds_the_coverage_map(tmp_path):
+    from rtl_buddy.tools.spec_trace import (
+        build_coverage_map,
+        discover_fpv_verifications,
+    )
+
+    _write_covers_project(tmp_path)
+    entries, failures = discover_fpv_verifications(str(tmp_path))
+    assert failures == []
+    assert [(Path(p).name, v.get_name()) for p, v in entries] == [
+        ("fpv.yaml", "fpv_covered"),
+        ("fpv.yaml", "fpv_uncovered"),
+    ]
+    cov_map = build_coverage_map(entries)
+    assert {item: [name for _, name in hits] for item, hits in cov_map.items()} == {
+        "A-COV-1": ["fpv_covered"],
+        "A-COV-2": ["fpv_covered"],
+    }
+
+
+def test_discover_fpv_verifications_without_a_regression_is_empty(tmp_path):
+    from rtl_buddy.tools.spec_trace import discover_fpv_verifications
+
+    assert discover_fpv_verifications(str(tmp_path)) == ([], [])
+
+
+def test_discover_fpv_verifications_reports_a_broken_regression(tmp_path):
+    from rtl_buddy.tools.spec_trace import discover_fpv_verifications
+
+    (tmp_path / "fpv_regression.yaml").write_text(
+        "rtl-buddy-filetype: fpv_reg_config\nfpv-configs:\n  - missing/fpv.yaml\n"
+    )
+    entries, failures = discover_fpv_verifications(str(tmp_path))
+    assert entries == []
+    assert [Path(f).name for f in failures] == ["fpv_regression.yaml"]
+
+
+def test_spec_check_coverage_counts_an_fpv_run(tmp_path, monkeypatch):
+    """`rb spec check-coverage` sees formal `covers:` claims (#385)."""
+    import json
+
+    from typer.testing import CliRunner
+
+    from rtl_buddy.rtl_buddy import RtlBuddy
+
+    _write_covers_project(tmp_path)
+    spec_dir = tmp_path / "spec" / "mod_a"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "specs.yaml").write_text(
+        dedent("""\
+        rtl-buddy-filetype: spec_config
+
+        blocks:
+          - name: "mod_a"
+            desc: "Block covered only by a formal run"
+            coverage-items:
+              - id: "A-COV-1"
+                desc: "Claimed by fpv_covered"
+              - id: "A-COV-3"
+                desc: "Claimed by nothing"
+    """)
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_fpv_check_coverage")
+    result = runner.invoke(rb.app, ["--machine", "spec", "check-coverage"])
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    items = {i["id"]: i for i in json.loads(lines[-1])["payload"]["items"]}
+    assert items["A-COV-1"]["covered"] is True
+    assert [t["test"] for t in items["A-COV-1"]["tests"]] == ["fpv_covered"]
+    assert items["A-COV-1"]["tests"][0]["path"].endswith("fpv.yaml")
+    assert items["A-COV-3"]["covered"] is False
+
+
 def test_fpv_suite_config_missing_name_raises(tmp_path):
     from rtl_buddy.errors import FatalRtlBuddyError
 

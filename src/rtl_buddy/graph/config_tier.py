@@ -773,6 +773,7 @@ def _add_flow_suite_nodes(
     gb: _GraphBuilder,
     project_root: Path,
     flows: _Flows,
+    cov_owners: dict[str, list[str]],
 ) -> None:
     """Emit the non-simulation flows' suites and runs.
 
@@ -785,6 +786,10 @@ def _add_flow_suite_nodes(
     formal verification may override away from the model name) is the
     run's own config->design stitch, `targets` — the same relation a
     testbench's `elaborates_as` states, from a third kind of source.
+
+    `covers:` does not differ: an fpv run declaring one gets the same
+    run -> coverage-item edges a simulation test gets, which is what lets
+    a formal run reach the spec tier at all.
     """
     for flow, suite_cfg, entries_attr in flows.suites:
         cfg_path = suite_cfg.get_path()
@@ -819,6 +824,29 @@ def _add_flow_suite_nodes(
             gb.add_link(test_node, model_node, "exercises")
             if top:
                 gb.add_link(test_node, module_id(top), TARGETS)
+            # An fpv run may declare `covers:` exactly as a test does
+            # (rtl-buddy/rtl_buddy#385) — same field, same edge, same
+            # fan-out to every declaring block. `getattr` because the
+            # other flows' entries have no such field (yet); a flow that
+            # grows one gets the edge for free.
+            for cov in getattr(entry, "covers", None) or []:
+                owners = cov_owners.get(cov)
+                if not owners:
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "graph_config.unknown_coverage_item",
+                        path=cfg_path,
+                        test=entry.get_name(),
+                        item=cov,
+                    )
+                    continue
+                for block_name in owners:
+                    gb.add_link(
+                        test_node,
+                        coverage_item_id(block_name, cov),
+                        "covers",
+                    )
 
 
 def _hash_inputs(project_root: Path, paths: list[str]) -> list[dict]:
@@ -881,7 +909,7 @@ def extract_config_tier(
         if os.path.isdir(search_verif)
         else []
     )
-    _add_flow_suite_nodes(gb, root, flows)
+    _add_flow_suite_nodes(gb, root, flows, cov_owners)
     failures += flows.failures
 
     generator = {
