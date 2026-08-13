@@ -258,6 +258,17 @@ APIs, and dispatch changes *how many times* they run:
   bumps a counter, or otherwise has side effects — behaves differently under
   `--dispatch`. Make `preproc` idempotent, or move one-time setup into the
   sweep/head path.
+- **Those `preproc` runs are concurrent, and `artifact_dir` is test-keyed.**
+  Every element of a dispatched `randtest` (or a seed fan-out) runs the hook
+  against the *same* `artifact_dir` while its siblings' simulations read from
+  it, so a generator using `open(path, "w")` truncates a file another element
+  is reading and the short read surfaces as a *design* failure — a checker
+  mismatch against empty expected data, not a harness error. Two rules keep a
+  hook safe: write to `artifact_dir` **atomically** (temp file plus
+  `os.replace`), and if the generated content depends on the run or the seed,
+  write to the injected `run_artifact_dir` instead — it is unique per run
+  ([#415](https://github.com/rtl-buddy/rtl_buddy/issues/415)). See
+  [Where a generator should write](concepts/plugins.md#where-a-generator-should-write).
 
 ## A dispatched compile failure surfaces as CompileFail, not DispatchFail
 

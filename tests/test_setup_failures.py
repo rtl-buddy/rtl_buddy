@@ -18,12 +18,12 @@ class DummyTestCfg:
 
 
 class DummySim:
-    def pre(self):
+    def pre(self, **_kwargs):
         return "Setup failed in preproc: boom"
 
 
 class DummyPassingSim:
-    def pre(self):
+    def pre(self, **_kwargs):
         return None
 
     def compile(self):
@@ -39,7 +39,7 @@ class DummyPassingSim:
 class DummyFilelistFailSim:
     """Simulates a VlogSim whose compile() raises FilelistError due to a bad path."""
 
-    def pre(self):
+    def pre(self, **_kwargs):
         return None
 
     def compile(self):
