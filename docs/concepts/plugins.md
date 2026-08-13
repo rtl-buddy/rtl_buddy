@@ -86,25 +86,6 @@ Both directories exist by the time the hook runs.
 
 Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against `suite_dir` in preproc. Output filenames that should land in the per-test artefact tree can remain relative to `artifact_dir`.
 
-### Where a generator should write
-
-`artifact_dir` is keyed on the test name only, so under `randtest` or `--dispatch` every seed of a test resolves to the same path — and dispatched seeds run **concurrently**. Which directory to use follows from what the generated files depend on:
-
-- **Output depends only on the test** (the common case): write to `artifact_dir`, and write **atomically** — a temp file plus `os.replace`, never `open(path, "w")`. Truncate-in-place is not atomic, so a sibling element reading the file mid-write gets a short one, and the mismatch surfaces as a design failure rather than a harness failure.
-- **Output depends on the run or the seed**: write to `run_artifact_dir`. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative. This only separates runs where the hook itself runs per run: under `--dispatch` it does, and `run_id` is set. A **local** `randtest` runs the hook once for all its seeds, so `run_id` is `None` and `run_artifact_dir` is the test directory — a generator that must vary per seed needs the dispatch path (or a `sweep` that expands the seeds into separate tests).
-
-```python
-# Seed-dependent stimulus: per-run directory, no race to worry about.
-out = Path(run_artifact_dir) / "stimulus.hex"
-out.write_text(generate(run_id))
-
-# Test-dependent stimulus: shared path, so publish it atomically.
-out = Path(artifact_dir) / "stimulus.hex"
-tmp = out.with_suffix(f".{os.getpid()}.tmp")
-tmp.write_text(generate())
-os.replace(tmp, out)
-```
-
 **Example:**
 
 ```python
@@ -119,6 +100,28 @@ test_cfg.plusargs["stimulus"] = str(Path(suite_dir) / "vectors" / "streaming_con
 If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.
 
 See the template repo for a working example.
+
+## Where a generator should write
+
+`artifact_dir` is keyed on the test name only, so under `randtest` or `--dispatch` every seed of a test resolves to the same path — and dispatched seeds run **concurrently**. Which directory a `preproc` generator should use follows from what its output depends on:
+
+- **Output depends only on the test** (the common case): write to `artifact_dir`, and write **atomically** — a temp file plus `os.replace`, never `open(path, "w")`. Truncate-in-place is not atomic, so a sibling element reading the file mid-write gets a short one, and the mismatch surfaces as a design failure rather than a harness failure.
+- **Output depends on the run or the seed**: write to `run_artifact_dir`. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative. This only separates runs where the hook itself runs per run: under `--dispatch` it does, and `run_id` is set. A **local** `randtest` runs the hook once for all its seeds, so `run_id` is `None` and `run_artifact_dir` is the test directory — a generator that must vary per seed needs the dispatch path (or a `sweep` that expands the seeds into separate tests).
+
+```python
+import os
+from pathlib import Path
+
+# Seed-dependent stimulus: per-run directory, no race to worry about.
+out = Path(run_artifact_dir) / "stimulus.hex"
+out.write_text(generate(run_id))
+
+# Test-dependent stimulus: shared path, so publish it atomically.
+out = Path(artifact_dir) / "stimulus.hex"
+tmp = out.with_name(f"{out.name}.{os.getpid()}.tmp")
+tmp.write_text(generate())
+os.replace(tmp, out)
+```
 
 ## Hook working directory
 

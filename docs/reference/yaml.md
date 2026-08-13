@@ -442,7 +442,7 @@ cocotb writes a JUnit XML results file (`cocotb_results.xml`) instead of `PASS`/
 - `plusargs`: converted to `+KEY` (no value) or `+KEY=VALUE`.
 - `sim_timeout`: applies per test run, not per iteration in `randtest`.
 - `sweep.path`: Python script that expands one test entry into a list of `TestConfig` objects. See [Plugins](../concepts/plugins.md).
-- `preproc.path`: Python script executed before compile; can mutate `test_cfg` and `root_cfg`, and receives `suite_dir` plus `artifact_dir` in its execution namespace. See [Plugins](../concepts/plugins.md).
+- `preproc.path`: Python script executed before compile; can mutate `test_cfg` and `root_cfg`, and receives `suite_dir`, `artifact_dir`, `run_id` and `run_artifact_dir` in its execution namespace. `artifact_dir` is keyed on the test name only, so under `randtest` or `--dispatch` every run of a test shares it; write there atomically, or write per-run output to `run_artifact_dir`. See [Where a generator should write](../concepts/plugins.md#where-a-generator-should-write).
 
 ## Path semantics and cwd
 
