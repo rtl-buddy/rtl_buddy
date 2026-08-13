@@ -1771,6 +1771,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The viewer answers to four different names: dist rtl-buddy-sch, executable rtl-buddy-view
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2156,6 +2167,17 @@
     <span class="md-ellipsis">
       
         rb graph results --coverage takes a value now, so a bare --coverage no longer parses
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The viewer answers to four different names: dist rtl-buddy-sch, executable rtl-buddy-view
       
     </span>
   </a>
@@ -2558,6 +2580,43 @@ the
 <h2 id="rb-graph-results-coverage-takes-a-value-now-so-a-bare-coverage-no-longer-parses"><code>rb graph results --coverage</code> takes a value now, so a bare <code>--coverage</code> no longer parses</h2>
 <p>In v6.30.x, <code>--coverage/--no-coverage</code> was a boolean pair and the join was on by default. It now <strong>names a source</strong> — <code>auto</code> (the default), <code>model</code>, <code>none</code>, or a path to a merged LCOV <code>.info</code> — so <code>rb graph results --coverage</code> with no value fails with <em>"Option '--coverage' requires an argument"</em>. The break is loud rather than silent, and passing the flag bare was always redundant (the join was already on), but a script that did so needs one edit.</p>
 <p>The fix is whichever you meant: drop the flag entirely (the default is unchanged), or write <code>--coverage auto</code>. <code>--no-coverage</code> is untouched and still disables the join, as does <code>--coverage none</code>. Click can express an optional-value option (<code>is_flag=False, flag_value=...</code>), which would have kept the bare form working; Typer forwards neither kwarg and deprecates both, so that route is closed until Typer supports it.</p>
+<h2 id="the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view">The viewer answers to four different names: dist <code>rtl-buddy-sch</code>, executable <code>rtl-buddy-view</code></h2>
+<p>The schematic viewer's PyPI <strong>distribution</strong> was renamed <code>rtl-buddy-view</code> → <code>rtl-buddy-sch</code> at 0.7.0; <code>rtl-buddy-view</code> is frozen at 0.5.0 and gets no further releases. Nothing else moved, so one tool now wears four names at once:</p>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Name</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PyPI distribution</td>
+<td><code>rtl-buddy-sch</code></td>
+<td><code>uv tool install rtl-buddy-sch</code> / <code>pip install rtl-buddy-sch</code>. Releases up to 0.5.0 are on PyPI as <code>rtl-buddy-view</code></td>
+</tr>
+<tr>
+<td>Executable</td>
+<td><code>rtl-buddy-view</code></td>
+<td>Unchanged — it is what <code>rb hier</code>, <code>rb graph build</code>, <code>rb hub</code> and <code>--tool</code> resolve. 0.7.0+ also installs an <code>rtl-buddy-sch</code> alias</td>
+</tr>
+<tr>
+<td><code>rb tool-check</code> key</td>
+<td><code>rtl-buddy-view</code></td>
+<td><code>rb tool-check --explain rtl-buddy-view</code>. <code>--explain rtl-buddy-sch</code> exits 1 with "unknown tool" and lists the known keys</td>
+</tr>
+<tr>
+<td>Import package</td>
+<td><code>rtl_buddy_view</code></td>
+<td>What the hub imports for the in-env SPA bundle</td>
+</tr>
+</tbody>
+</table>
+<p>rtl_buddy probes the <strong>distribution</strong> under both names, <code>rtl-buddy-sch</code> first, so either install satisfies every version floor and <code>rb tool-check</code> reports a version either way. What you have to know: <strong>pip cannot upgrade one into the other.</strong> There is no rename metadata, so <code>pip install -U rtl-buddy-sch</code> over an existing <code>rtl-buddy-view</code> leaves two distributions claiming the same console script and the same <code>rtl_buddy_view</code> import package, with each one's <code>RECORD</code> describing files the other may have overwritten. Uninstall first:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pip<span class="w"> </span>uninstall<span class="w"> </span>-y<span class="w"> </span>rtl-buddy-view<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-U<span class="w"> </span>rtl-buddy-sch
+</code></pre></div>
+<p>One consequence worth expecting: after <code>uv tool install rtl-buddy-sch</code> (an isolated tool env) a project venv that still holds the old wheel has PATH at the new version and in-venv metadata at the old one. <code>rb tool-check</code> prefers the executable in exactly that case — a version read from the pre-rename dist name is dropped when the binary is on PATH, so the probe answers — but the stale wheel is still worth removing.</p>
 
 
 
