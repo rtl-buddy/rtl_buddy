@@ -642,6 +642,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sizing-the-reservations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sizing the reservations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#reservation-right-sizing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1681,6 +1692,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sizing-the-reservations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sizing the reservations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#reservation-right-sizing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1788,7 +1810,10 @@ plans and submits; the compile and the sims both run as scheduler jobs.</p>
    <code>rb _build-job</code> on a compute node: it compiles one shared <code>simv</code> per
    unique compile key (<code>--dispatch</code> implies
    <a href="../tests/#sharing-compiled-builds-across-tests"><code>--share-build</code></a>) and
-   writes the shared build to the shared filesystem. If no test in the
+   writes the shared build to the shared filesystem. Those compiles run
+   <strong>serially inside that one job</strong>, so a suite with several compile keys
+   needs a <code>compile.time</code> covering their total — see <a href="#sizing-the-reservations">Sizing the
+   reservations</a>. If no test in the
    suite uses a share-build-capable builder there is nothing for the sim
    jobs to read, so the build job is skipped entirely rather than burning
    a compile — see <a href="#builders-that-compile-inside-the-job">Builders that compile inside the
@@ -1877,16 +1902,35 @@ self-contained), and <strong>Icarus</strong> (<code>-o</code> for the <code>.vvp
 build once per compile key and short-circuit on the stamp.</p>
 <p>Any other builder — and a builder configured with an <em>absolute</em>
 <code>builder-simv:</code>, which pins the executable somewhere a per-compile-key dir
-cannot honour — has no shared stamp, so <strong>each array element recompiles
-inside its own job</strong>. That is correct, just unshared, and it has two
-consequences dispatch handles for you:</p>
+cannot honour — cannot put its build where other tests would find it, so
+<strong>the build stays inside the test's own <code>artefacts/&lt;test&gt;/</code></strong>. Under
+<code>--share-build</code> it is still stamped there, which means it can be <em>reused</em>
+by the next process to compile that same test even though it can never be
+<em>shared</em> with a different one. That is what lets a build job compile it once
+and the sim jobs skip their own compile. Two further consequences dispatch
+handles for you:</p>
 <ul>
 <li><strong>No build job is submitted</strong> when nothing in the suite can share a
-  build. The build pass would compile on a compute node and produce
-  something no sim job can read, so it is skipped and the elements run
-  ungated (logged as <code>dispatch.build_job_skipped</code>). A suite mixing
-  builders still gets one, and only the groups that actually read it are
-  gated on it with <code>afterok</code>.</li>
+  build <em>and</em> no test is fanned out over several runs. The build pass would
+  compile on a compute node and produce something no sim job needs, so it
+  is skipped and the elements run ungated (logged as
+  <code>dispatch.build_job_skipped</code>). That is safe because each test owns its own
+  <code>artefacts/&lt;test&gt;/</code>, so there is exactly one writer per directory.</li>
+<li><strong>A fanned-out test gets one anyway</strong>, because there the one-writer
+  property does not hold: <code>artefacts/&lt;test&gt;/</code> is keyed on the <em>test</em>, not on
+  the run, so <code>randtest &lt;test&gt; N --dispatch</code> would otherwise run N full
+  compiles into one directory at once and the losers would report
+  <code>Compile failed</code> with nothing wrong
+  (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/369">#369</a>). The build job
+  is the single writer: it compiles once, and every element waits for it and
+  short-circuits on the stamp it leaves. So whenever a build job exists,
+  <strong>every</strong> group is gated on it with <code>afterok</code> — including the
+  self-compiling ones, since the build job runs PRE+COMPILE for the whole
+  plan and therefore writes into their directories too. The gate orders the
+  elements but does not exclude them, so the stamp is what actually keeps
+  them from recompiling; an element that compiles anyway logs
+  <code>compile.prebuilt_stamp_invalid</code> — see
+  <a href="../../known-issues/#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling">Known Issues</a>.</li>
 <li><strong>The job's reservation covers both phases.</strong> A compile is frequently
   hungrier than the sim it precedes — a VCS elaboration usually is — so a
   sim-sized reservation would be killed during it. One allocation cannot
@@ -1895,7 +1939,10 @@ consequences dispatch handles for you:</p>
   <code>cfg-dispatch.compile</code> is used, field by field, and logged as
   <code>dispatch.compile_in_job</code>. Tests whose builder <em>can</em> share a build are
   unaffected: they keep the sim-sized reservation, and the compile
-  reservation stays with the build job where it belongs.</li>
+  reservation stays with the build job where it belongs. The combined size
+  is kept even where a build job exists and the element expects to skip its
+  compile — a stamp that fails to validate for any reason puts the compile
+  back inside the job, and being over-reserved is cheaper than being killed.</li>
 </ul>
 <div class="admonition note">
 <p class="admonition-title">A VCS compile can wait for a license</p>
@@ -2012,8 +2059,14 @@ several suites submits several arrays, so peak concurrency is roughly
 <p class="admonition-title">Quote <code>time</code> values</p>
 <p>YAML 1.1 reads an unquoted <code>time: 4:00:00</code> as the <strong>integer 14400</strong>
 (sexagesimal), which Slurm would take as 14400 <em>minutes</em> — 10 days.
-rtl_buddy rejects the unquoted form loudly; always write
-<code>time: "4:00:00"</code>. See
+rtl_buddy rejects the unquoted form loudly, so this costs you a config
+error rather than a ten-day reservation; always write
+<code>time: "4:00:00"</code> (bare minutes work as a string too, <code>time: "240"</code>).</p>
+<p>The trap is easy to miss because it is inconsistent: a leading-zero form
+like <code>01:00:00</code> happens to survive as a string, so a file full of
+unquoted times can load fine until someone writes a single-digit hour.
+Quote every one, in <code>cfg-dispatch.resources</code>, <code>cfg-dispatch.compile</code>,
+and per-testbench / per-test <code>resources:</code> alike. See
 <a href="../../known-issues/#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">Known Issues</a>.</p>
 </div>
 <h2 id="per-test-reservations">Per-test reservations</h2>
@@ -2032,6 +2085,46 @@ effective reservation is layered <strong>test → testbench →
 </code></pre></div>
 <p>Tests that resolve to the same reservation share one Slurm array;
 differing reservations split into separate arrays.</p>
+<h2 id="sizing-the-reservations">Sizing the reservations</h2>
+<p><a href="#reservation-right-sizing">Right-sizing</a> tunes these numbers from real
+usage, but it can only
+report on jobs that survived long enough to be measured. Four things decide
+the first sizing, and each has bitten someone:</p>
+<p><strong><code>compile.time</code> covers the whole suite, not one compile.</strong> The build job
+compiles each of the suite's unique compile keys <strong>serially</strong>, in one job,
+under one <code>--time</code>. A suite with six testbenches over one DUT has six keys,
+so its build job needs roughly six compiles' worth of time — and the whole
+array waits behind it, since every sim job is gated on that one job with
+<code>afterok</code>. Sizing <code>compile.time</code> from a single observed compile is the usual
+way to get a build job killed at its limit and a suite of dispatch failures
+pointing at a build log that just stops. Two ways to shrink the number
+rather than raise it: collapse compile keys (tests differing only in
+<code>plusdefines:</code> each cost a key — see
+<a href="#how-arrays-interact-with-the-shared-build">How arrays interact with the shared build</a>),
+or split the suite. Full consequences in
+<a href="../../known-issues/#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation">Known Issues</a>.</p>
+<p><strong>A job that compiles inside itself must be reserved for the compile.</strong>
+Where the builder cannot share a build, the compile happens under the
+<em>sim</em> job's reservation. rtl_buddy folds <code>cfg-dispatch.compile</code> into it
+field by field (see <a href="#builders-that-compile-inside-the-job">Builders that compile inside the
+job</a>), so the thing to get right is
+<code>cfg-dispatch.compile</code> itself — a sim-sized <code>mem</code> there is what turns a
+whole array into <code>OUT_OF_MEMORY</code> kills. Elaboration is usually the memory
+peak of the entire flow, so size <code>compile.mem</code> from a real elaboration, not
+from a simulation.</p>
+<p><strong>Give a VCS build job headroom for the license queue.</strong> <code>-licqueue</code> waits
+count against <code>--time</code>, so a <code>compile.time</code> sized for compute alone will
+eventually land on a busy license server — see <a href="#builders-that-compile-inside-the-job">A VCS compile can wait for a
+license</a>. <code>compile.license_queued</code> is
+logged when a compile <em>completes</em> after queueing, so a build job killed at
+its limit produces no such event of its own: the evidence comes from the
+keys that finished before it, or from a previous run.</p>
+<p><strong>Ask for accounting fine enough to advise from.</strong> Dispatch requests
+<code>--acctg-freq=task=1</code> for you unless your <code>sbatch-args</code> already set
+<code>--acctg-freq</code>; leave it alone unless the site requires otherwise, because
+at the stock 30 s interval every sim job shorter than half a minute reports
+a memory peak far below the truth. See <a href="#reservation-right-sizing">Reservation
+right-sizing</a>.</p>
 <h2 id="reservation-right-sizing">Reservation right-sizing</h2>
 <p>After a dispatched run, rtl_buddy compares what each test <em>reserved</em>
 against what it <em>used</em> (from <code>sacct</code> accounting) and reports advice —
@@ -2065,6 +2158,17 @@ finding:</p>
   masquerade as compute time, so time advice is suppressed off Verilator
   (see <a href="https://github.com/rtl-buddy/rtl_buddy/issues/329">#329</a>); memory
   and CPU-efficiency advice are unaffected.</li>
+<li><strong>Memory advice needs a peak that was sampled.</strong> <code>MaxRSS</code> is a high-water
+  mark over accounting samples, so a test whose longest run finished inside
+  one sampling interval was measured at most once and reports near-nothing.
+  Dispatch therefore asks for per-second task accounting
+  (<code>--acctg-freq=task=1</code>) on every job unless your <code>sbatch-args</code> already set
+  <code>--acctg-freq</code>, and <em>still</em> suppresses utilization-based memory advice for
+  any test that ran shorter than the interval actually in force — logging
+  <code>rightsize.mem_advice_unsampled</code> with the test names rather than leaving
+  the gap silent. An <code>OUT_OF_MEMORY</code> kill still raises, being a fact about
+  the reservation rather than a measurement of it. Background:
+  <a href="https://github.com/rtl-buddy/rtl_buddy/issues/365">#365</a>.</li>
 <li>Advice is labelled with <code>runs</code> and <code>reg_level</code>, so a <code>-l 0</code> smoke run
   is never used to shrink a nightly test's reservation.</li>
 <li><strong><code>phase</code> says what the numbers cover.</strong> <code>"sim"</code> is the usual case. A
@@ -2083,6 +2187,15 @@ finding:</p>
   and right-sizing degrades gracefully to no advice. Turn it off with
   <code>rightsize: { report: false }</code>.</li>
 </ul>
+<div class="admonition note">
+<p class="admonition-title"><code>MaxRSS</code> populates on step rows only</p>
+<p>Checking the advice by hand with <code>sacct -X</code> shows the field <strong>blank</strong> —
+<code>-X</code> returns allocation rows, and usage is recorded on the steps
+(<code>.batch</code>, <code>.extern</code>, …) and folded up. rtl_buddy queries without <code>-X</code>
+and gets this right; a human reproducing it may conclude the field is
+simply empty. Use <code>sacct -j &lt;jobid&gt; --format=JobID,Elapsed,MaxRSS</code> with
+no <code>-X</code>.</p>
+</div>
 <h2 id="agent-loop">Agent loop</h2>
 <p>An agent driving <code>--dispatch slurm --machine</code> closes the loop: run,
 read <code>reservation_advice</code>, apply each <code>edit_hint</code> (raise under-reservations

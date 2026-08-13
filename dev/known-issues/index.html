@@ -1629,6 +1629,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A suite's build job compiles every compile key serially, in one reservation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#memory-right-sizing-depends-on-the-accounting-sampling-interval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Memory right-sizing depends on the accounting sampling interval
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#reservation-right-sizing-has-floors-that-can-silently-suppress-advice" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1644,6 +1666,17 @@
     <span class="md-ellipsis">
       
         Under --dispatch, preproc runs in both the build job and each sim job
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A build job orders the fan-out; only the stamp keeps it from recompiling
       
     </span>
   </a>
@@ -1673,10 +1706,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades" class="md-nav__link">
+  <a href="#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Shared-build reuse does not see header edits or toolchain upgrades
+        Shared-build reuse sees header edits only where the builder reports them
       
     </span>
   </a>
@@ -1965,6 +1998,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A suite's build job compiles every compile key serially, in one reservation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#memory-right-sizing-depends-on-the-accounting-sampling-interval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Memory right-sizing depends on the accounting sampling interval
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#reservation-right-sizing-has-floors-that-can-silently-suppress-advice" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1980,6 +2035,17 @@
     <span class="md-ellipsis">
       
         Under --dispatch, preproc runs in both the build job and each sim job
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A build job orders the fan-out; only the stamp keeps it from recompiling
       
     </span>
   </a>
@@ -2009,10 +2075,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades" class="md-nav__link">
+  <a href="#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Shared-build reuse does not see header edits or toolchain upgrades
+        Shared-build reuse sees header edits only where the builder reports them
       
     </span>
   </a>
@@ -2199,8 +2265,12 @@ compiling one shared <code>simv</code> per unique compile key on a compute node 
 exactly what lets each sim job skip compilation and re-enter at simulation.
 This changes compile behaviour versus a plain local run — tests with
 identical compile inputs compile once, not once each. Builders share-build
-cannot handle fall back to compiling inside each job, which also skips the
-build job and widens that job's reservation to cover the compile; see
+cannot handle fall back to compiling inside each job, which widens that
+job's reservation to cover the compile. The build job is skipped for them
+too, but only while there is nothing to serialize: a test fanned out over
+several runs would otherwise have every element compiling into the one
+<code>artefacts/&lt;test&gt;/</code> at once, so it gets a build job and its elements wait
+for it. See
 <a href="../concepts/dispatch/#builders-that-compile-inside-the-job">Parallel dispatch</a>.
 The promotion is logged as <code>dispatch.share_build_implied</code>. Also
 note <code>--dispatch</code> cannot be combined with <code>--early-stop</code>: a build job
@@ -2247,6 +2317,49 @@ digit), which is why the trap is easy to miss. rtl_buddy's <code>_validate_time<
 it — so always write <code>time: "4:00:00"</code> (or bare minutes as a string,
 <code>time: "240"</code>). Applies everywhere <code>resources:</code> appears: <code>cfg-dispatch</code>,
 per-testbench, and per-test.</p>
+<h2 id="a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation">A suite's build job compiles every compile key serially, in one reservation</h2>
+<p>The per-suite build job is a single <code>sbatch</code> job running <code>rb _build-job</code>,
+which walks the suite's planned tests in order and compiles each unique
+compile key. That is deliberate — it is what makes a VCS build take one
+license seat at a time instead of one per concurrent element — but it has
+two consequences that are easy to miss when sizing <code>cfg-dispatch.compile</code>:</p>
+<ul>
+<li><strong><code>compile.time</code> must cover the sum of those compiles, not one of them.</strong>
+  A multi-testbench suite has one key per testbench (at least), so its build
+  job's wall-clock is their total. A limit sized from one observed compile
+  gets the build job killed, and because every sim job is gated on it with
+  <code>afterok</code>, the entire array is cancelled and reported as dispatch failures
+  pointing at a build log that simply stops mid-compile.</li>
+<li><strong>The whole array waits for the slowest suite-wide build</strong>, including
+  tests whose own compile key finished first. There is no partial release.</li>
+</ul>
+<p>The lever is the compile-key count, not the reservation: tests that differ
+only in their <code>plusdefines:</code> each cost a key. The build job logs one
+<code>compile.start</code> per key, which is the cheapest way to count them (a key
+already valid in the shared dir short-circuits before that event, so the
+count is of real compiles).</p>
+<h2 id="memory-right-sizing-depends-on-the-accounting-sampling-interval">Memory right-sizing depends on the accounting sampling interval</h2>
+<p><code>MaxRSS</code> is a high-water mark over <code>JobAcctGatherFrequency</code> samples, so a
+job shorter than one interval is sampled at most once and reports a peak far
+below the truth — measured 17-27x low on a site running the stock 30 s
+default, where the resulting suggestion for every short test was the 128M
+floor (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/365">#365</a>). Dispatch
+exists to produce lots of short jobs, so this is the common case rather than
+the corner one.</p>
+<p>Two things now stand between that and a bad reservation, and it is worth
+knowing both because the first can be turned off:</p>
+<ul>
+<li>every job is submitted with <strong><code>--acctg-freq=task=1</code></strong> unless your
+  <code>cfg-dispatch.sbatch-args</code> already sets <code>--acctg-freq</code>. Setting it
+  yourself — including to a coarse value, or to <code>task=0</code> — is honoured, and
+  is the supported way for a site that must not raise the sampling rate;</li>
+<li>utilization-based <strong>memory advice is suppressed</strong> for any test whose
+  longest run finished inside the interval actually in force, logged as
+  <code>rightsize.mem_advice_unsampled</code> with the test names. Time and CPU advice
+  are unaffected (elapsed and <code>TotalCPU</code> are not sampled the same way), and
+  an <code>OUT_OF_MEMORY</code> kill still raises.</li>
+</ul>
+<p>Build jobs were never affected: they run for minutes and get sampled.</p>
 <h2 id="reservation-right-sizing-has-floors-that-can-silently-suppress-advice">Reservation right-sizing has floors that can silently suppress advice</h2>
 <p>The reservation-advice thresholds (<code>over-threshold</code>, <code>near-limit</code>,
 <code>margin</code>) are configurable under <code>cfg-dispatch.rightsize</code>, but two guards
@@ -2273,7 +2386,40 @@ APIs, and dispatch changes <em>how many times</em> they run:</p>
   bumps a counter, or otherwise has side effects — behaves differently under
   <code>--dispatch</code>. Make <code>preproc</code> idempotent, or move one-time setup into the
   sweep/head path.</li>
+<li><strong>Those <code>preproc</code> runs are concurrent, and <code>artifact_dir</code> is test-keyed.</strong>
+  Every element of a dispatched <code>randtest</code> (or a seed fan-out) runs the hook
+  against the <em>same</em> <code>artifact_dir</code> while its siblings' simulations read from
+  it, so a generator using <code>open(path, "w")</code> truncates a file another element
+  is reading and the short read surfaces as a <em>design</em> failure — a checker
+  mismatch against empty expected data, not a harness error. Two rules keep a
+  hook safe: write to <code>artifact_dir</code> <strong>atomically</strong> (temp file plus
+  <code>os.replace</code>), and if the generated content depends on the run or the seed,
+  write to the injected <code>run_artifact_dir</code> instead — it is unique per run
+  (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/415">#415</a>). See
+  <a href="../concepts/plugins/#where-a-generator-should-write">Where a generator should write</a>.</li>
 </ul>
+<h2 id="a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling">A build job orders the fan-out; only the stamp keeps it from recompiling</h2>
+<p>When a self-compiling test is fanned out over several runs, dispatch submits
+a build job and gates every element on it with <code>afterok</code>
+(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/369">#369</a>). That dependency
+makes the elements start <em>after</em> the build — it does not make them exclusive
+of each other. What actually stops them recompiling into the one
+<code>artefacts/&lt;test&gt;/</code> is the compile stamp the build job leaves, and anything
+that invalidates it invalidates it for <strong>all N at once</strong>.</p>
+<p>The realistic way in is a <code>preproc</code> that regenerates a file listed in the
+filelist. The stamp records each source's <code>st_mtime_ns</code>, so a regenerated
+file invalidates it even when the bytes are identical — and a hook that
+writes per run is a supported pattern
+(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/415">#415</a>). Every element
+then runs the full compile concurrently into one directory, which is exactly
+the failure the build job exists to prevent, and the result is a
+<code>Compile failed</code> that looks like a design error.</p>
+<p><code>compile.prebuilt_stamp_invalid</code> (WARNING) is emitted by any element that
+compiles despite having been gated, and is the line that identifies this.
+Two ways out until a lock or a per-run compile dir exists: make the
+generator write to <code>run_artifact_dir</code> (per-run output does not belong in a
+filelist source anyway), or emit test-keyed files only when their content
+changes, so the mtime is stable across elements.</p>
 <h2 id="a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail">A dispatched compile failure surfaces as CompileFail, not DispatchFail</h2>
 <p>When a test's compile fails, the build job records it and the head maps the
 row to a <strong>CompileFail</strong> — the same clean design-error result the
@@ -2306,30 +2452,51 @@ to the pin and <code>test_pin_tracks_hub_protocol_version</code> asserts it equa
 <code>PROTOCOL_VERSION</code>. When you bump <code>PROTOCOL_VERSION</code>, the test fails until you
 (1) tag a compatible <code>rtl-buddy-nvim</code> release, (2) bump <code>RTL_BUDDY_NVIM_REF</code> to
 it, and (3) bump <code>_PIN_PROTOCOL_VERSION</code>. Keep the three in lockstep.</p>
-<h2 id="shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades">Shared-build reuse does not see header edits or toolchain upgrades</h2>
+<h2 id="shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them">Shared-build reuse sees header edits only where the builder reports them</h2>
 <p>With <a href="../concepts/tests/#sharing-compiled-builds-across-tests"><code>--share-build</code></a>
 (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/293">#293</a>), a compile is
 skipped when the <code>rb-compile-stamp.json</code> in the shared build dir matches the
 current compile inputs. The stamp covers the compile command, the extra
-compile env, and the size/mtime of every <strong>file listed in the resolved
-<code>run.f</code></strong> — but two input classes are not tracked:</p>
+compile env, the size/mtime of every <strong>file listed in the resolved <code>run.f</code></strong>,
+and — since <a href="https://github.com/rtl-buddy/rtl_buddy/issues/303">#303</a> — every
+input the builder reports having <strong>consumed</strong>, read from the dependency file
+it emits. What that last part covers depends entirely on the builder:</p>
 <ul>
-<li><strong>Include-dir contents.</strong> <code>+incdir+</code> and <code>-y</code> entries resolve to
-  directories, so the stamp records only the raw line. Editing a header that
-  is only reachable through an include dir does <strong>not</strong> invalidate the stamp,
-  and a warm run reuses a simv built from the old header. Tracking consumed
-  headers via Verilator's emitted <code>.d</code> dependency file is
-  <a href="https://github.com/rtl-buddy/rtl_buddy/issues/303">#303</a>.</li>
-<li><strong>The toolchain itself.</strong> The builder executable is keyed by its configured
-  name (e.g. <code>verilator</code>), not its version, and only the <em>extra</em> compile env
-  is recorded — the ambient environment the subprocess inherits is not. An
-  in-place Verilator upgrade, or a <code>PATH</code> change that selects a different
-  binary, reuses the stale simv silently.</li>
+<li><strong>Verilator</strong> emits <code>V&lt;prefix&gt;__ver.d</code>, so included headers, files reached
+  through <code>-y</code> library dirs, its own std includes and the <code>verilator_bin</code>
+  binary are all tracked. A header-only edit and an in-place Verilator
+  upgrade each invalidate the stamp.</li>
+<li><strong>VCS and Icarus</strong> emit nothing comparable. Their stamps record
+  <code>"deps": null</code> — <em>no dependency information</em>, not <em>no dependencies</em> — and
+  reuse behaves as it did before: <strong>editing a header reachable only through
+  <code>+incdir+</code>/<code>-y</code> does not invalidate the stamp</strong>, and a warm run reuses a
+  simv built from the old header.</li>
 </ul>
-<p>The escape hatch for both: delete <code>artefacts/.shared-builds/</code> (or run once
-without <code>--share-build</code>) to force a fresh compile. Within-run and concurrent
-safety are separate concerns and <em>are</em> handled — same-key tests share by
-construction, and cross-process races are excluded by the
+<p>Two things stay untracked for every builder: the <strong>ambient environment</strong> the
+compile subprocess inherits (only the <em>extra</em> compile env is recorded, so a
+<code>PATH</code> change that selects a different binary is invisible unless the
+dependency file names that binary), and anything a builder consumes without
+declaring.</p>
+<p>The escape hatch where tracking does not reach: delete the stamp, or run
+once without <code>--share-build</code>, to force a fresh compile. <strong>Which stamp
+depends on the builder</strong>, and the distinction matters most for exactly the
+builders with no dependency tracking:</p>
+<ul>
+<li>a <em>shared</em> build stamps <code>artefacts/.shared-builds/obj_dir_&lt;key&gt;/</code>, so
+  deleting <code>artefacts/.shared-builds/</code> covers it;</li>
+<li>a build that could not be shared (any non-Verilator/VCS/Icarus family, or
+  an absolute <code>builder-simv:</code>) stays in the test's own directory and stamps
+  <code>artefacts/&lt;test&gt;/rb-compile-stamp.json</code>, which that deletion does <strong>not</strong>
+  touch.</li>
+</ul>
+<p>When a warm run rebuilds and you want to know why, <code>compile.build_dep_changed</code>
+(DEBUG) names the input that changed.</p>
+<p>A stamp written by an rtl_buddy older than #303 has no dependency record at
+all, and its silence cannot be told from "there were none" — such a stamp is
+rejected, so the first run after upgrading recompiles once per compile key.</p>
+<p>Within-run and concurrent safety are separate concerns and <em>are</em> handled —
+same-key tests share by construction, and cross-process races are excluded by
+the
 <a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">per-tree artefact lock</a>
 (with that quirk's NFS caveat applying here too).</p>
 <h2 id="a-wrong-fpv-plugin-path-degrades-coi-coverage-silently">A wrong FPV plugin path degrades COI coverage silently</h2>

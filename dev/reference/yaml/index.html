@@ -2444,7 +2444,7 @@ and Icarus do not collect coverage through this path.</p>
 <li><code>plusargs</code>: converted to <code>+KEY</code> (no value) or <code>+KEY=VALUE</code>.</li>
 <li><code>sim_timeout</code>: applies per test run, not per iteration in <code>randtest</code>.</li>
 <li><code>sweep.path</code>: Python script that expands one test entry into a list of <code>TestConfig</code> objects. See <a href="../../concepts/plugins/">Plugins</a>.</li>
-<li><code>preproc.path</code>: Python script executed before compile; can mutate <code>test_cfg</code> and <code>root_cfg</code>, and receives <code>suite_dir</code> plus <code>artifact_dir</code> in its execution namespace. See <a href="../../concepts/plugins/">Plugins</a>.</li>
+<li><code>preproc.path</code>: Python script executed before compile; can mutate <code>test_cfg</code> and <code>root_cfg</code>, and receives <code>suite_dir</code>, <code>artifact_dir</code>, <code>run_id</code> and <code>run_artifact_dir</code> in its execution namespace. <code>artifact_dir</code> is keyed on the test name only, so under <code>randtest</code> or <code>--dispatch</code> every run of a test shares it; write there atomically, or write per-run output to <code>run_artifact_dir</code>. See <a href="../../concepts/plugins/#where-a-generator-should-write">Where a generator should write</a>.</li>
 </ul>
 <h2 id="path-semantics-and-cwd">Path semantics and cwd</h2>
 <ul>
