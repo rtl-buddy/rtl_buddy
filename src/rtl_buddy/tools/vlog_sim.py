@@ -93,6 +93,35 @@ def share_build_supported(simulator_family) -> bool:
     return simulator_family in SHARE_BUILD_FAMILIES
 
 
+def share_build_unsupported_reason(builder_cfg):
+    """Why this builder cannot use a shared build, or ``None`` if it can.
+
+    Two ways out: a family rtl_buddy cannot redirect into the shared dir at
+    all, and an absolute ``builder-simv:`` — that pins the executable to one
+    exact path the user chose, which a per-compile-key shared dir cannot
+    honour without silently ignoring the config.
+
+    Module-level and taking the builder config rather than a live
+    :class:`VlogSim`, because the dispatch head must ask the *same* question
+    before any VlogSim exists: it sizes a sim job's reservation on whether
+    that job will also compile, and gates the fan-out on whether anything
+    needs serializing. A head that consulted only the family would plan a
+    VCS builder with an absolute ``builder-simv:`` as shareable and give it
+    a sim-sized reservation, while the job itself took the unshared path
+    (#369).
+    """
+    family = builder_cfg.get_simulator_family()
+    if not share_build_supported(family):
+        return f"simulator family {family!r} has no shared-build support"
+    if family not in ("verilator", "icarus") and os.path.isabs(builder_cfg.get_simv()):
+        return (
+            f"builder-simv is an absolute path "
+            f"({builder_cfg.get_simv()}), which pins the "
+            "executable outside the shared build dir"
+        )
+    return None
+
+
 # Matches the option prefixes VlogFilelist emits into run.f (see
 # VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
 _FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext)\+|-[vyF]\s+)?(.*)$")
@@ -171,6 +200,7 @@ class VlogSim:
         replay_run_id=None,
         suite_dir=None,
         share_build=False,
+        expect_prebuilt=False,
     ):
         """
         compile and execute sim for given test
@@ -194,6 +224,11 @@ class VlogSim:
         # dir is only known once compile() has written the filelist.
         self.share_build = share_build
         self._shared_build_dir = None
+        # Set by a dispatched sim job that was gated on a build job, so
+        # compiling here means the stamp that build left did not
+        # validate — worth a WARNING, because the whole serialization
+        # guarantee rests on it (#369).
+        self.expect_prebuilt = expect_prebuilt
         # CLI commands always pass suite_dir resolved from the test
         # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
         # is tests-only — `tests/test_setup_failures.py`,
@@ -544,25 +579,7 @@ class VlogSim:
         return has_license_queue_marker((result.stdout or "") + (result.stderr or ""))
 
     def _share_build_unsupported_reason(self):
-        """Why this test cannot use a shared build, or ``None`` if it can.
-
-        Two ways out: a family rtl_buddy cannot redirect into the shared dir
-        at all, and an absolute ``builder-simv:`` — that pins the executable
-        to one exact path the user chose, which a per-compile-key shared dir
-        cannot honour without silently ignoring the config.
-        """
-        family = self._get_simulator_family()
-        if not share_build_supported(family):
-            return f"simulator family {family!r} has no shared-build support"
-        if family not in ("verilator", "icarus") and os.path.isabs(
-            self.rtl_builder_cfg.get_simv()
-        ):
-            return (
-                f"builder-simv is an absolute path "
-                f"({self.rtl_builder_cfg.get_simv()}), which pins the "
-                "executable outside the shared build dir"
-            )
-        return None
+        return share_build_unsupported_reason(self.rtl_builder_cfg)
 
     def _vcs_shared_output_argv(self, build_dir):
         """VCS flags that put the whole build inside ``build_dir``.
@@ -1054,6 +1071,22 @@ class VlogSim:
 
         run_cmd += ["-f", filelist_path]
         run_str = " ".join(run_cmd)
+        if self.expect_prebuilt:
+            # This job was ordered after a build job precisely so it would not
+            # have to compile. Reaching here means that build's stamp did not
+            # validate, and the dependency only *orders* the elements — it does
+            # not exclude them — so every sibling element is about to do the
+            # same thing into the same directory. That is #369 resurrected, and
+            # this is the one line that says so; a `Compile failed` further
+            # down otherwise looks like a design error.
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.prebuilt_stamp_invalid",
+                test=self.test_name,
+                run_id=self.run_id,
+                build_dir=build_dir,
+            )
         log_event(
             logger,
             logging.INFO,

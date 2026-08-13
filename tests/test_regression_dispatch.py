@@ -1208,3 +1208,64 @@ def test_jobs_on_a_replay_against_a_poolless_backend_is_still_rejected(
     )
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
     assert "max-jobs-per-array" in str(result.exception)
+
+
+def test_gated_jobs_are_told_they_were_gated(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """A gated element that still compiles is the signal that the build's
+    stamp failed and every sibling is compiling too (#369 review)."""
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert all(spec.expect_prebuilt for spec in fake_backend.submitted)
+
+
+def test_ungated_jobs_are_not(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """With no build job there is nothing to have been prebuilt, and one
+    writer per directory, so compiling is the expected path."""
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    assert not any(spec.expect_prebuilt for spec in fake_backend.submitted)
+
+
+def test_a_pinned_builder_simv_is_planned_as_compiling_in_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The planner and the runtime must agree on what can share a build.
+
+    A VCS builder with an absolute `builder-simv:` declines sharing at
+    runtime; a planner consulting only the family would give it a sim-sized
+    reservation and never count it as needing serialization (#369 review).
+    """
+    _set_stub_builder_family(minimal_project, "vcs")
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            '    builder-simv: "obj_dir/simv"', '    builder-simv: "/pinned/simv"'
+        )
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n',
+    )
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    # Sized for the compile it will really do, not for the sim alone.
+    resources = fake_backend.submitted[0].resources
+    assert (resources.cpus, resources.mem) == (8, "16G")
+    # ...and nothing can share, so no build job is submitted for one run.
+    assert fake_backend.build_submitted == []

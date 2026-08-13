@@ -901,3 +901,67 @@ def test_default_builder_simv_override_is_not_logged(tmp_path, monkeypatch, capl
     with caplog.at_level(_logging.DEBUG):
         assert sim.compile() == 0
     assert "builder-simv" not in caplog.text
+
+
+def test_a_gated_job_that_compiles_anyway_says_so(tmp_path, monkeypatch, caplog):
+    """The build-job gate *orders* the elements; it does not exclude them.
+
+    If the stamp that build left fails to validate, every element compiles
+    into the same directory at once — #369 resurrected — and the resulting
+    `Compile failed` reads as a design error. This WARNING is the only thing
+    that says otherwise (#369 review).
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    sim.expect_prebuilt = True
+    with caplog.at_level(_logging.WARNING):
+        assert sim.compile() == 0
+
+    assert "compiling despite being gated on a build job" in caplog.text
+
+
+def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, caplog):
+    """The normal path must not warn, or the signal is worthless."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    reader.expect_prebuilt = True
+    with caplog.at_level(_logging.WARNING):
+        assert reader.compile() == 0
+
+    assert len(calls) == 1
+    assert "compiling despite being gated" not in caplog.text
+
+
+def test_share_build_unsupported_reason_is_the_predicate_the_head_uses():
+    """The head plans reservations and gating from this, and the job takes
+    the unshared path from it. Family alone is not enough: an absolute
+    `builder-simv:` declines sharing too, and a head consulting only the
+    family would plan such a builder as shareable (#369 review)."""
+    reason = vlog_sim_module.share_build_unsupported_reason
+
+    assert reason(DummyBuilderCfg(simulator_family="verilator")) is None
+    assert reason(DummyBuilderCfg(simulator_family="vcs")) is None
+    assert "no shared-build support" in reason(
+        DummyBuilderCfg(simulator_family="questa")
+    )
+    # The case the two predicates used to disagree on.
+    assert "builder-simv is an absolute path" in reason(
+        DummyBuilderCfg(simulator_family="vcs", simv="/pinned/simv")
+    )
+    # Verilator and Icarus are redirected wholesale, so a pinned simv is
+    # overridden rather than honoured, and sharing still applies.
+    assert (
+        reason(DummyBuilderCfg(simulator_family="verilator", simv="/pinned/simv"))
+        is None
+    )

@@ -73,6 +73,10 @@ class TestJobSpec:
     builder_override: str | None = None
     extra_sim_timeout: int | None = None
     share_build: bool = True
+    # True when the head gated this job on a build job, so the job knows
+    # that compiling means the build's stamp failed to validate and every
+    # sibling element is about to compile too (#369).
+    expect_prebuilt: bool = False
     log_path: Path | None = None
     # Dispatch plan manifest (absolute); the sim job resolves ``test_name``
     # from it instead of re-running the suite's sweep hook. See BuildJobSpec.

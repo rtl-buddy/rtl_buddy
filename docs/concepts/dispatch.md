@@ -161,7 +161,11 @@ handles for you:
   short-circuits on the stamp it leaves. So whenever a build job exists,
   **every** group is gated on it with `afterok` — including the
   self-compiling ones, since the build job runs PRE+COMPILE for the whole
-  plan and therefore writes into their directories too.
+  plan and therefore writes into their directories too. The gate orders the
+  elements but does not exclude them, so the stamp is what actually keeps
+  them from recompiling; an element that compiles anyway logs
+  `compile.prebuilt_stamp_invalid` — see
+  [Known Issues](../known-issues.md#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling).
 - **The job's reservation covers both phases.** A compile is frequently
   hungrier than the sim it precedes — a VCS elaboration usually is — so a
   sim-sized reservation would be killed during it. One allocation cannot

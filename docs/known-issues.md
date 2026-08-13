@@ -274,6 +274,32 @@ APIs, and dispatch changes *how many times* they run:
   ([#415](https://github.com/rtl-buddy/rtl_buddy/issues/415)). See
   [Where a generator should write](concepts/plugins.md#where-a-generator-should-write).
 
+## A build job orders the fan-out; only the stamp keeps it from recompiling
+
+When a self-compiling test is fanned out over several runs, dispatch submits
+a build job and gates every element on it with `afterok`
+([#369](https://github.com/rtl-buddy/rtl_buddy/issues/369)). That dependency
+makes the elements start *after* the build — it does not make them exclusive
+of each other. What actually stops them recompiling into the one
+`artefacts/<test>/` is the compile stamp the build job leaves, and anything
+that invalidates it invalidates it for **all N at once**.
+
+The realistic way in is a `preproc` that regenerates a file listed in the
+filelist. The stamp records each source's `st_mtime_ns`, so a regenerated
+file invalidates it even when the bytes are identical — and a hook that
+writes per run is a supported pattern
+([#415](https://github.com/rtl-buddy/rtl_buddy/issues/415)). Every element
+then runs the full compile concurrently into one directory, which is exactly
+the failure the build job exists to prevent, and the result is a
+`Compile failed` that looks like a design error.
+
+`compile.prebuilt_stamp_invalid` (WARNING) is emitted by any element that
+compiles despite having been gated, and is the line that identifies this.
+Two ways out until a lock or a per-run compile dir exists: make the
+generator write to `run_artifact_dir` (per-run output does not belong in a
+filelist source anyway), or emit test-keyed files only when their content
+changes, so the mtime is stable across elements.
+
 ## A dispatched compile failure surfaces as CompileFail, not DispatchFail
 
 When a test's compile fails, the build job records it and the head maps the

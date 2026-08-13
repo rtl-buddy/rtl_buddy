@@ -120,7 +120,7 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
-from .tools.vlog_sim import share_build_supported
+from .tools.vlog_sim import share_build_unsupported_reason
 from .config.xplr import load_xplr_config
 from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
@@ -600,6 +600,7 @@ class RtlBuddy:
         self.coverage = None
         self.run_depth = RunDepth.POST
         self.share_build = False
+        self.expect_prebuilt = False
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
@@ -1596,6 +1597,14 @@ class RtlBuddy:
                 "it instead of re-running the suite's sweep hook",
             ),
         ] = None,
+        expect_prebuilt: Annotated[
+            bool,
+            typer.Option(
+                "--expect-prebuilt",
+                help="this job was gated on a build job, so compiling here "
+                "means that build's stamp did not validate (warns)",
+            ),
+        ] = False,
     ):
         """
         internal: run one (test, run_id) and write its result JSON (#351)
@@ -1604,6 +1613,7 @@ class RtlBuddy:
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
         self.share_build = share_build
+        self.expect_prebuilt = expect_prebuilt
         # Resolve the output path before entering the command context so
         # a relative --result-json lands where the dispatching process
         # expects it, not under the suite dir.
@@ -1923,6 +1933,7 @@ class RtlBuddy:
             run_depth=self.run_depth,
             suite_dir=suite_dir,
             share_build=self.share_build,
+            expect_prebuilt=self.expect_prebuilt,
         )
 
         if len(run_ids) == 1:
@@ -2436,6 +2447,11 @@ class RtlBuddy:
                     builder_override=self._builder_override,
                     extra_sim_timeout=self._extra_sim_timeout_override,
                     share_build=True,
+                    # Gated jobs are told so: reaching their own compile then
+                    # means the build job's stamp did not validate, which is
+                    # the one thing that puts every sibling element back into
+                    # one build directory at once (#369).
+                    expect_prebuilt=build_handle is not None,
                     # Named after the backend that will write it: `slurm-*`
                     # from sbatch --output, `local-parallel-*` from the pool's
                     # redirected stdout.
@@ -2524,11 +2540,11 @@ class RtlBuddy:
             exp_builder = builder_cfg.get_name()
             # A builder that cannot share a build recompiles inside every sim
             # job, so that job's reservation has to cover the compile too
-            # (#358). Decided here, once, from the same capability the job
-            # itself will consult.
-            compile_in_job = not share_build_supported(
-                builder_cfg.get_simulator_family()
-            )
+            # (#358). Decided here, once, from the same predicate the job
+            # itself will consult — family *and* an absolute `builder-simv:`,
+            # not family alone, or a VCS builder pinned that way would be
+            # planned as shareable and take the unshared path at runtime.
+            compile_in_job = share_build_unsupported_reason(builder_cfg) is not None
             rows = []
             for run_id in run_ids:
                 suite_results.append(
