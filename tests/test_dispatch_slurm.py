@@ -4,6 +4,7 @@ faked subprocess layer, no Slurm required."""
 
 from __future__ import annotations
 
+import math
 import shlex
 import sys
 from pathlib import Path
@@ -659,3 +660,98 @@ def test_the_flag_precedes_user_sbatch_args(monkeypatch):
     assert argv.index("--kill-on-invalid-dep=yes") < argv.index(
         "--kill-on-invalid-dep=no"
     )
+
+
+# ---------------------------------- accounting sampling frequency (#365)
+
+
+def test_per_second_task_accounting_is_requested_by_default(monkeypatch):
+    """MaxRSS is a high-water mark over samples, and a sim job is usually
+    shorter than the stock 30 s JobAcctGatherFrequency — so it is sampled
+    once, near zero, and right-sizing advises from that (#365)."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    assert backend.accounting_interval_s() == 1.0
+    backend.submit(_spec())
+    (argv,) = calls
+    assert "--acctg-freq=task=1" in argv
+
+
+def test_a_configured_acctg_freq_is_left_alone(monkeypatch):
+    """A site that must not raise the sampling rate says so in sbatch-args."""
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="7", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq=task=15,energy=0"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    # ...and right-sizing is told the rate that will really apply.
+    assert backend.accounting_interval_s() == 15.0
+    backend.submit(_spec())
+    (argv,) = calls
+    assert len([a for a in argv if a.startswith("--acctg-freq")]) == 1
+    assert "--acctg-freq=task=15,energy=0" in argv
+
+
+def test_a_separated_acctg_freq_value_is_recognised(monkeypatch):
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq", "30"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    assert backend.accounting_interval_s() == 30.0
+    assert "--acctg-freq=task=1" not in backend.sbatch_args
+
+
+def test_arrays_carry_the_accounting_frequency_too(monkeypatch, tmp_path):
+    calls, results = ([], [SimpleNamespace(returncode=0, stdout="55", stderr="")])
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit_array([_spec(run_id=1), _spec(run_id=2)], array_dir=tmp_path / "arr")
+
+    (argv,) = calls
+    assert "--acctg-freq=task=1" in argv
+
+
+def test_task_sampling_interval_parsing():
+    parse = slurm_module._task_sampling_interval
+    assert parse("30") == 30.0
+    assert parse("task=5") == 5.0
+    assert parse("energy=30,task=2") == 2.0
+    # An explicit disable is a KNOWN absence of sampling, not an unknown
+    # interval: every peak must be distrusted, not trusted.
+    assert parse("task=0") == math.inf
+    # These say nothing about task sampling at all.
+    assert parse("energy=30") is None
+    assert parse("task=nonsense") is None
+
+
+def test_a_flag_that_says_nothing_about_task_sampling_does_not_disarm_the_guard(
+    monkeypatch, caplog
+):
+    """`--acctg-freq=energy=30` is about a different datatype. Deferring to it
+    would leave tasks on the site default AND report the interval as unknown,
+    which right-sizing reads as "trust the peak" — #365 back, both guards
+    disarmed by one flag neither guard was about."""
+    import logging
+
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq=energy=30"]).initialise()
+    with caplog.at_level(logging.WARNING):
+        backend = SlurmDispatchBackend(cfg)
+
+    assert backend.accounting_interval_s() == 1.0
+    assert "--acctg-freq=task=1" in backend.sbatch_args
+    assert "says nothing about task sampling" in caplog.text
+    # The user's own flag is still passed through, and still wins.
+    assert backend.sbatch_args.index("--acctg-freq=task=1") < backend.sbatch_args.index(
+        "--acctg-freq=energy=30"
+    )
+
+
+def test_disabled_task_accounting_is_reported_as_never_sampled(monkeypatch):
+    cfg = DispatchConfigFile(sbatch_args=["--acctg-freq=task=0"]).initialise()
+    backend = SlurmDispatchBackend(cfg)
+
+    # inf, not None: no elapsed time can exceed it, so no peak is trusted.
+    assert backend.accounting_interval_s() == math.inf
+    assert "--acctg-freq=task=1" not in backend.sbatch_args

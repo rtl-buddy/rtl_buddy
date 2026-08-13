@@ -233,6 +233,31 @@ it — so always write `time: "4:00:00"` (or bare minutes as a string,
 `time: "240"`). Applies everywhere `resources:` appears: `cfg-dispatch`,
 per-testbench, and per-test.
 
+## Memory right-sizing depends on the accounting sampling interval
+
+`MaxRSS` is a high-water mark over `JobAcctGatherFrequency` samples, so a
+job shorter than one interval is sampled at most once and reports a peak far
+below the truth — measured 17-27x low on a site running the stock 30 s
+default, where the resulting suggestion for every short test was the 128M
+floor ([#365](https://github.com/rtl-buddy/rtl_buddy/issues/365)). Dispatch
+exists to produce lots of short jobs, so this is the common case rather than
+the corner one.
+
+Two things now stand between that and a bad reservation, and it is worth
+knowing both because the first can be turned off:
+
+- every job is submitted with **`--acctg-freq=task=1`** unless your
+  `cfg-dispatch.sbatch-args` already sets `--acctg-freq`. Setting it
+  yourself — including to a coarse value, or to `task=0` — is honoured, and
+  is the supported way for a site that must not raise the sampling rate;
+- utilization-based **memory advice is suppressed** for any test whose
+  longest run finished inside the interval actually in force, logged as
+  `rightsize.mem_advice_unsampled` with the test names. Time and CPU advice
+  are unaffected (elapsed and `TotalCPU` are not sampled the same way), and
+  an `OUT_OF_MEMORY` kill still raises.
+
+Build jobs were never affected: they run for minutes and get sampled.
+
 ## Reservation right-sizing has floors that can silently suppress advice
 
 The reservation-advice thresholds (`over-threshold`, `near-limit`,

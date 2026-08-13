@@ -344,6 +344,36 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"({fields.get('utilization')}) → {fields.get('direction')} "
                 f"to {fields.get('suggested')}"
             )
+        case "dispatch.accounting_frequency_unusable":
+            return (
+                f"cfg-dispatch.sbatch-args sets `{fields.get('sbatch_arg')}`, "
+                "which says nothing about task sampling — the rate memory "
+                "right-sizing depends on. Requesting "
+                f"`{fields.get('default')}` anyway; set an explicit "
+                "`--acctg-freq=task=<seconds>` to control it."
+            )
+        case "rightsize.mem_advice_unsampled":
+            tests = fields.get("tests") or []
+            interval = fields.get("interval_s")
+            # Reachable only when the user's own --acctg-freq set the rate,
+            # since dispatch otherwise requests task=1 — so name that as the
+            # cause rather than recommending the value they overrode.
+            if interval == float("inf"):
+                cause = "task accounting is disabled (--acctg-freq task=0)"
+            else:
+                interval_str = (
+                    f"{interval:g}" if isinstance(interval, float) else str(interval)
+                )
+                cause = (
+                    f"they ran shorter than the {interval_str}s accounting "
+                    "interval set by your cfg-dispatch.sbatch-args --acctg-freq"
+                )
+            return (
+                f"{fields.get('suite')}: memory advice omitted for "
+                f"{len(tests)} test(s) ({', '.join(map(str, tests))}) — "
+                f"{cause}, so their MaxRSS was never sampled. Lower it, or "
+                "drop the override for the --acctg-freq=task=1 default"
+            )
         case "randtest.dispatch_ignored_for_replay":
             jobs = fields.get("jobs")
             also = f" (and --jobs {jobs})" if jobs is not None else ""

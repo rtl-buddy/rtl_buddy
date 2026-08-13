@@ -173,3 +173,15 @@ class DispatchBackend(ABC):
         backend-shaped dicts; the Slurm backend documents its fields.
         """
         return {}
+
+    def accounting_interval_s(self) -> float | None:
+        """Seconds between usage samples, or ``None`` if not known.
+
+        Peak memory in :meth:`collect_telemetry` is a high-water mark over
+        samples, so a job that finished inside one interval was measured at
+        most once and its peak means nothing. Right-sizing asks for this to
+        decide whether a memory number is worth advising from (#365). A
+        backend with no accounting at all never reaches that question, since
+        it reports no telemetry either.
+        """
+        return None

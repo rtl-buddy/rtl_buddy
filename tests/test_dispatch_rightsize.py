@@ -47,7 +47,14 @@ def _row(
     }
 
 
-def _analyze(rows, cfg=_CFG, families=None, reg_level=0, root_config_path=None):
+def _analyze(
+    rows,
+    cfg=_CFG,
+    families=None,
+    reg_level=0,
+    root_config_path=None,
+    accounting_interval_s=None,
+):
     return analyze_suite_reservations(
         rows,
         suite_display="verif/blk/tests.yaml",
@@ -56,6 +63,7 @@ def _analyze(rows, cfg=_CFG, families=None, reg_level=0, root_config_path=None):
         reg_level=reg_level,
         simulator_family_of=(families or {"verilator": "verilator"}).get,
         root_config_path=root_config_path,
+        accounting_interval_s=accounting_interval_s,
     )
 
 
@@ -554,3 +562,110 @@ def test_oom_raise_still_fires_on_a_compile_governed_field():
     assert mem.direction == "raise"
     assert mem.suggested == "12G"
     assert mem.edit_hint["path"] == "cfg-dispatch.compile.mem"
+
+
+# ------------------------------- memory advice needs a sampled peak (#365)
+
+
+def _short_job(max_rss_bytes=5 * 2**20, elapsed_s=8, **extra):
+    """A test that finished well inside a 30 s accounting interval."""
+    return {
+        "state": "COMPLETED",
+        "elapsed_s": elapsed_s,
+        "timelimit_s": 3600,
+        "alloc_cpus": 1,
+        "req_mem_bytes": 4 * 2**30,
+        "max_rss_bytes": max_rss_bytes,
+        **extra,
+    }
+
+
+def test_mem_advice_is_suppressed_for_a_job_shorter_than_the_sample_interval():
+    """MaxRSS on a job never sampled is not a small peak, it is no peak —
+    and advising a reservation from it points at the OOM floor (#365)."""
+    rows = [_row("fast", _short_job())]
+
+    assert "mem" not in [f.resource for f in _analyze(rows, accounting_interval_s=30)]
+    # Only memory: elapsed time is measured directly, not sampled, so time
+    # advice for the same short job stands.
+    assert "time" in [f.resource for f in _analyze(rows, accounting_interval_s=30)]
+    # And the same numbers with adequate sampling are advice, not noise.
+    assert "mem" in [f.resource for f in _analyze(rows, accounting_interval_s=1)]
+
+
+def test_mem_advice_survives_when_the_interval_is_unknown():
+    """No interval means no evidence the peak is untrustworthy."""
+    rows = [_row("fast", _short_job())]
+    assert "mem" in [f.resource for f in _analyze(rows)]
+
+
+def test_an_oom_kill_still_raises_however_coarse_the_sampling(caplog):
+    """A kill is a fact about the reservation, not a measurement of it —
+    the same rule the TIMEOUT case follows for time."""
+    import logging
+
+    rows = [_row("oom", _short_job(state="OUT_OF_MEMORY"), passing=False)]
+
+    with caplog.at_level(logging.WARNING):
+        findings = [
+            f for f in _analyze(rows, accounting_interval_s=30) if f.resource == "mem"
+        ]
+
+    assert [f.direction for f in findings] == ["raise"]
+    # ...and it must not also be reported as an omission: advice was given.
+    assert "memory advice omitted" not in caplog.text
+
+
+def test_nothing_is_reported_omitted_when_there_was_nothing_to_advise(caplog):
+    """No reservation and no peak are unrelated reasons for silence; naming
+    those tests in "memory advice omitted" would blame the wrong cause."""
+    import logging
+
+    rows = [
+        _row(
+            "no_reservation", {"state": "COMPLETED", "elapsed_s": 2, "timelimit_s": 60}
+        ),
+        _row(
+            "no_peak",
+            {
+                "state": "COMPLETED",
+                "elapsed_s": 2,
+                "timelimit_s": 60,
+                "req_mem_bytes": 4 * 2**30,
+            },
+        ),
+    ]
+
+    with caplog.at_level(logging.WARNING):
+        _analyze(rows, accounting_interval_s=30)
+
+    assert "memory advice omitted" not in caplog.text
+
+
+def test_the_longest_run_decides_whether_a_test_was_sampled():
+    """Utilization is judged per test across its seeds, and so is this: one
+    run long enough to be sampled makes the test's peak meaningful."""
+    rows = [
+        _row("mixed", _short_job(elapsed_s=2), run_id=1),
+        _row("mixed", _short_job(elapsed_s=90, max_rss_bytes=3900 * 2**20), run_id=2),
+    ]
+
+    findings = [
+        f for f in _analyze(rows, accounting_interval_s=30) if f.resource == "mem"
+    ]
+    assert [f.direction for f in findings] == ["raise"]
+
+
+def test_the_omission_is_logged_rather_than_left_silent(caplog):
+    """Empty advice reads as "nothing to say"; it must not be able to mean
+    "the numbers were unusable" without saying so."""
+    import logging
+
+    rows = [_row("fast", _short_job()), _row("slow", _short_job(elapsed_s=600))]
+
+    with caplog.at_level(logging.WARNING):
+        _analyze(rows, accounting_interval_s=30)
+
+    assert "memory advice omitted" in caplog.text
+    assert "fast" in caplog.text
+    assert "slow" not in caplog.text
