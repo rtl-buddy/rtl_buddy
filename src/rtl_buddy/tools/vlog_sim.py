@@ -626,7 +626,11 @@ class VlogSim:
         Paths are resolved against ``compile_cwd`` and stored absolute:
         the file is written relative to whichever test's artefact dir ran
         the compile, and a *different* test with the same compile key
-        validates the stamp from its own directory. The compile's own
+        validates the stamp from its own directory. ``realpath``, not
+        ``normpath`` as in :meth:`_fingerprint_filelist_sources`, because
+        resolving symlinks on *both* sides is what makes the ``run.f``
+        exclusion below actually match; the two lists therefore canonicalise
+        differently and are not comparable to each other. The compile's own
         ``run.f`` is excluded — it is regenerated on every compile, so its
         mtime would invalidate the stamp for the very test that built it,
         and its *contents* are already fingerprinted entry by entry.
@@ -655,9 +659,7 @@ class VlogSim:
                 )
                 return None
             for prerequisite in parse_depend_prerequisites(text):
-                resolved = os.path.realpath(
-                    os.path.join(compile_cwd, os.path.expanduser(prerequisite))
-                )
+                resolved = os.path.realpath(os.path.join(compile_cwd, prerequisite))
                 if resolved != filelist_path:
                     seen.setdefault(resolved, None)
         return [_stat_entry(path) for path in sorted(seen)]
