@@ -31,6 +31,7 @@ from ..logging_utils import emit_console_text, log_event
 from . import config as hub_config
 from . import discovery
 from . import launchagent
+from . import landing_page
 from . import loop as hub_loop
 from . import model_discovery as hub_model_discovery
 from . import status_client
@@ -337,10 +338,12 @@ def cmd_status() -> None:
     emit_console_text(f"  tcp            : {record.tcp}")
     if record.http_port is not None:
         # Two URLs since #398 split them: ``/`` is the landing that lists
-        # every app, ``/view`` is the schematic SPA that used to be ``/``.
+        # every app, ``/sch`` is the schematic SPA that used to be ``/``
+        # (and was ``/view`` until #423 — that spelling still 307s here).
         emit_console_text(f"  hub_url        : http://127.0.0.1:{record.http_port}/")
         emit_console_text(
-            f"  viewer_url     : http://127.0.0.1:{record.http_port}/view"
+            f"  viewer_url     : http://127.0.0.1:{record.http_port}"
+            f"{landing_page.VIEW_PAGE_ROUTE}"
         )
     if record.active_model is not None:
         emit_console_text(f"  active_model   : {record.active_model}")

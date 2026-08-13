@@ -146,10 +146,11 @@ def _http_get_no_redirect(url: str) -> tuple[int, dict[str, str]]:
 
 @pytest.mark.asyncio
 async def test_http_view_route_returns_placeholder(hub_and_viewer):
-    """The SPA lives at ``/view`` since #398 — ``/`` is the landing."""
+    """The SPA lives at ``/sch`` since #423 (``/view`` since #398, ``/``
+    before that) — ``/`` is the landing."""
 
     _hub, viewer = hub_and_viewer
-    url = f"http://127.0.0.1:{viewer.http_port}/view"
+    url = f"http://127.0.0.1:{viewer.http_port}/sch"
     status, headers, body = await asyncio.to_thread(_http_get, url)
     assert status == 200
     assert "text/html" in headers.get("Content-Type", "")
@@ -168,7 +169,7 @@ async def test_http_index_html_route(hub_and_viewer):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("route", ["/view", "/graph", "/cov"])
+@pytest.mark.parametrize("route", ["/sch", "/gph", "/cov"])
 async def test_http_trailing_slash_redirects_to_canonical_route(
     hub_and_viewer, route: str
 ):
@@ -176,7 +177,7 @@ async def test_http_trailing_slash_redirects_to_canonical_route(
 
     The SPA bundle's asset references are relative (Vite ``base: ''``,
     which rtl-buddy-view needs for ``embed.py``'s standalone HTML), so
-    a page served at ``/view/`` resolves them to ``/view/assets/…`` and
+    a page served at ``/sch/`` resolves them to ``/sch/assets/…`` and
     never loads. Canonicalising the URL is what keeps one spelling —
     and one asset path — for every app page.
     """
@@ -193,13 +194,95 @@ async def test_http_trailing_slash_redirects_to_canonical_route(
 
 @pytest.mark.asyncio
 async def test_http_trailing_slash_redirect_preserves_query(hub_and_viewer):
-    """``/view/?view=…`` must not lose the query on the way to ``/view``."""
+    """``/sch/?view=…`` must not lose the query on the way to ``/sch``."""
 
     _hub, viewer = hub_and_viewer
-    url = f"http://127.0.0.1:{viewer.http_port}/view/?view=/view.json&model=alu"
+    url = f"http://127.0.0.1:{viewer.http_port}/sch/?view=/view.json&model=alu"
     status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
     assert status == 307
-    assert headers.get("Location") == "/view?view=/view.json&model=alu"
+    assert headers.get("Location") == "/sch?view=/view.json&model=alu"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy", "canonical"),
+    [
+        ("/view", "/sch"),
+        ("/graph", "/gph"),
+        ("/view/", "/sch"),
+        ("/graph/", "/gph"),
+    ],
+)
+async def test_http_legacy_page_routes_redirect_to_the_tla_spelling(
+    hub_and_viewer, legacy: str, canonical: str
+):
+    """The pre-#423 page spellings still answer, with a 307.
+
+    Note the trailing-slash rows: a request is normalised **once**, so
+    ``/graph/`` lands on ``/gph`` directly rather than bouncing through
+    ``/graph`` and costing a second round-trip.
+    """
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}{legacy}"
+    status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
+    assert status == 307
+    assert headers.get("Location") == canonical
+    assert headers.get("Cache-Control") == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_http_legacy_redirect_preserves_the_query(hub_and_viewer):
+    """A bookmarked ``/view?view=…`` must arrive at ``/sch`` with its
+    query intact — the SPA reads ``?view=`` to know what to load, so
+    dropping it would turn a working bookmark into an empty canvas."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}/view?view=/view.json&model=alu"
+    status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
+    assert status == 307
+    assert headers.get("Location") == "/sch?view=/view.json&model=alu"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["/view.json", "/graph.json", "/cov.json"])
+async def test_http_data_routes_are_not_renamed(hub_and_viewer, route: str):
+    """Only PAGE routes moved. ``/view.json`` in particular keeps its
+    name because the ``view`` hub-protocol origin does — renaming a page
+    does not get to touch the wire contract."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}{route}"
+    status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
+    # Whatever these answer (200/404/409 depending on artefacts), they
+    # must never be a redirect to a renamed spelling.
+    assert status != 307
+    assert "Location" not in headers
+
+
+@pytest.mark.asyncio
+async def test_http_cov_source_is_not_swept_up_by_the_page_rename(hub_and_viewer):
+    """``/cov/source`` is a data route living under a page route's
+    prefix — the canonicaliser must not touch it."""
+
+    _hub, viewer = hub_and_viewer
+    url = f"http://127.0.0.1:{viewer.http_port}/cov/source?path=x.sv"
+    status, headers = await asyncio.to_thread(_http_get_no_redirect, url)
+    assert status != 307
+    assert "Location" not in headers
+
+
+def test_the_landing_cards_name_the_routes_their_modules_serve():
+    """The app-card registry spells the routes as literals to keep
+    `landing_page` free of the heavy `graph_page` import, so this is
+    what stops the two drifting."""
+
+    from rtl_buddy.hub import cov_page, graph_page, landing_page
+
+    routes = {card.id: card.route for card in landing_page.APPS}
+    assert routes["view"] == landing_page.VIEW_PAGE_ROUTE == "/sch"
+    assert routes["graph"] == graph_page.GRAPH_PAGE_ROUTE == "/gph"
+    assert routes["cov"] == cov_page.COV_PAGE_ROUTE == "/cov"
 
 
 @pytest.mark.asyncio
@@ -331,7 +414,7 @@ async def test_http_view_json_served_when_configured(tmp_path: Path):
         assert body == view_json.read_bytes()
 
         # Bonus: the SPA route gets the auto-load preamble.
-        url_root = f"http://127.0.0.1:{viewer.http_port}/view"
+        url_root = f"http://127.0.0.1:{viewer.http_port}/sch"
         _status, _, root_body = await asyncio.to_thread(_http_get, url_root)
         assert b"window.__RTL_BUDDY_VIEW_URL__" in root_body
         assert b"'/view.json'" in root_body
@@ -365,7 +448,7 @@ async def test_http_serves_static_from_bundle(tmp_path: Path):
     await viewer.start()
     vtask = asyncio.create_task(viewer.serve_forever())
     try:
-        url_idx = f"http://127.0.0.1:{viewer.http_port}/view"
+        url_idx = f"http://127.0.0.1:{viewer.http_port}/sch"
         status, _, body = await asyncio.to_thread(_http_get, url_idx)
         assert status == 200
         assert b"bundle index" in body
@@ -384,10 +467,12 @@ async def test_http_serves_static_from_bundle(tmp_path: Path):
         assert "text/css" in headers.get("Content-Type", "")
         assert body == b"body{}"
 
-        # ``/view/`` follows through to the injected index, and the
-        # relative ``./assets/app.css`` in it resolves against ``/view``
-        # — i.e. to the URL asserted above, not ``/view/assets/app.css``.
-        url_slash = f"http://127.0.0.1:{viewer.http_port}/view/"
+        # ``/sch/`` follows through to the injected index, and the
+        # relative ``./assets/app.css`` in it resolves against ``/sch``
+        # — i.e. to the URL asserted above, not ``/sch/assets/app.css``.
+        # ``/sch`` is root-level exactly as ``/view`` was, so the rename
+        # does not move where those relative references land.
+        url_slash = f"http://127.0.0.1:{viewer.http_port}/sch/"
         status, _, body = await asyncio.to_thread(_http_get, url_slash)
         assert status == 200
         assert b"window.__RTL_BUDDY_HUB__" in body
@@ -395,7 +480,7 @@ async def test_http_serves_static_from_bundle(tmp_path: Path):
         # And the fix is the redirect, not a second mount of the assets
         # one level deeper: the nested spelling stays a 404 so each
         # asset keeps exactly one URL.
-        url_nested = f"http://127.0.0.1:{viewer.http_port}/view/assets/app.css"
+        url_nested = f"http://127.0.0.1:{viewer.http_port}/sch/assets/app.css"
         try:
             await asyncio.to_thread(_http_get, url_nested)
         except urllib.error.HTTPError as exc:

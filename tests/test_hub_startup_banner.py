@@ -51,7 +51,7 @@ def test_banner_with_viewer_but_no_view_json(capfd):
     )
     out = capfd.readouterr().err
     assert "Hub:      http://127.0.0.1:54321/" in out
-    assert "Viewer:   http://127.0.0.1:54321/view" in out
+    assert "Viewer:   http://127.0.0.1:54321/sch" in out
     assert "?view=" not in out
 
 
@@ -69,7 +69,7 @@ def test_banner_view_json_path_set_but_file_missing(capfd, tmp_path: Path):
     )
     out = capfd.readouterr().err
     assert "Hub:      http://127.0.0.1:54321/" in out
-    assert "Viewer:   http://127.0.0.1:54321/view" in out
+    assert "Viewer:   http://127.0.0.1:54321/sch" in out
     assert "?view=" not in out
 
 
@@ -87,7 +87,9 @@ def test_banner_view_json_present_appends_query(capfd, tmp_path: Path):
     )
     out = capfd.readouterr().err
     assert "Hub:      http://127.0.0.1:54321/" in out
-    assert "Viewer:   http://127.0.0.1:54321/view?view=/view.json" in out
+    # The PAGE is /sch; the `?view=` query still names /view.json, which
+    # is a data route and did not move (#423).
+    assert "Viewer:   http://127.0.0.1:54321/sch?view=/view.json" in out
 
 
 def test_banner_includes_log_path_when_configured(capfd, tmp_path: Path):

@@ -401,7 +401,9 @@ def test_each_card_carries_a_long_name_and_a_short_one():
         "graph",
         "cov",
     ]
-    assert apps["view"]["route"] == "/view"
+    # The PAGE route is the app's short name since #423; the ORIGIN
+    # asserted above is what did not move, and that is the real fence.
+    assert apps["view"]["route"] == "/sch"
 
 
 def test_the_card_shows_the_long_name_and_the_switcher_the_short_one():

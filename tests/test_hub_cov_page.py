@@ -1279,7 +1279,7 @@ def test_the_file_header_offers_a_send_for_every_sibling_app():
     apps = js.split("var APPS = [")[1].split("\n  ];")[0]
     assert "{ origin: 'graph', prose: 'the graph pane' }," in apps
     assert "{ origin: 'view', prose: 'the schematic' }" in apps
-    for route in ("/graph", "/view"):
+    for route in ("/gph", "/sch"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert "'send → ' + originLabel(app.origin)," in row
@@ -1361,7 +1361,7 @@ def test_the_action_row_has_no_open_buttons():
     row = js.split("function renderActions(base) {")[1].split("\n  }")[0]
     assert "window.open(" not in row
     assert "'open '" not in row
-    for route in ("/graph", "/view"):
+    for route in ("/gph", "/sch"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
@@ -2150,5 +2150,5 @@ def test_the_rename_did_not_leak_into_the_wire():
     assert "origin: 'cov', kind: 'request', type: 'hello'," in js
     assert "origin: 'graph'," in js  # the APPS entries address wire values
     assert "origin: 'view'," in js
-    assert 'href="/view"' in body
-    assert 'href="/graph"' in body
+    assert 'href="/sch"' in body
+    assert 'href="/gph"' in body

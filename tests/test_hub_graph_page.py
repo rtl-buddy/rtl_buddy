@@ -787,7 +787,7 @@ def test_the_inspector_offers_send_and_open_for_every_sibling_app():
     assert "'open ' + " not in row
     assert "window.open(" not in row
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    for route in ("/view", "/cov"):
+    for route in ("/sch", "/cov"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
@@ -838,7 +838,7 @@ def test_the_action_row_has_no_open_buttons():
     assert "window.open(" not in row
     # The header switcher still carries the open links.
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
-    for route in ("/view", "/cov"):
+    for route in ("/sch", "/cov"):
         assert f'<a href="{route}" target="_blank" rel="noopener"' in body
 
 
@@ -1498,14 +1498,21 @@ def test_every_rendered_origin_goes_through_the_map():
 
 def test_the_rename_did_not_leak_into_the_wire():
     """The fence for the display rebrand: the hub still speaks `view`,
-    `graph` and `cov`, and the schematic still lives at `/view`."""
+    `graph` and `cov` on the wire, and `/view.json` is still `/view.json`.
+
+    #423 moved the *page* to `/sch` — the browser-facing half — which is
+    exactly what this fence has to let through while still catching a
+    rename that reached the origin or the data route."""
 
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     js = _page_js()
     assert "origin: 'graph', kind: 'request', type: 'hello'," in js
     assert "origin: 'view'," in js  # the APPS entry addresses the wire value
     assert "origin: 'cov'," in js
-    assert 'href="/view"' in body
+    # The page link is the short name...
+    assert 'href="/sch"' in body
+    assert 'href="/view"' not in body
+    # ...and the data route it fetches from is emphatically not.
     assert "fetch('/view.json?model=' + encodeURIComponent(target.model))" in js
 
 

@@ -308,7 +308,7 @@ It is a hub peer, so it drives the rest: clicking a line broadcasts `source_focu
 
 `rb graph results` correlates what a suite **declared** it covers (`covers:` entries in `tests.yaml`, which the graph carries as `test --covers--> covitem:<block>#<id>` edges) with what this model **observed**, and writes the verdict into the results overlay: per spec item `exercised` / `declared-only` / `observed-but-undeclared`, per module a ratio, per test the scalars above.
 
-Nothing is re-run — the numbers are read out of `cov_dir/manifest.json` and the model it names. The `/graph` pane tints the design column with them and `rb graph explain` returns them. See [Coverage on the Graph](graph.md#coverage-on-the-graph).
+Nothing is re-run — the numbers are read out of `cov_dir/manifest.json` and the model it names. The `/gph` pane tints the design column with them and `rb graph explain` returns them. See [Coverage on the Graph](graph.md#coverage-on-the-graph).
 
 ## Full flag reference
 
