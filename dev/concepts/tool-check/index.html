@@ -1893,6 +1893,7 @@
 </tr>
 </tbody>
 </table>
+<p><code>PythonSiblingDetector</code> additionally takes <code>legacy_packages</code>: distribution names the same tool was published under before a rename, tried only when the current name yields no metadata. The viewer uses it for the <code>rtl-buddy-sch</code> / <code>rtl-buddy-view</code> pair, so either install reports a version. A version that came from a legacy name is dropped when the binary is also on <code>PATH</code>, letting the <code>version_cmd</code> probe answer instead — an abandoned distribution's frozen metadata should not outrank the executable it no longer owns. See <a href="../../known-issues/#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view">Quirks &amp; Known Issues</a>.</p>
 <p>The same <code>ToolSpec</code> is consulted at runtime when a wrapper invokes <code>tool_manifest.require("&lt;name&gt;")</code> — that's how subcommand wrappers produce a uniform "missing tool, see <code>rb tool-check --explain X</code>" message instead of an opaque <code>FileNotFoundError</code>.</p>
 <h2 id="reconciliation-with-root_configyaml">Reconciliation with <code>root_config.yaml</code></h2>
 <p>When a project's <code>root_config.yaml</code> is discoverable from the current directory, <code>rb tool-check</code> reconciles it with the manifest:</p>

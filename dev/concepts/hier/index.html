@@ -789,10 +789,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#installing-rtl-buddy-view" class="md-nav__link">
+  <a href="#installing-the-viewer" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Installing rtl-buddy-view
+        Installing the viewer
       
     </span>
   </a>
@@ -1615,10 +1615,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#installing-rtl-buddy-view" class="md-nav__link">
+  <a href="#installing-the-viewer" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Installing rtl-buddy-view
+        Installing the viewer
       
     </span>
   </a>
@@ -1747,18 +1747,20 @@
 <h1 id="hierarchy-rendering">Hierarchy Rendering</h1>
 <blockquote>
 <p><strong>Integration type:</strong> Pluggable — curated. <code>rb hier</code> shells out to the standalone <a href="https://github.com/rtl-buddy/rtl-buddy-view">rtl-buddy-view</a> renderer at subprocess granularity; rtl_buddy is not coupled to its Python API.</p>
-<p><strong>External binary required:</strong> <code>rtl-buddy-view</code> — install with <code>uv tool install rtl-buddy-view</code> (or <code>pip install rtl-buddy-view</code>).</p>
+<p><strong>External binary required:</strong> <code>rtl-buddy-view</code> — install with <code>uv tool install rtl-buddy-sch</code> (or <code>pip install rtl-buddy-sch</code>).</p>
 <p><strong>Optional:</strong> <code>graphviz</code> (<code>dot</code>) for SVG/PNG conversion of <code>--format dot</code>; <code>pyslang</code> for <code>--frontend slang</code>.</p>
 <p>See also: <a href="../../install/#external-tools-by-feature">Installation — External tools by feature</a>.</p>
 </blockquote>
 <p><code>rb hier &lt;model&gt;</code> produces a module-hierarchy view of a model defined in <code>models.yaml</code>. It writes a stripped, deduplicated filelist into <code>artefacts/hier/&lt;model&gt;/hier.f</code>, then runs <code>rtl-buddy-view --top &lt;model&gt; --filelist hier.f</code> with the requested format and forwards the renderer's stdout to the terminal so it composes with shell pipes.</p>
 <p><code>rb hier &lt;test&gt; --view tb</code> (rtl-buddy-view #99 / 6b) renders the <strong>testbench</strong> hierarchy for a test from <code>tests.yaml</code>, with the DUT called out as a subtree. The test pins both the model (DUT side) and the TB top, so the positional argument is a test name in this mode. The merged DUT + TB filelist is written to <code>artefacts/hier/&lt;model&gt;/tb/&lt;tb_name&gt;/hier.f</code> and the renderer is invoked with both <code>--top &lt;model&gt;</code> and <code>--tb-top &lt;tb.toplevel&gt;</code>. Cache key is <code>(model, tb_name)</code>, so two tests sharing a TB share the artefact.</p>
-<h2 id="installing-rtl-buddy-view">Installing rtl-buddy-view</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-view<span class="w">    </span><span class="c1"># recommended — isolated tool env</span>
+<h2 id="installing-the-viewer">Installing the viewer</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>rtl-buddy-sch<span class="w">    </span><span class="c1"># recommended — isolated tool env</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># or</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>rtl-buddy-view<span class="w">     </span><span class="c1"># into the project venv</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>rtl-buddy-sch<span class="w">     </span><span class="c1"># into the project venv</span>
 </code></pre></div>
-<p>Once installed, the binary lands on <code>PATH</code> as <code>rtl-buddy-view</code>. Override with <code>--tool /absolute/path/to/rtl-buddy-view</code> if you need a specific build.</p>
+<p>The <strong>distribution</strong> is <code>rtl-buddy-sch</code> from 0.7.0 onwards. Releases up to 0.5.0 were published as <code>rtl-buddy-view</code>, which is now frozen; rtl_buddy probes both names, <code>rtl-buddy-sch</code> first, so either install works.</p>
+<p>The <strong>executable</strong> is <code>rtl-buddy-view</code> under either name, and so are its <code>rtl-buddy-view &lt;X.Y.Z&gt;</code> <code>--version</code> output and the <code>tool.name</code> stamp in exported JSON. Nothing that calls the renderer had to move. Once installed the binary lands on <code>PATH</code> as <code>rtl-buddy-view</code> (0.7.0+ installs an <code>rtl-buddy-sch</code> alias beside it); override with <code>--tool /absolute/path/to/rtl-buddy-view</code> if you need a specific build.</p>
+<p>Upgrading from the old distribution needs an uninstall first — pip has no rename metadata, so installing one over the other leaves both claiming the same files. See <a href="../../known-issues/#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view">Quirks &amp; Known Issues</a>.</p>
 <p>For <code>--format dot</code> rendering to SVG/PNG, install Graphviz (<code>brew install graphviz</code> / <code>apt install graphviz</code>) and pipe the output through <code>dot</code> (see <a href="#output-formats">Output formats</a> below).</p>
 <h2 id="output-formats">Output formats</h2>
 <p><code>--format</code> selects one of four renderers:</p>
