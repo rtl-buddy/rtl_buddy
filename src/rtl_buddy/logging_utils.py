@@ -914,6 +914,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "counted, so `rb spec check-coverage` may report items as "
                 "uncovered that a property does verify"
             )
+        case "graph_bind.dpi_symbol_not_found":
+            return (
+                f"graph build: DPI import {fields.get('symbol')!r} "
+                f"({fields.get('node')}) is defined by no C/C++/Python source "
+                "under verif/ or spec/ — the function node stays in the graph "
+                "with no implemented_by edge"
+            )
         case "graph_results.overlay_rejected":
             return (
                 f"graph: {fields.get('path')} is not a readable results "

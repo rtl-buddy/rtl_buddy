@@ -35,6 +35,8 @@ from typer.testing import CliRunner
 from rtl_buddy.graph import (
     PY_NODE_PREFIX,
     PYTHON_MODULE_TYPE,
+    SOURCE_FILE_TYPE,
+    SRC_NODE_PREFIX,
     bind_python,
     build_graph,
     scan_python_source,
@@ -457,7 +459,7 @@ def test_a_graph_with_no_cocotb_tests_is_skipped(tmp_path: Path):
     ]
     stage = bind_python(_merged(nodes, []), tmp_path)
     assert stage.status == "skipped"
-    assert stage.detail == "no cocotb tests in the graph"
+    assert stage.detail == "no cocotb tests or dpi_function nodes in the graph"
     assert stage.graph["nodes"] == [] and stage.graph["links"] == []
 
 
@@ -492,6 +494,291 @@ def test_an_import_cycle_terminates(tmp_path: Path):
     stage = bind_python(_merged(nodes + _design_nodes(), links), tmp_path)
     assert stage.status == "built"
     assert {x["source"] for x in _links_of(stage, "imports")}
+
+
+# ---------------------------------------------------------------------------
+# DPI binding stitch (rtl-buddy-sch 127)
+#
+# The fixture graphs are handcrafted: released rtl-buddy-sch (v0.5.0)
+# emits no dpi_function nodes yet, so the norm this stage must serve is
+# both shapes — and pinning the node shape here keeps the test
+# independent of any particular extractor release.
+# ---------------------------------------------------------------------------
+
+
+def _dpi_node(c_symbol: str, *, direction: str = "import", sv_name: str | None = None):
+    return {
+        "id": f"dpi:{c_symbol}",
+        "type": "dpi_function",
+        "label": c_symbol,
+        "tier": "design",
+        "file": "verif/alu/tb_alu.sv",
+        "line": 8,
+        "sv_name": sv_name or c_symbol,
+        "c_symbol": c_symbol,
+        "direction": direction,
+    }
+
+
+def _write(root: Path, rel: str, body: str) -> Path:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    return path
+
+
+def test_dpi_symbol_defined_in_a_c_file_is_extracted(tmp_path: Path):
+    _write(
+        tmp_path,
+        "verif/alu/dpi/alu_ref.c",
+        "#include <stdint.h>\n\nint add_ref(int a, int b) {\n    return a + b;\n}\n",
+    )
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    assert stage.status == "built"
+    assert stage.dpi_functions == 1 and stage.dpi_implemented == 1
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["source"] == "dpi:add_ref"
+    assert edge["target"] == SRC_NODE_PREFIX + "verif/alu/dpi/alu_ref.c"
+    assert edge["confidence"] == "EXTRACTED"
+    assert edge["symbol"] == "add_ref"
+    assert edge["file"] == "verif/alu/dpi/alu_ref.c"
+    assert edge["line"] == 3
+    node = next(n for n in stage.graph["nodes"] if n["id"] == edge["target"])
+    assert node["type"] == SOURCE_FILE_TYPE
+    assert node["tier"] == "binding"
+    assert node["file"] == "verif/alu/dpi/alu_ref.c"
+
+
+def test_dpi_case_only_match_is_inferred(tmp_path: Path):
+    _write(
+        tmp_path,
+        "verif/alu/dpi/ref.c",
+        "int Add_Ref(int a, int b) {\n    return a + b;\n}\n",
+    )
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["confidence"] == "INFERRED"
+    assert edge["target"] == SRC_NODE_PREFIX + "verif/alu/dpi/ref.c"
+
+
+def test_an_exact_dpi_match_suppresses_the_case_similar_one(tmp_path: Path):
+    _write(
+        tmp_path,
+        "verif/alu/dpi/exact.c",
+        "int add_ref(int a, int b) {\n    return a + b;\n}\n",
+    )
+    _write(
+        tmp_path,
+        "verif/alu/dpi/similar.c",
+        "int ADD_REF(int a, int b) {\n    return a + b;\n}\n",
+    )
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["confidence"] == "EXTRACTED"
+    assert edge["file"] == "verif/alu/dpi/exact.c"
+
+
+def test_the_definition_wins_over_the_header_and_the_caller(tmp_path: Path):
+    """The realistic DPI project: a header declares, a .c defines, a
+    driver calls. A whole-word scan matches all three equally, which is
+    an agent being told to read three files to find one implementation."""
+    _write(tmp_path, "verif/alu/dpi/alu_ref.h", "int add_ref(int a, int b);\n")
+    _write(
+        tmp_path,
+        "verif/alu/dpi/alu_ref.c",
+        '#include "alu_ref.h"\n\nint add_ref(int a, int b) {\n    return a + b;\n}\n',
+    )
+    _write(
+        tmp_path,
+        "verif/alu/dpi/tb_driver.c",
+        '#include "alu_ref.h"\n\nvoid drive(void) {\n'
+        "    if (add_ref(1, 2)) {\n        return;\n    }\n}\n",
+    )
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["file"] == "verif/alu/dpi/alu_ref.c"
+    assert edge["confidence"] == "EXTRACTED"
+    assert edge["line"] == 3
+    assert "resolved" not in edge
+
+
+def test_a_declaration_only_match_is_inferred_and_unresolved(tmp_path: Path):
+    """Nothing defines the symbol, so a header prototype is the only
+    evidence there is — worth an edge, not worth EXTRACTED."""
+    _write(tmp_path, "verif/alu/dpi/alu_ref.h", "int add_ref(int a, int b);\n")
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["file"] == "verif/alu/dpi/alu_ref.h"
+    assert edge["confidence"] == "INFERRED"
+    assert edge["resolved"] is False
+
+
+def test_a_python_definition_is_extracted_but_a_call_is_not(tmp_path: Path):
+    _write(tmp_path, "verif/alu/model.py", "def add_ref(a, b):\n    return a + b\n")
+    _write(
+        tmp_path,
+        "verif/alu/use.py",
+        "from model import add_ref\n\nx = add_ref(1, 2)\n",
+    )
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["file"] == "verif/alu/model.py"
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_a_dpi_node_without_a_direction_binds_nothing(tmp_path: Path):
+    """The extraction half is unreleased: a looser future extractor that
+    omits `direction` must under-claim, not silently bind exports."""
+    _write(
+        tmp_path,
+        "verif/alu/dpi/alu_ref.c",
+        "int add_ref(int a, int b) {\n    return a + b;\n}\n",
+    )
+    node = _dpi_node("add_ref")
+    del node["direction"]
+    stage = bind_python(_merged([node], []), tmp_path)
+
+    assert stage.status == "built"
+    assert stage.dpi_functions == 0
+    assert _links_of(stage, "implemented_by") == []
+
+
+def test_the_dpi_not_found_warning_has_a_human_message():
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "graph_bind.dpi_symbol_not_found",
+        {"symbol": "add_ref", "node": "dpi:add_ref"},
+    )
+    assert "add_ref" in msg and "dpi:add_ref" in msg and "implemented_by" in msg
+
+
+def test_an_exported_dpi_function_is_not_bound(tmp_path: Path):
+    """An export is implemented on the SV side; a C file naming its
+    symbol is a caller, not an implementation."""
+    _write(tmp_path, "verif/alu/dpi/caller.c", "void sv_notify(void);\n")
+    stage = bind_python(
+        _merged([_dpi_node("sv_notify", direction="export")], []), tmp_path
+    )
+
+    assert stage.status == "built"
+    assert stage.dpi_functions == 0
+    assert _links_of(stage, "implemented_by") == []
+
+
+def test_dpi_symbol_in_a_golden_model_lands_on_the_golden_node(tmp_path: Path):
+    """The loop the issue is named for: a DPI-bound reference model
+    under spec/ already has a golden_model node, so the edge reuses it
+    instead of inventing a second identity for the file."""
+    _write(
+        tmp_path,
+        "spec/alu/alu_model.py",
+        "def add_ref(a, b):\n    return (a + b) & 0xFF\n",
+    )
+    golden = {
+        "id": "golden:spec/alu/alu_model.py",
+        "type": "golden_model",
+        "label": "alu_model",
+        "tier": "config",
+        "file": "spec/alu/alu_model.py",
+    }
+    stage = bind_python(_merged([_dpi_node("add_ref"), golden], []), tmp_path)
+
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["source"] == "dpi:add_ref"
+    assert edge["target"] == "golden:spec/alu/alu_model.py"
+    assert edge["confidence"] == "EXTRACTED"
+    # The existing node was reused: the stage synthesized nothing.
+    assert stage.graph["nodes"] == []
+
+
+def test_dpi_symbol_in_plain_verif_python_synthesizes_a_py_node(tmp_path: Path):
+    _write(tmp_path, "verif/alu/helper.py", "def add_ref(a, b):\n    return a + b\n")
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    (edge,) = _links_of(stage, "implemented_by")
+    assert edge["target"] == PY_NODE_PREFIX + "verif/alu/helper.py"
+    node = next(n for n in stage.graph["nodes"] if n["id"] == edge["target"])
+    assert node["type"] == PYTHON_MODULE_TYPE
+
+
+def test_an_unmatched_dpi_symbol_is_recorded_not_raised(tmp_path: Path):
+    _write(tmp_path, "verif/alu/dpi/other.c", "int unrelated(void);\n")
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+
+    assert stage.status == "built"
+    assert _links_of(stage, "implemented_by") == []
+    assert {"dpi_symbol": "add_ref", "node": "dpi:add_ref"} in stage.unresolved
+    assert stage.summary()["implemented_by"] == 0
+
+
+def test_a_graph_without_dpi_nodes_degrades_to_the_cocotb_pass(tmp_path: Path):
+    """Graphs from released rtl-buddy-sch (v0.5.0: no dpi_function
+    vocabulary) are the norm — the DPI pass must be a silent no-op on
+    them, not a requirement on the extractor version."""
+    _write(tmp_path, "verif/alu/dpi/alu_ref.c", "int add_ref(int a, int b);\n")
+    _write_cocotb_module(
+        tmp_path,
+        "verif/alu",
+        "test_alu",
+        "import cocotb\n\n@cocotb.test()\nasync def t(dut):\n    dut.a.value = 1\n",
+    )
+    nodes, links = _config_nodes()
+    stage = bind_python(_merged(nodes + _design_nodes(), links), tmp_path)
+
+    assert stage.status == "built"
+    assert stage.dpi_functions == 0
+    assert _links_of(stage, "implemented_by") == []
+    assert _links_of(stage, "drives")  # the cocotb pass still ran
+
+
+def test_dpi_binding_runs_without_any_cocotb_test(tmp_path: Path):
+    """The DUT of a pure-SV bench with a DPI checker has no cocotb
+    entry at all; the stage must not skip past the DPI nodes."""
+    _write(
+        tmp_path,
+        "verif/alu/dpi/alu_ref.c",
+        "int add_ref(int a, int b) {\n    return a + b;\n}\n",
+    )
+    stage = bind_python(_merged([_dpi_node("add_ref")], []), tmp_path)
+    assert stage.status == "built"
+    assert stage.dpi_implemented == 1
+
+
+def test_collect_sources_includes_c_family_files(tmp_path: Path):
+    _write(tmp_path, "verif/alu/dpi/ref.c", "")
+    _write(tmp_path, "verif/alu/dpi/ref.h", "")
+    _write(tmp_path, "verif/alu/test_alu.py", "")
+    _write(tmp_path, "spec/alu/model.cpp", "")
+    _write(tmp_path, "verif/alu/tb.sv", "")
+    from rtl_buddy.graph.binding import collect_sources
+
+    found = collect_sources(tmp_path / "verif", tmp_path / "spec")
+    names = {Path(p).name for p in found}
+    assert names == {"ref.c", "ref.h", "test_alu.py", "model.cpp"}
+
+
+def test_dpi_binding_output_is_deterministic(tmp_path: Path):
+    _write(
+        tmp_path,
+        "verif/alu/dpi/a.c",
+        "int add_ref(int a, int b) {\n    return a + b;\n}\n",
+    )
+    _write(
+        tmp_path,
+        "verif/alu/dpi/b.c",
+        "int add_ref(int x, int y) {\n    return x + y;\n}\n",
+    )
+    merged = _merged([_dpi_node("scale_ref"), _dpi_node("add_ref")], [])
+    first = bind_python(merged, tmp_path).graph
+    second = bind_python(merged, tmp_path).graph
+    assert json.dumps(first) == json.dumps(second)
 
 
 # ---------------------------------------------------------------------------

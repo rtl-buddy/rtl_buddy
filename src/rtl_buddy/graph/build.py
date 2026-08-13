@@ -1397,9 +1397,10 @@ def build_graph(
         if not extract_inputs:
             binding_report.status = SKIPPED
             binding_report.detail = "no verif Python or spec markdown found"
-    # The in-process binding stage reads verif/spec Python whether or not
-    # an extractor is installed, so its inputs belong in the tier's hash list
-    # unconditionally: editing a cocotb test must invalidate the cache.
+    # The in-process binding stage reads verif/spec Python (and C/C++, for
+    # the DPI symbol scan) whether or not an extractor is installed, so its
+    # inputs belong in the tier's hash list unconditionally: editing a cocotb
+    # test or a DPI reference model must invalidate the cache.
     bind_inputs = collect_sources(search_verif, search_spec) if bind else []
     binding_report.inputs = hash_inputs(root, sorted(set(extract_inputs + bind_inputs)))
     reports[BINDING_TIER] = binding_report
@@ -1563,6 +1564,8 @@ def build_graph(
                 "tier": BINDING_TIER,
                 "stage": "bind",
             },
+            verif_dir=search_verif,
+            spec_dir=search_spec,
         )
         binding_info = stage.summary()
         if stage.links:
@@ -1579,6 +1582,10 @@ def build_graph(
                 drives=stage.drives,
                 inferred=stage.inferred,
                 checks=stage.checks,
+                # The DPI pass's counters ride the same line: this is the
+                # one event that tells a machine-mode consumer it ran.
+                dpi=stage.dpi_functions,
+                implemented=stage.dpi_implemented,
             )
 
     merge_info: dict = {
