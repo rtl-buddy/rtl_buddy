@@ -3864,15 +3864,34 @@ class RtlBuddy:
             ),
         ] = False,
         coverage: Annotated[
-            bool,
+            str,
             typer.Option(
-                "--coverage/--no-coverage",
+                "--coverage",
+                # This NAMES A SOURCE and so takes a value, where in
+                # v6.30.x it was the boolean `--coverage/--no-coverage`.
+                # A bare `--coverage` therefore no longer parses. Click's
+                # optional-value form (`is_flag=False, flag_value=...`)
+                # is the obvious rescue, but Typer does not forward
+                # either kwarg and deprecates both, so the compatibility
+                # kept here is `--no-coverage` (unchanged) plus the
+                # `none` keyword; the break is loud, and it is recorded
+                # in docs/known-issues.md.
                 help=(
-                    "join the run's coverage model onto the graph's ids "
-                    "(read from cov_dir/manifest.json; nothing is re-run)"
+                    "coverage source to join onto the graph's ids: 'auto' "
+                    "(cov_dir/manifest.json, then the per-test coverage.dat "
+                    "databases this scan finds), 'model' (the manifest "
+                    "only), 'none', or a path to a merged LCOV .info file; "
+                    "nothing is re-run"
                 ),
             ),
-        ] = True,
+        ] = "auto",
+        no_coverage: Annotated[
+            bool,
+            typer.Option(
+                "--no-coverage",
+                help="skip the coverage join (same as --coverage none)",
+            ),
+        ] = False,
         cov_dir: Annotated[
             str | None,
             typer.Option(
@@ -3898,6 +3917,21 @@ class RtlBuddy:
         root = str(discover_project_root(fallback_cwd=True))
         ctx = self._enter_command_context(command_root=root)
 
+        # `--coverage` names a source (#390): the two keywords pass
+        # through, 'none' (and `--no-coverage`) disables the join, and
+        # anything else is a merged LCOV .info path, resolved against the
+        # invoking directory like every other path option. The accepted
+        # keywords are exactly the three the help and docs list — an
+        # undocumented synonym is a contract nobody knows they own.
+        cov_source: bool | str = coverage.strip()
+        if no_coverage or cov_source == "none":
+            cov_source = False
+        elif cov_source not in (
+            graph_coverage_mod.COVERAGE_SOURCE_AUTO,
+            graph_coverage_mod.COVERAGE_SOURCE_MODEL,
+        ):
+            cov_source = str(ctx.resolve_input(cov_source))
+
         log_event(
             logger,
             logging.INFO,
@@ -3905,7 +3939,7 @@ class RtlBuddy:
             command="graph results",
             verif_dir=verif_dir,
             strict=strict,
-            coverage=coverage,
+            coverage=cov_source,
         )
 
         overlay = graph_results_mod.refresh_results_overlay(
@@ -3913,7 +3947,7 @@ class RtlBuddy:
             verif_dir=str(ctx.resolve_input(verif_dir)) if verif_dir else None,
             out_dir=str(ctx.resolve_input(out_dir)) if out_dir else None,
             graph_path=str(ctx.resolve_input(graph)) if graph else None,
-            coverage=coverage,
+            coverage=cov_source,
             cov_dir=str(ctx.resolve_input(cov_dir)) if cov_dir else None,
             cov_manifest=str(ctx.resolve_input(cov_manifest)) if cov_manifest else None,
         )
@@ -3976,8 +4010,12 @@ class RtlBuddy:
         )
         cov_summary = overlay.coverage_summary()
         if cov_summary is not None:
+            # Only a non-manifest source is worth a word: `model` is the
+            # ordinary case and the line is budgeted for one console row.
+            source = cov_summary.get("source")
+            note = f" (from {source})" if source and source != "model" else ""
             emit_console_text(
-                "coverage: "
+                f"coverage{note}: "
                 f"{cov_summary['tests']} test(s) scored, "
                 f"{cov_summary['modules']} module(s), "
                 f"{cov_summary[graph_coverage_mod.STATUS_EXERCISED]}/"
