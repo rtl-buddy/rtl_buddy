@@ -7,7 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Literal
 
-from serde import serde, field
+import yaml
+from serde import serde, field, from_dict
 from serde.yaml import from_yaml
 
 from .platform import PlatformConfigFile
@@ -102,7 +103,107 @@ def discover_project_root(
 
 @serde
 class RootRtlField:
+    """The ``cfg-rtl-reg`` block: where each flow's regression manifest lives.
+
+    ``reg-cfg-path`` is the long-standing simulation entry. The per-flow
+    keys are optional and exist for projects that keep a flow's manifest
+    away from the project root (e.g. ``cdc_regression.yaml`` under
+    ``lint/cdc/``), where the ``./<flow>_regression.yaml`` filename
+    convention cannot find it (#389). Relative paths anchor to the
+    directory containing ``root_config.yaml``.
+    """
+
     path: str = field(rename="reg-cfg-path")
+    synth_path: str | None = field(rename="synth-reg-cfg-path", default=None)
+    power_path: str | None = field(rename="power-reg-cfg-path", default=None)
+    fpga_path: str | None = field(rename="fpga-reg-cfg-path", default=None)
+    cdc_path: str | None = field(rename="cdc-reg-cfg-path", default=None)
+    fpv_path: str | None = field(rename="fpv-reg-cfg-path", default=None)
+
+
+#: ``cfg-rtl-reg`` YAML key and :class:`RootRtlField` attribute per flow.
+#: One table, consulted by the ``rb <flow>-regression`` commands and the
+#: graph's config tier alike, so the two can never disagree about which
+#: key names a flow's manifest.
+REG_CFG_PATH_KEYS: dict[str, tuple[str, str]] = {
+    "sim": ("reg-cfg-path", "path"),
+    "synth": ("synth-reg-cfg-path", "synth_path"),
+    "power": ("power-reg-cfg-path", "power_path"),
+    "fpga": ("fpga-reg-cfg-path", "fpga_path"),
+    "cdc": ("cdc-reg-cfg-path", "cdc_path"),
+    "fpv": ("fpv-reg-cfg-path", "fpv_path"),
+}
+
+
+def load_reg_cfg_paths(root_cfg_path: str | Path) -> RootRtlField | None:
+    """Read just the ``cfg-rtl-reg`` block of ``root_config.yaml``.
+
+    The graph's config tier (and the flow-regression commands' fallback)
+    anchor on a project root without loading the full :class:`RootConfig`
+    — no builders or platforms are needed there, the same reasoning as
+    :func:`~rtl_buddy.config.xplr.load_xplr_config`. A missing file or a
+    missing block yields None; a block that does not parse is logged and
+    also yields None, because callers of this lenient path treat the
+    configured locations as best-effort hints and fall back to the
+    filename convention (the full RootConfig load is where a malformed
+    root config fails loudly).
+
+    Lenient-on-missing is not lenient-on-*misspelled*: ``from_dict``
+    ignores keys it does not know, so a ``cdc-reg-cfg-paths:`` typo would
+    otherwise reproduce the exact silence #389 exists to remove — zero
+    cdc-flow nodes and no diagnostic naming the key. Unknown keys are
+    reported by name (and the known ones still honoured, since one typo
+    should not cost a project the flows it spelled correctly).
+    """
+    path = Path(root_cfg_path)
+    if not path.is_file():
+        return None
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        block = (data or {}).get("cfg-rtl-reg")
+        if not isinstance(block, dict):
+            return None
+        unknown = sorted(set(block) - {key for key, _ in REG_CFG_PATH_KEYS.values()})
+        if unknown:
+            log_event(
+                logger,
+                logging.WARNING,
+                "root_config.reg_cfg_unknown_keys",
+                path=str(path),
+                keys=", ".join(unknown),
+                known=", ".join(key for key, _ in REG_CFG_PATH_KEYS.values()),
+            )
+        return from_dict(RootRtlField, block)
+    except Exception as e:
+        log_event(
+            logger,
+            logging.WARNING,
+            "root_config.reg_cfg_block_unreadable",
+            path=str(path),
+            error=str(e),
+        )
+        return None
+
+
+def resolve_reg_cfg_path(
+    reg_paths: "RootRtlField | None", root_cfg_path: str | Path, flow: str
+) -> str | None:
+    """Absolute path of ``flow``'s configured regression manifest, or None.
+
+    Relative entries anchor to the root-config directory — the anchoring
+    :meth:`RootConfig.get_rtl_reg_cfg` has always applied to
+    ``reg-cfg-path``, kept identical for the per-flow keys so the graph
+    and every ``rb <flow>-regression`` command resolve one file.
+    """
+    _, attr = REG_CFG_PATH_KEYS[flow]
+    raw = getattr(reg_paths, attr, None) if reg_paths is not None else None
+    if not raw:
+        return None
+    if os.path.isabs(raw):
+        return raw
+    return os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(str(root_cfg_path))), raw)
+    )
 
 
 @serde
@@ -542,9 +643,7 @@ class RootConfig:
         if self.reg_cfg is None:
             self.reg_cfg = RegConfig(
                 name=self.name + "/reg_config",
-                path=os.path.join(
-                    os.path.dirname(self.root_cfg_path), self.cfg_rtl_reg.path
-                ),
+                path=resolve_reg_cfg_path(self.cfg_rtl_reg, self.root_cfg_path, "sim"),
             )
         return self.reg_cfg
 

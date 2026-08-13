@@ -657,7 +657,7 @@ uv run python scripts/graph_token_benchmark.py -p ... --json       # every step,
 
 The change-impact task needs an inclusion criterion, or the answer is unfalsifiable. A run counts when **the project-root regression manifests claim its suite** — `regression.yaml`, `synth_regression.yaml`, `fpv_regression.yaml`, `fpga_regression.yaml` — **and the elaboration that run drives contains an `ip_cdc_sync` instance**. Synthesis of an affected top counts as much as simulation of one: the netlist changes either way.
 
-The template's CDC analyses are out of scope for *both* routes, and not by preference: `cdc_regression.yaml` lives at `lint/cdc/`, not the project root, so the graph's flow discovery — which is by root filename — never sees it, and there is no root manifest for the raw route to read either. Three analyses would otherwise be in the answer (`ip_cdc_handshake_lint`, `demo_tiny_alu_subsys_lint`, `demo_cdc_mem_macro_lint`). Recorded here rather than silently dropped; see [Flow provenance](#flow-provenance).
+The template's CDC analyses were out of scope for *both* routes when this was measured, and not by preference: `cdc_regression.yaml` lives at `lint/cdc/`, not the project root, so the flow discovery of the day — root filename only — never saw it, and there was no root manifest for the raw route to read either. Three analyses would otherwise be in the answer (`ip_cdc_handshake_lint`, `demo_tiny_alu_subsys_lint`, `demo_cdc_mem_macro_lint`). Recorded here rather than silently dropped. Flow discovery now also honours the `cfg-rtl-reg` manifest paths in `root_config.yaml`, so a project that declares `cdc-reg-cfg-path: lint/cdc/cdc_regression.yaml` gets those analyses into the graph — see [Flow provenance](#flow-provenance).
 
 One finding falls out of the answer rather than the tokens: `mem_subsys` is affected and **no run in any root manifest touches it**. Its only consumer is the out-of-scope CDC analysis. Both routes report it in `models` and neither can name a run for it.
 
@@ -842,13 +842,15 @@ Testbenches declared but used by no test still become nodes — a dead testbench
 
 A `tests.yaml` does not know that it is a *simulation* suite, and nothing under `verif/` mentions the `fpv.yaml` next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all five — each through its own `RegConfig`, the same class `rb <flow>-regression` constructs — and stamps `flow` on every `suite`, `test` and `testbench` node:
 
-| File at the project root | `flow` | Suites it lists |
+| Manifest | `flow` | Suites it lists |
 | --- | --- | --- |
 | `regression.yaml` | `sim` | `tests.yaml` |
 | `synth_regression.yaml` | `synth` | `synth.yaml` |
 | `fpv_regression.yaml` | `fpv` | `fpv.yaml` |
 | `cdc_regression.yaml` | `cdc` | `cdc.yaml` |
 | `fpga_regression.yaml` | `fpga` | `fpga.yaml` |
+
+Each manifest is looked for at the project root first, then at the flow's `cfg-rtl-reg` path from `root_config.yaml` (`reg-cfg-path` for `sim`, `<flow>-reg-cfg-path` for the rest) — the same precedence `rb <flow>-regression` applies when no `-c` is passed, so a manifest kept away from the root (the template's `cdc_regression.yaml` lives under `lint/cdc/`) is visible to the graph exactly when it is runnable by the command. See [`cfg-rtl-reg`](../reference/yaml.md#root_configyaml).
 
 Four consequences:
 
@@ -857,9 +859,9 @@ Four consequences:
 - **A suite claimed by two flows gets a list**, in the table's order. That happens when one directory holds two flows' configs — a `synth.yaml` and a `cdc.yaml` side by side. Individual runs are always stamped with the single flow of the file that declared them.
 - **`cocotb: true`** is stamped on a cocotb test *and* on its testbench. `kind: cocotb` already says it on the testbench and `cocotb_modules` implies it on the test; the flat boolean is so a consumer bucketing nodes does not have to know which type spells it which way.
 
-All five files, and every suite they list, join the config tier's input hashes — wiring a suite into a flow changes the graph, so [the no-op re-run check](#caching) has to see the edit.
+All five files, every suite they list, and `root_config.yaml` itself join the config tier's input hashes — wiring a suite into a flow, or a manifest path into `cfg-rtl-reg`, changes the graph, so [the no-op re-run check](#caching) has to see the edit.
 
-Discovery is by filename at the project root, the same convention `rb <flow>-regression` uses when no `-c` is passed. A missing file is not an error, it is a project that does not run that flow; one that will not load is reported like a bad suite and costs only its own flow's nodes.
+A missing manifest — at the root *and* at any configured path — is not an error, it is a project that does not run that flow; one that will not load is reported like a bad suite and costs only its own flow's nodes. A `cfg-rtl-reg` key the schema does not know (`cdc-reg-cfg-paths:` for `cdc-reg-cfg-path:`) is reported by name rather than ignored, since a silently-dropped key looks exactly like a project that does not run the flow.
 
 ## Python API
 

@@ -48,6 +48,8 @@ When `--reg-config` is not given, `rtl_buddy` resolves the regression config in 
 
 This means you can drop a `regression.yaml` at the repo root and run `rtl-buddy regression` without any flags, even if `root_config.yaml` points elsewhere.
 
+The flow regressions (`rb synth-regression`, `rb power-regression`, `rb fpga-regression`, `rb cdc-regression`, `rb fpv-regression`) resolve their manifests with the same precedence: `-c`, then `./<flow>_regression.yaml` in the current working directory, then the matching `cfg-rtl-reg.<flow>-reg-cfg-path` key in `root_config.yaml` (see [root_config.yaml](../reference/yaml.md#root_configyaml)). Declaring a flow's manifest there is what keeps a non-root location (e.g. `lint/cdc/cdc_regression.yaml`) visible to [`rb graph build`'s flow discovery](graph.md#flow-provenance) as well.
+
 Each suite's outputs land under that suite's own `tests.yaml` directory; the orchestration log and any merged coverage artifacts land under `dirname(regression.yaml)`. See [Execution Context](execution-context.md) for how the per-suite re-anchoring works.
 
 ### Regression levels

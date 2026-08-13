@@ -18,7 +18,13 @@ import click
 
 from .config import RegConfig, RootConfig, SuiteConfig, TestConfig
 from .config.env_file import apply_env_file
-from .config.root import _discover_root_cfg, discover_project_root
+from .config.root import (
+    REG_CFG_PATH_KEYS,
+    _discover_root_cfg,
+    discover_project_root,
+    load_reg_cfg_paths,
+    resolve_reg_cfg_path,
+)
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
 from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
@@ -2986,6 +2992,9 @@ class RtlBuddy:
                     logging.INFO,
                     "regression.config_root_default",
                     path=self.reg_cfg.get_path(),
+                    # `flow` is on every emission of this event, not only the
+                    # per-flow commands' — one event name, one field set.
+                    flow="sim",
                 )
 
         reg_dir = os.path.dirname(self.reg_cfg.get_path())
@@ -6213,6 +6222,62 @@ class RtlBuddy:
             metadata=metadata,
         )
 
+    def _resolve_flow_reg_cfg_path(
+        self, reg_config: str | None, default_filename: str, flow: str
+    ) -> str:
+        """Resolve a flow's regression manifest path.
+
+        Precedence, mirroring what ``rb regression`` applies to
+        ``regression.yaml``: an explicit ``-c`` wins; then
+        ``./<flow>_regression.yaml`` in the invocation cwd; then the
+        flow's ``cfg-rtl-reg`` path from ``root_config.yaml`` (#389).
+        The graph's config tier discovers manifests through the same
+        cfg-rtl-reg machinery, so a manifest this finds is one
+        ``rb graph build`` flow-stamps too.
+        """
+        if reg_config is not None:
+            return (
+                reg_config
+                if os.path.isabs(reg_config)
+                else str(self.invocation_cwd / reg_config)
+            )
+        local = str(self.invocation_cwd / default_filename)
+        if os.path.isfile(local):
+            return local
+        # RootConfig is not built yet at this point (the command context —
+        # and with it root_cfg — anchors on the manifest we are still
+        # looking for), so read just the cfg-rtl-reg block leniently.
+        root_cfg_path = _discover_root_cfg(start_dir=self.invocation_cwd)
+        key, _ = REG_CFG_PATH_KEYS[flow]
+        if root_cfg_path is not None:
+            configured = resolve_reg_cfg_path(
+                load_reg_cfg_paths(root_cfg_path), root_cfg_path, flow
+            )
+            if configured is not None:
+                # Existence-check before returning, so a configured path that
+                # is wrong is reported as such rather than handed to the
+                # RegConfig loader as a load failure for a path the user never
+                # typed. `graph/config_tier.py` applies the same isfile guard,
+                # so the two surfaces agree on when a configured path counts.
+                if os.path.isfile(configured):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "regression.config_root_default",
+                        path=configured,
+                        flow=flow,
+                    )
+                    return configured
+                raise FatalRtlBuddyError(
+                    f"cfg-rtl-reg.{key} in root_config.yaml points at "
+                    f"{configured}, which does not exist; correct the path, "
+                    f"pass -c, or add ./{default_filename}"
+                )
+        raise FatalRtlBuddyError(
+            f"{default_filename} not found; pass -c to specify a path or set "
+            f"cfg-rtl-reg.{key} in root_config.yaml"
+        )
+
     def do_fpga_regression(
         self,
         reg_config: Annotated[
@@ -6221,7 +6286,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to fpga_regression.yaml",
-                show_default="Use ./fpga_regression.yaml if present",
+                show_default="Use ./fpga_regression.yaml if present, "
+                "otherwise root_config.yaml fpga-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -6249,19 +6315,9 @@ class RtlBuddy:
             bitstream=emit_bitstream,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "fpga_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "fpga_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "fpga_regression.yaml", "fpga"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         fpga_reg = FpgaRegConfig(name=self.name + "/fpga_reg_config", path=reg_cfg_path)
@@ -6315,7 +6371,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to power_regression.yaml",
-                show_default="Use ./power_regression.yaml if present",
+                show_default="Use ./power_regression.yaml if present, "
+                "otherwise root_config.yaml power-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -6334,19 +6391,9 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "power_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "power_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "power_regression.yaml", "power"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         power_reg = PowerRegConfig(
@@ -6399,7 +6446,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to synth_regression.yaml",
-                show_default="Use ./synth_regression.yaml if present",
+                show_default="Use ./synth_regression.yaml if present, "
+                "otherwise root_config.yaml synth-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -6428,19 +6476,9 @@ class RtlBuddy:
             effort=effort,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "synth_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "synth_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "synth_regression.yaml", "synth"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         synth_reg = SynthRegConfig(
@@ -6955,7 +6993,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to cdc_regression.yaml",
-                show_default="Use ./cdc_regression.yaml if present",
+                show_default="Use ./cdc_regression.yaml if present, "
+                "otherwise root_config.yaml cdc-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -6974,19 +7013,9 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "cdc_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "cdc_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "cdc_regression.yaml", "cdc"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         cdc_reg = CdcRegConfig(name=self.name + "/cdc_reg_config", path=reg_cfg_path)
@@ -7267,7 +7296,8 @@ class RtlBuddy:
                 "-c",
                 "--reg-config",
                 help="path to fpv_regression.yaml",
-                show_default="Use ./fpv_regression.yaml if present",
+                show_default="Use ./fpv_regression.yaml if present, "
+                "otherwise root_config.yaml fpv-reg-cfg-path",
             ),
         ] = None,
         reg_level: Annotated[
@@ -7286,19 +7316,9 @@ class RtlBuddy:
             reg_level=reg_level,
         )
 
-        if reg_config is not None:
-            reg_cfg_path = (
-                reg_config
-                if os.path.isabs(reg_config)
-                else str(self.invocation_cwd / reg_config)
-            )
-        else:
-            local = str(self.invocation_cwd / "fpv_regression.yaml")
-            reg_cfg_path = local if os.path.isfile(local) else None
-            if reg_cfg_path is None:
-                raise FatalRtlBuddyError(
-                    "fpv_regression.yaml not found; pass -c to specify a path"
-                )
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "fpv_regression.yaml", "fpv"
+        )
 
         orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
         fpv_reg = FpvRegConfig(name=self.name + "/fpv_reg_config", path=reg_cfg_path)

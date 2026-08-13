@@ -672,6 +672,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"root_config.yaml not found (searched {fields.get('max_levels')} levels from {fields.get('cwd')})"
         case "root_config.load_failed":
             return f'failed to load root config "{fields.get("path")}": {fields.get("error")}'
+        case "root_config.reg_cfg_block_unreadable":
+            return (
+                f"{fields.get('path')}: cfg-rtl-reg block could not be read "
+                f"({fields.get('error')}) — configured regression-manifest paths "
+                "ignored, falling back to the ./<flow>_regression.yaml filename "
+                "convention"
+            )
+        case "root_config.reg_cfg_unknown_keys":
+            return (
+                f"{fields.get('path')}: cfg-rtl-reg has unknown key(s) "
+                f"{fields.get('keys')} — ignored; the manifest-path keys are "
+                f"{fields.get('known')}"
+            )
         case "regression_config.load_failed":
             return f'failed to load regression config "{fields.get("path")}": {fields.get("error")}'
         case "suite_config.load_failed":

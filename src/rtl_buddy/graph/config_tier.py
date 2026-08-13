@@ -51,6 +51,7 @@ from ..config.cdc import CdcRegConfig
 from ..config.fpga import FpgaRegConfig
 from ..config.fpv import FpvRegConfig
 from ..config.reg import RegConfig
+from ..config.root import load_reg_cfg_paths, resolve_reg_cfg_path
 from ..config.spec import SpecBlock, SpecConfig
 from ..config.suite import SuiteConfig, SuiteConfigFile
 from ..config.synth import SynthRegConfig
@@ -148,8 +149,11 @@ class _FlowSource:
 
 
 #: The five flows, in the order they are read. Discovery is by filename at
-#: the project root — the same convention `rb <flow>-regression` uses when
-#: no `-c` is passed.
+#: the project root, then by the flow's `cfg-rtl-reg` path from
+#: `root_config.yaml` — the same precedence `rb <flow>-regression` applies
+#: when no `-c` is passed, so a manifest kept away from the root (e.g.
+#: `cdc_regression.yaml` under `lint/cdc/`) is only visible to the graph
+#: if the command would find it too (#389).
 FLOW_SOURCES: tuple[_FlowSource, ...] = (
     _FlowSource(FLOW_SIM, "regression.yaml", RegConfig),
     _FlowSource(FLOW_SYNTH, "synth_regression.yaml", SynthRegConfig, "get_syntheses"),
@@ -350,19 +354,36 @@ class _Flows:
 
 
 def _collect_flows(project_root: Path) -> _Flows:
-    """Read every repo-level regression file that exists.
+    """Read every flow regression file the project declares.
 
-    Loading goes through each flow's own ``*RegConfig``, which is the same
-    class ``rb <flow>-regression`` constructs — so a suite this says is a
-    CDC suite is one ``rb cdc-regression`` would actually run. A file that
-    will not load is recorded and skipped: flow provenance is a labelling
-    nicety, and losing it must not cost a project its whole graph.
+    Discovery per flow is root filename first (``<root>/<filename>``),
+    then the flow's ``cfg-rtl-reg`` path from ``root_config.yaml`` — the
+    precedence ``rb <flow>-regression`` applies when no ``-c`` is passed
+    (local file, then configured path), so the graph has no private,
+    stricter discovery rule (#389). Loading goes through each flow's own
+    ``*RegConfig``, which is the same class ``rb <flow>-regression``
+    constructs — so a suite this says is a CDC suite is one
+    ``rb cdc-regression`` would actually run. A file that will not load
+    is recorded and skipped: flow provenance is a labelling nicety, and
+    losing it must not cost a project its whole graph.
     """
     flows = _Flows()
+    root_cfg_path = project_root / "root_config.yaml"
+    reg_paths = load_reg_cfg_paths(root_cfg_path)
+    if root_cfg_path.is_file():
+        # Wiring a manifest path into cfg-rtl-reg changes what the graph
+        # discovers, so `rb graph build`'s no-op check has to see the edit.
+        flows.inputs.append(str(root_cfg_path))
     for source in FLOW_SOURCES:
         path = project_root / source.filename
         if not path.is_file():
-            continue
+            configured = resolve_reg_cfg_path(reg_paths, root_cfg_path, source.flow)
+            if configured is None or not os.path.isfile(configured):
+                # Configured-but-missing is not a failure: reg-cfg-path
+                # defaults to "regression.yaml" in every template, and a
+                # project without one still has a valid (smaller) graph.
+                continue
+            path = Path(configured)
         flows.inputs.append(str(path))
         try:
             reg = source.loader(name=f"graph/{source.flow}", path=str(path))
