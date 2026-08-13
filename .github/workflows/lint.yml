@@ -9,8 +9,9 @@ on:
       - 'uv.lock'
       - 'src/**/*.py'
       - 'tests/**/*.py'
+  # No `branches:` filter — stacked PRs are based on their predecessor's
+  # branch, not on main, and a base filter would silently skip their checks.
   pull_request:
-    branches: [main]
     paths:
       - '.github/workflows/lint.yml'
       - 'pyproject.toml'
