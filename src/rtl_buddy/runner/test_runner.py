@@ -38,6 +38,7 @@ class TestRunner:
         run_depth=None,
         suite_dir=None,
         share_build=False,
+        expect_prebuilt=False,
     ):
         """
         Run tests based on config
@@ -62,6 +63,7 @@ class TestRunner:
         self.test_runner_mode = test_runner_mode
         self.suite_dir = suite_dir
         self.share_build = share_build
+        self.expect_prebuilt = expect_prebuilt
 
     def _create_vlog_sim(self):
         sim_mode = {"sim_to_stdout": True}
@@ -85,6 +87,7 @@ class TestRunner:
             replay_run_id=self.replay_run_id,
             suite_dir=self.suite_dir,
             share_build=self.share_build,
+            expect_prebuilt=self.expect_prebuilt,
         )
 
     def run(self):

@@ -120,7 +120,7 @@ from .tools.spec_trace import (
 )
 from .tools.verible import Verible
 from .tools.vlog_filelist import VlogFilelist
-from .tools.vlog_sim import share_build_supported
+from .tools.vlog_sim import share_build_unsupported_reason
 from .config.xplr import load_xplr_config
 from .xplr import analysis as xplr_analysis
 from .xplr import commands as xplr_commands
@@ -600,6 +600,7 @@ class RtlBuddy:
         self.coverage = None
         self.run_depth = RunDepth.POST
         self.share_build = False
+        self.expect_prebuilt = False
         self.machine = False
         self.invocation_cwd: Path = Path.cwd()
         self.exec_ctx: ExecutionContext | None = None
@@ -1596,6 +1597,14 @@ class RtlBuddy:
                 "it instead of re-running the suite's sweep hook",
             ),
         ] = None,
+        expect_prebuilt: Annotated[
+            bool,
+            typer.Option(
+                "--expect-prebuilt",
+                help="this job was gated on a build job, so compiling here "
+                "means that build's stamp did not validate (warns)",
+            ),
+        ] = False,
     ):
         """
         internal: run one (test, run_id) and write its result JSON (#351)
@@ -1604,6 +1613,7 @@ class RtlBuddy:
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
         self.share_build = share_build
+        self.expect_prebuilt = expect_prebuilt
         # Resolve the output path before entering the command context so
         # a relative --result-json lands where the dispatching process
         # expects it, not under the suite dir.
@@ -1923,6 +1933,7 @@ class RtlBuddy:
             run_depth=self.run_depth,
             suite_dir=suite_dir,
             share_build=self.share_build,
+            expect_prebuilt=self.expect_prebuilt,
         )
 
         if len(run_ids) == 1:
@@ -2337,7 +2348,20 @@ class RtlBuddy:
         # submitting it burns a compile and adds queue latency for nothing
         # (#358). A mixed-builder suite still gets one: the sharable configs
         # benefit.
-        if any(not entry["compile_in_job"] for entry in entries):
+        #
+        # One exception, and it is a correctness one rather than an
+        # optimization (#369): a test that compiles inside its own job
+        # compiles into `artefacts/<test>/`, which is keyed on the test and
+        # NOT on the run. Fan that test out over several run_ids and every
+        # element runs the full compile into that one directory at once,
+        # overwriting each other's outputs — spurious `Compile failed`
+        # results with no design fault behind them. The build job is the
+        # single writer that fixes it: it compiles once, and the elements
+        # short-circuit on the stamp it leaves.
+        fans_out_in_job = any(
+            entry["compile_in_job"] and len(entry["rows"]) > 1 for entry in entries
+        )
+        if any(not entry["compile_in_job"] for entry in entries) or fans_out_in_job:
             build_handle = self._submit_dispatch_build(
                 suite_cfg,
                 backend,
@@ -2354,7 +2378,11 @@ class RtlBuddy:
                 logging.INFO,
                 "dispatch.build_job_skipped",
                 suite_dir=suite_dir,
-                reason="no planned test can share a build; each sim job compiles",
+                reason=(
+                    "no planned test can share a build, and none is fanned out "
+                    "over several runs; each sim job compiles into its own "
+                    "per-test directory"
+                ),
                 tests=len(entries),
             )
 
@@ -2419,23 +2447,22 @@ class RtlBuddy:
                     builder_override=self._builder_override,
                     extra_sim_timeout=self._extra_sim_timeout_override,
                     share_build=True,
+                    # Gated jobs are told so: reaching their own compile then
+                    # means the build job's stamp did not validate, which is
+                    # the one thing that puts every sibling element back into
+                    # one build directory at once (#369).
+                    expect_prebuilt=build_handle is not None,
                     # Named after the backend that will write it: `slurm-*`
                     # from sbatch --output, `local-parallel-*` from the pool's
                     # redirected stdout.
                     log_path=dispatch_dir / f"{backend.name}-{run_tag}.log",
                     plan_path=plan_path,
                 )
-                # compile_in_job joins the key so a suite mixing builders does
-                # not make its self-compiling elements queue behind a shared
-                # build they will never read (dependency is per group below).
+                # Resources alone: every group now takes the same dependency,
+                # so a self-compiling test that happens to resolve to the
+                # same reservation can ride along in the same array.
                 groups.setdefault(
-                    (
-                        resources.cpus,
-                        resources.mem,
-                        resources.time,
-                        entry["compile_in_job"],
-                    ),
-                    [],
+                    (resources.cpus, resources.mem, resources.time), []
                 ).append((idx, spec))
 
         pending = []  # (row index, JobHandle)
@@ -2444,23 +2471,25 @@ class RtlBuddy:
             # overlapping run in the same suite tree never rewrites a
             # manifest under another run's still-queued array elements, which
             # sed the manifest at exec time. Sibling of .shared-builds.
-            for array_seq, (group_key, group_entries) in enumerate(
-                groups.items(), start=1
-            ):
+            for array_seq, group_entries in enumerate(groups.values(), start=1):
                 specs = [spec for _, spec in group_entries]
                 array_dir = dispatch_root / f"{os.getpid()}-{array_seq:03d}"
-                compiles_in_job = group_key[-1]
                 handles = backend.submit_array(
                     specs,
                     array_dir=array_dir,
                     max_parallel=dispatch_cfg.max_jobs_per_array,
-                    # Gate on the shared build only if this group actually
-                    # reads it. Elements that compile for themselves — or a
-                    # suite with no build job at all — run unblocked.
+                    # Every group waits for the build job, including the
+                    # groups that compile for themselves. The build job runs
+                    # PRE+COMPILE for the whole plan, so it writes into a
+                    # self-compiling test's `artefacts/<test>/` too — letting
+                    # such an element start alongside it is the same
+                    # two-writers-one-directory race that made this build job
+                    # necessary (#369). Gated, it finds the stamp and skips
+                    # its own compile. A suite with no build job at all still
+                    # runs unblocked: there, one element per directory is the
+                    # only writer.
                     dependency=(
-                        build_handle.job_id
-                        if build_handle is not None and not compiles_in_job
-                        else None
+                        build_handle.job_id if build_handle is not None else None
                     ),
                 )
                 for (idx, _), handle in zip(group_entries, handles):
@@ -2511,11 +2540,11 @@ class RtlBuddy:
             exp_builder = builder_cfg.get_name()
             # A builder that cannot share a build recompiles inside every sim
             # job, so that job's reservation has to cover the compile too
-            # (#358). Decided here, once, from the same capability the job
-            # itself will consult.
-            compile_in_job = not share_build_supported(
-                builder_cfg.get_simulator_family()
-            )
+            # (#358). Decided here, once, from the same predicate the job
+            # itself will consult — family *and* an absolute `builder-simv:`,
+            # not family alone, or a VCS builder pinned that way would be
+            # planned as shareable and take the unshared path at runtime.
+            compile_in_job = share_build_unsupported_reason(builder_cfg) is not None
             rows = []
             for run_id in run_ids:
                 suite_results.append(

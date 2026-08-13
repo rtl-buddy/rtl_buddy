@@ -73,6 +73,8 @@ def test_job_argv(spec: TestJobSpec) -> list[str]:
         argv += ["--plan", str(spec.plan_path)]
     if spec.share_build:
         argv += ["--share-build"]
+    if spec.expect_prebuilt:
+        argv += ["--expect-prebuilt"]
     if spec.run_id is not None:
         argv += ["--run-id", str(spec.run_id)]
     if spec.seed_mode != SeedMode.DEFAULT:

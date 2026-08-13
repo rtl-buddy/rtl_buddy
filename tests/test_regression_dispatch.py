@@ -447,7 +447,12 @@ class _RecordingBackend(_FakeBackend):
 
     def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
         self.array_calls.append(
-            {"n": len(specs), "max_parallel": max_parallel, "array_dir": array_dir}
+            {
+                "n": len(specs),
+                "max_parallel": max_parallel,
+                "array_dir": array_dir,
+                "dependency": dependency,
+            }
         )
         return [self.submit(spec) for spec in specs]
 
@@ -773,6 +778,105 @@ def test_share_build_capable_builder_keeps_the_sim_sized_reservation(
     # ...while the build job it depends on carries the compile reservation.
     build = fake_backend.build_submitted[0].resources
     assert (build.cpus, build.mem, build.time) == (8, "16G", "02:00:00")
+
+
+def test_fanned_out_in_job_compile_gets_a_build_job_to_serialize_it(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """The reported defect (#369): a dispatched randtest on a builder with no
+    shared-build support ran N full compiles into one `artefacts/<test>/` at
+    once, and the losers reported `Compile failed` with nothing wrong.
+
+    The fix is a single writer — the build job compiles once and every
+    element waits for it, then short-circuits on the stamp it left.
+    """
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert [spec.run_id for spec in fake_backend.submitted] == [1, 2, 3]
+    # No element starts before the compile it would otherwise have raced.
+    assert fake_backend.dependencies == ["fake-build"] * 3
+
+
+def test_single_run_in_job_compiles_still_skip_the_build_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One writer per directory already: distinct tests each own their own
+    `artefacts/<test>/`, so serializing them behind a build job would only
+    trade parallel compiles for serial ones."""
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic", "extra"]
+    assert fake_backend.dependencies == [None, None]
+
+
+def _add_second_builder(project: Path, *, name: str, family: str):
+    """Give the fixture a second builder so a suite can mix families."""
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            "cfg-verible:",
+            f'  - name: "{name}"\n'
+            f'    builder: "echo"\n'
+            f'    simulator-family: "{family}"\n'
+            f'    builder-simv: "obj_dir/simv"\n'
+            f"    sim-rand-seed: 1\n"
+            f'    sim-rand-seed-prefix: "+seed="\n'
+            f"    builder-opts:\n"
+            f"      debug:\n"
+            f'        compile-time: "--no-op"\n'
+            f'        run-time: "--no-op"\n'
+            f"\ncfg-verible:",
+        )
+    )
+
+
+def test_every_group_waits_for_the_build_job_that_writes_its_directory(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+):
+    """The build job runs PRE+COMPILE for the whole plan, so it writes into a
+    self-compiling test's artefact dir too — an ungated element would be the
+    second writer there. That is the mixed-builder case, which needs no
+    fan-out at all: one shareable test puts a build job in the plan, and the
+    unshareable one beside it must still wait for it.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    _add_second_builder(minimal_project, name="unshareable", family="questa")
+    tests_yaml = minimal_project / "tests.yaml"
+    # `extra` compiles for itself AND resolves to a different reservation, so
+    # the two tests land in different arrays.
+    tests_yaml.write_text(
+        tests_yaml.read_text().replace(
+            "  - name: extra\n",
+            "  - name: extra\n    builder: unshareable\n    resources: { mem: 24G }\n",
+        )
+    )
+
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-l", "5", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in recording_backend.submitted] == [
+        "basic",
+        "extra",
+    ]
+    # Two reservation groups, one build job, and neither group runs unblocked.
+    assert len(recording_backend.build_submitted) == 1
+    assert len(recording_backend.array_calls) == 2
+    assert [call["dependency"] for call in recording_backend.array_calls] == [
+        "fake-build",
+        "fake-build",
+    ]
 
 
 # --------------------------------------------------- P3: reservation advice
@@ -1104,3 +1208,64 @@ def test_jobs_on_a_replay_against_a_poolless_backend_is_still_rejected(
     )
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
     assert "max-jobs-per-array" in str(result.exception)
+
+
+def test_gated_jobs_are_told_they_were_gated(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """A gated element that still compiles is the signal that the build's
+    stamp failed and every sibling is compiling too (#369 review)."""
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert len(fake_backend.build_submitted) == 1
+    assert all(spec.expect_prebuilt for spec in fake_backend.submitted)
+
+
+def test_ungated_jobs_are_not(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """With no build job there is nothing to have been prebuilt, and one
+    writer per directory, so compiling is the expected path."""
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert fake_backend.build_submitted == []
+    assert not any(spec.expect_prebuilt for spec in fake_backend.submitted)
+
+
+def test_a_pinned_builder_simv_is_planned_as_compiling_in_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The planner and the runtime must agree on what can share a build.
+
+    A VCS builder with an absolute `builder-simv:` declines sharing at
+    runtime; a planner consulting only the family would give it a sim-sized
+    reservation and never count it as needing serialization (#369 review).
+    """
+    _set_stub_builder_family(minimal_project, "vcs")
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text().replace(
+            '    builder-simv: "obj_dir/simv"', '    builder-simv: "/pinned/simv"'
+        )
+    )
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        '  resources:\n    cpus: 1\n    mem: 2G\n    time: "00:20:00"\n'
+        '  compile:\n    cpus: 8\n    mem: 16G\n    time: "00:10:00"\n',
+    )
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    # Sized for the compile it will really do, not for the sim alone.
+    resources = fake_backend.submitted[0].resources
+    assert (resources.cpus, resources.mem) == (8, "16G")
+    # ...and nothing can share, so no build job is submitted for one run.
+    assert fake_backend.build_submitted == []

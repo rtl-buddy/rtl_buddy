@@ -155,7 +155,14 @@ def _make_sim(
 
 
 def _install_fake_builder(
-    monkeypatch, calls, *, stdout="", returncode=0, depends=None, phony_tail=True
+    monkeypatch,
+    calls,
+    *,
+    stdout="",
+    returncode=0,
+    depends=None,
+    phony_tail=True,
+    simv="simv",
 ):
     """run_managed_process stand-in that drops a simv where the flags say.
 
@@ -190,6 +197,12 @@ def _install_fake_builder(
                 (mdir / "Vtop__ver.d").write_text(text_out)
         elif "-o" in cmd:
             out = _resolve(cmd[cmd.index("-o") + 1])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("binary\n")
+        else:
+            # A builder rtl_buddy cannot redirect: it drops its executable
+            # where `builder-simv:` says, relative to the compile dir.
+            out = _resolve(simv)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("binary\n")
         return ManagedProcessResult(returncode=returncode, stdout=stdout, stderr="")
@@ -371,12 +384,87 @@ def test_share_build_falls_back_for_unsupported_builders(tmp_path, monkeypatch):
     assert sim_a._get_simv_path() == str(tmp_path / "artefacts" / "test_a" / "simv")
 
 
+def test_unshareable_builder_still_stamps_its_own_build(tmp_path, monkeypatch):
+    """A build that cannot be *shared* can still be *reused* by the next
+    process to ask for the same test — which is what lets a dispatched
+    fan-out compile once in the build job instead of racing N compiles into
+    one directory (#369)."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert first.compile() == 0
+    assert len(calls) == 1
+    # The stamp lands beside the test's compile outputs: an unshared build
+    # has no directory of rtl_buddy's choosing.
+    stamp = tmp_path / "artefacts" / "test_a" / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+    assert stamp.is_file()
+
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert second.compile() == 0
+    assert len(calls) == 1  # reused, not recompiled
+
+    # ...and it is still not shared: a different test with identical inputs
+    # compiles for itself.
+    other = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="qrun", family="questa"
+    )
+    assert other.compile() == 0
+    assert len(calls) == 2
+    assert other._get_simv_path() != first._get_simv_path()
+
+
+def test_unshareable_builder_rebuilds_when_a_source_changes(tmp_path, monkeypatch):
+    src = _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    first = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert first.compile() == 0
+    _touch(src, "module top; /* edited */ endmodule\n")
+
+    second = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="qrun", family="questa"
+    )
+    assert second.compile() == 0
+    assert len(calls) == 2
+
+
+def test_no_stamp_is_written_without_share_build(tmp_path, monkeypatch):
+    """Reuse stays opt-in: plain `rb test` compiles every time, as before."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    for _ in range(2):
+        sim = _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name="test_a",
+            exe="qrun",
+            family="questa",
+            share_build=False,
+        )
+        assert sim.compile() == 0
+    assert len(calls) == 2
+    assert not (
+        tmp_path / "artefacts" / "test_a" / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+    ).exists()
+
+
 def test_share_build_declines_absolute_builder_simv(tmp_path, monkeypatch):
     """An absolute builder-simv pins the executable; sharing would ignore it."""
     _write_source(tmp_path)
     calls = []
-    _install_fake_builder(monkeypatch, calls)
     pinned = str(tmp_path / "pinned" / "simv")
+    _install_fake_builder(monkeypatch, calls, simv=pinned)
 
     sim_a = _make_sim(
         tmp_path,
@@ -399,6 +487,45 @@ def test_share_build_declines_absolute_builder_simv(tmp_path, monkeypatch):
     assert sim_b.compile() == 0
     assert len(calls) == 2
     assert sim_a._get_simv_path() == pinned
+
+
+def test_a_pinned_simv_overwritten_by_another_test_invalidates_the_stamp(
+    tmp_path, monkeypatch
+):
+    """An absolute `builder-simv:` is one path shared by every test on that
+    builder, while the stamp is per test. Without stamping the executable,
+    test_a's stamp keeps validating after test_b overwrote the binary they
+    both point at, and test_a silently simulates test_b's build (#369)."""
+    _write_source(tmp_path)
+    calls = []
+    pinned = str(tmp_path / "pinned" / "simv")
+    _install_fake_builder(monkeypatch, calls, simv=pinned)
+
+    def _sim(name, pd=None):
+        return _make_sim(
+            tmp_path,
+            monkeypatch,
+            test_name=name,
+            exe="qrun",
+            family="questa",
+            simv=pinned,
+            pd=pd,
+        )
+
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+    # Nothing else has touched the binary: test_a reuses its own build.
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 1
+
+    # test_b compiles a *different* configuration over the same pinned path.
+    assert _sim("test_b", pd={"WIDTH": 8}).compile() == 0
+    assert len(calls) == 2
+    _touch(Path(pinned), "test_b's binary\n")
+
+    # test_a must not inherit it.
+    assert _sim("test_a").compile() == 0
+    assert len(calls) == 3
 
 
 def test_share_build_supported_is_the_single_capability_source():
@@ -774,3 +901,67 @@ def test_default_builder_simv_override_is_not_logged(tmp_path, monkeypatch, capl
     with caplog.at_level(_logging.DEBUG):
         assert sim.compile() == 0
     assert "builder-simv" not in caplog.text
+
+
+def test_a_gated_job_that_compiles_anyway_says_so(tmp_path, monkeypatch, caplog):
+    """The build-job gate *orders* the elements; it does not exclude them.
+
+    If the stamp that build left fails to validate, every element compiles
+    into the same directory at once — #369 resurrected — and the resulting
+    `Compile failed` reads as a design error. This WARNING is the only thing
+    that says otherwise (#369 review).
+    """
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    sim.expect_prebuilt = True
+    with caplog.at_level(_logging.WARNING):
+        assert sim.compile() == 0
+
+    assert "compiling despite being gated on a build job" in caplog.text
+
+
+def test_a_gated_job_that_reuses_the_build_is_silent(tmp_path, monkeypatch, caplog):
+    """The normal path must not warn, or the signal is worthless."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    assert _make_sim(tmp_path, monkeypatch, test_name="test_a").compile() == 0
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    reader.expect_prebuilt = True
+    with caplog.at_level(_logging.WARNING):
+        assert reader.compile() == 0
+
+    assert len(calls) == 1
+    assert "compiling despite being gated" not in caplog.text
+
+
+def test_share_build_unsupported_reason_is_the_predicate_the_head_uses():
+    """The head plans reservations and gating from this, and the job takes
+    the unshared path from it. Family alone is not enough: an absolute
+    `builder-simv:` declines sharing too, and a head consulting only the
+    family would plan such a builder as shareable (#369 review)."""
+    reason = vlog_sim_module.share_build_unsupported_reason
+
+    assert reason(DummyBuilderCfg(simulator_family="verilator")) is None
+    assert reason(DummyBuilderCfg(simulator_family="vcs")) is None
+    assert "no shared-build support" in reason(
+        DummyBuilderCfg(simulator_family="questa")
+    )
+    # The case the two predicates used to disagree on.
+    assert "builder-simv is an absolute path" in reason(
+        DummyBuilderCfg(simulator_family="vcs", simv="/pinned/simv")
+    )
+    # Verilator and Icarus are redirected wholesale, so a pinned simv is
+    # overridden rather than honoured, and sharing still applies.
+    assert (
+        reason(DummyBuilderCfg(simulator_family="verilator", simv="/pinned/simv"))
+        is None
+    )

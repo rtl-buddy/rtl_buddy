@@ -322,6 +322,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: compile failed in the dispatch build "
                 "job (its sim job will retry the compile and fail there)"
             )
+        case "compile.prebuilt_stamp_invalid":
+            run = fields.get("run_id")
+            run_note = "" if run is None else f" (run {run})"
+            return (
+                f"{fields.get('test')}{run_note}: compiling despite being gated "
+                "on a build job — that build's stamp did not validate, so every "
+                "element of this fan-out is compiling into "
+                f"{fields.get('build_dir')} at once. A compile failure below is "
+                "most likely that collision, not a design error."
+            )
         case "dispatch.compile_failed_in_build":
             return (
                 f"{fields.get('test')}: compile failed in build job "

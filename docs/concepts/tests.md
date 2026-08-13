@@ -255,10 +255,15 @@ instead declines sharing altogether — see the caveats below.
 
 Caveats:
 
-- Verilator, VCS, and Icarus builders only. Others log a warning
-  (`compile.share_build_unsupported`, with the reason) and compile per test
-  as before, as does any builder whose `builder-simv:` is an absolute path —
-  that pins the executable outside the shared dir.
+- Verilator, VCS, and Icarus builders share one build. Others log a warning
+  (`compile.share_build_unsupported`, with the reason) and keep the build in
+  the test's own artefact dir, as does any builder whose `builder-simv:` is
+  an absolute path — that pins the executable outside the shared dir. Such a
+  build is still stamped where it lands, so *that test* reuses it on its
+  next run; only cross-test sharing is lost. (That reuse is what lets a
+  dispatched fan-out compile once in the build job instead of racing N
+  compiles into one directory — see
+  [Builders that compile inside the job](dispatch.md#builders-that-compile-inside-the-job).)
 - Include-dir headers and toolchain changes are tracked **only where the
   builder reports its inputs** — Verilator today. Under VCS or Icarus a
   header-only edit still does not invalidate the stamp; delete

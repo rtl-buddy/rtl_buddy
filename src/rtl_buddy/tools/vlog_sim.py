@@ -93,6 +93,35 @@ def share_build_supported(simulator_family) -> bool:
     return simulator_family in SHARE_BUILD_FAMILIES
 
 
+def share_build_unsupported_reason(builder_cfg):
+    """Why this builder cannot use a shared build, or ``None`` if it can.
+
+    Two ways out: a family rtl_buddy cannot redirect into the shared dir at
+    all, and an absolute ``builder-simv:`` — that pins the executable to one
+    exact path the user chose, which a per-compile-key shared dir cannot
+    honour without silently ignoring the config.
+
+    Module-level and taking the builder config rather than a live
+    :class:`VlogSim`, because the dispatch head must ask the *same* question
+    before any VlogSim exists: it sizes a sim job's reservation on whether
+    that job will also compile, and gates the fan-out on whether anything
+    needs serializing. A head that consulted only the family would plan a
+    VCS builder with an absolute ``builder-simv:`` as shareable and give it
+    a sim-sized reservation, while the job itself took the unshared path
+    (#369).
+    """
+    family = builder_cfg.get_simulator_family()
+    if not share_build_supported(family):
+        return f"simulator family {family!r} has no shared-build support"
+    if family not in ("verilator", "icarus") and os.path.isabs(builder_cfg.get_simv()):
+        return (
+            f"builder-simv is an absolute path "
+            f"({builder_cfg.get_simv()}), which pins the "
+            "executable outside the shared build dir"
+        )
+    return None
+
+
 # Matches the option prefixes VlogFilelist emits into run.f (see
 # VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
 _FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext)\+|-[vyF]\s+)?(.*)$")
@@ -171,6 +200,7 @@ class VlogSim:
         replay_run_id=None,
         suite_dir=None,
         share_build=False,
+        expect_prebuilt=False,
     ):
         """
         compile and execute sim for given test
@@ -194,6 +224,11 @@ class VlogSim:
         # dir is only known once compile() has written the filelist.
         self.share_build = share_build
         self._shared_build_dir = None
+        # Set by a dispatched sim job that was gated on a build job, so
+        # compiling here means the stamp that build left did not
+        # validate — worth a WARNING, because the whole serialization
+        # guarantee rests on it (#369).
+        self.expect_prebuilt = expect_prebuilt
         # CLI commands always pass suite_dir resolved from the test
         # config (see ExecutionContext / rtl_buddy.py). The cwd fallback
         # is tests-only — `tests/test_setup_failures.py`,
@@ -544,25 +579,7 @@ class VlogSim:
         return has_license_queue_marker((result.stdout or "") + (result.stderr or ""))
 
     def _share_build_unsupported_reason(self):
-        """Why this test cannot use a shared build, or ``None`` if it can.
-
-        Two ways out: a family rtl_buddy cannot redirect into the shared dir
-        at all, and an absolute ``builder-simv:`` — that pins the executable
-        to one exact path the user chose, which a per-compile-key shared dir
-        cannot honour without silently ignoring the config.
-        """
-        family = self._get_simulator_family()
-        if not share_build_supported(family):
-            return f"simulator family {family!r} has no shared-build support"
-        if family not in ("verilator", "icarus") and os.path.isabs(
-            self.rtl_builder_cfg.get_simv()
-        ):
-            return (
-                f"builder-simv is an absolute path "
-                f"({self.rtl_builder_cfg.get_simv()}), which pins the "
-                "executable outside the shared build dir"
-            )
-        return None
+        return share_build_unsupported_reason(self.rtl_builder_cfg)
 
     def _vcs_shared_output_argv(self, build_dir):
         """VCS flags that put the whole build inside ``build_dir``.
@@ -685,8 +702,23 @@ class VlogSim:
 
     @classmethod
     def _shared_build_is_valid(cls, build_dir, fingerprint, *, test_name=None):
-        simv_path = Path(build_dir) / "simv"
-        stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+        return cls._build_stamp_is_valid(
+            build_dir, Path(build_dir) / "simv", fingerprint, test_name=test_name
+        )
+
+    @classmethod
+    def _build_stamp_is_valid(
+        cls, stamp_dir, simv_path, fingerprint, *, test_name=None
+    ):
+        """Does the stamp in ``stamp_dir`` still describe ``simv_path``?
+
+        ``stamp_dir`` and the executable are separate arguments because an
+        unshared build does not put the executable inside a directory
+        rtl_buddy chose: the stamp goes in the test's compile work dir while
+        ``builder-simv:`` decides where the binary lands (#369).
+        """
+        simv_path = Path(simv_path)
+        stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
         if not simv_path.is_file() or not stamp_path.is_file():
             return False
         try:
@@ -699,8 +731,25 @@ class VlogSim:
             # honest reading is one rebuild — after which the stamp says
             # which it is.
             return False
+        # The executable is an *output*, so the input fingerprint says
+        # nothing about it. That was harmless while the output always lived
+        # in a directory named after those inputs, and stops being harmless
+        # here: an absolute `builder-simv:` is one path shared by every test
+        # using that builder, while the stamp is per test. Without this,
+        # test_a's stamp keeps validating after test_b overwrote the binary
+        # they both point at, and test_a silently simulates test_b's build
+        # (#369).
+        if stored.get("simv") != _stat_entry(str(simv_path)):
+            log_event(
+                logger,
+                logging.DEBUG,
+                "compile.build_dep_changed",
+                test=test_name,
+                dependency=str(simv_path),
+            )
+            return False
         if {
-            key: value for key, value in stored.items() if key != "deps"
+            key: value for key, value in stored.items() if key not in ("deps", "simv")
         } != fingerprint:
             return False
         deps = stored["deps"]
@@ -932,6 +981,39 @@ class VlogSim:
                     simulator=self._get_simulator_family(),
                     reason=unsupported,
                 )
+                # The build cannot be *shared*, but it can still be *reused*
+                # by the next process to ask for this test — which is what
+                # lets a dispatched fan-out compile once in the build job and
+                # have its elements short-circuit instead of racing each
+                # other into one directory (#369). Same fingerprint, same
+                # stamp file; only the scope differs, so the stamp lives in
+                # the test's own compile work dir.
+                key_cmd = (
+                    [rtl_builder_cfg.get_exe()]
+                    + builder_opts
+                    + extra_compile_flags
+                    + assertion_flags
+                    + plusdefines
+                )
+                fingerprint = self._compile_fingerprint(key_cmd, filelist_path)
+                if self._build_stamp_is_valid(
+                    compile_work_dir,
+                    self._get_simv_path(),
+                    fingerprint,
+                    test_name=self.test_name,
+                ):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "compile.build_reused",
+                        test=self.test_name,
+                        build_dir=compile_work_dir,
+                        shared=False,
+                    )
+                    return 0
+                (Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME).unlink(
+                    missing_ok=True
+                )
 
         shared = self._shared_build_dir is not None
         run_cmd = [rtl_builder_cfg.get_exe()]
@@ -989,6 +1071,22 @@ class VlogSim:
 
         run_cmd += ["-f", filelist_path]
         run_str = " ".join(run_cmd)
+        if self.expect_prebuilt:
+            # This job was ordered after a build job precisely so it would not
+            # have to compile. Reaching here means that build's stamp did not
+            # validate, and the dependency only *orders* the elements — it does
+            # not exclude them — so every sibling element is about to do the
+            # same thing into the same directory. That is #369 resurrected, and
+            # this is the one line that says so; a `Compile failed` further
+            # down otherwise looks like a design error.
+            log_event(
+                logger,
+                logging.WARNING,
+                "compile.prebuilt_stamp_invalid",
+                test=self.test_name,
+                run_id=self.run_id,
+                build_dir=build_dir,
+            )
         log_event(
             logger,
             logging.INFO,
@@ -1058,13 +1156,31 @@ class VlogSim:
             if self._get_simulator_family() == "icarus":
                 self._write_icarus_simv_wrapper()
             if fingerprint is not None:
+                # A shared build owns its directory and stamps it; an
+                # unshared one has no directory of its own (`build_dir` is a
+                # bare relative name the builder interprets), so its stamp
+                # goes beside the rest of the test's compile outputs.
+                stamp_dir = self._shared_build_dir or compile_work_dir
                 # Recorded from the finished build, not predicted from the
                 # filelist: the builder is the only thing that knows which
-                # headers it actually opened (#303).
+                # headers it actually opened (#303). Read from the *build
+                # output* dir, which is the stamp dir only in the shared
+                # case — unshared, the builder's outputs are under
+                # `compile_work_dir / build_dir` while the stamp sits beside
+                # them in `compile_work_dir`.
                 deps = self._collect_build_deps(build_dir, compile_work_dir)
-                stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
+                stamp_path = Path(stamp_dir) / SHARED_BUILD_STAMP_NAME
                 stamp_path.write_text(
-                    json.dumps({**fingerprint, "deps": deps}, sort_keys=True)
+                    json.dumps(
+                        # The executable is stamped too, so a reuse check can
+                        # tell "these inputs" from "this binary" (#369).
+                        {
+                            **fingerprint,
+                            "deps": deps,
+                            "simv": _stat_entry(self._get_simv_path()),
+                        },
+                        sort_keys=True,
+                    )
                 )
                 log_event(
                     logger,
