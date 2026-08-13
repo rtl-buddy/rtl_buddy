@@ -41,7 +41,10 @@ plans and submits; the compile and the sims both run as scheduler jobs.
    `rb _build-job` on a compute node: it compiles one shared `simv` per
    unique compile key (`--dispatch` implies
    [`--share-build`](tests.md#sharing-compiled-builds-across-tests)) and
-   writes the shared build to the shared filesystem. If no test in the
+   writes the shared build to the shared filesystem. Those compiles run
+   **serially inside that one job**, so a suite with several compile keys
+   needs a `compile.time` covering their total — see [Sizing the
+   reservations](#sizing-the-reservations). If no test in the
    suite uses a share-build-capable builder there is nothing for the sim
    jobs to read, so the build job is skipped entirely rather than burning
    a compile — see [Builders that compile inside the
@@ -303,8 +306,15 @@ several suites submits several arrays, so peak concurrency is roughly
 !!! warning "Quote `time` values"
     YAML 1.1 reads an unquoted `time: 4:00:00` as the **integer 14400**
     (sexagesimal), which Slurm would take as 14400 *minutes* — 10 days.
-    rtl_buddy rejects the unquoted form loudly; always write
-    `time: "4:00:00"`. See
+    rtl_buddy rejects the unquoted form loudly, so this costs you a config
+    error rather than a ten-day reservation; always write
+    `time: "4:00:00"` (bare minutes work as a string too, `time: "240"`).
+
+    The trap is easy to miss because it is inconsistent: a leading-zero form
+    like `01:00:00` happens to survive as a string, so a file full of
+    unquoted times can load fine until someone writes a single-digit hour.
+    Quote every one, in `cfg-dispatch.resources`, `cfg-dispatch.compile`,
+    and per-testbench / per-test `resources:` alike. See
     [Known Issues](../known-issues.md#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal).
 
 ## Per-test reservations
@@ -327,6 +337,52 @@ tests:
 
 Tests that resolve to the same reservation share one Slurm array;
 differing reservations split into separate arrays.
+
+## Sizing the reservations
+
+[Right-sizing](#reservation-right-sizing) tunes these numbers from real
+usage, but it can only
+report on jobs that survived long enough to be measured. Four things decide
+the first sizing, and each has bitten someone:
+
+**`compile.time` covers the whole suite, not one compile.** The build job
+compiles each of the suite's unique compile keys **serially**, in one job,
+under one `--time`. A suite with six testbenches over one DUT has six keys,
+so its build job needs roughly six compiles' worth of time — and the whole
+array waits behind it, since every sim job is gated on that one job with
+`afterok`. Sizing `compile.time` from a single observed compile is the usual
+way to get a build job killed at its limit and a suite of dispatch failures
+pointing at a build log that just stops. Two ways to shrink the number
+rather than raise it: collapse compile keys (tests differing only in
+`plusdefines:` each cost a key — see
+[How arrays interact with the shared build](#how-arrays-interact-with-the-shared-build)),
+or split the suite. Full consequences in
+[Known Issues](../known-issues.md#a-suites-build-job-compiles-every-compile-key-serially-in-one-reservation).
+
+**A job that compiles inside itself must be reserved for the compile.**
+Where the builder cannot share a build, the compile happens under the
+*sim* job's reservation. rtl_buddy folds `cfg-dispatch.compile` into it
+field by field (see [Builders that compile inside the
+job](#builders-that-compile-inside-the-job)), so the thing to get right is
+`cfg-dispatch.compile` itself — a sim-sized `mem` there is what turns a
+whole array into `OUT_OF_MEMORY` kills. Elaboration is usually the memory
+peak of the entire flow, so size `compile.mem` from a real elaboration, not
+from a simulation.
+
+**Give a VCS build job headroom for the license queue.** `-licqueue` waits
+count against `--time`, so a `compile.time` sized for compute alone will
+eventually land on a busy license server — see [A VCS compile can wait for a
+license](#builders-that-compile-inside-the-job). `compile.license_queued` is
+logged when a compile *completes* after queueing, so a build job killed at
+its limit produces no such event of its own: the evidence comes from the
+keys that finished before it, or from a previous run.
+
+**Ask for accounting fine enough to advise from.** Dispatch requests
+`--acctg-freq=task=1` for you unless your `sbatch-args` already set
+`--acctg-freq`; leave it alone unless the site requires otherwise, because
+at the stock 30 s interval every sim job shorter than half a minute reports
+a memory peak far below the truth. See [Reservation
+right-sizing](#reservation-right-sizing).
 
 ## Reservation right-sizing
 
