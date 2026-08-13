@@ -208,7 +208,7 @@ def cmd_open(
     "graph-focus",
     help=(
         "Broadcast graph_focus{node} — point the hub's design knowledge "
-        "graph pane (http://127.0.0.1:<http_port>/graph) at one node of "
+        "graph pane (http://127.0.0.1:<http_port>/gph) at one node of "
         "artefacts/graph/graph.json. NODE is a graph node id: "
         "'module:fifo', 'inst:top/top.u_fifo', 'test:verif/dma#smoke', "
         "'covitem:dma#DMA-COV-1' — the vocabulary `rb graph query` "

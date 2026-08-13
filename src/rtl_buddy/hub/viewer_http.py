@@ -4,8 +4,9 @@ Browsers can't speak the hub's raw TCP transport, so this module
 embeds an HTTP server alongside :mod:`rtl_buddy.hub.server` that:
 
 * serves the hub landing page at ``/`` and the rtl-buddy-view SPA
-  static bundle at ``/view`` (rtl-buddy/rtl_buddy#398 — ``/`` was the
-  SPA until the hub grew a second app worth advertising),
+  static bundle at ``/sch`` (rtl-buddy/rtl_buddy#398 — ``/`` was the
+  SPA until the hub grew a second app worth advertising; #423 moved it
+  again, to the app's short name, and left ``/view`` answering a 307),
 * injects the hub's host:port into the page via a
   ``window.__RTL_BUDDY_HUB__`` script preamble (§4.4),
 * exposes the hub's JSON-message channel as a WebSocket at ``/ws``,
@@ -132,7 +133,7 @@ PLACEHOLDER_HTML = """<!doctype html>
     the WebSocket round-trip below.
   </p>
   <p>
-    The design knowledge graph pane at <a href="/graph"><code>/graph</code></a>
+    The design knowledge graph pane at <a href="/gph"><code>/gph</code></a>
     and the coverage pane at <a href="/cov"><code>/cov</code></a> are
     served independently of the SPA — they need built artefacts, not a
     viewer bundle. Every app this hub serves is listed on the landing
@@ -441,6 +442,23 @@ class ViewerServer:
             return _http_response(connection, 404, b"unknown ws path")
 
         # Plain HTTP.
+
+        # ``/sch/`` → ``/sch``, and the legacy ``/view`` → ``/sch``. The
+        # slashless spelling is canonical: the SPA bundle is built with
+        # Vite ``base: ''`` so every asset reference in its
+        # ``index.html`` is relative (``./assets/index-*.js``), which the
+        # browser resolves against the *directory* of the current URL.
+        # From ``/sch`` that is ``/assets/…`` and hits ``_serve_static``;
+        # from ``/sch/`` it becomes ``/sch/assets/…`` and 404s, leaving a
+        # shell that renders its chrome and then hangs on "Loading…".
+        # Redirecting rather than also mounting the assets one level
+        # deeper keeps one URL per asset, and rtl-buddy-view keeps the
+        # relative base it needs for ``embed.py``'s standalone ``file://``
+        # HTML. ``/sch`` is root-level exactly as ``/view`` was, so the
+        # relative resolution is unchanged by the rename.
+        if redirect := self._canonical_route_redirect(connection, path, query_string):
+            return redirect
+
         if path == landing_page.LANDING_PAGE_ROUTE:
             return _http_response(
                 connection,
@@ -469,7 +487,7 @@ class ViewerServer:
         # bundle's own relative links resolve to, and letting it fall
         # through to ``_serve_static`` would serve the bundle's index
         # WITHOUT the hub injection — an SPA that cannot find its hub.
-        if path in (landing_page.VIEW_PAGE_ROUTE, "/view/", "/index.html"):
+        if path in (landing_page.VIEW_PAGE_ROUTE, "/index.html"):
             cov_available = await self._has_cov_data()
             body = render_index_html(
                 bundle_index=self._bundle_index,
@@ -536,6 +554,43 @@ class ViewerServer:
                 return static
 
         return _http_response(connection, 404, b"not found")
+
+    def _canonical_route_redirect(
+        self, connection: ServerConnection, path: str, query_string: str
+    ) -> Response | None:
+        """Send every non-canonical spelling of an app page to its canonical one.
+
+        Two normalisations, applied in that order, so a request only ever
+        takes **one** hop no matter how it was spelled:
+
+        1. a trailing slash is dropped (``/gph/`` → ``/gph``);
+        2. a legacy page path is renamed (``/graph`` → ``/gph``, ``/view``
+           → ``/sch``, #423) — so ``/graph/`` lands on ``/gph`` directly
+           rather than bouncing through ``/graph``.
+
+        Returns ``None`` for every other path, which is what keeps this
+        from touching anything but page routes: the landing page (``/``
+        *is* canonical), every JSON and asset route (``/view.json`` and
+        ``/graph.json`` are DATA routes and do not move — only pages were
+        renamed), ``/cov/source``, and bundle statics (a directory
+        request there has always been a 404).
+
+        The redirect is **temporary** (307) rather than permanent on
+        purpose: hub http ports are pinned and reused across projects,
+        and a 301 cached against ``127.0.0.1:<port>`` would outlive the
+        hub that issued it. That reasoning is doubly load-bearing for the
+        legacy renames, which a browser would otherwise pin against a
+        port a different project's hub will hold next week.
+        """
+
+        target = path.rstrip("/")
+        target = _LEGACY_PAGE_ROUTES.get(target, target)
+        if target == path:
+            return None  # already canonical, and already slashless
+        if target not in _CANONICAL_PAGE_ROUTES:
+            return None
+        location = f"{target}?{query_string}" if query_string else target
+        return _http_redirect(connection, location)
 
     # ------------------------------------------------------------------
     # / + /hub/* — landing, tokens, brand marks (issue #398)
@@ -1663,13 +1718,51 @@ def _http_response(
     )
 
 
+def _http_redirect(
+    connection: ServerConnection, location: str, *, status: int = 307
+) -> Response:
+    """Build a redirect to ``location`` with an empty body."""
+
+    headers = Headers()
+    headers["Location"] = location
+    headers["Content-Length"] = "0"
+    headers["Cache-Control"] = "no-store"
+    return Response(
+        status_code=status,
+        reason_phrase=_REASON_PHRASES.get(status, ""),
+        headers=headers,
+        body=b"",
+    )
+
+
 _REASON_PHRASES = {
     200: "OK",
+    307: "Temporary Redirect",
     400: "Bad Request",
     403: "Forbidden",
     404: "Not Found",
     409: "Conflict",
     500: "Internal Server Error",
+}
+
+
+# The app pages, in their canonical spelling. Only HTML routes belong
+# here — the JSON and asset routes are fetched by code that spells them
+# exactly, and none of them was renamed.
+_CANONICAL_PAGE_ROUTES = frozenset(
+    {
+        landing_page.VIEW_PAGE_ROUTE,
+        graph_page.GRAPH_PAGE_ROUTE,
+        cov_page.COV_PAGE_ROUTE,
+    }
+)
+
+# Pre-#423 page spellings → their canonical replacement. Page routes
+# only: the ``view`` hub-protocol origin, ``/view.json``, ``/graph.json``
+# and ``/cov.json`` are wire and data contracts and are NOT in here.
+_LEGACY_PAGE_ROUTES = {
+    landing_page.LEGACY_VIEW_PAGE_ROUTE: landing_page.VIEW_PAGE_ROUTE,
+    graph_page.LEGACY_GRAPH_PAGE_ROUTE: graph_page.GRAPH_PAGE_ROUTE,
 }
 
 

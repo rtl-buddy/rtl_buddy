@@ -8,7 +8,8 @@
 whole identity: nothing told a user the graph pane existed, and the next
 app would have been just as invisible. ``/`` is now a landing that names
 the *tasks* ("explore the design", "navigate the knowledge graph") and
-routes to the app that does each one; the SPA moved to ``/view``.
+routes to the app that does each one; the SPA moved to ``/view``, and
+to ``/sch`` in #423 when the page routes became the apps' short names.
 
 Two halves, same split as :mod:`~rtl_buddy.hub.graph_page`:
 
@@ -46,10 +47,18 @@ LANDING_PAGE_ROUTE = "/"
 #: Route serving the landing page's live state.
 STATE_JSON_ROUTE = "/hub/state.json"
 
-#: Route serving the schematic SPA (``/`` before #398). A WIRE route:
-#: the app is displayed as ``sch`` but ``/view`` does not move until a
-#: protocol v2 renames the ``view`` origin with it.
-VIEW_PAGE_ROUTE = "/view"
+#: Route serving the schematic SPA (``/`` before #398, ``/view`` before
+#: #423). The page route is the app's **short** name, so the three apps
+#: read as one set — ``/sch``, ``/gph``, ``/cov`` — and the URL matches
+#: the chip every app switcher shows.
+#:
+#: This is a PAGE route only. The hub-protocol origin stays ``view``, as
+#: do ``/view.json`` and every other data route: the wire contract is
+#: protocol v1 and renaming a page does not get to touch it.
+VIEW_PAGE_ROUTE = "/sch"
+
+#: The pre-#423 spelling, answered with a 307 to :data:`VIEW_PAGE_ROUTE`.
+LEGACY_VIEW_PAGE_ROUTE = "/view"
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +122,7 @@ APPS: tuple[AppCard, ...] = (
             "Spec, design, suites and tests as one picture — click a node to "
             "select it in the schematic and open it in your editor."
         ),
-        route="/graph",
+        route="/gph",
         origin="graph",
     ),
     AppCard(
@@ -297,6 +306,7 @@ __all__ = [
     "STATE_JSON_ROUTE",
     "THEME_CSS_ROUTE",
     "VIEW_PAGE_ROUTE",
+    "LEGACY_VIEW_PAGE_ROUTE",
     "AppCard",
     "build_state_payload",
     "graph_state",

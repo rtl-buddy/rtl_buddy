@@ -59,7 +59,7 @@ With `--serve-viewer`, open `http://127.0.0.1:<http_port>/` — the [landing pag
 
 `--daemon` is reserved; today it warns and runs in the foreground. Treat the explicit `--foreground` as load-bearing; future versions may detach when `--daemon` is given.
 
-`--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/view`, `/graph`, `/ws`) used by the browser apps. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
+`--serve-viewer` enables the HTTP + WebSocket layer (`/`, `/sch`, `/gph`, `/cov`, `/ws`) used by the browser apps. When you omit `--viewer-bundle`, the hub auto-discovers the SPA shipped by [`rtl-buddy-view`](https://github.com/rtl-buddy/rtl-buddy-view) via `importlib.resources` — install it alongside rtl-buddy and `rb hub start --serve-viewer` is all you need. If rtl-buddy-view isn't installed (or you're on a checkout without a staged bundle), the hub falls back to a small placeholder page that proves the transport works. Pass `--viewer-bundle PATH` to override the auto-discovered bundle — useful when iterating on the SPA from a working tree (`viewer/dist/`) and you don't want the in-wheel copy from the installed package.
 
 When the hub knows where to find a `view.json` (via `[mapping].view_json` in `hub.toml`, default `.rtl-buddy/view.json`), the viewer HTTP layer also serves it at `GET /view.json`. Open the SPA with `?view=/view.json` to auto-load the design — e.g. `http://127.0.0.1:<http_port>/view?view=/view.json` — instead of drag-and-dropping the file. The index page also gets a `window.__RTL_BUDDY_VIEW_URL__ = "/view.json"` injection that a future SPA bootstrap can read directly without the query param. If the configured file is missing and no model has been selected, `/view.json` returns `409 no_active_model` (see [View errors](#view-errors)) and the SPA shows its "pick a model" placeholder.
 
@@ -211,17 +211,32 @@ Unknown top-level sections fail validation (typo guard). Unknown keys *inside* k
 
 ## Apps, the landing page, and hub chrome
 
-The hub serves more than one browser app, so `GET /` is a **landing page** that names the tasks and routes to the app that does each one. The schematic SPA moved to `/view` in [rtl-buddy/rtl_buddy#398](https://github.com/rtl-buddy/rtl_buddy/issues/398) (it used to be `/`); `rb hub start --serve-viewer` prints both URLs, and `rb hub status` reports `hub_url` alongside `viewer_url`.
+The hub serves more than one browser app, so `GET /` is a **landing page** that names the tasks and routes to the app that does each one. The schematic SPA moved off `/` in [rtl-buddy/rtl_buddy#398](https://github.com/rtl-buddy/rtl_buddy/issues/398) and onto its present `/sch` in [#423](https://github.com/rtl-buddy/rtl_buddy/issues/423); `rb hub start --serve-viewer` prints both URLs, and `rb hub status` reports `hub_url` alongside `viewer_url`.
 
 | Route | Serves |
 |---|---|
 | `/` | The landing page: task cards, live hub state, "already open" warnings. |
-| `/view` (`/index.html` is an alias) | The rtl-buddy-view SPA (or the placeholder page when no bundle is installed). |
-| `/graph` | The [design knowledge graph pane](#design-knowledge-graph-pane). |
+| `/sch` (`/index.html` is an alias) | The rtl-buddy-view SPA (or the placeholder page when no bundle is installed). |
+| `/gph` | The [design knowledge graph pane](#design-knowledge-graph-pane). |
 | `/cov` | The [coverage pane](#coverage-pane). |
+| `/view`, `/graph` | Legacy page spellings; `307` to `/sch` and `/gph`. |
 | `/hub/state.json` | The landing page's data: hub identity, active model, connected peers, per-app availability, graph freshness. |
 | `/hub/theme.css` | The shared design tokens (below). |
 | `/hub/assets/<name>` | The vendored brand marks (favicon, chip logo, mascot). |
+
+Each app page has exactly one canonical URL: its **short name, without a trailing slash** — `/sch`, `/gph`, `/cov` ([#423](https://github.com/rtl-buddy/rtl_buddy/issues/423)). Everything else answers `307` with the query string carried over, and a request is normalised **once**, so `/graph/` lands on `/gph` directly rather than bouncing through `/graph`:
+
+| Requested | `Location` |
+|---|---|
+| `/sch/`, `/gph/`, `/cov/` | `/sch`, `/gph`, `/cov` |
+| `/view`, `/graph` | `/sch`, `/gph` |
+| `/view/`, `/graph/` | `/sch`, `/gph` |
+
+The trailing-slash half is not cosmetic: the SPA bundle is built with Vite `base: ''` — rtl-buddy-view needs relative asset references so its `embed.py` standalone HTML works over `file://` — and a browser resolves those against the *directory* of the current URL, so a page served at `/sch/` asks for `/sch/assets/…` and hangs on "Loading…". Canonicalising is what keeps one URL per asset instead of mounting the bundle at two depths. `/sch` is root-level exactly as `/view` was, so the rename does not move where those relative references land.
+
+Both halves are **temporary** redirects rather than `301`, because hub HTTP ports are pinned and reused across projects and a cached permanent redirect against `127.0.0.1:<port>` would outlive the hub that issued it — doubly load-bearing for the legacy renames, which a browser would otherwise pin against a port a different project's hub holds next week.
+
+**Page routes only.** `/view.json`, `/graph.json`, `/cov.json`, `/cov/source` and every asset route keep their names, as does the `view` wire origin — see below.
 
 Cards advertise on **data presence**, the same rule `__RTL_BUDDY_GRAPH_URL__` follows: an app with nothing to show keeps its card, muted, carrying the command that would give it something (`rb graph build`, a coverage flag) rather than disappearing. An app whose origin already has a connected peer is badged **already open** — the hub allows one client per origin and a second tab supersedes the first, so the warning belongs before the click.
 
@@ -233,13 +248,13 @@ The three browser apps are one family, and each carries two names:
 
 | App | Long name | Short name | Wordmark | Wire origin |
 |---|---|---|---|---|
-| Schematic SPA (`/view`) | `rtl-buddy-schematic` | `sch` | `rtl-buddy-sch` | `view` |
-| Knowledge graph pane (`/graph`) | `rtl-buddy-graph` | `gph` | `rtl-buddy-gph` | `graph` |
+| Schematic SPA (`/sch`) | `rtl-buddy-schematic` | `sch` | `rtl-buddy-sch` | `view` |
+| Knowledge graph pane (`/gph`) | `rtl-buddy-graph` | `gph` | `rtl-buddy-gph` | `graph` |
 | Coverage pane (`/cov`) | `rtl-buddy-coverage` | `cov` | `rtl-buddy-cov` | `cov` |
 
 The **long name introduces an app**: it is what the landing page's cards say, and what these docs say on first mention. Everything after that is the **short name** — every switcher link (`sch ↗`), every peer strip, every `send → gph` button, and the wordmark each pane titles itself with. Tooltips and prose use plain English instead ("the schematic", "the graph pane", "the coverage pane"): short names are labels, not sentences.
 
-The **origin is the wire, and it does not move for a rename.** The schematic still registers as `view` and the graph pane as `graph`; `view_capture`, `resolve_signal_to_view`, the `/view` route, `view.json`, `--serve-viewer` and every Python identifier keep the names they have until a protocol v2 renames them in lockstep across both repos. The seam between the two vocabularies is a one-line **origin → display label** map — `{view: 'sch', graph: 'gph'}`, every other origin passed through unchanged — that each app applies wherever an origin would otherwise reach a user. It is hand-duplicated, because a pane is a self-contained single file by design: `graph_page.html`, `cov_page.html` and `landing_page.html` each carry it between `>>> origin-labels` markers, the SPA keeps its copy in `viewer/src/components/HubStatus.vue`, and the server-side names live in the `name`/`short` columns of `hub/landing_page.py`'s `APPS` table. Change one, change all of them. `rb hub status` is the deliberate exception: it lists raw origins, because it is the tool you reach for when you want to know what the *wire* says.
+The **origin is the wire, and it does not move for a rename.** The schematic still registers as `view` and the graph pane as `graph`; `view_capture`, `resolve_signal_to_view`, `/view.json`, `view.json`, `--serve-viewer` and every Python identifier keep the names they have until a protocol v2 renames them in lockstep across both repos. The **page** route is the one thing that did move ([#423](https://github.com/rtl-buddy/rtl_buddy/issues/423)): `/sch` and `/gph` are the short names, so a URL now matches the chip every switcher shows. That is a browser-facing rename with a `307` behind it, and it deliberately stops at the page — no data route, no origin, no `tool.name` stamp, no console script. The seam between the two vocabularies is a one-line **origin → display label** map — `{view: 'sch', graph: 'gph'}`, every other origin passed through unchanged — that each app applies wherever an origin would otherwise reach a user. It is hand-duplicated, because a pane is a self-contained single file by design: `graph_page.html`, `cov_page.html` and `landing_page.html` each carry it between `>>> origin-labels` markers, the SPA keeps its copy in `viewer/src/components/HubStatus.vue`, and the server-side names live in the `name`/`short` columns of `hub/landing_page.py`'s `APPS` table. Change one, change all of them. `rb hub status` is the deliberate exception: it lists raw origins, because it is the tool you reach for when you want to know what the *wire* says.
 
 ### Design tokens (`/hub/theme.css`)
 
@@ -294,10 +309,10 @@ These are **broadcasts, not point-to-point sends**, and the vocabularies overlap
 
 | Peer | Transport | How it connects |
 |---|---|---|
-| **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Served at `/view` from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
+| **rtl-buddy-view SPA** (browser) | WebSocket `/ws` on the hub's `http_port` | Served at `/sch` from the bundle when `rb hub start --serve-viewer` is in use. The bundle is injected with `window.__RTL_BUDDY_HUB__` at serve time. |
 | **`rb wave` bridge** (`tools/wave_hub_bridge.py`) | Line-delimited JSON over TCP on `listen_port` | Started by `rb wave`; bridges surfer's WCP TCP socket to the hub. Reconnect with backoff. |
 | **nvim plugin** ([`rtl-buddy-nvim`](https://github.com/rtl-buddy/rtl-buddy-nvim), installed by `rb nvim-install`) | Line-delimited JSON over TCP on `listen_port` | Auto-connects on startup (the managed setup calls `setup({ auto_connect = true })`). |
-| **graph pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /graph` — see [Design knowledge graph pane](#design-knowledge-graph-pane). Needs no viewer bundle. |
+| **graph pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /gph` — see [Design knowledge graph pane](#design-knowledge-graph-pane). Needs no viewer bundle. |
 | **coverage pane** (browser) | WebSocket `/ws` on the hub's `http_port` | The page the hub itself serves at `GET /cov` — see [Coverage pane](#coverage-pane). Needs no viewer bundle. |
 
 The **landing page** at `/` is not in this table on purpose: it polls `/hub/state.json` and never registers an origin, so it cannot evict an app you have open.
@@ -338,7 +353,7 @@ The verbs group into broadcast, wave-control, SPA, source, and resolve families 
 
 ## Design knowledge graph pane
 
-`rb hub start --serve-viewer` also serves the [design knowledge graph](graph.md) as an interactive page at `GET /graph`, next to the schematic rather than instead of it. Two routes:
+`rb hub start --serve-viewer` also serves the [design knowledge graph](graph.md) as an interactive page at `GET /gph`, next to the schematic rather than instead of it. Two routes:
 
 - `GET /graph.json` — `artefacts/graph/graph.json` joined with `artefacts/graph/results-overlay.json` **in memory**, using the same `annotate_graph()` and `annotate_coverage()` joins the query verbs use. `graph.json` on disk is never written: hash stability across regressions is why the overlay is a separate file to begin with. The body is the node-link envelope with each test node carrying its `results` entry, each node the [coverage join](graph.md#coverage-on-the-graph) knows carrying its `coverage` entry, each node carrying the `category` column it renders in, plus a `graph.hub` block (where the two files were read from, node/link counts, per-tier and per-column counts, the column order, the overlay's status summary, and the coverage run's header minus its per-node map) so the page can render a header and a legend without a second round-trip. Read per request, so `rb graph build` / `rb graph results` in another terminal shows up on **reload**. Returns 404 with a JSON `error` naming `rb graph build` when there is no graph yet.
 - `GET /graph` — the page. One HTML document with no build step, no CDN and no web font, because the hub is routinely run on machines with no route off localhost; its only external references are same-origin hub routes (`/hub/theme.css`, `/hub/assets/*`), and it carries an inline fallback for the tokens it cannot render without. Nodes are laid out in [flow columns](graph.md#looking-at-the-graph) (`spec` → `design` → one per verification flow) with a small force relaxation inside each, one colour per column, and test nodes get a pass/fail ring from the overlay. A **coverage** toggle appears when the overlay carries a coverage join and repaints the design column from the shared [coverage ramp](#design-tokens-hubthemecss) — see [Coverage on the pane](graph.md#coverage-on-the-pane). It is served even with no graph built — its empty state names `rb graph build`, which is more useful than a blank tab.

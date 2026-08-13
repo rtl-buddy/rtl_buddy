@@ -25,6 +25,7 @@ from typing import Any
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
 from .config import HubConfig
+from . import landing_page
 from .discovery import delete_record_if_owner, write_record
 from .resolver import Resolver, default_view_json_path
 from .server import HubServer
@@ -140,7 +141,7 @@ def _print_startup_banner(
         # SPA keeps its own line because it is the one people paste
         # into scripts and bookmarks.
         lines.append(f"  Hub:      {base}/")
-        url = f"{base}/view"
+        url = f"{base}{landing_page.VIEW_PAGE_ROUTE}"
         # Append the auto-load query string only when the view.json is
         # actually servable — otherwise it'd 404 and the SPA would land
         # in the empty state with a misleading URL on the user's first

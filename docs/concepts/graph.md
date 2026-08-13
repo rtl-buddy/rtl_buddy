@@ -398,7 +398,7 @@ coverage_for_node(overlay, "covitem:demo_tiny_alu#SAND-FUNC-OP-ADD")["status"]
 annotate_coverage(graph, overlay)     # attach entries in memory, like annotate_graph
 ```
 
-`rb graph explain` returns the node's entry as `coverage` and the manifest behind it as `coverage_run`; `rb graph query` puts it on every node it returns; the MCP `test_status` tool returns the per-test scalars and its own `coverage_run`. The `/graph` pane reads the same block — see [the graph pane](#coverage-on-the-pane).
+`rb graph explain` returns the node's entry as `coverage` and the manifest behind it as `coverage_run`; `rb graph query` puts it on every node it returns; the MCP `test_status` tool returns the per-test scalars and its own `coverage_run`. The `/gph` pane reads the same block — see [the graph pane](#coverage-on-the-pane).
 
 ## Querying the Graph
 
@@ -502,7 +502,7 @@ A static per-directory graph page would be the obvious answer. The hub can do be
 ```bash
 rb graph build
 rb hub start --serve-viewer          # prints the http_port
-# then open http://127.0.0.1:<http_port>/graph
+# then open http://127.0.0.1:<http_port>/gph
 # (or http://127.0.0.1:<http_port>/ — the hub landing links every app)
 ```
 

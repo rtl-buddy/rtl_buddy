@@ -18,7 +18,7 @@ to every connected peer. This module is the two halves of that pane:
   ``graph.json`` on disk is never written — that is what keeps it
   hash-stable across regressions (#379), and the same rule is why
   ``category`` exists only in the served body.
-* :func:`render_graph_html` — the page at ``GET /graph``, a single
+* :func:`render_graph_html` — the page at ``GET /gph``, a single
   self-contained HTML document. No CDN, no bundler, no build step: the
   hub is frequently run on machines with no route to the internet, and
   a viewer that needs one is a viewer that does not open.
@@ -75,8 +75,13 @@ PAGE_SCHEMA_VERSION = 3
 #: Route serving the merged graph + overlay join.
 GRAPH_JSON_ROUTE = "/graph.json"
 
-#: Route serving the interactive page.
-GRAPH_PAGE_ROUTE = "/graph"
+#: Route serving the interactive page — the app's short name, matching
+#: ``/sch`` and ``/cov`` (#423). ``/graph`` still answers, with a 307.
+#: ``GRAPH_JSON_ROUTE`` above is a DATA route and does not move.
+GRAPH_PAGE_ROUTE = "/gph"
+
+#: The pre-#423 spelling, answered with a 307 to :data:`GRAPH_PAGE_ROUTE`.
+LEGACY_GRAPH_PAGE_ROUTE = "/graph"
 
 #: Left-to-right column order on the page.
 #:
@@ -440,14 +445,14 @@ def graph_files_present(project_root: str | os.PathLike) -> bool:
     """Whether ``artefacts/graph/graph.json`` exists for this root.
 
     Cheap enough to call per request; used to decide whether the index
-    page advertises the ``/graph`` link.
+    page advertises the ``/gph`` link.
     """
 
     return graph_json_path(project_root).is_file()
 
 
 def render_graph_html(*, hub_addr: str, graph_url: str = GRAPH_JSON_ROUTE) -> bytes:
-    """The ``GET /graph`` document, with the hub address injected.
+    """The ``GET /gph`` document, with the hub address injected.
 
     Everything is inline. The page must work on a machine with no route
     off localhost, so there is no CDN reference, no web font and no
@@ -484,6 +489,7 @@ __all__ = [
     "GRAPH_JSON_ROUTE",
     "GRAPH_PAGE_HTML",
     "GRAPH_PAGE_ROUTE",
+    "LEGACY_GRAPH_PAGE_ROUTE",
     "PAGE_SCHEMA_VERSION",
     "SPEC_TYPES",
     "build_graph_payload",

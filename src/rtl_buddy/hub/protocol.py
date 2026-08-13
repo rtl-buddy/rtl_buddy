@@ -53,7 +53,10 @@ class Origin(str, Enum):
     CLI = "cli"
     NOTEBOOK = "notebook"
     GRAPH = "graph"
-    """The hub-served design-knowledge-graph pane (``GET /graph``).
+    """The hub-served design-knowledge-graph pane (``GET /gph``).
+
+    The ORIGIN stays ``graph`` though the page moved to ``/gph`` in
+    #423 — a page rename does not touch the wire.
 
     Its own origin rather than a second ``view``: the graph pane and the
     schematic SPA are meant to be open at the same time (clicking a
