@@ -2195,6 +2195,19 @@ compile separately.</p>
 compile inputs (including each source file's size and modification time) is
 written next to the <code>simv</code>. Reuse only happens when the stamp matches, so
 editing any file listed in the filelist triggers a rebuild in place.</p>
+<p>The filelist only names what the <em>project</em> declared, which is not the whole
+truth: an entry that resolves to a directory (<code>+incdir+</code>, <code>-y</code>) says nothing
+about the headers reached through it. So the stamp also records every input
+the builder reports having actually consumed. <strong>Under Verilator</strong> that comes
+from the <code>V&lt;prefix&gt;__ver.d</code> dependency file it emits into the build dir, and
+it covers included headers, files pulled in from <code>-y</code> library dirs,
+Verilator's own std includes, and the <code>verilator_bin</code> binary itself — so a
+header-only edit <em>and</em> an in-place toolchain upgrade both invalidate the
+stamp. Other builders emit nothing comparable; their stamps record that no
+dependency information was available (<code>"deps": null</code>) and reuse behaves as
+it did before. <code>compile.build_stamp_written</code> logs how many inputs were
+tracked, and <code>compile.build_dep_changed</code> names the one that forced a
+rebuild.</p>
 <p>Where the build lands depends on the builder, but the executable is always
 <code>simv</code> inside the shared dir: Verilator is pointed there with <code>--Mdir</code>, VCS
 with <code>-o</code> (plus <code>-Mdir</code> so its <code>csrc</code> tree stays beside the binary), and
@@ -2206,16 +2219,22 @@ build owns the output location, so a <code>-o</code> / <code>-Mdir</code> in <co
 instead declines sharing altogether — see the caveats below.</p>
 <p>Caveats:</p>
 <ul>
-<li>Verilator, VCS, and Icarus builders only. Others log a warning
-  (<code>compile.share_build_unsupported</code>, with the reason) and compile per test
-  as before, as does any builder whose <code>builder-simv:</code> is an absolute path —
-  that pins the executable outside the shared dir.</li>
-<li>Changes inside <code>+incdir+</code> include directories are not tracked by the
-  stamp; delete <code>artefacts/.shared-builds/</code> (or run without
-  <code>--share-build</code>) to force a fresh compile after header-only edits.</li>
-<li>Toolchain upgrades are likewise invisible to the stamp. See
-  <a href="../../known-issues/#shared-build-reuse-does-not-see-header-edits-or-toolchain-upgrades">Known Issues</a>
-  for the full list of untracked inputs.</li>
+<li>Verilator, VCS, and Icarus builders share one build. Others log a warning
+  (<code>compile.share_build_unsupported</code>, with the reason) and keep the build in
+  the test's own artefact dir, as does any builder whose <code>builder-simv:</code> is
+  an absolute path — that pins the executable outside the shared dir. Such a
+  build is still stamped where it lands, so <em>that test</em> reuses it on its
+  next run; only cross-test sharing is lost. (That reuse is what lets a
+  dispatched fan-out compile once in the build job instead of racing N
+  compiles into one directory — see
+  <a href="../dispatch/#builders-that-compile-inside-the-job">Builders that compile inside the job</a>.)</li>
+<li>Include-dir headers and toolchain changes are tracked <strong>only where the
+  builder reports its inputs</strong> — Verilator today. Under VCS or Icarus a
+  header-only edit still does not invalidate the stamp; delete
+  <code>artefacts/.shared-builds/</code> (or run without <code>--share-build</code>) to force a
+  fresh compile. See
+  <a href="../../known-issues/#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them">Known Issues</a>
+  for what remains untracked.</li>
 </ul>
 <h2 id="randomization">Randomization</h2>
 <p>Two seed options are available with the <code>test</code> subcommand:</p>
