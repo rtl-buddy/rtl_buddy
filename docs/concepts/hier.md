@@ -6,7 +6,7 @@ description: How to render module hierarchy diagrams with rtl_buddy via the rb h
 
 > **Integration type:** Pluggable — curated. `rb hier` shells out to the standalone [rtl-buddy-view](https://github.com/rtl-buddy/rtl-buddy-view) renderer at subprocess granularity; rtl_buddy is not coupled to its Python API.
 >
-> **External binary required:** `rtl-buddy-view` — install with `uv tool install rtl-buddy-view` (or `pip install rtl-buddy-view`).
+> **External binary required:** `rtl-buddy-view` — install with `uv tool install rtl-buddy-sch` (or `pip install rtl-buddy-sch`).
 >
 > **Optional:** `graphviz` (`dot`) for SVG/PNG conversion of `--format dot`; `pyslang` for `--frontend slang`.
 >
@@ -16,15 +16,19 @@ description: How to render module hierarchy diagrams with rtl_buddy via the rb h
 
 `rb hier <test> --view tb` (rtl-buddy-view #99 / 6b) renders the **testbench** hierarchy for a test from `tests.yaml`, with the DUT called out as a subtree. The test pins both the model (DUT side) and the TB top, so the positional argument is a test name in this mode. The merged DUT + TB filelist is written to `artefacts/hier/<model>/tb/<tb_name>/hier.f` and the renderer is invoked with both `--top <model>` and `--tb-top <tb.toplevel>`. Cache key is `(model, tb_name)`, so two tests sharing a TB share the artefact.
 
-## Installing rtl-buddy-view
+## Installing the viewer
 
 ```bash
-uv tool install rtl-buddy-view    # recommended — isolated tool env
+uv tool install rtl-buddy-sch    # recommended — isolated tool env
 # or
-uv pip install rtl-buddy-view     # into the project venv
+uv pip install rtl-buddy-sch     # into the project venv
 ```
 
-Once installed, the binary lands on `PATH` as `rtl-buddy-view`. Override with `--tool /absolute/path/to/rtl-buddy-view` if you need a specific build.
+The **distribution** is `rtl-buddy-sch` from 0.7.0 onwards. Releases up to 0.5.0 were published as `rtl-buddy-view`, which is now frozen; rtl_buddy probes both names, `rtl-buddy-sch` first, so either install works.
+
+The **executable** is `rtl-buddy-view` under either name, and so are its `rtl-buddy-view <X.Y.Z>` `--version` output and the `tool.name` stamp in exported JSON. Nothing that calls the renderer had to move. Once installed the binary lands on `PATH` as `rtl-buddy-view` (0.7.0+ installs an `rtl-buddy-sch` alias beside it); override with `--tool /absolute/path/to/rtl-buddy-view` if you need a specific build.
+
+Upgrading from the old distribution needs an uninstall first — pip has no rename metadata, so installing one over the other leaves both claiming the same files. See [Quirks & Known Issues](../known-issues.md#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view).
 
 For `--format dot` rendering to SVG/PNG, install Graphviz (`brew install graphviz` / `apt install graphviz`) and pipe the output through `dot` (see [Output formats](#output-formats) below).
 

@@ -469,3 +469,22 @@ Two related bounds on the same source. An `SF:` path is believed only when it re
 In v6.30.x, `--coverage/--no-coverage` was a boolean pair and the join was on by default. It now **names a source** — `auto` (the default), `model`, `none`, or a path to a merged LCOV `.info` — so `rb graph results --coverage` with no value fails with *"Option '--coverage' requires an argument"*. The break is loud rather than silent, and passing the flag bare was always redundant (the join was already on), but a script that did so needs one edit.
 
 The fix is whichever you meant: drop the flag entirely (the default is unchanged), or write `--coverage auto`. `--no-coverage` is untouched and still disables the join, as does `--coverage none`. Click can express an optional-value option (`is_flag=False, flag_value=...`), which would have kept the bare form working; Typer forwards neither kwarg and deprecates both, so that route is closed until Typer supports it.
+
+## The viewer answers to four different names: dist `rtl-buddy-sch`, executable `rtl-buddy-view`
+
+The schematic viewer's PyPI **distribution** was renamed `rtl-buddy-view` → `rtl-buddy-sch` at 0.7.0; `rtl-buddy-view` is frozen at 0.5.0 and gets no further releases. Nothing else moved, so one tool now wears four names at once:
+
+| What | Name | Notes |
+|------|------|-------|
+| PyPI distribution | `rtl-buddy-sch` | `uv tool install rtl-buddy-sch` / `pip install rtl-buddy-sch`. Releases up to 0.5.0 are on PyPI as `rtl-buddy-view` |
+| Executable | `rtl-buddy-view` | Unchanged — it is what `rb hier`, `rb graph build`, `rb hub` and `--tool` resolve. 0.7.0+ also installs an `rtl-buddy-sch` alias |
+| `rb tool-check` key | `rtl-buddy-view` | `rb tool-check --explain rtl-buddy-view`. `--explain rtl-buddy-sch` exits 1 with "unknown tool" and lists the known keys |
+| Import package | `rtl_buddy_view` | What the hub imports for the in-env SPA bundle |
+
+rtl_buddy probes the **distribution** under both names, `rtl-buddy-sch` first, so either install satisfies every version floor and `rb tool-check` reports a version either way. What you have to know: **pip cannot upgrade one into the other.** There is no rename metadata, so `pip install -U rtl-buddy-sch` over an existing `rtl-buddy-view` leaves two distributions claiming the same console script and the same `rtl_buddy_view` import package, with each one's `RECORD` describing files the other may have overwritten. Uninstall first:
+
+```bash
+pip uninstall -y rtl-buddy-view && pip install -U rtl-buddy-sch
+```
+
+One consequence worth expecting: after `uv tool install rtl-buddy-sch` (an isolated tool env) a project venv that still holds the old wheel has PATH at the new version and in-venv metadata at the old one. `rb tool-check` prefers the executable in exactly that case — a version read from the pre-rename dist name is dropped when the binary is on PATH, so the probe answers — but the stale wheel is still worth removing.

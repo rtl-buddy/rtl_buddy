@@ -101,8 +101,9 @@ def _resolve_viewer_executable() -> str:
     if exe is None:
         raise FatalRtlBuddyError(
             "rb hub --model: 'rtl-buddy-view' not found on PATH. "
-            "Install rtl-buddy-view into the active venv "
-            "(`uv add rtl-buddy-view` or `pip install rtl-buddy-view`)."
+            "Install rtl-buddy-sch into the active venv "
+            "(`uv add rtl-buddy-sch` or `pip install rtl-buddy-sch`) — "
+            "the dist that ships the rtl-buddy-view executable."
         )
     return exe
 

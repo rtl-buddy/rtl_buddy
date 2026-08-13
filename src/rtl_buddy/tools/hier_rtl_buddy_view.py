@@ -332,8 +332,9 @@ class RtlBuddyView:
             if os.sep not in self.executable and shutil.which(self.executable) is None:
                 raise FatalRtlBuddyError(
                     f"hier: '{self.executable}' not found on PATH or next to "
-                    f"{sys.executable}; install rtl-buddy-view into the active "
-                    f"venv or pass --tool to point at the binary"
+                    f"{sys.executable}; install rtl-buddy-sch into the active "
+                    f"venv (the dist that ships this executable) or pass "
+                    f"--tool to point at the binary"
                 )
 
         if self.cdc_annotations is not None and not os.path.isfile(

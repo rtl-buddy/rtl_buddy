@@ -169,6 +169,84 @@ def test_python_sibling_detector_returns_both_version_and_path(fake_bin: Path):
     assert result.kind == "path"
 
 
+def test_python_sibling_detector_falls_back_to_a_legacy_dist_name():
+    """A renamed dist is found under its old name too, current first.
+
+    The viewer's distribution was renamed rtl-buddy-view ->
+    rtl-buddy-sch (rtl-buddy-sch#157); the detector must read whichever
+    is installed, and prefer the current name when both are.
+    """
+    spec = tm.ToolSpec(
+        name="fake",
+        binaries=("nonexistent-cmd-zzz",),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(
+            tm.PythonSiblingDetector(
+                "nonexistent-package-zzz", legacy_packages=("pytest",)
+            ),
+        ),
+    )
+    result = tm.detect_tool(spec)
+    # Current name is absent; the legacy name carries the version.
+    assert result.found is True
+    assert result.version
+    assert result.kind == "python"
+
+    # Both present: the current name wins, so a stale frozen dist left
+    # behind by an upgrade cannot mask the installed one.
+    current_first = tm.ToolSpec(
+        name="fake",
+        binaries=("nonexistent-cmd-zzz",),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(tm.PythonSiblingDetector("pytest", legacy_packages=("coverage",)),),
+    )
+    import importlib.metadata as md
+
+    assert tm.detect_tool(current_first).version == md.version("pytest")
+
+
+def test_legacy_dist_metadata_yields_to_the_executable_probe(fake_bin: Path):
+    """A legacy-name version is dropped when the binary is on PATH.
+
+    `uv tool install rtl-buddy-sch` — what the docs now recommend — puts
+    the current dist in an isolated env, so a project venv that still
+    holds the abandoned wheel would otherwise report that frozen version
+    for a demonstrably newer binary. Leaving `version=None` sends
+    `check_tool` to `probe_version()`, which asks the executable.
+    """
+    _make_exe(fake_bin / "stub-tool", body="#!/bin/sh\necho 'stub-tool 9.9.9'\n")
+    spec = tm.ToolSpec(
+        name="fake",
+        binaries=("stub-tool",),
+        version_cmd=("stub-tool", "--version"),
+        version_regex=r"stub-tool\s+([\d.]+)",
+        minimum_version=None,
+        detection=(
+            tm.PythonSiblingDetector(
+                "nonexistent-package-zzz", legacy_packages=("pytest",)
+            ),
+        ),
+    )
+    detected = tm.detect_tool(spec)
+    assert detected.found is True
+    assert detected.kind == "path"
+    assert detected.version is None
+    assert tm.check_tool(spec, probe_versions=True, cache={}).version == "9.9.9"
+
+    # The current name is authoritative and keeps its metadata version:
+    # there the dist and the binary it installed cannot disagree.
+    current = tm._replace(
+        spec, detection=(tm.PythonSiblingDetector("pytest"),), version_cmd=None
+    )
+    import importlib.metadata as md
+
+    assert tm.detect_tool(current).version == md.version("pytest")
+
+
 def test_python_sibling_detector_misses_when_neither_present(tmp_path: Path):
     spec = tm.ToolSpec(
         name="fake",
@@ -483,6 +561,56 @@ def test_rtl_buddy_view_declares_floor_and_version_probe():
     # The tagless hatch-vcs dev build still resolves to its base version.
     m = re.search(spec.version_regex, "rtl-buddy-view 0.2.2.dev0+g0f37a432d")
     assert m is not None and m.group(1) == "0.2.2"
+
+
+def test_rtl_buddy_view_spec_probes_both_distribution_names():
+    """Executable contracts unchanged; dist metadata read under both names.
+
+    The PyPI distribution was renamed rtl-buddy-view -> rtl-buddy-sch at
+    0.7.0 (rtl-buddy-sch#157). The tool key, the binary, the version
+    command and its output literal are unchanged contracts — only the
+    metadata lookup and the install hint move.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    spec = by_name["rtl-buddy-view"]
+    assert spec.binaries == ("rtl-buddy-view",)
+    assert spec.version_cmd == ("rtl-buddy-view", "--version")
+
+    detector = spec.detection[0]
+    assert isinstance(detector, tm.PythonSiblingDetector)
+    assert detector.package == "rtl-buddy-sch"
+    assert "rtl-buddy-view" in detector.legacy_packages
+    assert tm.VIEWER_DIST_NAMES == ("rtl-buddy-sch", "rtl-buddy-view")
+
+    # `rb tool-check --explain` must send people to the dist that still
+    # gets releases, not the one frozen at 0.5.0.
+    assert "rtl-buddy-sch" in spec.install_hint["any"]
+
+
+def test_viewer_dist_version_probes_new_name_then_old(monkeypatch):
+    """Probe order: rtl-buddy-sch, then rtl-buddy-view, then None."""
+    installed: dict[str, str] = {}
+    real_version = tm.importlib_metadata.version
+
+    # The patch lands on the stdlib module object, so only the viewer's
+    # own names are answered from the fixture; everything else defers to
+    # the real lookup and stays usable inside the patched window.
+    def _version(name: str) -> str:
+        if name in installed:
+            return installed[name]
+        if name in tm.VIEWER_DIST_NAMES:
+            raise tm.importlib_metadata.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(tm.importlib_metadata, "version", _version)
+
+    assert tm.viewer_dist_version() is None
+
+    installed["rtl-buddy-view"] = "0.5.0"
+    assert tm.viewer_dist_version() == ("rtl-buddy-view", "0.5.0")
+
+    installed["rtl-buddy-sch"] = "0.7.0"
+    assert tm.viewer_dist_version() == ("rtl-buddy-sch", "0.7.0")
 
 
 def test_rtl_buddy_view_outdated_below_floor(fake_bin: Path):

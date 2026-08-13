@@ -135,6 +135,8 @@ The single source of truth lives in `src/rtl_buddy/tool_manifest.py`. Each `Tool
 | `used_by` | Subcommands gated by this tool; drives the readiness section |
 | `optional` | If true, missing does not gate subcommand readiness |
 
+`PythonSiblingDetector` additionally takes `legacy_packages`: distribution names the same tool was published under before a rename, tried only when the current name yields no metadata. The viewer uses it for the `rtl-buddy-sch` / `rtl-buddy-view` pair, so either install reports a version. A version that came from a legacy name is dropped when the binary is also on `PATH`, letting the `version_cmd` probe answer instead — an abandoned distribution's frozen metadata should not outrank the executable it no longer owns. See [Quirks & Known Issues](../known-issues.md#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view).
+
 The same `ToolSpec` is consulted at runtime when a wrapper invokes `tool_manifest.require("<name>")` — that's how subcommand wrappers produce a uniform "missing tool, see `rb tool-check --explain X`" message instead of an opaque `FileNotFoundError`.
 
 ## Reconciliation with `root_config.yaml`

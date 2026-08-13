@@ -24,6 +24,7 @@ from typing import Any
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
+from ..tool_manifest import viewer_dist_version
 from .config import HubConfig
 from . import landing_page
 from .discovery import delete_record_if_owner, write_record
@@ -35,7 +36,7 @@ from .viewer_http import ViewerServer
 logger = logging.getLogger(__name__)
 
 
-# Minimum rtl-buddy-view release the hub's in-env SPA bundle path targets.
+# Minimum viewer release the hub's in-env SPA bundle path targets.
 # Mirrors the `rtl-buddy-view` floor in tool_manifest.py — the two are
 # bumped together by convention (#266) so "which view does rtl_buddy
 # need" has one answer. 0.3.0 adds the `query` CLI consumed by
@@ -61,26 +62,36 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 def _check_view_version() -> None:
-    """Fail fast when a too-old in-env rtl-buddy-view is used for the SPA.
+    """Fail fast when a too-old in-env viewer is used for the SPA.
 
-    rtl_buddy pins no version of rtl-buddy-view, so nothing guards the
+    rtl_buddy pins no version of the viewer, so nothing guards the
     in-process ``rtl_buddy_view.viewer_bundle`` import at resolve time.
     This repeats the floor when the bundle is actually consumed so an
     old editable / git install surfaces as a friendly hint instead of a
     stale SPA (or an AttributeError) later. Skipped when the installed
     version can't be read (no distribution metadata); there a successful
     import stands in.
+
+    The dist is probed under both its names (``viewer_dist_version()``:
+    ``rtl-buddy-sch`` first, then the pre-rename ``rtl-buddy-view``).
+    Every ``rtl-buddy-sch`` release is >= 0.7.0 and so clears this floor
+    outright — the comparison still runs on it, because one code path
+    that reads whichever dist is installed is easier to trust than a
+    branch that trusts one of them by name.
     """
-    try:
-        installed = _pkg_version("rtl-buddy-view")
-    except PackageNotFoundError:
+    found = viewer_dist_version()
+    if found is None:
         return
+    dist, installed = found
     if _version_tuple(installed) < _version_tuple(_VIEW_MIN_VERSION):
         raise FatalRtlBuddyError(
-            f"rb hub --serve-viewer requires rtl-buddy-view >= "
-            f"{_VIEW_MIN_VERSION}, but {installed} is installed. "
-            f"Upgrade it with:\n"
-            f'    pip install -U "rtl-buddy-view >= {_VIEW_MIN_VERSION}"'
+            f"rb hub --serve-viewer requires rtl-buddy-sch >= "
+            f"{_VIEW_MIN_VERSION}, but {dist} {installed} is installed. "
+            f"rtl-buddy-sch is the renamed rtl-buddy-view dist, so pip "
+            f"cannot upgrade one into the other — remove the old one "
+            f"first or both ship the same files:\n"
+            f"    pip uninstall -y rtl-buddy-view && "
+            f'pip install -U "rtl-buddy-sch >= {_VIEW_MIN_VERSION}"'
         )
 
 
