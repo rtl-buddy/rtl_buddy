@@ -165,10 +165,19 @@ def check_view_supports_graph(view_version: str | None) -> str | None:
     if view_version is None or _is_dev_build(view_version):
         return None
     if _version_tuple(view_version) < _version_tuple(VIEW_GRAPH_MIN_VERSION):
+        # The version quoted here came from `rtl-buddy-view --version`,
+        # which still prints the executable's own name — but the thing
+        # you install is the renamed `rtl-buddy-sch` dist
+        # (rtl-buddy-sch#157; `rtl-buddy-view` is frozen at 0.5.0, below
+        # every floor this file states). The uninstall leads because pip
+        # has no rename metadata: installing one over the other leaves
+        # two dists claiming the same console script. It is a no-op
+        # (warning, exit 0) when the old dist was never installed.
         return (
             f"rtl-buddy-view {view_version} has no `graph` subcommand; "
             f"the design tier needs >= {VIEW_GRAPH_MIN_VERSION} "
-            f'(pip install -U "rtl-buddy-view >= {VIEW_GRAPH_MIN_VERSION}")'
+            f"(pip uninstall -y rtl-buddy-view && "
+            f'pip install -U "rtl-buddy-sch >= {VIEW_GRAPH_MIN_VERSION}")'
         )
     return None
 

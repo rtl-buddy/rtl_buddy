@@ -40,6 +40,38 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Viewer distribution names
+
+#: Distribution names the viewer has been published under, newest first.
+#:
+#: The PyPI distribution was renamed ``rtl-buddy-view`` ->
+#: ``rtl-buddy-sch`` at 0.7.0 (rtl-buddy-sch#157); ``rtl-buddy-view`` is
+#: frozen at 0.5.0. Everything else is an unchanged contract: the
+#: ``rtl-buddy-view`` **executable** (0.7.0+ also installs an
+#: ``rtl-buddy-sch`` console script), its ``rtl-buddy-view <X.Y.Z>``
+#: ``--version`` literal, the import package ``rtl_buddy_view``, and the
+#: ``tool.name`` stamp in exported JSON. Only lookups of *distribution
+#: metadata* have to know both names, and they all go through here.
+VIEWER_DIST_NAMES: tuple[str, ...] = ("rtl-buddy-sch", "rtl-buddy-view")
+
+
+def viewer_dist_version() -> tuple[str, str] | None:
+    """``(dist name, version)`` of the installed viewer distribution.
+
+    Probes :data:`VIEWER_DIST_NAMES` in order — the renamed
+    ``rtl-buddy-sch`` first, then the pre-rename ``rtl-buddy-view`` —
+    and returns ``None`` when neither is installed (a PATH-only or
+    source install, where the executable probe is the answer).
+    """
+    for name in VIEWER_DIST_NAMES:
+        try:
+            return name, importlib_metadata.version(name)
+        except importlib_metadata.PackageNotFoundError:
+            continue
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Detectors
 
 
@@ -155,21 +187,43 @@ class PythonPackageDetector(Detector):
 class PythonSiblingDetector(Detector):
     """Detect a python-sibling tool by *both* PyPI metadata and PATH.
 
-    Python siblings (``rtl-buddy-view``, ``rtl-buddy-cdc``,
+    Python siblings (``rtl-buddy-sch``, ``rtl-buddy-cdc``,
     ``rtl-buddy-axi-profiler``) ship a wheel plus a script entry-point.
     Reporting "kind=python" alone hides where the binary actually lives;
     reporting PATH alone hides the version. This detector returns both
     when both are present, so the table shows ``version + path`` for the
     common "fully installed" case.
+
+    ``legacy_packages`` names distributions the same tool was published
+    under before a rename (the viewer's ``rtl-buddy-view``, frozen at
+    0.5.0). They are probed only when ``package`` yields no metadata, so
+    a machine with both installed reports the current dist's version.
+    One detector rather than two per name: a second detector would find
+    the binary on PATH and short-circuit with ``version=None`` before
+    the older dist's metadata was ever read.
+
+    A version read from a *legacy* name is dropped when the binary is
+    also on PATH, so :func:`check_tool` falls through to the executable
+    probe. Otherwise the documented upgrade path — ``uv tool install
+    rtl-buddy-sch`` into an isolated env, leaving an old in-venv wheel
+    behind — would report the abandoned dist's frozen version for a
+    binary that is demonstrably newer. In-env metadata still wins for
+    the current name, where the two cannot disagree.
     """
 
     package: str
+    legacy_packages: tuple[str, ...] = ()
 
     def detect(self, spec: "ToolSpec", project_root: Path | None) -> DetectionResult:
-        try:
-            version = importlib_metadata.version(self.package)
-        except importlib_metadata.PackageNotFoundError:
-            version = None
+        version = None
+        from_legacy = False
+        for candidate in (self.package, *self.legacy_packages):
+            try:
+                version = importlib_metadata.version(candidate)
+                from_legacy = candidate != self.package
+                break
+            except importlib_metadata.PackageNotFoundError:
+                continue
         binary_path: str | None = None
         for binary in spec.binaries:
             resolved = shutil.which(binary)
@@ -178,6 +232,8 @@ class PythonSiblingDetector(Detector):
                 break
         if version is None and binary_path is None:
             return DetectionResult(found=False, kind="python")
+        if from_legacy and binary_path is not None:
+            version = None
         # Prefer "path" kind when the binary is on PATH so the table shows
         # the absolute path; fall back to "python" when only the wheel is
         # installed (uncommon, but possible with `pip install --no-scripts`).
@@ -618,9 +674,18 @@ def _builtin_manifest() -> list[ToolSpec]:
             # 0.2.3 coverage overlay + Coverview deep links and the SPA
             # bundle that earlier floors guarded.
             minimum_version="0.3.0",
-            detection=(PythonSiblingDetector("rtl-buddy-view"),),
+            # The dist was renamed to `rtl-buddy-sch` at 0.7.0
+            # (rtl-buddy-sch#157); `rtl-buddy-view` is frozen at 0.5.0
+            # and stays a fallback for anyone still on it. `name`,
+            # `binaries`, `version_cmd` and `version_regex` above are the
+            # unchanged EXECUTABLE contracts — only dist metadata moved.
+            detection=(
+                PythonSiblingDetector(
+                    VIEWER_DIST_NAMES[0], legacy_packages=VIEWER_DIST_NAMES[1:]
+                ),
+            ),
             install_hint={
-                "any": "uv tool install rtl-buddy-view  (or pip install rtl-buddy-view)",
+                "any": "uv tool install rtl-buddy-sch  (or pip install rtl-buddy-sch)",
             },
             used_by=("hier", "hier-query", "graph", "hub"),
             optional=False,
