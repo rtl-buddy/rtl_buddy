@@ -97,6 +97,62 @@ def share_build_supported(simulator_family) -> bool:
 # VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
 _FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext)\+|-[vyF]\s+)?(.*)$")
 
+# Verilator writes a make-style dependency file naming every input the
+# verilation consumed — sources, headers reached through `+incdir+`/`-y`,
+# its own std includes, and the `verilator_bin` binary itself. It is named
+# after `--prefix`, which rtl_buddy never sets, so it is found by glob
+# rather than construction. Other builders emit nothing comparable (#303).
+_VERILATOR_DEPEND_GLOB = "*__ver.d"
+
+# One token of a make dependency line: a run of non-whitespace, where a
+# backslash escapes the character after it (`\ ` inside a path).
+_DEPEND_TOKEN_RE = re.compile(r"(?:[^\s\\]|\\.)+")
+
+
+def parse_depend_prerequisites(text: str) -> list[str]:
+    """Prerequisite paths from a make-style dependency file.
+
+    Parsed rule by rule rather than "everything after the first colon":
+    with ``--MP`` (a ``builder-opts`` a project may set) Verilator appends a
+    ``gcc -MP``-style tail of phony rules — one bare ``<prerequisite>:`` per
+    line, so ``make`` does not fail on a deleted include. Those are targets,
+    and collecting them as prerequisites would stamp a shadow entry per real
+    dependency, each with a trailing colon and so resolving to a path that
+    never exists.
+
+    Within a rule, everything up to the ``:`` is the target list and is
+    dropped — those are generated files, not inputs. Line continuations are
+    joined and ``\\ `` escapes are unescaped; order is preserved and
+    duplicates are kept for the caller to collapse, since a prerequisite
+    listed twice is not an error.
+    """
+    prerequisites = []
+    for line in text.replace("\\\n", " ").splitlines():
+        tokens = _DEPEND_TOKEN_RE.findall(line)
+        for index, token in enumerate(tokens):
+            if token == ":" or token.endswith(":"):
+                # A rule with no prerequisites is a phony target: nothing to
+                # collect, and the next line starts a new rule either way.
+                prerequisites += tokens[index + 1 :]
+                break
+        # A line with no separator is not a rule rtl_buddy understands (a
+        # comment, or a stray target list); saying nothing beats treating
+        # every token on it as an input.
+    return [re.sub(r"\\(.)", r"\1", token) for token in prerequisites]
+
+
+def _stat_entry(path: str) -> list:
+    """``[path, size, mtime_ns]`` for a tracked input, or nulls if absent.
+
+    A vanished file records as ``[path, None, None]`` rather than being
+    dropped, so its later reappearance still invalidates the stamp.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return [path, None, None]
+    return [path, stat.st_size, stat.st_mtime_ns]
+
 
 class VlogSim:
     """
@@ -551,8 +607,84 @@ class VlogSim:
                 kept.append(opt)
         return kept, dropped
 
+    def _collect_build_deps(self, build_dir, compile_cwd):
+        """Stamps for every input the verilation consumed, or ``None``.
+
+        Closes the gap the filelist fingerprint cannot: an entry resolving
+        to a *directory* (``+incdir+``, ``-y``) is recorded as a raw line,
+        so a header edit reachable only through one leaves the stamp valid
+        and a warm run reuses a simv built from the old header (#303). The
+        builder already knows exactly which files it opened, so this reads
+        its dependency file instead of re-deriving the include search.
+
+        ``None`` means no dependency information exists for this build —
+        every non-Verilator family, or a Verilator invocation that emitted
+        no ``.d`` — and is stored as such: it is the difference between
+        "nothing else was consumed" and "we do not know", and only the
+        first may validate a reuse.
+
+        Paths are resolved against ``compile_cwd`` and stored absolute:
+        the file is written relative to whichever test's artefact dir ran
+        the compile, and a *different* test with the same compile key
+        validates the stamp from its own directory. ``realpath``, not
+        ``normpath`` as in :meth:`_fingerprint_filelist_sources`, because
+        resolving symlinks on *both* sides is what makes the ``run.f``
+        exclusion below actually match; the two lists therefore canonicalise
+        differently and are not comparable to each other. The compile's own
+        ``run.f`` is excluded — it is regenerated on every compile, so its
+        mtime would invalidate the stamp for the very test that built it,
+        and its *contents* are already fingerprinted entry by entry.
+        """
+        # Resolved against the compile cwd, not used as given: `build_dir` is
+        # an absolute shared dir on one path and a bare directory *name* on
+        # the other, and globbing the latter would search the process cwd.
+        depend_files = sorted(
+            (Path(compile_cwd) / build_dir).glob(_VERILATOR_DEPEND_GLOB)
+        )
+        if not depend_files:
+            return None
+        filelist_path = os.path.realpath(self._get_filelist_path())
+        seen: dict[str, None] = {}
+        for depend_file in depend_files:
+            try:
+                text = depend_file.read_text()
+            except OSError as e:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_deps_unreadable",
+                    test=self.test_name,
+                    depend_file=str(depend_file),
+                    error=str(e),
+                )
+                return None
+            for prerequisite in parse_depend_prerequisites(text):
+                resolved = os.path.realpath(os.path.join(compile_cwd, prerequisite))
+                if resolved != filelist_path:
+                    seen.setdefault(resolved, None)
+        return [_stat_entry(path) for path in sorted(seen)]
+
     @staticmethod
-    def _shared_build_is_valid(build_dir, fingerprint):
+    def _deps_unchanged(test_name, deps):
+        """Have any of the stamp's recorded inputs changed on disk?"""
+        for entry in deps:
+            if not isinstance(entry, list) or len(entry) != 3:
+                return False  # not a stamp this version wrote
+            if entry != _stat_entry(entry[0]):
+                # The one question worth answering when a warm run
+                # unexpectedly recompiles.
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "compile.build_dep_changed",
+                    test=test_name,
+                    dependency=entry[0],
+                )
+                return False
+        return True
+
+    @classmethod
+    def _shared_build_is_valid(cls, build_dir, fingerprint, *, test_name=None):
         simv_path = Path(build_dir) / "simv"
         stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
         if not simv_path.is_file() or not stamp_path.is_file():
@@ -561,7 +693,22 @@ class VlogSim:
             stored = json.loads(stamp_path.read_text())
         except (OSError, json.JSONDecodeError):
             return False
-        return stored == fingerprint
+        if not isinstance(stored, dict) or "deps" not in stored:
+            # Written before dependency tracking existed. Its silence about
+            # headers is indistinguishable from having had none, so the only
+            # honest reading is one rebuild — after which the stamp says
+            # which it is.
+            return False
+        if {
+            key: value for key, value in stored.items() if key != "deps"
+        } != fingerprint:
+            return False
+        deps = stored["deps"]
+        if deps is None:
+            # The builder emitted no dependency file, so include-dir
+            # contents stay untracked for it (docs/known-issues.md).
+            return True
+        return cls._deps_unchanged(test_name, deps)
 
     def pre(self, run_id=_UNSET):
         """Run the test's ``preproc`` hook; return a setup-failure string or None.
@@ -744,7 +891,9 @@ class VlogSim:
                 )
                 self._shared_build_dir = str(shared_dir)
                 build_dir = str(shared_dir)
-                if self._shared_build_is_valid(shared_dir, fingerprint):
+                if self._shared_build_is_valid(
+                    shared_dir, fingerprint, test_name=self.test_name
+                ):
                     log_event(
                         logger,
                         logging.INFO,
@@ -909,14 +1058,25 @@ class VlogSim:
             if self._get_simulator_family() == "icarus":
                 self._write_icarus_simv_wrapper()
             if fingerprint is not None:
+                # Recorded from the finished build, not predicted from the
+                # filelist: the builder is the only thing that knows which
+                # headers it actually opened (#303).
+                deps = self._collect_build_deps(build_dir, compile_work_dir)
                 stamp_path = Path(build_dir) / SHARED_BUILD_STAMP_NAME
-                stamp_path.write_text(json.dumps(fingerprint, sort_keys=True))
+                stamp_path.write_text(
+                    json.dumps({**fingerprint, "deps": deps}, sort_keys=True)
+                )
                 log_event(
                     logger,
                     logging.DEBUG,
                     "compile.build_stamp_written",
                     test=self.test_name,
                     stamp=str(stamp_path),
+                    # None, not "none": machine mode serialises these as JSON
+                    # Lines, and a field whose type varies by path forces
+                    # every consumer to type-check before comparing. `null`
+                    # is also how the stamp itself spells the same thing.
+                    tracked_deps=None if deps is None else len(deps),
                 )
         return result.returncode
 

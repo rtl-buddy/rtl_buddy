@@ -1,3 +1,4 @@
+import json
 import os
 from contextlib import nullcontext
 from pathlib import Path
@@ -153,12 +154,21 @@ def _make_sim(
     )
 
 
-def _install_fake_builder(monkeypatch, calls, *, stdout="", returncode=0):
+def _install_fake_builder(
+    monkeypatch, calls, *, stdout="", returncode=0, depends=None, phony_tail=True
+):
     """run_managed_process stand-in that drops a simv where the flags say.
 
     Mirrors each supported family's output convention: Verilator's
     ``--Mdir <dir>`` (simv inside it), and the ``-o <path>`` that VCS and
     Icarus take (simv/snapshot at exactly that path).
+
+    ``depends`` (Verilator only) is the prerequisite list to write into a
+    ``V<prefix>__ver.d`` beside the build, in the format Verilator really
+    emits: absolute targets and the prerequisites relative to the *compile
+    cwd* (not to ``--Mdir``), followed by ``--MP``'s tail of phony
+    ``<prerequisite>:`` rules. That tail is what a project enabling ``--MP``
+    in ``builder-opts`` gets, and it must not be mistaken for input.
     """
 
     def _fake_run(cmd, capture_output, text, cwd, env=None):
@@ -172,6 +182,12 @@ def _install_fake_builder(monkeypatch, calls, *, stdout="", returncode=0):
             mdir = _resolve(cmd[cmd.index("--Mdir") + 1])
             mdir.mkdir(parents=True, exist_ok=True)
             (mdir / "simv").write_text("binary\n")
+            if depends is not None:
+                targets = " ".join(str(mdir / name) for name in ("Vtop.cpp", "Vtop.mk"))
+                text_out = f"{targets}  : {' '.join(depends)} \n"
+                if phony_tail:
+                    text_out += "\n" + "".join(f"{dep}:\n" for dep in depends)
+                (mdir / "Vtop__ver.d").write_text(text_out)
         elif "-o" in cmd:
             out = _resolve(cmd[cmd.index("-o") + 1])
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -435,6 +451,211 @@ def test_share_build_disabled_keeps_per_test_build_dirs(tmp_path, monkeypatch):
     )
     assert sim_b._get_simv_path() == str(
         tmp_path / "artefacts" / "test_b" / "obj_dir_test_b" / "simv"
+    )
+
+
+# --- include-dir headers in the reuse stamp (issue #303) ---------------------
+
+
+def _write_header(tmp_path, content="`define W 8\n"):
+    header = tmp_path / "inc" / "w.svh"
+    header.parent.mkdir(parents=True, exist_ok=True)
+    header.write_text(content)
+    return header
+
+
+def _touch(path, text):
+    path.write_text(text)
+    stat = os.stat(path)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+def _stamp_of(sim):
+    return Path(sim._get_simv_path()).parent / vlog_sim_module.SHARED_BUILD_STAMP_NAME
+
+
+def test_share_build_invalidates_when_an_include_header_changes(tmp_path, monkeypatch):
+    """The reported gap: a header reachable only through +incdir+ is not in
+    the filelist, so the stamp used to stay valid across an edit to it and a
+    warm run reused a simv built from the old header (#303)."""
+    _write_source(tmp_path)
+    header = _write_header(tmp_path)
+    calls = []
+    # Verilator names the header among the inputs it consumed, relative to
+    # the compile cwd (the test's artefact dir).
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 1  # unchanged header: still one verilation
+
+    _touch(header, "`define W 16\n")
+
+    sim_c = _make_sim(tmp_path, monkeypatch, test_name="test_c")
+    assert sim_c.compile() == 0
+    assert len(calls) == 2  # the edit invalidated the stamp
+    assert sim_c._get_simv_path() == sim_a._get_simv_path()  # rebuilt in place
+
+
+def test_share_build_stamp_records_the_consumed_inputs(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../inc/w.svh"])
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+
+    deps = json.loads(_stamp_of(sim).read_text())["deps"]
+    assert [entry[0] for entry in deps] == [str((tmp_path / "inc" / "w.svh").resolve())]
+    size, mtime = deps[0][1], deps[0][2]
+    assert size == (tmp_path / "inc" / "w.svh").stat().st_size
+    assert mtime == (tmp_path / "inc" / "w.svh").stat().st_mtime_ns
+
+
+def test_share_build_deps_exclude_the_regenerated_filelist(tmp_path, monkeypatch):
+    """`run.f` is rewritten on every compile, so tracking its mtime would
+    make the test that built the simv rebuild it on its own next run."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["run.f", "../../src/top.sv"])
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    deps = json.loads(_stamp_of(sim_a).read_text())["deps"]
+    assert not any(entry[0].endswith("run.f") for entry in deps)
+
+    again = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert again.compile() == 0
+    assert len(calls) == 1  # the rewritten run.f did not invalidate anything
+
+
+def test_share_build_records_no_tracking_when_the_builder_emits_no_depfile(
+    tmp_path, monkeypatch
+):
+    """VCS and Icarus emit nothing comparable; reuse must still work there."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim_a = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="vcs", family="vcs"
+    )
+    sim_b = _make_sim(
+        tmp_path, monkeypatch, test_name="test_b", exe="vcs", family="vcs"
+    )
+
+    assert sim_a.compile() == 0
+    assert json.loads(_stamp_of(sim_a).read_text())["deps"] is None
+    assert sim_b.compile() == 0
+    assert len(calls) == 1
+
+
+def test_share_build_rejects_a_stamp_predating_dependency_tracking(
+    tmp_path, monkeypatch
+):
+    """A stamp with no `deps` key cannot say whether headers were tracked;
+    "we do not know" must not validate a reuse."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../src/top.sv"])
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    stamp = _stamp_of(sim_a)
+    legacy = json.loads(stamp.read_text())
+    legacy.pop("deps")
+    stamp.write_text(json.dumps(legacy, sort_keys=True))
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+    # ...and the rebuild leaves a stamp that does say.
+    assert "deps" in json.loads(stamp.read_text())
+
+
+def test_share_build_invalidates_when_a_tracked_input_disappears(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    header = _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, depends=["../../inc/w.svh"])
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim_a.compile() == 0
+    header.unlink()
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b")
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+
+
+def test_parse_depend_prerequisites_drops_targets_and_joins_continuations():
+    text = "obj/Vtop.cpp obj/Vtop.mk : \\\n  ../src/top.sv \\\n  ../inc/w.svh\n"
+    assert vlog_sim_module.parse_depend_prerequisites(text) == [
+        "../src/top.sv",
+        "../inc/w.svh",
+    ]
+
+
+def test_parse_depend_prerequisites_handles_attached_colon_and_escaped_spaces():
+    text = "obj/Vtop.mk: /opt/my\\ tools/verilator ../src/top.sv\n"
+    assert vlog_sim_module.parse_depend_prerequisites(text) == [
+        "/opt/my tools/verilator",
+        "../src/top.sv",
+    ]
+
+
+def test_parse_depend_prerequisites_ignores_mp_phony_rules():
+    """`--MP` appends one bare `<prerequisite>:` rule per dependency so make
+    does not fail on a deleted include. Those are targets; collecting them
+    would stamp a shadow entry per real dep, each ending in a colon and so
+    resolving to a path that never exists. Shape copied from a real
+    `V<prefix>__ver.d` (Verilator 5.048, `--cc --MP`)."""
+    text = (
+        "obj/Vtop.cpp obj/Vtop.mk  : /opt/verilator_bin ../src/top.sv ../inc/w.svh \n"
+        "\n"
+        "../src/top.sv:\n"
+        "../inc/w.svh:\n"
+        "/opt/verilator_bin:\n"
+    )
+    assert vlog_sim_module.parse_depend_prerequisites(text) == [
+        "/opt/verilator_bin",
+        "../src/top.sv",
+        "../inc/w.svh",
+    ]
+
+
+def test_share_build_stamp_ignores_the_mp_phony_tail(tmp_path, monkeypatch):
+    """End to end: the tail must not double the stamp."""
+    _write_source(tmp_path)
+    _write_header(tmp_path)
+    calls = []
+    _install_fake_builder(
+        monkeypatch, calls, depends=["../../src/top.sv", "../../inc/w.svh"]
+    )
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a")
+    assert sim.compile() == 0
+
+    deps = json.loads(_stamp_of(sim).read_text())["deps"]
+    assert [entry[0] for entry in deps] == [
+        str((tmp_path / "inc" / "w.svh").resolve()),
+        str((tmp_path / "src" / "top.sv").resolve()),
+    ]
+    # Every tracked input exists; a colon-suffixed shadow would stat as absent.
+    assert all(entry[1] is not None for entry in deps)
+
+
+def test_parse_depend_prerequisites_returns_nothing_without_a_separator():
+    """Never mistake a target list for an input list."""
+    assert (
+        vlog_sim_module.parse_depend_prerequisites("obj/Vtop.cpp obj/Vtop.mk\n") == []
     )
 
 
