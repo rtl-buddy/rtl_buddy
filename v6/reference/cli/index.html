@@ -3936,12 +3936,13 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
 <a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>│ --reg-config  -c      TEXT     path to synth_regression.yaml                         │
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>│                                [default: (Use ./synth_regression.yaml if present)]   │
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>│ --reg-level   -l      INTEGER  synthesis regression level to stop at [default: 0]    │
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>│ --effort              TEXT     override synthesis effort (must match                 │
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>│                                cfg-synth-efforts entry)                              │
-<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>│ --help                         Show this message and exit.                           │
-<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>│                                [default: (Use ./synth_regression.yaml if present,    │
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>│                                otherwise root_config.yaml synth-reg-cfg-path)]       │
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>│ --reg-level   -l      INTEGER  synthesis regression level to stop at [default: 0]    │
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>│ --effort              TEXT     override synthesis effort (must match                 │
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>│                                cfg-synth-efforts entry)                              │
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>│ --help                         Show this message and exit.                           │
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="pnr">pnr</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>Usage: rtl-buddy pnr [OPTIONS] [PNR_NAME]                                              
@@ -3987,10 +3988,11 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>
 <a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a>│ --reg-config  -c      TEXT     path to power_regression.yaml                         │
-<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>│                                [default: (Use ./power_regression.yaml if present)]   │
-<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>│ --reg-level   -l      INTEGER  power regression level to stop at [default: 0]        │
-<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>│ --help                         Show this message and exit.                           │
-<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>│                                [default: (Use ./power_regression.yaml if present,    │
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>│                                otherwise root_config.yaml power-reg-cfg-path)]       │
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>│ --reg-level   -l      INTEGER  power regression level to stop at [default: 0]        │
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a>│ --help                         Show this message and exit.                           │
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="saif">saif</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>Usage: rtl-buddy saif [OPTIONS] TRACE OUTPUT                                           
@@ -4027,10 +4029,11 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>
 <a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>│ --reg-config  -c      TEXT     path to fpv_regression.yaml                           │
-<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>│                                [default: (Use ./fpv_regression.yaml if present)]     │
-<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>│ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
-<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>│ --help                         Show this message and exit.                           │
-<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>│                                [default: (Use ./fpv_regression.yaml if present,      │
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>│                                otherwise root_config.yaml fpv-reg-cfg-path)]         │
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>│ --reg-level   -l      INTEGER  FPV regression level to stop at [default: 0]          │
+<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>│ --help                         Show this message and exit.                           │
+<a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="tool-check">tool-check</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>Usage: rtl-buddy tool-check [OPTIONS]                                                  
@@ -4108,35 +4111,42 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-20-32" name="__codelineno-20-32" href="#__codelineno-20-32"></a>│                                                             toplevel: (default on;   │
 <a id="__codelineno-20-33" name="__codelineno-20-33" href="#__codelineno-20-33"></a>│                                                             --no-tb is DUT-only)     │
 <a id="__codelineno-20-34" name="__codelineno-20-34" href="#__codelineno-20-34"></a>│                                                             [default: tb]            │
-<a id="__codelineno-20-35" name="__codelineno-20-35" href="#__codelineno-20-35"></a>│ --bind                     --no-bind                        run the post-merge       │
-<a id="__codelineno-20-36" name="__codelineno-20-36" href="#__codelineno-20-36"></a>│                                                             binding stage that ties  │
-<a id="__codelineno-20-37" name="__codelineno-20-37" href="#__codelineno-20-37"></a>│                                                             cocotb tests to the DUT  │
-<a id="__codelineno-20-38" name="__codelineno-20-38" href="#__codelineno-20-38"></a>│                                                             hierarchy (default on)   │
-<a id="__codelineno-20-39" name="__codelineno-20-39" href="#__codelineno-20-39"></a>│                                                             [default: bind]          │
-<a id="__codelineno-20-40" name="__codelineno-20-40" href="#__codelineno-20-40"></a>│ --extract                  --no-extract                     run the binding tier     │
-<a id="__codelineno-20-41" name="__codelineno-20-41" href="#__codelineno-20-41"></a>│                                                             when the extractor       │
-<a id="__codelineno-20-42" name="__codelineno-20-42" href="#__codelineno-20-42"></a>│                                                             (rtl-buddy-graph-extrac… │
-<a id="__codelineno-20-43" name="__codelineno-20-43" href="#__codelineno-20-43"></a>│                                                             is installed             │
-<a id="__codelineno-20-44" name="__codelineno-20-44" href="#__codelineno-20-44"></a>│                                                             [default: extract]       │
-<a id="__codelineno-20-45" name="__codelineno-20-45" href="#__codelineno-20-45"></a>│ --extract-cross-check      --no-extract-cross-che…          cross-check the internal │
-<a id="__codelineno-20-46" name="__codelineno-20-46" href="#__codelineno-20-46"></a>│                                                             merge against the        │
-<a id="__codelineno-20-47" name="__codelineno-20-47" href="#__codelineno-20-47"></a>│                                                             extractor&#39;s              │
-<a id="__codelineno-20-48" name="__codelineno-20-48" href="#__codelineno-20-48"></a>│                                                             `merge-graphs` when it   │
-<a id="__codelineno-20-49" name="__codelineno-20-49" href="#__codelineno-20-49"></a>│                                                             is installed             │
-<a id="__codelineno-20-50" name="__codelineno-20-50" href="#__codelineno-20-50"></a>│                                                             [default:                │
-<a id="__codelineno-20-51" name="__codelineno-20-51" href="#__codelineno-20-51"></a>│                                                             extract-cross-check]     │
-<a id="__codelineno-20-52" name="__codelineno-20-52" href="#__codelineno-20-52"></a>│ --force                                                     rebuild even when no     │
-<a id="__codelineno-20-53" name="__codelineno-20-53" href="#__codelineno-20-53"></a>│                                                             input changed            │
-<a id="__codelineno-20-54" name="__codelineno-20-54" href="#__codelineno-20-54"></a>│ --strict                                                    exit non-zero on any     │
-<a id="__codelineno-20-55" name="__codelineno-20-55" href="#__codelineno-20-55"></a>│                                                             per-item failure, not    │
-<a id="__codelineno-20-56" name="__codelineno-20-56" href="#__codelineno-20-56"></a>│                                                             just a dead tier         │
-<a id="__codelineno-20-57" name="__codelineno-20-57" href="#__codelineno-20-57"></a>│ --tool                                                TEXT  path to the              │
-<a id="__codelineno-20-58" name="__codelineno-20-58" href="#__codelineno-20-58"></a>│                                                             rtl-buddy-view binary    │
-<a id="__codelineno-20-59" name="__codelineno-20-59" href="#__codelineno-20-59"></a>│                                                             [default:                │
-<a id="__codelineno-20-60" name="__codelineno-20-60" href="#__codelineno-20-60"></a>│                                                             rtl-buddy-view]          │
-<a id="__codelineno-20-61" name="__codelineno-20-61" href="#__codelineno-20-61"></a>│ --help                                                      Show this message and    │
-<a id="__codelineno-20-62" name="__codelineno-20-62" href="#__codelineno-20-62"></a>│                                                             exit.                    │
-<a id="__codelineno-20-63" name="__codelineno-20-63" href="#__codelineno-20-63"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-20-35" name="__codelineno-20-35" href="#__codelineno-20-35"></a>│ --flow-tops                --no-flow-tops                   also export each         │
+<a id="__codelineno-20-36" name="__codelineno-20-36" href="#__codelineno-20-36"></a>│                                                             formal/synth/cdc run&#39;s   │
+<a id="__codelineno-20-37" name="__codelineno-20-37" href="#__codelineno-20-37"></a>│                                                             top over the flow&#39;s own  │
+<a id="__codelineno-20-38" name="__codelineno-20-38" href="#__codelineno-20-38"></a>│                                                             filelist when it is not  │
+<a id="__codelineno-20-39" name="__codelineno-20-39" href="#__codelineno-20-39"></a>│                                                             the model top (default   │
+<a id="__codelineno-20-40" name="__codelineno-20-40" href="#__codelineno-20-40"></a>│                                                             on)                      │
+<a id="__codelineno-20-41" name="__codelineno-20-41" href="#__codelineno-20-41"></a>│                                                             [default: flow-tops]     │
+<a id="__codelineno-20-42" name="__codelineno-20-42" href="#__codelineno-20-42"></a>│ --bind                     --no-bind                        run the post-merge       │
+<a id="__codelineno-20-43" name="__codelineno-20-43" href="#__codelineno-20-43"></a>│                                                             binding stage that ties  │
+<a id="__codelineno-20-44" name="__codelineno-20-44" href="#__codelineno-20-44"></a>│                                                             cocotb tests to the DUT  │
+<a id="__codelineno-20-45" name="__codelineno-20-45" href="#__codelineno-20-45"></a>│                                                             hierarchy (default on)   │
+<a id="__codelineno-20-46" name="__codelineno-20-46" href="#__codelineno-20-46"></a>│                                                             [default: bind]          │
+<a id="__codelineno-20-47" name="__codelineno-20-47" href="#__codelineno-20-47"></a>│ --extract                  --no-extract                     run the binding tier     │
+<a id="__codelineno-20-48" name="__codelineno-20-48" href="#__codelineno-20-48"></a>│                                                             when the extractor       │
+<a id="__codelineno-20-49" name="__codelineno-20-49" href="#__codelineno-20-49"></a>│                                                             (rtl-buddy-graph-extrac… │
+<a id="__codelineno-20-50" name="__codelineno-20-50" href="#__codelineno-20-50"></a>│                                                             is installed             │
+<a id="__codelineno-20-51" name="__codelineno-20-51" href="#__codelineno-20-51"></a>│                                                             [default: extract]       │
+<a id="__codelineno-20-52" name="__codelineno-20-52" href="#__codelineno-20-52"></a>│ --extract-cross-check      --no-extract-cross-che…          cross-check the internal │
+<a id="__codelineno-20-53" name="__codelineno-20-53" href="#__codelineno-20-53"></a>│                                                             merge against the        │
+<a id="__codelineno-20-54" name="__codelineno-20-54" href="#__codelineno-20-54"></a>│                                                             extractor&#39;s              │
+<a id="__codelineno-20-55" name="__codelineno-20-55" href="#__codelineno-20-55"></a>│                                                             `merge-graphs` when it   │
+<a id="__codelineno-20-56" name="__codelineno-20-56" href="#__codelineno-20-56"></a>│                                                             is installed             │
+<a id="__codelineno-20-57" name="__codelineno-20-57" href="#__codelineno-20-57"></a>│                                                             [default:                │
+<a id="__codelineno-20-58" name="__codelineno-20-58" href="#__codelineno-20-58"></a>│                                                             extract-cross-check]     │
+<a id="__codelineno-20-59" name="__codelineno-20-59" href="#__codelineno-20-59"></a>│ --force                                                     rebuild even when no     │
+<a id="__codelineno-20-60" name="__codelineno-20-60" href="#__codelineno-20-60"></a>│                                                             input changed            │
+<a id="__codelineno-20-61" name="__codelineno-20-61" href="#__codelineno-20-61"></a>│ --strict                                                    exit non-zero on any     │
+<a id="__codelineno-20-62" name="__codelineno-20-62" href="#__codelineno-20-62"></a>│                                                             per-item failure, not    │
+<a id="__codelineno-20-63" name="__codelineno-20-63" href="#__codelineno-20-63"></a>│                                                             just a dead tier         │
+<a id="__codelineno-20-64" name="__codelineno-20-64" href="#__codelineno-20-64"></a>│ --tool                                                TEXT  path to the              │
+<a id="__codelineno-20-65" name="__codelineno-20-65" href="#__codelineno-20-65"></a>│                                                             rtl-buddy-view binary    │
+<a id="__codelineno-20-66" name="__codelineno-20-66" href="#__codelineno-20-66"></a>│                                                             [default:                │
+<a id="__codelineno-20-67" name="__codelineno-20-67" href="#__codelineno-20-67"></a>│                                                             rtl-buddy-view]          │
+<a id="__codelineno-20-68" name="__codelineno-20-68" href="#__codelineno-20-68"></a>│ --help                                                      Show this message and    │
+<a id="__codelineno-20-69" name="__codelineno-20-69" href="#__codelineno-20-69"></a>│                                                             exit.                    │
+<a id="__codelineno-20-70" name="__codelineno-20-70" href="#__codelineno-20-70"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="graph-results">graph results</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a>Usage: rtl-buddy graph results [OPTIONS]                                               
@@ -4145,25 +4155,25 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a> per test node; graph.json is not touched                                               
 <a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a>
 <a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>│ --verif-dir                          TEXT  directory searched for tests.yaml         │
-<a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>│ --out-dir       -o                   TEXT  output directory (default: &lt;project       │
-<a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a>│                                            root&gt;/artefacts/graph)                    │
-<a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a>│ --graph                              TEXT  graph.json to cross-check ids against     │
-<a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a>│                                            (default: &lt;out-dir&gt;/graph.json); read,    │
-<a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a>│                                            never written                             │
-<a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a>│ --strict                                   exit non-zero when an envelope could not  │
-<a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a>│                                            be read, a test node has no result, or a  │
-<a id="__codelineno-21-15" name="__codelineno-21-15" href="#__codelineno-21-15"></a>│                                            result matches no node                    │
-<a id="__codelineno-21-16" name="__codelineno-21-16" href="#__codelineno-21-16"></a>│ --coverage          --no-coverage          join the run&#39;s coverage model onto the    │
-<a id="__codelineno-21-17" name="__codelineno-21-17" href="#__codelineno-21-17"></a>│                                            graph&#39;s ids (read from                    │
-<a id="__codelineno-21-18" name="__codelineno-21-18" href="#__codelineno-21-18"></a>│                                            cov_dir/manifest.json; nothing is re-run) │
-<a id="__codelineno-21-19" name="__codelineno-21-19" href="#__codelineno-21-19"></a>│                                            [default: coverage]                       │
-<a id="__codelineno-21-20" name="__codelineno-21-20" href="#__codelineno-21-20"></a>│ --cov-dir                            TEXT  coverage artefact directory to join from  │
-<a id="__codelineno-21-21" name="__codelineno-21-21" href="#__codelineno-21-21"></a>│                                            (default: the newest cov_dir/ under the   │
-<a id="__codelineno-21-22" name="__codelineno-21-22" href="#__codelineno-21-22"></a>│                                            project)                                  │
-<a id="__codelineno-21-23" name="__codelineno-21-23" href="#__codelineno-21-23"></a>│ --cov-manifest                       TEXT  coverage manifest.json to join from,      │
-<a id="__codelineno-21-24" name="__codelineno-21-24" href="#__codelineno-21-24"></a>│                                            instead of discovery                      │
-<a id="__codelineno-21-25" name="__codelineno-21-25" href="#__codelineno-21-25"></a>│ --help                                     Show this message and exit.               │
+<a id="__codelineno-21-7" name="__codelineno-21-7" href="#__codelineno-21-7"></a>│ --verif-dir             TEXT  directory searched for tests.yaml                      │
+<a id="__codelineno-21-8" name="__codelineno-21-8" href="#__codelineno-21-8"></a>│ --out-dir       -o      TEXT  output directory (default: &lt;project                    │
+<a id="__codelineno-21-9" name="__codelineno-21-9" href="#__codelineno-21-9"></a>│                               root&gt;/artefacts/graph)                                 │
+<a id="__codelineno-21-10" name="__codelineno-21-10" href="#__codelineno-21-10"></a>│ --graph                 TEXT  graph.json to cross-check ids against (default:        │
+<a id="__codelineno-21-11" name="__codelineno-21-11" href="#__codelineno-21-11"></a>│                               &lt;out-dir&gt;/graph.json); read, never written             │
+<a id="__codelineno-21-12" name="__codelineno-21-12" href="#__codelineno-21-12"></a>│ --strict                      exit non-zero when an envelope could not be read, a    │
+<a id="__codelineno-21-13" name="__codelineno-21-13" href="#__codelineno-21-13"></a>│                               test node has no result, or a result matches no node   │
+<a id="__codelineno-21-14" name="__codelineno-21-14" href="#__codelineno-21-14"></a>│ --coverage              TEXT  coverage source to join onto the graph&#39;s ids: &#39;auto&#39;   │
+<a id="__codelineno-21-15" name="__codelineno-21-15" href="#__codelineno-21-15"></a>│                               (cov_dir/manifest.json, then the per-test coverage.dat │
+<a id="__codelineno-21-16" name="__codelineno-21-16" href="#__codelineno-21-16"></a>│                               databases this scan finds), &#39;model&#39; (the manifest      │
+<a id="__codelineno-21-17" name="__codelineno-21-17" href="#__codelineno-21-17"></a>│                               only), &#39;none&#39;, or a path to a merged LCOV .info file;  │
+<a id="__codelineno-21-18" name="__codelineno-21-18" href="#__codelineno-21-18"></a>│                               nothing is re-run                                      │
+<a id="__codelineno-21-19" name="__codelineno-21-19" href="#__codelineno-21-19"></a>│                               [default: auto]                                        │
+<a id="__codelineno-21-20" name="__codelineno-21-20" href="#__codelineno-21-20"></a>│ --no-coverage                 skip the coverage join (same as --coverage none)       │
+<a id="__codelineno-21-21" name="__codelineno-21-21" href="#__codelineno-21-21"></a>│ --cov-dir               TEXT  coverage artefact directory to join from (default: the │
+<a id="__codelineno-21-22" name="__codelineno-21-22" href="#__codelineno-21-22"></a>│                               newest cov_dir/ under the project)                     │
+<a id="__codelineno-21-23" name="__codelineno-21-23" href="#__codelineno-21-23"></a>│ --cov-manifest          TEXT  coverage manifest.json to join from, instead of        │
+<a id="__codelineno-21-24" name="__codelineno-21-24" href="#__codelineno-21-24"></a>│                               discovery                                              │
+<a id="__codelineno-21-25" name="__codelineno-21-25" href="#__codelineno-21-25"></a>│ --help                        Show this message and exit.                            │
 <a id="__codelineno-21-26" name="__codelineno-21-26" href="#__codelineno-21-26"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="graph-query">graph query</h2>
@@ -4178,22 +4188,30 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-22-9" name="__codelineno-22-9" href="#__codelineno-22-9"></a>│                          [required]                                                  │
 <a id="__codelineno-22-10" name="__codelineno-22-10" href="#__codelineno-22-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-22-11" name="__codelineno-22-11" href="#__codelineno-22-11"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a>│ --type                       TEXT     restrict to one node type (module, test,       │
-<a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a>│                                       coverage_item, ...)                            │
-<a id="__codelineno-22-14" name="__codelineno-22-14" href="#__codelineno-22-14"></a>│ --tier                       TEXT     restrict to one tier (design|config|binding)   │
-<a id="__codelineno-22-15" name="__codelineno-22-15" href="#__codelineno-22-15"></a>│ --limit                      INTEGER  maximum matches to report [default: 10]        │
-<a id="__codelineno-22-16" name="__codelineno-22-16" href="#__codelineno-22-16"></a>│ --depth                      INTEGER  hops of neighbourhood expansion around each    │
-<a id="__codelineno-22-17" name="__codelineno-22-17" href="#__codelineno-22-17"></a>│                                       match (0 disables; maximum 3)                  │
-<a id="__codelineno-22-18" name="__codelineno-22-18" href="#__codelineno-22-18"></a>│                                       [default: 1]                                   │
-<a id="__codelineno-22-19" name="__codelineno-22-19" href="#__codelineno-22-19"></a>│ --results    --no-results             join the regression-results overlay onto every │
-<a id="__codelineno-22-20" name="__codelineno-22-20" href="#__codelineno-22-20"></a>│                                       node                                           │
-<a id="__codelineno-22-21" name="__codelineno-22-21" href="#__codelineno-22-21"></a>│                                       [default: results]                             │
-<a id="__codelineno-22-22" name="__codelineno-22-22" href="#__codelineno-22-22"></a>│ --graph                      TEXT     graph.json to query (default &lt;project          │
-<a id="__codelineno-22-23" name="__codelineno-22-23" href="#__codelineno-22-23"></a>│                                       root&gt;/artefacts/graph)                         │
-<a id="__codelineno-22-24" name="__codelineno-22-24" href="#__codelineno-22-24"></a>│ --overlay                    TEXT     results-overlay.json to join (default: beside  │
-<a id="__codelineno-22-25" name="__codelineno-22-25" href="#__codelineno-22-25"></a>│                                       graph.json)                                    │
-<a id="__codelineno-22-26" name="__codelineno-22-26" href="#__codelineno-22-26"></a>│ --help                                Show this message and exit.                    │
-<a id="__codelineno-22-27" name="__codelineno-22-27" href="#__codelineno-22-27"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-22-12" name="__codelineno-22-12" href="#__codelineno-22-12"></a>│ --type                             TEXT     restrict to one node type (module, test, │
+<a id="__codelineno-22-13" name="__codelineno-22-13" href="#__codelineno-22-13"></a>│                                             coverage_item, ...)                      │
+<a id="__codelineno-22-14" name="__codelineno-22-14" href="#__codelineno-22-14"></a>│ --tier                             TEXT     restrict to one tier                     │
+<a id="__codelineno-22-15" name="__codelineno-22-15" href="#__codelineno-22-15"></a>│                                             (design|config|binding)                  │
+<a id="__codelineno-22-16" name="__codelineno-22-16" href="#__codelineno-22-16"></a>│ --limit                            INTEGER  maximum matches to report [default: 10]  │
+<a id="__codelineno-22-17" name="__codelineno-22-17" href="#__codelineno-22-17"></a>│ --depth                            INTEGER  hops of neighbourhood expansion around   │
+<a id="__codelineno-22-18" name="__codelineno-22-18" href="#__codelineno-22-18"></a>│                                             each match (0 disables; maximum 3)       │
+<a id="__codelineno-22-19" name="__codelineno-22-19" href="#__codelineno-22-19"></a>│                                             [default: 1]                             │
+<a id="__codelineno-22-20" name="__codelineno-22-20" href="#__codelineno-22-20"></a>│ --max-neighbors                    INTEGER  neighbours reported per match; anything  │
+<a id="__codelineno-22-21" name="__codelineno-22-21" href="#__codelineno-22-21"></a>│                                             beyond is counted in neighbors_truncated │
+<a id="__codelineno-22-22" name="__codelineno-22-22" href="#__codelineno-22-22"></a>│                                             rather than dropped silently             │
+<a id="__codelineno-22-23" name="__codelineno-22-23" href="#__codelineno-22-23"></a>│                                             [default: 25]                            │
+<a id="__codelineno-22-24" name="__codelineno-22-24" href="#__codelineno-22-24"></a>│ --results          --no-results             join the regression-results overlay onto │
+<a id="__codelineno-22-25" name="__codelineno-22-25" href="#__codelineno-22-25"></a>│                                             every node                               │
+<a id="__codelineno-22-26" name="__codelineno-22-26" href="#__codelineno-22-26"></a>│                                             [default: results]                       │
+<a id="__codelineno-22-27" name="__codelineno-22-27" href="#__codelineno-22-27"></a>│ --expand                                    full node summaries for every neighbour  │
+<a id="__codelineno-22-28" name="__codelineno-22-28" href="#__codelineno-22-28"></a>│                                             instead of the lean id/label/type        │
+<a id="__codelineno-22-29" name="__codelineno-22-29" href="#__codelineno-22-29"></a>│                                             references                               │
+<a id="__codelineno-22-30" name="__codelineno-22-30" href="#__codelineno-22-30"></a>│ --graph                            TEXT     graph.json to query (default &lt;project    │
+<a id="__codelineno-22-31" name="__codelineno-22-31" href="#__codelineno-22-31"></a>│                                             root&gt;/artefacts/graph)                   │
+<a id="__codelineno-22-32" name="__codelineno-22-32" href="#__codelineno-22-32"></a>│ --overlay                          TEXT     results-overlay.json to join (default:   │
+<a id="__codelineno-22-33" name="__codelineno-22-33" href="#__codelineno-22-33"></a>│                                             beside graph.json)                       │
+<a id="__codelineno-22-34" name="__codelineno-22-34" href="#__codelineno-22-34"></a>│ --help                                      Show this message and exit.              │
+<a id="__codelineno-22-35" name="__codelineno-22-35" href="#__codelineno-22-35"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="graph-path">graph path</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a>Usage: rtl-buddy graph path [OPTIONS] SOURCE TARGET                                    
@@ -4230,10 +4248,12 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-24-9" name="__codelineno-24-9" href="#__codelineno-24-9"></a>│ --results    --no-results          join the regression-results overlay onto every    │
 <a id="__codelineno-24-10" name="__codelineno-24-10" href="#__codelineno-24-10"></a>│                                    node                                              │
 <a id="__codelineno-24-11" name="__codelineno-24-11" href="#__codelineno-24-11"></a>│                                    [default: results]                                │
-<a id="__codelineno-24-12" name="__codelineno-24-12" href="#__codelineno-24-12"></a>│ --graph                      TEXT  graph.json to query                               │
-<a id="__codelineno-24-13" name="__codelineno-24-13" href="#__codelineno-24-13"></a>│ --overlay                    TEXT  results-overlay.json to join                      │
-<a id="__codelineno-24-14" name="__codelineno-24-14" href="#__codelineno-24-14"></a>│ --help                             Show this message and exit.                       │
-<a id="__codelineno-24-15" name="__codelineno-24-15" href="#__codelineno-24-15"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-24-12" name="__codelineno-24-12" href="#__codelineno-24-12"></a>│ --expand                           full node summaries for every edge peer instead   │
+<a id="__codelineno-24-13" name="__codelineno-24-13" href="#__codelineno-24-13"></a>│                                    of the lean id/label/type references              │
+<a id="__codelineno-24-14" name="__codelineno-24-14" href="#__codelineno-24-14"></a>│ --graph                      TEXT  graph.json to query                               │
+<a id="__codelineno-24-15" name="__codelineno-24-15" href="#__codelineno-24-15"></a>│ --overlay                    TEXT  results-overlay.json to join                      │
+<a id="__codelineno-24-16" name="__codelineno-24-16" href="#__codelineno-24-16"></a>│ --help                             Show this message and exit.                       │
+<a id="__codelineno-24-17" name="__codelineno-24-17" href="#__codelineno-24-17"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="cov">cov</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>Usage: rtl-buddy cov [OPTIONS] COMMAND [ARGS]...                                       
@@ -4754,7 +4774,7 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-53-12" name="__codelineno-53-12" href="#__codelineno-53-12"></a>│ scope          Broadcast scope_changed{wave_scope}.                                  │
 <a id="__codelineno-53-13" name="__codelineno-53-13" href="#__codelineno-53-13"></a>│ open           Broadcast source_focused{file, line, col}.                            │
 <a id="__codelineno-53-14" name="__codelineno-53-14" href="#__codelineno-53-14"></a>│ graph-focus    Broadcast graph_focus{node} — point the hub&#39;s design knowledge graph  │
-<a id="__codelineno-53-15" name="__codelineno-53-15" href="#__codelineno-53-15"></a>│                pane (http://127.0.0.1:&lt;http_port&gt;/graph) at one node of              │
+<a id="__codelineno-53-15" name="__codelineno-53-15" href="#__codelineno-53-15"></a>│                pane (http://127.0.0.1:&lt;http_port&gt;/gph) at one node of                │
 <a id="__codelineno-53-16" name="__codelineno-53-16" href="#__codelineno-53-16"></a>│                artefacts/graph/graph.json. NODE is a graph node id: &#39;module:fifo&#39;,   │
 <a id="__codelineno-53-17" name="__codelineno-53-17" href="#__codelineno-53-17"></a>│                &#39;inst:top/top.u_fifo&#39;, &#39;test:verif/dma#smoke&#39;,                        │
 <a id="__codelineno-53-18" name="__codelineno-53-18" href="#__codelineno-53-18"></a>│                &#39;covitem:dma#DMA-COV-1&#39; — the vocabulary `rb graph query` returns and │
@@ -4877,8 +4897,8 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <div class="highlight"><pre><span></span><code><a id="__codelineno-59-1" name="__codelineno-59-1" href="#__codelineno-59-1"></a>Usage: rtl-buddy hub send graph-focus [OPTIONS] NODE                                   
 <a id="__codelineno-59-2" name="__codelineno-59-2" href="#__codelineno-59-2"></a>
 <a id="__codelineno-59-3" name="__codelineno-59-3" href="#__codelineno-59-3"></a> Broadcast graph_focus{node} — point the hub&#39;s design knowledge graph pane              
-<a id="__codelineno-59-4" name="__codelineno-59-4" href="#__codelineno-59-4"></a> (http://127.0.0.1:&lt;http_port&gt;/graph) at one node of artefacts/graph/graph.json. NODE   
-<a id="__codelineno-59-5" name="__codelineno-59-5" href="#__codelineno-59-5"></a> is a graph node id: &#39;module:fifo&#39;, &#39;inst:top/top.u_fifo&#39;, &#39;test:verif/dma#smoke&#39;,      
+<a id="__codelineno-59-4" name="__codelineno-59-4" href="#__codelineno-59-4"></a> (http://127.0.0.1:&lt;http_port&gt;/gph) at one node of artefacts/graph/graph.json. NODE is  
+<a id="__codelineno-59-5" name="__codelineno-59-5" href="#__codelineno-59-5"></a> a graph node id: &#39;module:fifo&#39;, &#39;inst:top/top.u_fifo&#39;, &#39;test:verif/dma#smoke&#39;,         
 <a id="__codelineno-59-6" name="__codelineno-59-6" href="#__codelineno-59-6"></a> &#39;covitem:dma#DMA-COV-1&#39; — the vocabulary `rb graph query` returns and                  
 <a id="__codelineno-59-7" name="__codelineno-59-7" href="#__codelineno-59-7"></a> docs/concepts/graph.md lists. The hub caches the focus and replays it to the pane on   
 <a id="__codelineno-59-8" name="__codelineno-59-8" href="#__codelineno-59-8"></a> connect, so sending this before the browser tab is open works.                         

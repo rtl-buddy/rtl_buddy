@@ -1749,6 +1749,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#rb-graph-results-coverage-mergedinfo-joins-design-heat-by-file-so-two-modules-in-one-file-share-numbers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph results --coverage &lt;merged.info&gt; joins design heat by file, so two modules in one file share numbers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rb-graph-results-coverage-takes-a-value-now-so-a-bare-coverage-no-longer-parses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph results --coverage takes a value now, so a bare --coverage no longer parses
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2112,6 +2134,28 @@
     <span class="md-ellipsis">
       
         rb fpga PASSes a routed run that misses timing (unless require-timing-met)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rb-graph-results-coverage-mergedinfo-joins-design-heat-by-file-so-two-modules-in-one-file-share-numbers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph results --coverage &lt;merged.info&gt; joins design heat by file, so two modules in one file share numbers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rb-graph-results-coverage-takes-a-value-now-so-a-bare-coverage-no-longer-parses" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb graph results --coverage takes a value now, so a bare --coverage no longer parses
       
     </span>
   </a>
@@ -2508,6 +2552,12 @@ the
 <h2 id="rb-fpga-passes-a-routed-run-that-misses-timing-unless-require-timing-met"><code>rb fpga</code> PASSes a routed run that misses timing (unless <code>require-timing-met</code>)</h2>
 <p>By default a routed run with negative slack (<code>timing_met: false</code>, negative <code>wns_ns</code>) still reports <strong>PASS</strong>. This is intentional and mirrors <code>rb pnr</code>: the metrics carry the truth so an agent can run a timing-closure loop — read <code>timing_met</code> / <code>wns_ns</code> / <code>failing_paths</code> from the machine JSON, edit the XDC or RTL, and rerun — instead of the run simply failing with no actionable detail. Pass/fail keys off the flow completing (synth → route → reports), not off meeting timing.</p>
 <p>To make timing a hard gate (e.g. for a regression suite that must not regress closure), set <code>require-timing-met: true</code> on the run in <code>fpga.yaml</code>. An unmet-timing run then becomes a <strong>FAIL</strong>, but the routed metrics still ride along on the failing result so the closure loop keeps its inputs. The gate only fires when the backend actually reports timing — a backend that cannot measure it (<code>timing_met: null</code>) is never gated, since a miss cannot be proven.</p>
+<h2 id="rb-graph-results-coverage-mergedinfo-joins-design-heat-by-file-so-two-modules-in-one-file-share-numbers"><code>rb graph results --coverage &lt;merged.info&gt;</code> joins design heat by file, so two modules in one file share numbers</h2>
+<p>The <code>info</code> source ingests a merged LCOV <code>.info</code>, and LCOV records files, never module names. A <code>module:</code> node therefore gets the numbers of exactly the <code>SF:</code> record that resolves to the file the node claims — so <strong>two modules declared in one source file both wear that file's whole coverage</strong>. The entry says so (<code>joined_by: "file"</code>), and the richer <code>model</code> / <code>artefacts</code> sources do not have this behavior: they read the simulator's own per-module attribution. If you need per-module numbers from one file, join from a coverage-mode run's <code>cov_dir/manifest.json</code> (<code>--coverage auto</code>, the default) rather than from an <code>.info</code>.</p>
+<p>Two related bounds on the same source. An <code>SF:</code> path is believed only when it reaches a real file — either as written (absolute, or relative to the <code>.info</code>'s own directory) or after leading segments are trimmed to re-anchor it on the project root, and <strong>never down to a bare basename</strong>: a repo-scope <code>--coverage-merge</code> can rewrite duplicate basenames against the wrong suite's root, so a basename that happens to exist under your root is not evidence. Records that only resolved after trimming are listed in <code>summary.reanchored_files</code>; records that resolved to nothing land in <code>summary.unresolved_files</code> with a <code>problems</code> row. And because a merged <code>.info</code> carries no test column and no SVA cover points, per-test badges and <code>covitem:</code> verdicts still come from the per-test <code>coverage.dat</code> databases — with none in the tree, <code>summary.items</code> counts what the graph <em>declares</em> while <code>summary.items_scored</code> is <code>0</code>, which is what distinguishes "nothing scored these" from "the run hit none of them".</p>
+<h2 id="rb-graph-results-coverage-takes-a-value-now-so-a-bare-coverage-no-longer-parses"><code>rb graph results --coverage</code> takes a value now, so a bare <code>--coverage</code> no longer parses</h2>
+<p>In v6.30.x, <code>--coverage/--no-coverage</code> was a boolean pair and the join was on by default. It now <strong>names a source</strong> — <code>auto</code> (the default), <code>model</code>, <code>none</code>, or a path to a merged LCOV <code>.info</code> — so <code>rb graph results --coverage</code> with no value fails with <em>"Option '--coverage' requires an argument"</em>. The break is loud rather than silent, and passing the flag bare was always redundant (the join was already on), but a script that did so needs one edit.</p>
+<p>The fix is whichever you meant: drop the flag entirely (the default is unchanged), or write <code>--coverage auto</code>. <code>--no-coverage</code> is untouched and still disables the join, as does <code>--coverage none</code>. Click can express an optional-value option (<code>is_flag=False, flag_value=...</code>), which would have kept the bare form working; Typer forwards neither kwarg and deprecates both, so that route is closed until Typer supports it.</p>
 
 
 
