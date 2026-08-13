@@ -671,6 +671,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#where-a-generator-should-write" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where a generator should write
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#hook-working-directory" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1571,6 +1582,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#where-a-generator-should-write" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where a generator should write
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#hook-working-directory" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1728,7 +1750,17 @@
 <tr>
 <td><code>artifact_dir</code></td>
 <td>string</td>
-<td>Artifact root for this test under <code>suite_dir/artefacts/</code></td>
+<td>Artifact root for this test under <code>suite_dir/artefacts/</code> — <strong>test-keyed</strong>, so every run of the test shares it</td>
+</tr>
+<tr>
+<td><code>run_id</code></td>
+<td>int or None</td>
+<td>The run index this hook is preparing — a dispatched array element, or a single <code>test</code> — and <code>None</code> when one execution of the hook serves several runs, which is what a local <code>randtest</code> does (it runs <code>preproc</code> and the compile once, then loops the simulation)</td>
+</tr>
+<tr>
+<td><code>run_artifact_dir</code></td>
+<td>string</td>
+<td>Artifact root for <em>this run</em>: <code>artifact_dir/run-NNNN</code> when <code>run_id</code> is set, otherwise <code>artifact_dir</code> itself. Also the simulation's working directory</td>
 </tr>
 <tr>
 <td><code>__file__</code></td>
@@ -1737,6 +1769,7 @@
 </tr>
 </tbody>
 </table>
+<p>Both directories exist by the time the hook runs.</p>
 <p>Plusargs are still passed through verbatim. If a plusarg value should reference a suite-local file, resolve it explicitly against <code>suite_dir</code> in preproc. Output filenames that should land in the per-test artefact tree can remain relative to <code>artifact_dir</code>.</p>
 <p><strong>Example:</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># my_preproc.py</span>
@@ -1748,20 +1781,39 @@
 </code></pre></div>
 <p>If a pre-processing script raises an exception, the affected test is marked as a setup failure and the rest of the run continues.</p>
 <p>See the template repo for a working example.</p>
+<h2 id="where-a-generator-should-write">Where a generator should write</h2>
+<p><code>artifact_dir</code> is keyed on the test name only, so under <code>randtest</code> or <code>--dispatch</code> every seed of a test resolves to the same path — and dispatched seeds run <strong>concurrently</strong>. Which directory a <code>preproc</code> generator should use follows from what its output depends on:</p>
+<ul>
+<li><strong>Output depends only on the test</strong> (the common case): write to <code>artifact_dir</code>, and write <strong>atomically</strong> — a temp file plus <code>os.replace</code>, never <code>open(path, "w")</code>. Truncate-in-place is not atomic, so a sibling element reading the file mid-write gets a short one, and the mismatch surfaces as a design failure rather than a harness failure.</li>
+<li><strong>Output depends on the run or the seed</strong>: write to <code>run_artifact_dir</code>. It is unique per run, so nothing races, and it is the simulation's working directory — a plusarg naming a file there can stay relative. This only separates runs where the hook itself runs per run: under <code>--dispatch</code> it does, and <code>run_id</code> is set. A <strong>local</strong> <code>randtest</code> runs the hook once for all its seeds, so <code>run_id</code> is <code>None</code> and <code>run_artifact_dir</code> is the test directory — a generator that must vary per seed needs the dispatch path (or a <code>sweep</code> that expands the seeds into separate tests).</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Seed-dependent stimulus: per-run directory, no race to worry about.</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">out</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">run_artifact_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;stimulus.hex&quot;</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">out</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">generate</span><span class="p">(</span><span class="n">run_id</span><span class="p">))</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># Test-dependent stimulus: shared path, so publish it atomically.</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">out</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">)</span> <span class="o">/</span> <span class="s2">&quot;stimulus.hex&quot;</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">tmp</span> <span class="o">=</span> <span class="n">out</span><span class="o">.</span><span class="n">with_name</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">out</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2">.</span><span class="si">{</span><span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span><span class="si">}</span><span class="s2">.tmp&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="n">tmp</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">generate</span><span class="p">())</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="n">os</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">tmp</span><span class="p">,</span> <span class="n">out</span><span class="p">)</span>
+</code></pre></div>
 <h2 id="hook-working-directory">Hook working directory</h2>
 <p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which stays at <code>invocation_cwd</code> — the directory you ran <code>rb</code> from. It is <strong>not</strong> the suite directory. Always build paths from the injected <code>suite_dir</code> and <code>artifact_dir</code> variables; never call <code>os.getcwd()</code> to locate the suite.</p>
 <p>Because hooks run via <code>exec()</code> rather than <code>import</code>, <code>__name__</code> is set to the sentinel <code>"__rtl_buddy_hook__"</code> — never <code>"__main__"</code>. Put hook logic at module top level. If you also want the script runnable standalone (e.g. for local testing outside <code>rb</code>), keep only the standalone entry point under <code>if __name__ == "__main__":</code> and put the <code>rb</code>-invoked logic at module level or in the accompanying <code>else:</code> branch; the <code>__main__</code> branch is always skipped when <code>rb</code> runs the hook.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>     <span class="c1"># wrong — invocation cwd</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">artifact_dir</span><span class="p">,</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>   <span class="c1"># correct</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">out</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">(),</span> <span class="s2">&quot;gen.sv&quot;</span><span class="p">)</span>     <span class="c1"># wrong — invocation cwd</span>
 </code></pre></div>
 <p>If a hook delegates to a third-party generator that writes relative to <code>os.getcwd()</code> and exposes no output-directory argument, wrap the call in a <code>chdir</code> to the suite and restore it afterwards:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">try</span><span class="p">:</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">finally</span><span class="p">:</span>
-<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">prev</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getcwd</span><span class="p">()</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">suite_dir</span><span class="p">)</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="k">try</span><span class="p">:</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">gen_dir</span> <span class="o">=</span> <span class="n">third_party_generate</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>   <span class="c1"># writes relative to cwd</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="k">finally</span><span class="p">:</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">os</span><span class="o">.</span><span class="n">chdir</span><span class="p">(</span><span class="n">prev</span><span class="p">)</span>
 </code></pre></div>
 <p>This anchoring behavior changed in v5; see <a href="../../migrations/#v4-to-v5">Migrations: v4 to v5</a> and the <a href="../execution-context/">execution context</a> reference.</p>
 <h2 id="post-processing">Post-processing</h2>

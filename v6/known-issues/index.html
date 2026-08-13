@@ -2273,6 +2273,17 @@ APIs, and dispatch changes <em>how many times</em> they run:</p>
   bumps a counter, or otherwise has side effects — behaves differently under
   <code>--dispatch</code>. Make <code>preproc</code> idempotent, or move one-time setup into the
   sweep/head path.</li>
+<li><strong>Those <code>preproc</code> runs are concurrent, and <code>artifact_dir</code> is test-keyed.</strong>
+  Every element of a dispatched <code>randtest</code> (or a seed fan-out) runs the hook
+  against the <em>same</em> <code>artifact_dir</code> while its siblings' simulations read from
+  it, so a generator using <code>open(path, "w")</code> truncates a file another element
+  is reading and the short read surfaces as a <em>design</em> failure — a checker
+  mismatch against empty expected data, not a harness error. Two rules keep a
+  hook safe: write to <code>artifact_dir</code> <strong>atomically</strong> (temp file plus
+  <code>os.replace</code>), and if the generated content depends on the run or the seed,
+  write to the injected <code>run_artifact_dir</code> instead — it is unique per run
+  (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/415">#415</a>). See
+  <a href="../concepts/plugins/#where-a-generator-should-write">Where a generator should write</a>.</li>
 </ul>
 <h2 id="a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail">A dispatched compile failure surfaces as CompileFail, not DispatchFail</h2>
 <p>When a test's compile fails, the build job records it and the head maps the
