@@ -1318,7 +1318,8 @@ def test_suite_job_ids_are_announced_before_the_wait(
     (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
     assert fields["job_ids"] == ["fake-1"]
     assert fields["build_job"] == "fake-build"
-    assert fields["jobs"] == 1
+    # Build job counted: same scale as dispatch.progress / suite_drained.
+    assert fields["jobs"] == 2
     assert fields["suite"] == "tests.yaml"
     # ...and it really reached the console at default verbosity.
     printed = " ".join(result.output.split())
@@ -1358,4 +1359,6 @@ def test_randtest_announces_its_seed_fanout_before_waiting(
     (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
     # One id per submitted seed job, exactly as the fake handed them out.
     assert fields["job_ids"] == ["fake-1", "fake-2", "fake-3"]
-    assert fields["jobs"] == len(recording_backend.submitted) == 3
+    assert len(recording_backend.submitted) == 3
+    # ...plus the build job, so the announced count is the drained count.
+    assert fields["jobs"] == 3 + (1 if fields.get("build_job") else 0)

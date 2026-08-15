@@ -142,6 +142,38 @@ def test_change_is_recorded_unchanged_is_not_and_the_console_is_throttled(
     assert _stderr(capsys).count("jobs remaining") == 1
 
 
+def test_a_throttled_change_is_not_stamped_heartbeat_when_it_finally_prints(
+    console, caplog
+):
+    """`heartbeat` is the field a reader filters on to tell "still alive"
+    from "something happened"; a change the throttle held back is the latter.
+    """
+    capsys = console()
+    clock = _Clock()
+    handles = [_handle(f"9_{i}") for i in (1, 2, 3)]
+    progress = DispatchProgress(
+        handles, backend="slurm", interval=60.0, max_wait=None, clock=clock
+    )
+
+    progress.observe(["9_1", "9_2", "9_3"])  # first: prints
+    clock.advance(10)
+    progress.observe(["9_1", "9_2"])  # changed, throttled off the console
+    clock.advance(55)
+    progress.observe(["9_1", "9_2"])  # unchanged, but a change is owed
+
+    records = _records(caplog, "dispatch.progress")
+    assert [(f["remaining"], f["heartbeat"]) for f in records] == [
+        (3, False),
+        (2, False),
+        (2, False),  # NOT a heartbeat: the count moved since the last line
+    ]
+    assert _stderr(capsys).count("jobs remaining") == 2
+
+    clock.advance(60)
+    progress.observe(["9_1", "9_2"])  # nothing owed now: a real heartbeat
+    assert _records(caplog, "dispatch.progress")[-1]["heartbeat"] is True
+
+
 def test_heartbeat_proves_liveness_when_nothing_moves(console, caplog):
     """A count that has not moved for an hour is the case that looked hung."""
     capsys = console()

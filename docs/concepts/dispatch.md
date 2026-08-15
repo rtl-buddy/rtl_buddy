@@ -340,7 +340,7 @@ warning. Four things appear, in this order:
 
 2. **Progress, on change and as a heartbeat.** Every time the outstanding
    count moves, and at least once every `progress-interval` seconds while
-   jobs are queued (`dispatch.progress`):
+   any job is still outstanding, queued or running (`dispatch.progress`):
 
     ```text
     dispatch: 42/88 jobs remaining (12 running, 30 pending), 12m34s elapsed, longest running rb:demo_alu 8m02s
@@ -365,7 +365,9 @@ warning. Four things appear, in this order:
    an interrupted run leaves a post-mortem trail either way.
 
 `progress-interval: 0` opts a developer's terminal out of all three
-console lines; `rtl_buddy.log` still records every change at INFO. There
+console lines; `rtl_buddy.log` still records every change at INFO (with
+[one caveat](../known-issues.md#under-dispatch-the-jobs-and-the-head-write-the-same-suitertl_buddylog)
+about the jobs sharing that file today). There
 is no CLI flag for either knob — CI sets them once in `root_config.yaml`,
 where the value belongs to the site rather than to the invocation.
 

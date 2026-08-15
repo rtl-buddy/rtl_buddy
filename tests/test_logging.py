@@ -423,6 +423,43 @@ def test_log_console_event_prints_once_at_default_verbosity(tmp_path, capsys, ca
     assert "3/8 jobs remaining" in log_path.read_text()
 
 
+def test_log_console_event_prints_in_machine_mode_too(tmp_path, capsys, caplog):
+    """An agent's transcript needs the liveness line for the reason CI does.
+
+    Machine mode's console is the same WARNING-gated stream rendering the
+    human message (the JSON Lines are the file log's), so the line is
+    printed there as well; the JSONL record still carries the event.
+    """
+    from rtl_buddy.logging_utils import log_console_event
+
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(machine=True, color=False, log_path=log_path)
+    _attach_caplog(caplog)
+
+    log_console_event(
+        logging.getLogger("rtl_buddy.tests"),
+        logging.INFO,
+        "dispatch.progress",
+        backend="slurm",
+        remaining=3,
+        total=8,
+        elapsed_s=12,
+    )
+
+    stderr = " ".join(capsys.readouterr().err.split())
+    assert stderr.count("3/8 jobs remaining") == 1
+    (line,) = [
+        json.loads(text)
+        for text in log_path.read_text().splitlines()
+        if '"dispatch.progress"' in text
+    ]
+    assert (line["event"], line["remaining"], line["total"]) == (
+        "dispatch.progress",
+        3,
+        8,
+    )
+
+
 def test_log_console_event_is_not_printed_twice_under_verbose(tmp_path, capsys):
     """`-v` already shows INFO: the direct print must stand down."""
     from rtl_buddy.logging_utils import log_console_event

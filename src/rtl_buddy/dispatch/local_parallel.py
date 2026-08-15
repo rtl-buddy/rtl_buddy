@@ -428,7 +428,7 @@ class LocalProcessBackend(DispatchBackend):
                 for job in outstanding
             }
             progress.observe(
-                states, states=states, longest=self._longest_running(outstanding)
+                states.keys(), states=states, longest=self._longest_running(outstanding)
             )
             time.sleep(_POLL_INTERVAL_SEC)
 
@@ -495,7 +495,7 @@ class LocalProcessBackend(DispatchBackend):
             jobs=len(victims),
             # Named, not just counted: an interrupted run's ids are what a
             # reader needs to check nothing outlived the head (#435).
-            job_ids=group_job_ids(victims),
+            job_ids=group_job_ids(victims.keys()),
         )
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:

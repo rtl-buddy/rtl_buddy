@@ -2547,7 +2547,10 @@ class RtlBuddy:
             suite=suite,
             build_job=build_handle.job_id if build_handle is not None else None,
             job_ids=group_job_ids(handle.job_id for handle in handles),
-            jobs=len(handles),
+            # Build job included: this is the same scale `dispatch.progress`
+            # (remaining/total) and `dispatch.suite_drained` count on, so the
+            # per-suite counts announced here sum to the fleet's `total`.
+            jobs=len(handles) + (1 if build_handle is not None else 0),
         )
 
     def _plan_dispatch_suite(

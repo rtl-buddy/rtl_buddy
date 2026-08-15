@@ -15,7 +15,9 @@ per poll. It owns three decisions so neither backend has to:
 
 * **When to speak.** On the first observation (the moment the head enters
   the wait), on every change in the outstanding count, and as a heartbeat
-  every ``progress-interval`` seconds while jobs are still queued — at
+  every ``progress-interval`` seconds while any job is still outstanding
+  (queued *or* running — a fleet that is all running still needs to prove
+  the head is alive) — at
   most one console line per interval, so a 10 s poll cadence does not
   produce 180 lines an hour. ``progress-interval: 0`` silences the
   console entirely while every change still reaches ``rtl_buddy.log``.
@@ -136,6 +138,11 @@ class DispatchProgress:
         self._start = clock()
         self._last_console: float | None = None
         self._last_remaining: int | None = None
+        # A change the throttle kept off the console. The next line that
+        # does print must not be stamped `heartbeat` — its count moved since
+        # the last console line, and `heartbeat` is the field a reader
+        # filters on to tell "still alive" from "something happened".
+        self._pending_change = False
         self._first = True
         self._total = len(handles)
 
@@ -184,7 +191,7 @@ class DispatchProgress:
             self._emit_progress(
                 count,
                 elapsed=elapsed,
-                heartbeat=not (self._first or changed),
+                heartbeat=not (self._first or changed or self._pending_change),
                 states=states,
                 longest=longest,
                 now=now,
@@ -231,11 +238,14 @@ class DispatchProgress:
             self._last_console is not None
             and (now - self._last_console) < self._interval
         ):
-            # Throttled: a change worth recording, too soon to print.
+            # Throttled: a change worth recording, too soon to print. The
+            # next console line owes the reader the news that the count moved.
+            self._pending_change = True
             log_event(self._logger, logging.INFO, "dispatch.progress", **fields)
             return
         log_console_event(self._logger, logging.INFO, "dispatch.progress", **fields)
         self._last_console = now
+        self._pending_change = False
 
     def _report_drained_suites(self, outstanding: set[str], elapsed: float) -> None:
         """One line per suite, the first time none of its jobs are queued."""

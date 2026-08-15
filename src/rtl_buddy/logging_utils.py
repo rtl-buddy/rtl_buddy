@@ -1079,6 +1079,13 @@ def log_console_event(
     console AND keep the structured record — and this is its generalisation.
     When the console *would* show ``level`` anyway the extra print is
     skipped, so ``-v`` shows one line, not two.
+
+    ``--machine`` is deliberately no different: its console handler is the
+    same WARNING-gated stream (rendering the human message — the JSON Lines
+    go to the file log), and an agent driving a dispatched regression needs
+    the liveness line for exactly the reason CI does. The lines are
+    throttled at the source (``progress-interval``), so a transcript sees a
+    line a minute, not one per poll.
     """
     message = log_event(logger, level, event, **fields)
     if level < console_level():

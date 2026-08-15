@@ -651,7 +651,7 @@ class SlurmDispatchBackend(DispatchBackend):
                 )
                 return
             states, longest = self._outstanding(records, handle_ids)
-            progress.observe(states, states=states, longest=longest)
+            progress.observe(states.keys(), states=states, longest=longest)
             time.sleep(self.poll_interval)
 
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
