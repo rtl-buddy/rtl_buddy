@@ -18,6 +18,8 @@ execution backend for regression test runs:
       sbatch-args:             # passed through to sbatch verbatim
         - --partition=verif
       poll-interval: 10        # seconds between queue polls while collecting
+      progress-interval: 60    # seconds between console progress lines (0 = quiet)
+      max-wait: 7200           # seconds the head waits before failing loudly
       jobs: 4                  # local-parallel only: concurrent subprocesses
 
 Per-test reservation overrides use the same ``resources`` shape in
@@ -125,6 +127,17 @@ class DispatchConfigFile:
     compile: DispatchResourcesFile | None = None
     sbatch_args: list[str] = field(rename="sbatch-args", default_factory=list)
     poll_interval: float = field(rename="poll-interval", default=10.0)
+    # Cadence of the console progress/heartbeat line while the fleet drains
+    # (#435). Deliberately NOT `poll-interval`: that paces the scheduler
+    # query (10 s, so ~180 identical lines in a half-hour regression), while
+    # this paces what a reader sees. 0 keeps a developer's terminal quiet;
+    # the log file still records every change at INFO.
+    progress_interval: float = field(rename="progress-interval", default=60.0)
+    # Wall-clock bound on the collect wait. `None` (the default) is
+    # unbounded — today's behaviour. Set it and a fleet that never leaves the
+    # queue becomes a diagnosable failure naming the outstanding job ids,
+    # instead of a head that blocks forever and silently.
+    max_wait: float | None = field(rename="max-wait", default=None)
     # Cap on concurrently *running* elements PER submitted array
     # (sbatch --array=1-N%cap). Peak concurrency across a run is roughly
     # this times the number of arrays (resource groups x suites).
@@ -158,6 +171,17 @@ class DispatchConfigFile:
                 time=_validate_time(res.time),
             )
 
+        if self.progress_interval < 0:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch progress-interval must be >= 0 "
+                f"(got {self.progress_interval}); use 0 to disable console "
+                "progress lines."
+            )
+        if self.max_wait is not None and self.max_wait <= 0:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch max-wait must be > 0 when set (got {self.max_wait}); "
+                "omit it for an unbounded wait."
+            )
         if self.max_jobs_per_array < 1:
             raise FatalRtlBuddyError(
                 f"cfg-dispatch max-jobs-per-array must be >= 1 "
@@ -174,6 +198,8 @@ class DispatchConfigFile:
             compile=_validated(self.compile),
             sbatch_args=list(self.sbatch_args),
             poll_interval=self.poll_interval,
+            progress_interval=self.progress_interval,
+            max_wait=self.max_wait,
             max_jobs_per_array=self.max_jobs_per_array,
             jobs=self.jobs,
             rightsize=self.rightsize,
@@ -189,6 +215,8 @@ class DispatchConfig:
     compile: DispatchResourcesFile | None = None
     sbatch_args: list = None
     poll_interval: float = 10.0
+    progress_interval: float = 60.0
+    max_wait: float | None = None
     max_jobs_per_array: int = 200
     jobs: int | None = None
     rightsize: RightsizeConfigFile | None = None

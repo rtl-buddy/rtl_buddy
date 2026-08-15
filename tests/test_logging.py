@@ -380,3 +380,62 @@ def test_verible_stdout_is_preserved_verbatim(monkeypatch):
     assert verible.do_exe("verible-verilog-format", []) == 0
     assert stdout.getvalue() == "module x;  \nassign y = z;\n"
     assert stderr.getvalue() == ""
+
+
+# ------------------------------------- #435: console-visible INFO events
+
+
+def _attach_caplog(caplog):
+    """Re-attach caplog's handler, which setup_logging() clears."""
+    logging.getLogger().addHandler(caplog.handler)
+    caplog.set_level(logging.DEBUG)
+
+
+def test_log_console_event_prints_once_at_default_verbosity(tmp_path, capsys, caplog):
+    """The event a CI console must see, without being logged as a warning.
+
+    The console handler sits at WARNING by default, so a plain INFO event
+    reaches the log file and nothing else — which is how a dispatched
+    regression stayed silent for half an hour (#435).
+    """
+    from rtl_buddy.logging_utils import log_console_event
+
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, log_path=log_path)
+    _attach_caplog(caplog)
+
+    log_console_event(
+        logging.getLogger("rtl_buddy.tests"),
+        logging.INFO,
+        "dispatch.progress",
+        backend="slurm",
+        remaining=3,
+        total=8,
+        elapsed_s=12,
+    )
+
+    stderr = " ".join(capsys.readouterr().err.split())
+    assert stderr.count("3/8 jobs remaining") == 1
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.progress"
+    ]
+    assert record.levelno == logging.INFO
+    assert "3/8 jobs remaining" in log_path.read_text()
+
+
+def test_log_console_event_is_not_printed_twice_under_verbose(tmp_path, capsys):
+    """`-v` already shows INFO: the direct print must stand down."""
+    from rtl_buddy.logging_utils import log_console_event
+
+    setup_logging(verbose=True, color=False, log_path=tmp_path / "rtl_buddy.log")
+    log_console_event(
+        logging.getLogger("rtl_buddy.tests"),
+        logging.INFO,
+        "dispatch.progress",
+        backend="slurm",
+        remaining=3,
+        total=8,
+        elapsed_s=12,
+    )
+    stderr = " ".join(capsys.readouterr().err.split())
+    assert stderr.count("3/8 jobs remaining") == 1
