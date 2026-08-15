@@ -597,3 +597,50 @@ def test_cancel_all_survives_a_repeated_handle(monkeypatch, tmp_path):
     assert backend._jobs[queued.job_id].skipped
     assert backend._queued == []
     backend.wait_all([running, queued])
+
+
+# ---- progress reporting (#435) -------------------------------------------
+
+
+def test_wait_all_drives_the_progress_reporter(monkeypatch, tmp_path, caplog):
+    """The pool's liveness signal is the reporter, not the old DEBUG line.
+
+    `dispatch.waiting` was DEBUG-only, so a laptop regression that takes an
+    hour said nothing between submit and drain either.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=2)
+    handles = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(3)]
+
+    with caplog.at_level(logging.INFO):
+        backend.wait_all(handles)
+
+    progress = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.progress"
+    ]
+    assert progress, "expected the pool's wait to report progress"
+    assert progress[0].levelno == logging.INFO
+    assert progress[0].__dict__["rtl_fields"]["total"] == 3
+    # The DEBUG placeholder it replaces is gone.
+    assert "dispatch.waiting" not in _events(caplog)
+    # ...and the suite is reported as finished, not as passed.
+    drained = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.suite_drained"
+    ]
+    assert drained and "finished" in drained[0].message
+
+
+def test_cancelled_warning_names_the_jobs(monkeypatch, tmp_path, caplog):
+    _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
+    backend = _backend(jobs=1)
+    handles = [backend.submit(_sim_spec(tmp_path, f"t{i}")) for i in range(2)]
+
+    with caplog.at_level(logging.WARNING):
+        backend.cancel_all(handles)
+
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.cancelled"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["lp-1", "lp-2"]

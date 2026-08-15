@@ -40,6 +40,7 @@ from ..logging_utils import log_event
 from ..tool_manifest import require as require_tool
 from .argv import build_job_argv, test_job_argv
 from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
+from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,15 @@ _ACTIVE_STATES = "PD,R,S,CG,CF"
 # ignores it. Absent both, the job pends until the site's
 # `kill_invalid_depend` reaps it, which is off by default (#358, #372).
 _NEVER_SATISFIED = "DependencyNeverSatisfied"
+
+# What each poll asks squeue for: id | reason | state | time-used | name.
+# The first two are what `_reap_never_satisfied` has always needed; the
+# rest are the progress line's running/pending split and its "longest
+# running job" (#435). Parsing stays tolerant of a short line so a Slurm
+# that renders fewer columns degrades to a plainer progress line rather
+# than breaking the wait.
+_SQUEUE_FORMAT = "%i|%r|%T|%M|%j"
+_SQUEUE_RUNNING_STATE = "RUNNING"
 
 # One element per manifest line, indexed by SLURM_ARRAY_TASK_ID. Lines
 # are shlex-quoted, so eval reconstructs the exact argv. A missing line
@@ -132,6 +142,71 @@ def _parse_cpu_time_to_seconds(text: str) -> float | None:
     return days * 86400 + seconds
 
 
+def _parse_squeue_line(line: str) -> dict | None:
+    """One ``_SQUEUE_FORMAT`` line as a record; ``None`` if it has no id.
+
+    Tolerant of a line with fewer fields than asked for: the id and the
+    reason are load-bearing (they decide what is still queued and what is
+    doomed), the rest only decorate the progress line.
+    """
+    job_id, _, rest = line.partition("|")
+    job_id = job_id.strip()
+    if not job_id:
+        return None
+    fields = rest.split("|")
+
+    def at(index: int) -> str:
+        return fields[index].strip() if len(fields) > index else ""
+
+    return {
+        "id": job_id,
+        "reason": at(0),
+        "state": at(1),
+        "time": at(2),
+        "name": at(3),
+    }
+
+
+def _expand_squeue_id(
+    job_id: str, handle_ids: Sequence[str] | None = None
+) -> list[str]:
+    """Handle ids one squeue id stands for.
+
+    squeue speaks four shapes and only one of them is one job:
+    ``1235`` (a non-array job, or a whole array before Slurm splits it),
+    ``1235_3`` (one element), ``1235_[1-40]`` / ``1235_[1,3-5]`` (the
+    still-pending elements of an array), and ``1235_[1-40%4]`` (the same
+    with the concurrency throttle attached). Counting lines instead of
+    expanding them is what made ``remaining`` a number about the queue
+    rather than about the run.
+
+    A bare base id with array handles is expanded **conservatively** to
+    every handle sharing it: the alternative — assuming it means one job —
+    would under-report a whole array as a single outstanding job.
+    """
+    base, sep, element = job_id.partition("_")
+    if not sep:
+        if handle_ids is None:
+            return [job_id]
+        matches = [h for h in handle_ids if h == base or h.startswith(f"{base}_")]
+        return matches or [job_id]
+    if not element.startswith("["):
+        return [job_id]
+    body = element.strip("[]")
+    body = body.split("%", 1)[0]  # drop the --array=%N throttle suffix
+    expanded = []
+    for part in body.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        low, dash, high = part.partition("-")
+        if dash and low.isdigit() and high.isdigit():
+            expanded.extend(str(i) for i in range(int(low), int(high) + 1))
+        else:
+            expanded.append(part)
+    return [f"{base}_{index}" for index in expanded] or [job_id]
+
+
 def _task_sampling_interval(value: str) -> float | None:
     """Seconds between task samples in an ``--acctg-freq`` value.
 
@@ -171,6 +246,11 @@ class SlurmDispatchBackend(DispatchBackend):
         require_tool("slurm")
         self.sbatch_args = list(dispatch_cfg.sbatch_args)
         self.poll_interval = dispatch_cfg.poll_interval
+        # How often the wait says something, and how long it is willing to
+        # wait at all (#435). Both default-safe: 60 s of console cadence and
+        # an unbounded wait, i.e. today's behaviour plus a heartbeat.
+        self.progress_interval = getattr(dispatch_cfg, "progress_interval", 60.0)
+        self.max_wait = getattr(dispatch_cfg, "max_wait", None)
         self._acct_interval_s = self._resolve_accounting_frequency()
 
     def _resolve_accounting_frequency(self) -> float | None:
@@ -436,7 +516,7 @@ class SlurmDispatchBackend(DispatchBackend):
             seen.setdefault(h.job_id.split("_")[0], None)
         return list(seen)
 
-    def _reap_never_satisfied(self, lines, *, cwd) -> list[str]:
+    def _reap_never_satisfied(self, lines, *, cwd) -> list[dict]:
         """Split queued jobs into those still coming and those already dead.
 
         A job whose ``afterok`` build failed is reported PENDING with reason
@@ -447,20 +527,26 @@ class SlurmDispatchBackend(DispatchBackend):
         ``kill_invalid_depend`` (off by default) removed it. Cancel them so
         they leave the queue instead of being waited on; collection then
         reports them as producing no result, which is exactly what happened.
+
+        Returns the surviving **records** (see :func:`_parse_squeue_line`),
+        not just their ids: the caller needs each survivor's state and
+        elapsed time for the progress line, and parsing the same output
+        twice invites the two parses to disagree.
         """
         remaining, doomed = [], []
         for line in lines:
-            job_id, _, reason = line.partition("|")
-            job_id = job_id.strip()
-            if not job_id:
+            record = _parse_squeue_line(line)
+            if record is None:
                 continue
             # Substring, not equality: %r is unpadded today, but a site whose
             # Slurm renders the reason with surrounding text must not silently
             # fall back into the infinite poll this method exists to remove.
-            if _NEVER_SATISFIED in reason:
-                doomed.append(job_id)
+            # Matched against the reason column alone, so a job *named* after
+            # the reason cannot be reaped by mistake.
+            if _NEVER_SATISFIED in record["reason"]:
+                doomed.append(record["id"])
             else:
-                remaining.append(job_id)
+                remaining.append(record)
         if doomed:
             log_event(
                 logger,
@@ -489,17 +575,56 @@ class SlurmDispatchBackend(DispatchBackend):
                 )
         return remaining
 
+    def _outstanding(self, records, handle_ids):
+        """Queue records → ({outstanding handle id: state}, longest running).
+
+        The queue speaks in lines and the run is counted in jobs, so every
+        record is expanded to the handle ids it covers (an array pending as
+        ``9_[1-3]`` is three jobs, not one). A record whose expansion names
+        no known handle still counts as itself: dropping it would let the
+        wait end while that job is queued, and being conservative here
+        costs at most an over-count for one poll.
+        """
+        known = set(handle_ids)
+        outstanding: dict[str, str] = {}
+        longest = None
+        for record in records:
+            running = record["state"] == _SQUEUE_RUNNING_STATE
+            expanded = [
+                job_id
+                for job_id in _expand_squeue_id(record["id"], handle_ids)
+                if job_id in known
+            ] or [record["id"]]
+            for job_id in expanded:
+                outstanding[job_id] = "running" if running else "pending"
+            if running:
+                # %M is the same [DD-]HH:MM:SS shape sacct's TotalCPU uses.
+                elapsed = _parse_cpu_time_to_seconds(record["time"])
+                if elapsed is not None and (longest is None or elapsed > longest[1]):
+                    longest = (record["name"] or record["id"], elapsed)
+        return outstanding, longest
+
     def wait_all(self, handles: list[JobHandle]) -> None:
         if not handles:
             return
         ids = ",".join(self._base_ids(handles))
         cwd = self._cwd_of(handles)
+        handle_ids = [h.job_id for h in handles if h is not None]
+        progress = DispatchProgress(
+            handles,
+            backend=self.name,
+            interval=self.progress_interval,
+            max_wait=self.max_wait,
+            # Resolved here rather than taken as a default, so the clock the
+            # reporter reads is the same one this module sleeps against.
+            clock=time.monotonic,
+        )
         while True:
             proc = subprocess.run(
                 [
                     "squeue",
                     "--noheader",
-                    "--format=%i|%r",
+                    f"--format={_SQUEUE_FORMAT}",
                     f"--states={_ACTIVE_STATES}",
                     "--jobs",
                     ids,
@@ -510,12 +635,13 @@ class SlurmDispatchBackend(DispatchBackend):
             )
             # squeue errors ("Invalid job id specified") once every job
             # has aged out of the queue — that is completion, not failure.
-            remaining = (
+            records = (
                 self._reap_never_satisfied(proc.stdout.splitlines(), cwd=cwd)
                 if proc.returncode == 0
                 else []
             )
-            if not remaining:
+            if not records:
+                progress.finish()
                 log_event(
                     logger,
                     logging.INFO,
@@ -524,14 +650,8 @@ class SlurmDispatchBackend(DispatchBackend):
                     jobs=len(handles),
                 )
                 return
-            log_event(
-                logger,
-                logging.DEBUG,
-                "dispatch.waiting",
-                backend=self.name,
-                remaining=len(remaining),
-                total=len(handles),
-            )
+            states, longest = self._outstanding(records, handle_ids)
+            progress.observe(states, states=states, longest=longest)
             time.sleep(self.poll_interval)
 
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
@@ -550,6 +670,9 @@ class SlurmDispatchBackend(DispatchBackend):
             "dispatch.cancelled",
             backend=self.name,
             jobs=len(handles),
+            # An interrupted or failed run must leave the ids on the console:
+            # they are the only route to `squeue`/`sacct` afterwards (#435).
+            job_ids=group_job_ids(h.job_id for h in handles if h is not None),
         )
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:

@@ -63,6 +63,7 @@ from ..logging_utils import log_event
 from ..process_utils import DEFAULT_KILL_TIMEOUT, signal_process_group
 from .argv import build_job_argv, test_job_argv
 from .base import BuildJobSpec, DispatchBackend, JobHandle, TestJobSpec
+from .progress import DispatchProgress, group_job_ids
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,9 @@ class _PoolJob:
     log_handle: IO | None = None
     returncode: int | None = None
     skipped: bool = False
+    # When the process was launched (monotonic), so progress reporting can
+    # name the job that has been running longest.
+    started_at: float | None = None
 
     @property
     def running(self) -> bool:
@@ -132,6 +136,11 @@ class LocalProcessBackend(DispatchBackend):
         self.max_jobs = (
             dispatch_cfg.jobs if dispatch_cfg.jobs is not None else default_jobs()
         )
+        # Same two knobs the Slurm backend honours (#435): the pool is
+        # quieter than a queue, but a laptop regression can still run for an
+        # hour with nothing on the console between submit and drain.
+        self.progress_interval = getattr(dispatch_cfg, "progress_interval", 60.0)
+        self.max_wait = getattr(dispatch_cfg, "max_wait", None)
         # Every job ever submitted, by id: the dependency graph and the
         # handles the head collects with both index into this.
         self._jobs: dict[str, _PoolJob] = {}
@@ -343,6 +352,7 @@ class LocalProcessBackend(DispatchBackend):
             raise FatalRtlBuddyError(
                 f"{self.name}: could not start {job.label()}: {e}"
             ) from e
+        job.started_at = time.monotonic()
         self._queued.remove(job)
         self._running[job.job_id] = job
         log_event(
@@ -371,15 +381,40 @@ class LocalProcessBackend(DispatchBackend):
 
     # ---- waiting and teardown ---------------------------------------
 
+    @staticmethod
+    def _longest_running(outstanding: list[_PoolJob]) -> tuple[str, float] | None:
+        """The running job started earliest, and for how long."""
+        started = [job for job in outstanding if job.running and job.started_at]
+        if not started:
+            return None
+        oldest = min(started, key=lambda job: job.started_at)
+        name = (
+            oldest.spec.display_name()
+            if isinstance(oldest.spec, TestJobSpec)
+            else f"build:{os.path.basename(str(oldest.spec.suite_dir).rstrip(os.sep))}"
+        )
+        return name, time.monotonic() - oldest.started_at
+
     def wait_all(self, handles: list[JobHandle]) -> None:
         if not handles:
             return
         watched = [self._jobs[h.job_id] for h in handles if h is not None]
-        remaining = None
+        # The reporter replaces the old DEBUG `dispatch.waiting`: identical
+        # numbers, but throttled and console-visible, so a long local run
+        # proves it is alive (#435). The per-job job_started/job_exited
+        # events stay as they are — they are detail, not the liveness signal.
+        progress = DispatchProgress(
+            handles,
+            backend=self.name,
+            interval=self.progress_interval,
+            max_wait=self.max_wait,
+            clock=time.monotonic,
+        )
         while True:
             self._pump()
-            outstanding = sum(1 for job in watched if not job.finished)
+            outstanding = [job for job in watched if not job.finished]
             if not outstanding:
+                progress.finish()
                 log_event(
                     logger,
                     logging.INFO,
@@ -388,18 +423,13 @@ class LocalProcessBackend(DispatchBackend):
                     jobs=len(watched),
                 )
                 return
-            if outstanding != remaining:
-                # Only on change: at this poll interval, logging every sweep
-                # would bury the run's log in thousands of identical lines.
-                remaining = outstanding
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "dispatch.waiting",
-                    backend=self.name,
-                    remaining=outstanding,
-                    total=len(watched),
-                )
+            states = {
+                job.job_id: "running" if job.running else "pending"
+                for job in outstanding
+            }
+            progress.observe(
+                states, states=states, longest=self._longest_running(outstanding)
+            )
             time.sleep(_POLL_INTERVAL_SEC)
 
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
@@ -463,6 +493,9 @@ class LocalProcessBackend(DispatchBackend):
             "dispatch.cancelled",
             backend=self.name,
             jobs=len(victims),
+            # Named, not just counted: an interrupted run's ids are what a
+            # reader needs to check nothing outlived the head (#435).
+            job_ids=group_job_ids(victims),
         )
 
     def collect_telemetry(self, handles: list[JobHandle]) -> dict[str, dict]:
