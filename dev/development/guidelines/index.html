@@ -2125,6 +2125,7 @@ Machine mode writes JSON Lines with the event name, fields, and human message.</
 <li>Use dotted names such as <code>compile.start</code>, <code>sim.timeout</code>, or <code>suite_config.load_failed</code>.</li>
 <li>Include structured fields that are stable and useful for agents.</li>
 <li>Add a dedicated human-message case for WARNING or ERROR events.</li>
+<li>Use <code>log_console_event()</code> instead of <code>log_event()</code> only for the handful of events that are a run's sole liveness signal on a default-verbosity console (dispatch progress, submitted job ids): it prints the human message as well, so such an event need not be misfiled at WARNING or hidden behind <code>-v</code>.</li>
 <li>Keep DEBUG and INFO events concise enough for machine logs.</li>
 </ul>
 <h2 id="error-handling">Error Handling</h2>
