@@ -631,6 +631,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#watching-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Watching a run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#per-test-reservations" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1681,6 +1692,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#watching-a-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Watching a run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#per-test-reservations" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2041,11 +2063,13 @@ orphans — its children finish their runs. Prefer <code>Ctrl-C</code> over
 <a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">--account=chip</span>
 <a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">  </span><span class="nt">max-jobs-per-array</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">200</span><span class="w">   </span><span class="c1"># concurrency throttle, PER submitted array</span>
 <a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">  </span><span class="nt">poll-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w">         </span><span class="c1"># seconds between queue polls (&gt; 0)</span>
-<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">  </span><span class="nt">rightsize</span><span class="p">:</span><span class="w">                </span><span class="c1"># reservation right-sizing (see below)</span>
-<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">    </span><span class="nt">report</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">    </span><span class="nt">over-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
-<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span><span class="nt">near-limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.9</span>
-<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="nt">margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">  </span><span class="nt">progress-interval</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">     </span><span class="c1"># seconds between console progress lines (0 = quiet)</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">  </span><span class="nt">max-wait</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">7200</span><span class="w">            </span><span class="c1"># seconds to wait for the fleet (unset = unbounded)</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">  </span><span class="nt">rightsize</span><span class="p">:</span><span class="w">                </span><span class="c1"># reservation right-sizing (see below)</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span><span class="nt">report</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span><span class="nt">over-threshold</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.5</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span><span class="nt">near-limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.9</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="w">    </span><span class="nt">margin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.5</span>
 </code></pre></div>
 <p><code>jobs</code> and <code>max-jobs-per-array</code> belong to different backends and do not
 interact: <code>jobs</code> is <code>local-parallel</code>'s single global pool, while
@@ -2069,19 +2093,76 @@ Quote every one, in <code>cfg-dispatch.resources</code>, <code>cfg-dispatch.comp
 and per-testbench / per-test <code>resources:</code> alike. See
 <a href="../../known-issues/#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal">Known Issues</a>.</p>
 </div>
+<h2 id="watching-a-run">Watching a run</h2>
+<p>A dispatched regression's console is often the <strong>only</strong> artifact anyone
+sees — a Jenkins log, an agent's transcript — so the wait narrates itself
+at default verbosity, without <code>-v</code> and without pretending any of it is a
+warning. Four things appear, in this order:</p>
+<ol>
+<li>
+<p><strong>The job ids, before the wait starts.</strong> One line per suite as it is
+   submitted (<code>dispatch.suite_submitted</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>dispatch: verif/tb_a → build job 1234, sim jobs 1235_[1-40] 1236 (41 jobs on slurm)
+</code></pre></div>
+<p>The ordering is deliberate. If the head dies — killed by CI, or by
+the machine it ran on — those ids are the only route to
+<code>squeue</code>/<code>sacct</code>, and the only way to tell whether the fleet outlived
+the process that submitted it.</p>
+</li>
+<li>
+<p><strong>Progress, on change and as a heartbeat.</strong> Every time the outstanding
+   count moves, and at least once every <code>progress-interval</code> seconds while
+   any job is still outstanding, queued or running (<code>dispatch.progress</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>dispatch: 42/88 jobs remaining (12 running, 30 pending), 12m34s elapsed, longest running rb:demo_alu 8m02s
+</code></pre></div>
+<p>The count is in <strong>jobs</strong>, not queue lines: one pending array is as
+many jobs as it has elements. At most one line per interval, so a 10 s
+<code>poll-interval</code> does not print 360 lines an hour.</p>
+</li>
+<li>
+<p><strong>Suites, as they drain</strong> (<code>dispatch.suite_drained</code>) —
+   <code>dispatch: verif/tb_a — all 41 jobs finished (12m34s)</code>. "Finished", not
+   "passed": results are collected once the whole fleet has drained, so at
+   this point nobody has looked at them.</p>
+</li>
+<li>
+<p><strong><code>max-wait</code>, if it fires.</strong> The collect wait is otherwise a <code>while
+   True</code> with no wall-clock bound, so anything that never leaves the queue
+   blocks the head forever and silently. Set <code>max-wait</code> and that becomes a
+   loud failure instead: <code>dispatch.max_wait_exceeded</code> at WARNING, the run
+   fails, the head <strong>cancels the fleet</strong> (as it does on any interrupt),
+   and the message names the outstanding ids in the grouped form
+   <code>squeue</code>/<code>sacct</code> take back. <code>dispatch.cancelled</code> carries them too, so
+   an interrupted run leaves a post-mortem trail either way.</p>
+</li>
+</ol>
+<p><code>progress-interval: 0</code> opts a developer's terminal out of all three
+console lines; <code>rtl_buddy.log</code> still records every change at INFO (with
+<a href="../../known-issues/#under-dispatch-the-jobs-and-the-head-write-the-same-suitertl_buddylog">one caveat</a>
+about the jobs sharing that file today). There
+is no CLI flag for either knob — CI sets them once in <code>root_config.yaml</code>,
+where the value belongs to the site rather than to the invocation.</p>
+<div class="admonition note">
+<p class="admonition-title">A heartbeat also protects against CI idle timeouts</p>
+<p>A build that prints nothing for long enough is a candidate for being
+killed as hung by the very system running it. Before this, a healthy
+half-hour regression printed nothing at all between "Running
+regression from …" and the summary
+(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/435">#435</a>).</p>
+</div>
 <h2 id="per-test-reservations">Per-test reservations</h2>
 <p>Not every test deserves the same slot. Override the reservation per
 testbench or per test in <code>tests.yaml</code>, using the same fields; the
 effective reservation is layered <strong>test → testbench →
 <code>cfg-dispatch.resources</code> → built-in defaults</strong>, field by field:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">testbenches</span><span class="p">:</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_tb</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpus</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">8G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;00:30:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="nt">tests</span><span class="p">:</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_smoke</span>
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">    </span><span class="c1"># inherits the testbench reservation</span>
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_soak</span>
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">24G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;04:00:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">   </span><span class="c1"># cpus inherited</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">testbenches</span><span class="p">:</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_tb</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> cpus</span><span class="p">:</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">8G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;00:30:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="nt">tests</span><span class="p">:</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_smoke</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="c1"># inherits the testbench reservation</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">axi_soak</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{</span><span class="nt"> mem</span><span class="p">:</span><span class="w"> </span><span class="nv">24G</span><span class="p p-Indicator">,</span><span class="nt"> time</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;04:00:00&quot;</span><span class="w"> </span><span class="p p-Indicator">}</span><span class="w">   </span><span class="c1"># cpus inherited</span>
 </code></pre></div>
 <p>Tests that resolve to the same reservation share one Slurm array;
 differing reservations split into separate arrays.</p>
@@ -2134,18 +2215,18 @@ apply the change as a reviewable diff.</p>
 <p>In human mode this is a "Reservation Advice" table after the summary. In
 <code>--machine</code> mode, <code>payload.reservation_advice</code> carries one event per
 finding:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reservation-advice&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">&quot;suite&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;axi_soak&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">&quot;resource&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mem&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">&quot;reserved&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;24G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;peak&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;utilization&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.13</span><span class="p">,</span>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reduce&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;suggested&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;5G&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">&quot;runs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reg_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;states&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;COMPLETED&quot;</span><span class="p">],</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span><span class="nt">&quot;edit_hint&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
-<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">                </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tests[name=axi_soak].resources.mem&quot;</span><span class="p">}</span>
-<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">&quot;event&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reservation-advice&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">&quot;suite&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">&quot;test&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;axi_soak&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span><span class="nt">&quot;resource&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mem&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span><span class="nt">&quot;reserved&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;24G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;peak&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;3G&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;utilization&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.13</span><span class="p">,</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span><span class="nt">&quot;direction&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;reduce&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;suggested&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;5G&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">  </span><span class="nt">&quot;runs&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reg_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1000</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;states&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;COMPLETED&quot;</span><span class="p">],</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="w">  </span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sim&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="w">  </span><span class="nt">&quot;edit_hint&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;verif/demo_axi/tests.yaml&quot;</span><span class="p">,</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">                </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tests[name=axi_soak].resources.mem&quot;</span><span class="p">}</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="p">}</span>
 </code></pre></div>
 <p>Semantics:</p>
 <ul>

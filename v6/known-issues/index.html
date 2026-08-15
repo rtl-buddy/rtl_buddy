@@ -1673,6 +1673,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#under-dispatch-the-jobs-and-the-head-write-the-same-suitertl_buddylog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Under --dispatch, the jobs and the head write the same &lt;suite&gt;/rtl_buddy.log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2075,6 +2086,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#under-dispatch-the-jobs-and-the-head-write-the-same-suitertl_buddylog" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Under --dispatch, the jobs and the head write the same &lt;suite&gt;/rtl_buddy.log
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2464,6 +2486,24 @@ APIs, and dispatch changes <em>how many times</em> they run:</p>
   (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/415">#415</a>). See
   <a href="../concepts/plugins/#where-a-generator-should-write">Where a generator should write</a>.</li>
 </ul>
+<h2 id="under-dispatch-the-jobs-and-the-head-write-the-same-suitertl_buddylog">Under <code>--dispatch</code>, the jobs and the head write the same <code>&lt;suite&gt;/rtl_buddy.log</code></h2>
+<p>Every dispatched <code>rb _test-job</code> / <code>rb _build-job</code> attaches its file log to
+<code>&lt;suite&gt;/rtl_buddy.log</code> — the path the head process re-anchors to for that
+suite — and each process <strong>truncates</strong> the file on its first open. So after
+a dispatched run a suite's log holds the jobs' machine-mode JSON Lines
+interleaved with, and partly overwriting, the head's human-format lines;
+the head's INFO trail for the last-entered suite (which is where
+<code>wait_all</code>'s <code>dispatch.progress</code> / <code>dispatch.suite_drained</code> records land)
+is the most exposed. In practice this weakens the fallback
+<code>progress-interval: 0</code> promises — "the console is quiet, the log still has
+every change" — whenever a job races the head to the file, which on a
+shared filesystem is always. The console lines described in
+<a href="../concepts/dispatch/#watching-a-run">Watching a run</a> are unaffected; they
+never go through the file. Head and jobs are different processes with
+different roles and will get separate log paths
+(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/437">#437</a>); until then,
+treat the per-job <code>slurm-*.log</code> / <code>dispatch/</code> artefacts as the jobs' record
+and the console as the head's.</p>
 <h2 id="a-build-job-orders-the-fan-out-only-the-stamp-keeps-it-from-recompiling">A build job orders the fan-out; only the stamp keeps it from recompiling</h2>
 <p>When a self-compiling test is fanned out over several runs, dispatch submits
 a build job and gates every element on it with <code>afterok</code>
