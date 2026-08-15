@@ -286,6 +286,8 @@ cfg-dispatch:
     - --account=chip
   max-jobs-per-array: 200   # concurrency throttle, PER submitted array
   poll-interval: 10         # seconds between queue polls (> 0)
+  progress-interval: 60     # seconds between console progress lines (0 = quiet)
+  max-wait: 7200            # seconds to wait for the fleet (unset = unbounded)
   rightsize:                # reservation right-sizing (see below)
     report: true
     over-threshold: 0.5
@@ -316,6 +318,63 @@ several suites submits several arrays, so peak concurrency is roughly
     Quote every one, in `cfg-dispatch.resources`, `cfg-dispatch.compile`,
     and per-testbench / per-test `resources:` alike. See
     [Known Issues](../known-issues.md#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal).
+
+## Watching a run
+
+A dispatched regression's console is often the **only** artifact anyone
+sees — a Jenkins log, an agent's transcript — so the wait narrates itself
+at default verbosity, without `-v` and without pretending any of it is a
+warning. Four things appear, in this order:
+
+1. **The job ids, before the wait starts.** One line per suite as it is
+   submitted (`dispatch.suite_submitted`):
+
+    ```text
+    dispatch: verif/tb_a → build job 1234, sim jobs 1235_[1-40] 1236 (41 jobs on slurm)
+    ```
+
+    The ordering is deliberate. If the head dies — killed by CI, or by
+    the machine it ran on — those ids are the only route to
+    `squeue`/`sacct`, and the only way to tell whether the fleet outlived
+    the process that submitted it.
+
+2. **Progress, on change and as a heartbeat.** Every time the outstanding
+   count moves, and at least once every `progress-interval` seconds while
+   jobs are queued (`dispatch.progress`):
+
+    ```text
+    dispatch: 42/88 jobs remaining (12 running, 30 pending), 12m34s elapsed, longest running rb:demo_alu 8m02s
+    ```
+
+    The count is in **jobs**, not queue lines: one pending array is as
+    many jobs as it has elements. At most one line per interval, so a 10 s
+    `poll-interval` does not print 360 lines an hour.
+
+3. **Suites, as they drain** (`dispatch.suite_drained`) —
+   `dispatch: verif/tb_a — all 41 jobs finished (12m34s)`. "Finished", not
+   "passed": results are collected once the whole fleet has drained, so at
+   this point nobody has looked at them.
+
+4. **`max-wait`, if it fires.** The collect wait is otherwise a `while
+   True` with no wall-clock bound, so anything that never leaves the queue
+   blocks the head forever and silently. Set `max-wait` and that becomes a
+   loud failure instead: `dispatch.max_wait_exceeded` at WARNING, the run
+   fails, the head **cancels the fleet** (as it does on any interrupt),
+   and the message names the outstanding ids in the grouped form
+   `squeue`/`sacct` take back. `dispatch.cancelled` carries them too, so
+   an interrupted run leaves a post-mortem trail either way.
+
+`progress-interval: 0` opts a developer's terminal out of all three
+console lines; `rtl_buddy.log` still records every change at INFO. There
+is no CLI flag for either knob — CI sets them once in `root_config.yaml`,
+where the value belongs to the site rather than to the invocation.
+
+!!! note "A heartbeat also protects against CI idle timeouts"
+    A build that prints nothing for long enough is a candidate for being
+    killed as hung by the very system running it. Before this, a healthy
+    half-hour regression printed nothing at all between "Running
+    regression from …" and the summary
+    ([#435](https://github.com/rtl-buddy/rtl_buddy/issues/435)).
 
 ## Per-test reservations
 
