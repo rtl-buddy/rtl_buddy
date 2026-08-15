@@ -128,8 +128,14 @@ def test_submit_failure_fails_loud(monkeypatch):
 def test_wait_all_polls_until_queue_drains(monkeypatch):
     calls = []
     results = [
-        SimpleNamespace(returncode=0, stdout="1|Resources\n2|Priority\n", stderr=""),
-        SimpleNamespace(returncode=0, stdout="2|None\n", stderr=""),
+        SimpleNamespace(
+            returncode=0,
+            stdout="1|Resources|PENDING|0:00|rb:basic\n2|None|RUNNING|0:12|rb:basic:1\n",
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=0, stdout="2|None|RUNNING|0:22|rb:basic:1\n", stderr=""
+        ),
         SimpleNamespace(returncode=0, stdout="", stderr=""),
     ]
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
@@ -156,7 +162,10 @@ def test_wait_all_cancels_jobs_whose_dependency_can_never_be_satisfied(monkeypat
         [
             SimpleNamespace(
                 returncode=0,
-                stdout="7_[1-3]|DependencyNeverSatisfied\n9|Resources\n",
+                stdout=(
+                    "7_[1-3]|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n"
+                    "9|Resources|PENDING|0:00|rb:basic:1\n"
+                ),
                 stderr="",
             ),
             SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
@@ -182,7 +191,9 @@ def test_wait_all_returns_when_only_doomed_jobs_remain(monkeypatch):
         [],
         [
             SimpleNamespace(
-                returncode=0, stdout="7|DependencyNeverSatisfied\n", stderr=""
+                returncode=0,
+                stdout="7|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+                stderr="",
             ),
             SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
         ],
@@ -196,13 +207,32 @@ def test_wait_all_returns_when_only_doomed_jobs_remain(monkeypatch):
     assert [argv[0] for argv in calls] == ["squeue", "scancel"]
 
 
-def test_wait_all_asks_squeue_for_the_reason_field(monkeypatch):
+def test_wait_all_asks_squeue_for_reason_state_time_and_name(monkeypatch):
     calls, results = ([], [SimpleNamespace(returncode=0, stdout="", stderr="")])
     monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
     SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
         [JobHandle("1", _spec())]
     )
-    assert "--format=%i|%r" in calls[0]
+    # Reason drives dependency reaping; state/time/name drive the progress
+    # line's running-vs-pending split and its longest-running job (#435).
+    assert "--format=%i|%r|%T|%M|%j" in calls[0]
+
+
+def test_wait_all_tolerates_a_short_squeue_line(monkeypatch):
+    """A Slurm rendering fewer columns must not break the wait itself."""
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(returncode=0, stdout="1|Resources\n", stderr=""),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(
+        [JobHandle("1", _spec())]
+    )
+    assert len([argv for argv in calls if argv[0] == "squeue"]) == 2
 
 
 def test_wait_all_treats_squeue_error_as_drained(monkeypatch):
@@ -545,7 +575,7 @@ def test_wait_all_matches_a_reason_rendered_with_surrounding_text(monkeypatch):
         [
             SimpleNamespace(
                 returncode=0,
-                stdout="7|(DependencyNeverSatisfied)\n",
+                stdout="7|(DependencyNeverSatisfied)|PENDING|0:00|rb:basic\n",
                 stderr="",
             ),
             SimpleNamespace(returncode=0, stdout="", stderr=""),  # scancel
@@ -568,7 +598,9 @@ def test_wait_all_reports_a_failed_scancel(monkeypatch, caplog):
         [],
         [
             SimpleNamespace(
-                returncode=0, stdout="7|DependencyNeverSatisfied\n", stderr=""
+                returncode=0,
+                stdout="7|DependencyNeverSatisfied|PENDING|0:00|rb:basic\n",
+                stderr="",
             ),
             SimpleNamespace(
                 returncode=1, stdout="", stderr="scancel: error: Invalid job id"
@@ -755,3 +787,153 @@ def test_disabled_task_accounting_is_reported_as_never_sampled(monkeypatch):
     # inf, not None: no elapsed time can exceed it, so no peak is trusted.
     assert backend.accounting_interval_s() == math.inf
     assert "--acctg-freq=task=1" not in backend.sbatch_args
+
+
+# ------------------------------- #435: progress, job counting, max-wait
+
+
+def test_expand_squeue_id_covers_every_shape_squeue_speaks():
+    expand = slurm_module._expand_squeue_id
+    # A non-array id is itself.
+    assert expand("1235") == ["1235"]
+    # One element of an array is itself.
+    assert expand("1235_3") == ["1235_3"]
+    # A pending range is every element it holds...
+    assert expand("1235_[1-3]") == ["1235_1", "1235_2", "1235_3"]
+    # ...including a mixed list...
+    assert expand("1235_[1,3-5]") == ["1235_1", "1235_3", "1235_4", "1235_5"]
+    # ...and the throttle suffix is not an element.
+    assert expand("1235_[1-2%4]") == ["1235_1", "1235_2"]
+    # A bare base id with array handles is conservatively all of them: the
+    # alternative reports a 40-element array as one outstanding job.
+    assert expand("1235", ["1235_1", "1235_2", "9"]) == ["1235_1", "1235_2"]
+
+
+def test_wait_all_counts_handles_not_queue_lines(monkeypatch, caplog):
+    """One pending array line stands for as many jobs as it has elements."""
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout="9_[1-3]|Priority|PENDING|0:00|rb:basic\n",
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    handles = [JobHandle(f"9_{i}", _spec(run_id=i)) for i in (1, 2, 3)]
+
+    with caplog.at_level(logging.INFO):
+        SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(handles)
+
+    progress = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.progress"
+    ]
+    assert progress, "expected a progress record"
+    assert progress[0].__dict__["rtl_fields"]["remaining"] == 3
+    assert progress[0].__dict__["rtl_fields"]["total"] == 3
+    assert progress[0].__dict__["rtl_fields"]["pending"] == 3
+
+
+def test_progress_names_the_longest_running_job(monkeypatch, caplog):
+    import logging
+
+    calls, results = (
+        [],
+        [
+            SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "9_1|None|RUNNING|8:02|rb:demo_alu\n"
+                    "9_2|None|RUNNING|0:11|rb:demo_fifo\n"
+                    "9_3|Priority|PENDING|0:00|rb:demo_mem\n"
+                ),
+                stderr="",
+            ),
+            SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ],
+    )
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    monkeypatch.setattr(slurm_module.time, "sleep", lambda s: None)
+    handles = [JobHandle(f"9_{i}", _spec(run_id=i)) for i in (1, 2, 3)]
+
+    with caplog.at_level(logging.INFO):
+        SlurmDispatchBackend(DispatchConfigFile().initialise()).wait_all(handles)
+
+    fields = [
+        r.__dict__["rtl_fields"]
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.progress"
+    ][0]
+    assert (fields["running"], fields["pending"]) == (2, 1)
+    assert fields["longest_job"] == "rb:demo_alu"
+    assert fields["longest_s"] == 482.0
+
+
+def test_max_wait_fails_loud_with_the_outstanding_ids(monkeypatch, caplog):
+    """An unbounded wait turns a stuck queue into a silent hang (#435)."""
+    import logging
+
+    never_drains = SimpleNamespace(
+        returncode=0, stdout="9_[1-3]|Priority|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    calls = []
+
+    def run(argv, capture_output=True, text=True, cwd=None, timeout=None):
+        calls.append(list(argv))
+        return never_drains
+
+    monkeypatch.setattr(slurm_module.subprocess, "run", run)
+    # Every sleep advances a fake clock past the deadline.
+    clock = {"now": 0.0}
+    monkeypatch.setattr(
+        slurm_module.time,
+        "sleep",
+        lambda s: clock.__setitem__("now", clock["now"] + 100),
+    )
+    monkeypatch.setattr(slurm_module.time, "monotonic", lambda: clock["now"])
+
+    cfg = DispatchConfigFile(max_wait=60.0).initialise()
+    handles = [JobHandle(f"9_{i}", _spec(run_id=i)) for i in (1, 2, 3)]
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(FatalRtlBuddyError) as excinfo:
+            SlurmDispatchBackend(cfg).wait_all(handles)
+
+    assert "9_[1-3]" in str(excinfo.value)
+    assert "max-wait" in str(excinfo.value)
+    warnings = [
+        r
+        for r in caplog.records
+        if r.__dict__.get("rtl_event") == "dispatch.max_wait_exceeded"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].levelno == logging.WARNING
+    assert warnings[0].__dict__["rtl_fields"]["jobs"] == ["9_[1-3]"]
+
+
+def test_cancelled_warning_carries_the_grouped_ids(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], []
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.WARNING):
+        backend.cancel_all(
+            [
+                JobHandle("500_1", _spec()),
+                JobHandle("500_2", _spec()),
+                JobHandle("42", _spec()),
+            ]
+        )
+
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.cancelled"
+    ]
+    assert record.__dict__["rtl_fields"]["job_ids"] == ["500_[1-2]", "42"]
+    assert "500_[1-2]" in record.message

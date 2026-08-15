@@ -140,6 +140,7 @@ When adding events:
 - Use dotted names such as `compile.start`, `sim.timeout`, or `suite_config.load_failed`.
 - Include structured fields that are stable and useful for agents.
 - Add a dedicated human-message case for WARNING or ERROR events.
+- Use `log_console_event()` instead of `log_event()` only for the handful of events that are a run's sole liveness signal on a default-verbosity console (dispatch progress, submitted job ids): it prints the human message as well, so such an event need not be misfiled at WARNING or hidden behind `-v`.
 - Keep DEBUG and INFO events concise enough for machine logs.
 
 ## Error Handling

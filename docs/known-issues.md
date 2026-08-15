@@ -322,6 +322,26 @@ APIs, and dispatch changes *how many times* they run:
   ([#415](https://github.com/rtl-buddy/rtl_buddy/issues/415)). See
   [Where a generator should write](concepts/plugins.md#where-a-generator-should-write).
 
+## Under `--dispatch`, the jobs and the head write the same `<suite>/rtl_buddy.log`
+
+Every dispatched `rb _test-job` / `rb _build-job` attaches its file log to
+`<suite>/rtl_buddy.log` — the path the head process re-anchors to for that
+suite — and each process **truncates** the file on its first open. So after
+a dispatched run a suite's log holds the jobs' machine-mode JSON Lines
+interleaved with, and partly overwriting, the head's human-format lines;
+the head's INFO trail for the last-entered suite (which is where
+`wait_all`'s `dispatch.progress` / `dispatch.suite_drained` records land)
+is the most exposed. In practice this weakens the fallback
+`progress-interval: 0` promises — "the console is quiet, the log still has
+every change" — whenever a job races the head to the file, which on a
+shared filesystem is always. The console lines described in
+[Watching a run](concepts/dispatch.md#watching-a-run) are unaffected; they
+never go through the file. Head and jobs are different processes with
+different roles and will get separate log paths
+([#437](https://github.com/rtl-buddy/rtl_buddy/issues/437)); until then,
+treat the per-job `slurm-*.log` / `dispatch/` artefacts as the jobs' record
+and the console as the head's.
+
 ## A build job orders the fan-out; only the stamp keeps it from recompiling
 
 When a self-compiling test is fanned out over several runs, dispatch submits

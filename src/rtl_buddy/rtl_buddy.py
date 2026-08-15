@@ -51,6 +51,7 @@ from .logging_utils import (
     attach_file_log,
     emit_console_text,
     is_machine_mode,
+    log_console_event,
     log_event,
     render_summary,
     setup_logging,
@@ -74,6 +75,7 @@ from .dispatch.plan import (
     read_plan_token,
     write_plan,
 )
+from .dispatch.progress import group_job_ids
 from .dispatch.rightsize import analyze_suite_reservations
 from .runner.result_io import (
     attach_telemetry_json,
@@ -1400,6 +1402,13 @@ class RtlBuddy:
                 run_ids=list(range(1, rnd_cnt + 1)),
                 seed_mode=SeedMode.NEW,
             )
+            self._announce_dispatched_suite(
+                state,
+                backend=dispatch_backend,
+                suite=self._display_path(
+                    str(ctx.primary_config), base_dir=str(self.invocation_cwd)
+                ),
+            )
             # Wait on the build job too, and cancel it on interrupt. Drop a
             # None build_handle (no test selected) — a None crashes wait_all
             # and cancel_all (#361).
@@ -2514,6 +2523,36 @@ class RtlBuddy:
             "run_token": run_token,
         }
 
+    def _announce_dispatched_suite(self, state, *, backend, suite):
+        """Put a suite's job ids on the console, before the wait begins (#435).
+
+        Ordering is the whole point: if the head then dies — the way this
+        surfaced — those ids are the only route to `squeue`/`sacct` and the
+        only way to tell whether the fleet outlived the process that
+        submitted it. Reconstructing them from `dispatch.*_submitted` is
+        possible but those are INFO, and a default-verbosity console shows
+        none of them.
+        """
+        handles = [handle for _, handle in state["pending"]]
+        if not handles:
+            # Nothing queued (every test filtered out): there are no ids to
+            # report and no wait to explain.
+            return
+        build_handle = state["build_handle"]
+        log_console_event(
+            logger,
+            logging.INFO,
+            "dispatch.suite_submitted",
+            backend=backend.name,
+            suite=suite,
+            build_job=build_handle.job_id if build_handle is not None else None,
+            job_ids=group_job_ids(handle.job_id for handle in handles),
+            # Build job included: this is the same scale `dispatch.progress`
+            # (remaining/total) and `dispatch.suite_drained` count on, so the
+            # per-suite counts announced here sum to the fleet's `total`.
+            jobs=len(handles) + (1 if build_handle is not None else 0),
+        )
+
     def _plan_dispatch_suite(
         self,
         suite_cfg,
@@ -3058,6 +3097,13 @@ class RtlBuddy:
                         run_token=run_token,
                         reg_level=reg_level,
                         start_level=start_level,
+                    )
+                    self._announce_dispatched_suite(
+                        state,
+                        backend=dispatch_backend,
+                        suite=self._display_path(
+                            suite_cfg.get_path(), base_dir=start_dir
+                        ),
                     )
                     submitted.append((suite_cfg, state))
                     # A suite that selected zero tests submits nothing and

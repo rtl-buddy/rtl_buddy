@@ -304,3 +304,39 @@ def test_combine_does_not_warn_when_no_compile_mem_is_set(caplog):
     with caplog.at_level(logging.WARNING):
         combine_for_in_job_compile(JobResources(mem="8G"), JobResources(mem=None))
     assert caplog.text == ""
+
+
+# ------------------------------- #435: progress-interval / max-wait
+
+
+def test_progress_and_wait_defaults_are_heartbeat_on_wait_unbounded():
+    cfg = DispatchConfigFile().initialise()
+    # A line a minute is cheap next to a CI console that says nothing...
+    assert cfg.progress_interval == 60.0
+    # ...and the deadline stays opt-in, so today's runs are unaffected.
+    assert cfg.max_wait is None
+
+
+def test_progress_interval_zero_is_the_quiet_terminal_not_an_error():
+    assert DispatchConfigFile(progress_interval=0.0).initialise().progress_interval == 0
+
+
+def test_negative_progress_interval_rejected():
+    with pytest.raises(FatalRtlBuddyError, match="progress-interval must be >= 0"):
+        DispatchConfigFile(progress_interval=-1.0).initialise()
+
+
+def test_non_positive_max_wait_rejected():
+    with pytest.raises(FatalRtlBuddyError, match="max-wait must be > 0"):
+        DispatchConfigFile(max_wait=0.0).initialise()
+
+
+def test_root_config_parses_progress_interval_and_max_wait(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text()
+        + "\ncfg-dispatch:\n  progress-interval: 30\n  max-wait: 7200\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.progress_interval == 30
+    assert cfg.max_wait == 7200

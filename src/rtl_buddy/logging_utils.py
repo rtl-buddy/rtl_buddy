@@ -38,6 +38,10 @@ class LoggingState:
     stdout_console: Console
     color: bool
     machine: bool
+    # The level the console handler was configured with. Recorded so
+    # log_console_event() can tell whether a record would already reach the
+    # console (and must therefore not be printed a second time).
+    console_level: int = logging.WARNING
 
 
 _STATE: LoggingState | None = None
@@ -142,9 +146,10 @@ def setup_logging(
         )
         console_handler.setFormatter(logging.Formatter("%(message)s"))
 
-    console_handler.setLevel(
+    console_level = (
         logging.DEBUG if debug else logging.INFO if verbose else logging.WARNING
     )
+    console_handler.setLevel(console_level)
     console_handler.addFilter(_ExcludeResultFilter())
 
     root_logger.addHandler(console_handler)
@@ -155,6 +160,7 @@ def setup_logging(
         stdout_console=stdout_console,
         color=color_enabled,
         machine=machine,
+        console_level=console_level,
     )
     _FILE_LOG_LEVEL = logging.DEBUG if debug else logging.INFO
     _FILE_LOG_MACHINE = machine
@@ -220,15 +226,22 @@ def emit_console_text(
     style: str | None = None,
     stream: str = "stderr",
     markup: bool = True,
+    soft_wrap: bool = False,
 ) -> None:
     console = get_stdout_console() if stream == "stdout" else get_stderr_console()
     # Pass markup=False for text that may contain literal square brackets
     # (e.g. exception messages with `pkg[extra]` install hints) so Rich
     # doesn't swallow them as style tags.
+    #
+    # soft_wrap=True keeps a line whole: off a terminal Rich assumes 80
+    # columns and hard-wraps, which splits a log-style line (job ids, a
+    # progress report) across two console lines and defeats grepping it.
     if is_machine_mode():
-        console.print(text, highlight=False, markup=markup)
+        console.print(text, highlight=False, markup=markup, soft_wrap=soft_wrap)
     else:
-        console.print(text, style=style, highlight=False, markup=markup)
+        console.print(
+            text, style=style, highlight=False, markup=markup, soft_wrap=soft_wrap
+        )
 
 
 @contextmanager
@@ -259,6 +272,27 @@ def _format_duration(duration: Any) -> str | None:
         return f"{float(duration):.2f}s"
     except (TypeError, ValueError):
         return str(duration)
+
+
+def _format_elapsed(seconds: Any) -> str:
+    """Compact wall-clock duration: ``45s`` / ``12m34s`` / ``1h02m03s``.
+
+    Distinct from :func:`_format_duration`, which reports a single phase's
+    cost to two decimals. A dispatch wait is measured in tens of minutes,
+    where ``754.00s`` is arithmetic the reader has to do.
+    """
+    try:
+        total = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        return str(seconds)
+    total = max(0, total)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
 
 
 def _format_artifacts(fields: Mapping[str, Any]) -> str:
@@ -383,9 +417,57 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "runs locally"
             )
         case "dispatch.cancelled":
+            # The ids are the only route to a post-mortem once the head is
+            # gone, so an interrupted run leaves them on the console (#435).
+            ids = fields.get("job_ids") or []
+            id_note = f": {' '.join(map(str, ids))}" if ids else ""
             return (
                 f"Cancelled {fields.get('jobs')} outstanding dispatch job(s) "
-                f"on the {fields.get('backend')} backend"
+                f"on the {fields.get('backend')} backend{id_note}"
+            )
+        case "dispatch.suite_submitted":
+            ids = fields.get("job_ids") or []
+            build = fields.get("build_job")
+            build_note = f"build job {build}, " if build else "no build job needed, "
+            count = fields.get("jobs")
+            plural = "" if count == 1 else "s"
+            return (
+                f"dispatch: {fields.get('suite')} → {build_note}"
+                f"sim jobs {' '.join(map(str, ids))} "
+                f"({count} job{plural} on {fields.get('backend')})"
+            )
+        case "dispatch.progress":
+            running, pending = fields.get("running"), fields.get("pending")
+            split = (
+                f" ({running} running, {pending} pending)"
+                if running is not None and pending is not None
+                else ""
+            )
+            longest_job, longest_s = fields.get("longest_job"), fields.get("longest_s")
+            longest = (
+                f", longest running {longest_job} {_format_elapsed(longest_s)}"
+                if longest_job is not None
+                else ""
+            )
+            return (
+                f"dispatch: {fields.get('remaining')}/{fields.get('total')} jobs "
+                f"remaining{split}, "
+                f"{_format_elapsed(fields.get('elapsed_s'))} elapsed{longest}"
+            )
+        case "dispatch.suite_drained":
+            # "finished", never "passed": results are collected afterwards.
+            return (
+                f"dispatch: {fields.get('suite')} — all {fields.get('jobs')} "
+                f"jobs finished ({_format_elapsed(fields.get('elapsed_s'))})"
+            )
+        case "dispatch.max_wait_exceeded":
+            ids = fields.get("jobs") or []
+            return (
+                f"dispatch: still waiting on {fields.get('remaining')} of "
+                f"{fields.get('total')} job(s) after cfg-dispatch.max-wait "
+                f"({_format_elapsed(fields.get('max_wait'))}) on the "
+                f"{fields.get('backend')} backend — cancelling the fleet: "
+                f"{' '.join(map(str, ids))}"
             )
         case "dispatch.result_missing":
             state = fields.get("scheduler_state")
@@ -962,7 +1044,7 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{event_text}{details}"
 
 
-def log_event(logger: logging.Logger, level: int, event: str, /, **fields: Any) -> None:
+def log_event(logger: logging.Logger, level: int, event: str, /, **fields: Any) -> str:
     sanitized_fields = {
         key: _machine_field_value(value)
         for key, value in fields.items()
@@ -972,6 +1054,44 @@ def log_event(logger: logging.Logger, level: int, event: str, /, **fields: Any) 
     logger.log(
         level, message, extra={"rtl_event": event, "rtl_fields": sanitized_fields}
     )
+    return message
+
+
+def console_level() -> int:
+    """Level the console handler shows, or WARNING before setup_logging()."""
+    return _STATE.console_level if _STATE is not None else logging.WARNING
+
+
+def log_console_event(
+    logger: logging.Logger, level: int, event: str, /, **fields: Any
+) -> None:
+    """:func:`log_event`, plus the human message on the console regardless.
+
+    The console handler sits at WARNING unless ``-v``/``--debug`` raised it,
+    so an INFO event never reaches a CI console — which is where a long
+    dispatched run's log is the *only* artifact. Use this for the handful of
+    events that are a run's liveness signal (progress, the submitted job
+    ids): they are not warnings, so logging them at WARNING would be a lie,
+    and raising global verbosity to see them turns on DEBUG for everything
+    else in the one place that cannot afford it (#435).
+
+    ``render_summary`` already establishes the pattern — print to the
+    console AND keep the structured record — and this is its generalisation.
+    When the console *would* show ``level`` anyway the extra print is
+    skipped, so ``-v`` shows one line, not two.
+
+    ``--machine`` is deliberately no different: its console handler is the
+    same WARNING-gated stream (rendering the human message — the JSON Lines
+    go to the file log), and an agent driving a dispatched regression needs
+    the liveness line for exactly the reason CI does. The lines are
+    throttled at the source (``progress-interval``), so a transcript sees a
+    line a minute, not one per poll.
+    """
+    message = log_event(logger, level, event, **fields)
+    if level < console_level():
+        # markup=False: job ids are rendered `1235_[1-40]`, and Rich would
+        # read the brackets as a style tag and swallow them.
+        emit_console_text(message, markup=False, soft_wrap=True)
 
 
 def _plain_summary_lines(

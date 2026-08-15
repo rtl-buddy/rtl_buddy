@@ -1269,3 +1269,96 @@ def test_a_pinned_builder_simv_is_planned_as_compiling_in_job(
     assert (resources.cpus, resources.mem) == (8, "16G")
     # ...and nothing can share, so no build job is submitted for one run.
     assert fake_backend.build_submitted == []
+
+
+# ------------------------- #435: the job ids reach the console before the wait
+
+
+def _spy_on_console_events(monkeypatch, order):
+    """Record every log_console_event the head makes, in call order."""
+    real = rtl_buddy_module.log_console_event
+
+    def spy(logger, level, event, **fields):
+        order.append((event, fields))
+        return real(logger, level, event, **fields)
+
+    monkeypatch.setattr(rtl_buddy_module, "log_console_event", spy)
+
+
+def _spy_on_wait(monkeypatch, backend, order):
+    original = backend.wait_all
+
+    def wait(handles):
+        order.append(("wait_all", {"handles": list(handles)}))
+        return original(handles)
+
+    monkeypatch.setattr(backend, "wait_all", wait)
+
+
+def test_suite_job_ids_are_announced_before_the_wait(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """If the head dies mid-wait, those ids are the only post-mortem route.
+
+    So the ordering is the deliverable: the line must be on the console
+    *before* wait_all blocks, not reconstructed afterwards (#435).
+    """
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    _spy_on_wait(monkeypatch, fake_backend, order)
+    _mark_stub_builder_verilator(minimal_project)
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    names = [event for event, _ in order]
+    assert names.index("dispatch.suite_submitted") < names.index("wait_all")
+    (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
+    assert fields["job_ids"] == ["fake-1"]
+    assert fields["build_job"] == "fake-build"
+    # Build job counted: same scale as dispatch.progress / suite_drained.
+    assert fields["jobs"] == 2
+    assert fields["suite"] == "tests.yaml"
+    # ...and it really reached the console at default verbosity.
+    printed = " ".join(result.output.split())
+    assert "dispatch: tests.yaml → build job fake-build, sim jobs fake-1" in printed
+
+
+def test_a_zero_test_suite_announces_nothing(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Nothing was queued, so there are no ids and no wait to explain."""
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "-s", "100", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert [event for event, _ in order if event == "dispatch.suite_submitted"] == []
+
+
+def test_randtest_announces_its_seed_fanout_before_waiting(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    recording_backend: _RecordingBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    _spy_on_wait(monkeypatch, recording_backend, order)
+
+    result, _ = _invoke(["randtest", "basic", "3", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    names = [event for event, _ in order]
+    assert names.index("dispatch.suite_submitted") < names.index("wait_all")
+    (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
+    # One id per submitted seed job, exactly as the fake handed them out.
+    assert fields["job_ids"] == ["fake-1", "fake-2", "fake-3"]
+    assert len(recording_backend.submitted) == 3
+    # ...plus the build job, so the announced count is the drained count.
+    assert fields["jobs"] == 3 + (1 if fields.get("build_job") else 0)
