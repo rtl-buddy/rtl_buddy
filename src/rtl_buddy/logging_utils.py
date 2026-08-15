@@ -226,15 +226,22 @@ def emit_console_text(
     style: str | None = None,
     stream: str = "stderr",
     markup: bool = True,
+    soft_wrap: bool = False,
 ) -> None:
     console = get_stdout_console() if stream == "stdout" else get_stderr_console()
     # Pass markup=False for text that may contain literal square brackets
     # (e.g. exception messages with `pkg[extra]` install hints) so Rich
     # doesn't swallow them as style tags.
+    #
+    # soft_wrap=True keeps a line whole: off a terminal Rich assumes 80
+    # columns and hard-wraps, which splits a log-style line (job ids, a
+    # progress report) across two console lines and defeats grepping it.
     if is_machine_mode():
-        console.print(text, highlight=False, markup=markup)
+        console.print(text, highlight=False, markup=markup, soft_wrap=soft_wrap)
     else:
-        console.print(text, style=style, highlight=False, markup=markup)
+        console.print(
+            text, style=style, highlight=False, markup=markup, soft_wrap=soft_wrap
+        )
 
 
 @contextmanager
@@ -1077,7 +1084,7 @@ def log_console_event(
     if level < console_level():
         # markup=False: job ids are rendered `1235_[1-40]`, and Rich would
         # read the brackets as a style tag and swallow them.
-        emit_console_text(message, markup=False)
+        emit_console_text(message, markup=False, soft_wrap=True)
 
 
 def _plain_summary_lines(
