@@ -707,3 +707,53 @@ def test_undelayed_submit_is_unchanged(monkeypatch, tmp_path):
     assert backend._jobs[handle.job_id].not_before is None
     assert backend._jobs[handle.job_id].running
     backend.cancel_all([handle])
+
+
+def test_a_held_job_does_not_spin_the_sweep_loop(monkeypatch, tmp_path):
+    """A 600 s backoff must not cost 12,000 full sweeps of the pool.
+
+    While every outstanding job is inside its ``not_before``, there is
+    nothing to reap and nothing launchable, so the sweep sleeps until the
+    earliest one is due instead of polling 20 times a second.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=2)
+    handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=30)
+
+    held = [backend._jobs[handle.job_id]]
+    # Capped at a second, so cancellation and progress heartbeats stay
+    # responsive even under a long hold.
+    assert backend._sweep_interval(held) == pytest.approx(1.0)
+
+    # A job that is actually running is polled at the normal cadence...
+    running = backend.submit(_sim_spec(tmp_path, "fresh"))
+    backend.advance()
+    outstanding = [backend._jobs[h.job_id] for h in (handle, running)]
+    assert backend._sweep_interval(outstanding) == lp_module._POLL_INTERVAL_SEC
+
+    backend.cancel_all([handle, running])
+
+
+def test_the_wait_deadline_allows_for_a_backoff_it_was_told_about(
+    monkeypatch, tmp_path
+):
+    """max-wait must not be spent on the hold the head asked the pool for.
+
+    A held job is outstanding for its whole backoff, so a max-wait shorter
+    than the delay would trip the deadline every retry round before the
+    job had been allowed to start (#405 review).
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+
+    # Unannounced, the hold is indistinguishable from a stuck fleet.
+    strict = _backend(jobs=1, max_wait=0.1)
+    held = strict.submit(_sim_spec(tmp_path, "unannounced"), delay_sec=0.5)
+    with pytest.raises(FatalRtlBuddyError, match="max-wait"):
+        strict.wait_all([held])
+    strict.cancel_all([held])
+
+    # Announced, the same delay is simply not charged against the budget.
+    forgiving = _backend(jobs=1, max_wait=0.1)
+    retried = forgiving.submit(_sim_spec(tmp_path, "announced"), delay_sec=0.5)
+    forgiving.wait_all([retried], extra_wait=0.5)
+    assert forgiving._jobs[retried.job_id].returncode == 0

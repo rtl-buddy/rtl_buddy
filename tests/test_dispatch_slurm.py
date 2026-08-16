@@ -1024,3 +1024,48 @@ def test_submitted_event_records_the_backoff(monkeypatch, caplog):
         r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.submitted"
     ]
     assert record.__dict__["rtl_fields"]["begin_delay_sec"] == 45.0
+
+
+def test_max_wait_is_widened_by_a_backoff_the_head_asked_for(monkeypatch):
+    """A job held on ``--begin`` is PENDING for the whole backoff.
+
+    squeue reports it outstanding all that time, so charging the hold
+    against max-wait would fail every retry round whose backoff is longer
+    than max-wait, before the job had been allowed to start (#405 review).
+    """
+    pending = SimpleNamespace(
+        returncode=0, stdout="9|BeginTime|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    drained = SimpleNamespace(returncode=0, stdout="", stderr="")
+    clock = {"now": 0.0}
+
+    def _install(monkeypatch):
+        """Fresh squeue transcript + fake clock: pending twice, then gone."""
+        clock["now"] = 0.0
+        polls = iter([pending, pending, drained])
+        monkeypatch.setattr(
+            slurm_module.subprocess,
+            "run",
+            lambda argv, capture_output=True, text=True, cwd=None, timeout=None: next(
+                polls
+            ),
+        )
+        monkeypatch.setattr(
+            slurm_module.time,
+            "sleep",
+            lambda s: clock.__setitem__("now", clock["now"] + 100),
+        )
+        monkeypatch.setattr(slurm_module.time, "monotonic", lambda: clock["now"])
+
+    cfg = DispatchConfigFile(max_wait=60.0).initialise()
+    handles = [JobHandle("9", _spec())]
+
+    # 100 s of held-and-pending is past a bare 60 s budget...
+    _install(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="max-wait"):
+        SlurmDispatchBackend(cfg).wait_all(handles)
+
+    # ...but not past 60 s plus the 600 s hold the head itself imposed.
+    _install(monkeypatch)
+    SlurmDispatchBackend(cfg).wait_all(handles, extra_wait=600.0)
+    assert clock["now"] == 200.0

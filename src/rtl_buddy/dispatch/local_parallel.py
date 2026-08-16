@@ -425,7 +425,29 @@ class LocalProcessBackend(DispatchBackend):
         )
         return name, time.monotonic() - oldest.started_at
 
-    def wait_all(self, handles: list[JobHandle]) -> None:
+    def _sweep_interval(self, outstanding: list[_PoolJob]) -> float:
+        """How long to sleep before the next sweep.
+
+        Normally :data:`_POLL_INTERVAL_SEC`, so a freed slot is refilled
+        promptly. But a job inside its retry backoff (#405) is outstanding
+        for minutes with nothing to reap and nothing launchable, and 20
+        full sweeps a second for a 600 s hold is pure head-side CPU for no
+        new information. When *every* outstanding job is waiting on a
+        ``not_before``, sleep until the earliest one is due instead —
+        capped at a second so the wait still reacts promptly to a
+        cancellation or a progress heartbeat.
+        """
+        now = time.monotonic()
+        held = [
+            job.not_before
+            for job in outstanding
+            if job.proc is None and job.not_before is not None and job.not_before > now
+        ]
+        if not held or len(held) != len(outstanding):
+            return _POLL_INTERVAL_SEC
+        return max(_POLL_INTERVAL_SEC, min(1.0, min(held) - now))
+
+    def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
         if not handles:
             return
         watched = [self._jobs[h.job_id] for h in handles if h is not None]
@@ -437,7 +459,12 @@ class LocalProcessBackend(DispatchBackend):
             handles,
             backend=self.name,
             interval=self.progress_interval,
-            max_wait=self.max_wait,
+            # A job the pool is holding for its retry backoff stays queued
+            # for the whole delay, so the deadline allows for the hold the
+            # head itself asked for (#405).
+            max_wait=(
+                None if self.max_wait is None else self.max_wait + max(0.0, extra_wait)
+            ),
             clock=time.monotonic,
         )
         while True:
@@ -460,7 +487,7 @@ class LocalProcessBackend(DispatchBackend):
             progress.observe(
                 states.keys(), states=states, longest=self._longest_running(outstanding)
             )
-            time.sleep(_POLL_INTERVAL_SEC)
+            time.sleep(self._sweep_interval(outstanding))
 
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:
         """Take the fleet down: signal everything, then reap on one deadline.

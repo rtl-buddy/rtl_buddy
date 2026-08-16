@@ -41,12 +41,17 @@ class _FakeBackend(DispatchBackend):
         self.dependencies = []
         self.waited = False
         self.cancelled = False
+        self.extra_waits = []
 
     def submit_build(self, spec):
         self.build_submitted.append(spec)
         return JobHandle(job_id="fake-build", spec=spec)
 
-    def submit(self, spec, *, dependency=None):
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        # `delay_sec` is accepted (and ignored) so the base fake matches the
+        # DispatchBackend ABC: a backend that does not take the retry
+        # backoff kwarg is exactly the out-of-tree breakage #405 introduced,
+        # and nothing would catch it if only the retry fake had it.
         self.submitted.append(spec)
         self.dependencies.append(dependency)
         if self.write_results:
@@ -68,8 +73,9 @@ class _FakeBackend(DispatchBackend):
             )
         return JobHandle(job_id=f"fake-{len(self.submitted)}", spec=spec)
 
-    def wait_all(self, handles):
+    def wait_all(self, handles, *, extra_wait=0.0):
         self.waited = True
+        self.extra_waits.append(extra_wait)
 
     def cancel_all(self, handles):
         self.cancelled = True
@@ -313,7 +319,7 @@ def test_dispatch_creates_log_parent_before_submit(
     seen_parent_exists = []
 
     class _CheckBackend(_FakeBackend):
-        def submit(self, spec, *, dependency=None):
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
             seen_parent_exists.append(spec.log_path.parent.is_dir())
             return super().submit(spec)
 
@@ -456,9 +462,9 @@ class _RecordingBackend(_FakeBackend):
         )
         return [self.submit(spec) for spec in specs]
 
-    def wait_all(self, handles):
+    def wait_all(self, handles, *, extra_wait=0.0):
         self.wait_calls += 1
-        super().wait_all(handles)
+        super().wait_all(handles, extra_wait=extra_wait)
 
     def collect_telemetry(self, handles):
         return self.telemetry
@@ -1425,9 +1431,9 @@ class _RetryBackend(_FakeBackend):
     def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
         return [self.submit(spec, dependency=dependency) for spec in specs]
 
-    def wait_all(self, handles):
+    def wait_all(self, handles, *, extra_wait=0.0):
         self.wait_calls += 1
-        super().wait_all(handles)
+        super().wait_all(handles, extra_wait=extra_wait)
 
     def collect_telemetry(self, handles):
         return {h.job_id: {"state": self.states.get(h.job_id)} for h in handles}
@@ -1622,3 +1628,119 @@ def test_randtest_seeds_retry_independently(
     # Two seeds, each retried once.
     assert [spec.run_id for spec in backend.submitted] == [1, 2, 1, 2]
     assert backend.delays == [0.0, 0.0, 5.0, 5.0]
+
+
+class _PoolRetryBackend(_RetryBackend):
+    """A backend shaped exactly like ``local-parallel``: no scheduler at all.
+
+    ``scheduled`` is False and ``collect_telemetry`` is empty by design, so
+    there is no scheduler state for the classifier to read. If retry
+    required one, it could never fire here (#405 review).
+    """
+
+    name = "fake-pool"
+    scheduled = False
+
+    def collect_telemetry(self, handles):
+        return {}
+
+
+def test_retry_fires_on_a_backend_with_no_scheduler_state(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _PoolRetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert _rows(result)["basic"]["result"] == "PASS"
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+    assert backend.delays == [0.0, 5.0]
+
+
+def test_a_pool_backend_still_needs_the_banner_to_retry(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No scheduler state to require does not mean no evidence required."""
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _PoolRetryBackend(banner=False))
+
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "local-parallel"]
+    )
+    assert result.exit_code == 1, result.output
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+
+
+def test_the_retry_wait_allows_for_the_backoff_it_imposed(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """max-wait must not be spent on the hold the head itself asked for.
+
+    A held job is outstanding for the whole backoff, so the retry round's
+    deadline is widened by that delay; otherwise a max-wait shorter than
+    the backoff would trip on every retry before the job could start.
+    """
+    _enable_retry(minimal_project, attempts=1, backoff=5, cap=20)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    # The first wait carries no allowance; the retry wait carries its delay.
+    assert backend.extra_waits == [0.0, 5.0]
+
+
+class _UnsubmittableRetryBackend(_RetryBackend):
+    """Accepts the first fan-out, refuses every retry — a flaky ``sbatch``."""
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        if delay_sec:
+            raise FatalRtlBuddyError("sbatch: error: Batch job submission failed")
+        return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+
+def test_a_failed_resubmission_keeps_the_results_already_collected(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry is a second chance, never a way to lose a scored regression.
+
+    The rows for the pass are already written and already say the job
+    produced no result, so a refusing scheduler degrades to those rather
+    than aborting the command with no summary and no machine payload.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _UnsubmittableRetryBackend())
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    # The payload still exists, and the row is the honest one.
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert backend.cancelled  # this attempt's jobs were taken down
+
+
+def test_an_abandoned_retry_says_so_on_the_console(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    _use_backend(monkeypatch, _UnsubmittableRetryBackend())
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    assert "giving up on retry attempt 1" in result.output
+    assert "keeping the results already collected" in result.output

@@ -482,6 +482,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('classifier')}, attempt {fields.get('attempt')} "
                 f"of {fields.get('attempts')}"
             )
+        case "dispatch.retry_abandoned":
+            # The run is still scored — every row was written before the
+            # retry was attempted — so this is a warning about a lost
+            # second chance, not a lost regression (#405).
+            return (
+                f"dispatch: giving up on retry attempt {fields.get('attempt')} for "
+                f"{fields.get('jobs')} job(s) on the {fields.get('backend')} "
+                "backend — keeping the results already collected "
+                f"({fields.get('error')})"
+            )
         case "dispatch.result_missing":
             state = fields.get("scheduler_state")
             state_note = f" (scheduler state {state})" if state else ""

@@ -2696,6 +2696,14 @@ class RtlBuddy:
         considered, so an interrupted or exhausted retry leaves the fleet
         scored — a job that vanished never scores green, whatever the
         budget says.
+
+        Retries are per suite: this runs after the fleet-wide ``wait_all``,
+        so a suite's second round is submitted and drained before the next
+        suite is collected rather than folded into one cross-suite round.
+        That costs wall clock proportional to the number of suites that had
+        a retryable job, and it is deliberate for now — collection is where
+        the classification evidence lives, and every later suite's
+        envelopes are already on disk, so only the retries serialise.
         """
         suite_results = state["suite_results"]
         pending = state["pending"]
@@ -2710,9 +2718,33 @@ class RtlBuddy:
             if not retryable:
                 return suite_results
             attempt += 1
-            pending = self._resubmit_retryable(
-                backend, retryable, attempt=attempt, retry_cfg=retry_cfg
-            )
+            try:
+                pending = self._resubmit_retryable(
+                    backend, retryable, attempt=attempt, retry_cfg=retry_cfg
+                )
+            except Exception as e:
+                # A retry is a best-effort second chance, never a way to
+                # lose a scored regression. Every row of this pass — this
+                # suite's and every suite collected before it — is already
+                # written, and the retryable ones already say they produced
+                # no result, so degrade to that instead of propagating out
+                # of the command and discarding the whole run's summary,
+                # exit code and machine payload. The failure modes here are
+                # exactly the flaky-cluster ones retry exists to survive: a
+                # refusing ``sbatch``, or ``max-wait`` elapsing on the
+                # second round. ``_resubmit_retryable`` has already taken
+                # this attempt's jobs down; BaseException (a Ctrl-C) is
+                # deliberately not caught and still tears the run down.
+                log_console_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch.retry_abandoned",
+                    backend=backend.name,
+                    attempt=attempt,
+                    jobs=len(retryable),
+                    error=str(e),
+                )
+                return suite_results
 
     def _resubmit_retryable(self, backend, retryable, *, attempt, retry_cfg):
         """Re-launch the retryable jobs after their backoff; wait; return them.
@@ -2727,11 +2759,20 @@ class RtlBuddy:
         retry — is still there afterwards. The result envelope path is
         deliberately unchanged: it is the one path the job and the head
         must agree on, and it is still guarded by this run's token.
+
+        The longest delay imposed is handed to ``wait_all`` as
+        ``extra_wait``: a held job is outstanding for its whole backoff, so
+        a ``cfg-dispatch.max-wait`` shorter than the backoff would
+        otherwise trip the deadline on every retry round before the job had
+        been allowed to start. ``max-wait`` still bounds each wait, not
+        their sum.
         """
         resubmitted = []
+        longest_delay = 0.0
         try:
             for idx, handle, classifier in retryable:
                 delay = backoff_delay(attempt, retry_cfg)
+                longest_delay = max(longest_delay, delay)
                 spec = self._retry_spec(handle.spec, attempt=attempt)
                 # Console-visible: a green run that needed three attempts
                 # must not read like one that needed none, and INFO alone
@@ -2754,7 +2795,7 @@ class RtlBuddy:
                 # on a job the scheduler has forgotten never becomes
                 # satisfiable.
                 resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
-            backend.wait_all([h for _, h in resubmitted])
+            backend.wait_all([h for _, h in resubmitted], extra_wait=longest_delay)
         except BaseException:
             # Same contract as the submit fan-out: a failure mid-retry must
             # not leave this attempt's jobs running behind the head.
@@ -2892,10 +2933,16 @@ class RtlBuddy:
                     # test reaches the same TIMEOUT with no banner and must
                     # keep failing (#405). Classified even when the budget
                     # is spent is pointless work, so the budget is checked
-                    # first.
+                    # first. `scheduled` decides whether a scheduler state
+                    # is required at all — a backend that runs jobs itself
+                    # reports none, and demanding one would make retry dead
+                    # code there.
                     classifier = (
                         classify_missing_result(
-                            handle.spec, sched_state, classifiers=retry_cfg.on
+                            handle.spec,
+                            sched_state,
+                            classifiers=retry_cfg.on,
+                            scheduled=backend.scheduled,
                         )
                         if retry_cfg.enabled and attempt < retry_cfg.attempts
                         else None

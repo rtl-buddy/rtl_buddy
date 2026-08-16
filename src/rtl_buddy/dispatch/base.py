@@ -165,8 +165,19 @@ class DispatchBackend(ABC):
         """
 
     @abstractmethod
-    def wait_all(self, handles: list[JobHandle]) -> None:
-        """Block until every submitted job has left the queue."""
+    def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
+        """Block until every submitted job has left the queue.
+
+        ``extra_wait`` widens this call's ``cfg-dispatch.max-wait``
+        allowance by a delay the head *knowingly* asked the backend to
+        serve — the retry backoff (#405). A held job is outstanding for
+        the whole backoff (Slurm reports it PENDING/BeginTime, the pool
+        keeps it queued), so without this a ``max-wait`` shorter than the
+        backoff would trip the deadline every time on a wait that had not
+        yet let the job start. ``max-wait`` still bounds each wait; it has
+        never bounded their sum, and a run with retry enabled can take up
+        to ``attempts × (backoff + max-wait)``.
+        """
 
     @abstractmethod
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:

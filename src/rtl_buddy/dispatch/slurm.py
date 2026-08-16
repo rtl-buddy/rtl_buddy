@@ -629,7 +629,7 @@ class SlurmDispatchBackend(DispatchBackend):
                     longest = (record["name"] or record["id"], elapsed)
         return outstanding, longest
 
-    def wait_all(self, handles: list[JobHandle]) -> None:
+    def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
         if not handles:
             return
         ids = ",".join(self._base_ids(handles))
@@ -639,7 +639,12 @@ class SlurmDispatchBackend(DispatchBackend):
             handles,
             backend=self.name,
             interval=self.progress_interval,
-            max_wait=self.max_wait,
+            # A job held on `--begin` is PENDING for the whole backoff and
+            # squeue reports it outstanding, so the deadline must allow for
+            # the hold the head itself asked for (#405).
+            max_wait=(
+                None if self.max_wait is None else self.max_wait + max(0.0, extra_wait)
+            ),
             # Resolved here rather than taken as a default, so the clock the
             # reporter reads is the same one this module sleeps against.
             clock=time.monotonic,

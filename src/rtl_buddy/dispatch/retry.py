@@ -21,6 +21,14 @@ in what the job captured — using the same
 phase already applies to its own output (#358). A hung test reaches its
 reservation with no banner and is not retried.
 
+A backend that runs jobs itself has no scheduler state to read at all
+(``DispatchBackend.scheduled`` is False, and ``collect_telemetry`` returns
+nothing), so on that half of the rule it would answer "no" for every job
+and retry would be dead code there. For those backends the banner alone
+decides: the head killed nothing, so a job that left no envelope while its
+sim was demonstrably waiting for a seat is the same shape, minus a
+scheduler to name it.
+
 :func:`backoff_delay` supplies the *when*. The jobs that lose a seat race
 lose it together — they queued behind the same exhausted pool and their
 reservations expire within seconds of each other — so an un-jittered retry
@@ -30,6 +38,12 @@ them; the delay itself is served by the backend
 (``sbatch --begin=now+<delay>`` on Slurm, so the scheduler holds the job
 and no allocation is burned while it waits; the pool's own gate on
 local-parallel, which has no scheduler to hold anything).
+
+Scope: **sim jobs only.** A build job's elaboration honours ``-licqueue``
+exactly as the sim does (#358), so it can lose the same race — but a build
+kill dooms a whole suite's fan-out at once and re-running it is a much
+larger bet than re-running one sim, so it stays out until there is a
+reported case for it.
 """
 
 import random
@@ -48,9 +62,12 @@ RESOURCE_KILL_STATES = frozenset({"TIMEOUT", "NODE_FAIL", "PREEMPTED"})
 # Cap on how much of one artefact is scanned for the banner. The banner is
 # printed where the sim starts, so it is never deep in a multi-gigabyte
 # transcript, and collection must not read a run's whole output back off a
-# shared filesystem to answer one yes/no question.
-_MAX_SCAN_BYTES = 4 * 1024 * 1024
-_CHUNK_BYTES = 256 * 1024
+# shared filesystem to answer one yes/no question. Counted in *characters*
+# (the read is decoded text), not bytes: this is a performance guard, and
+# reading somewhat more of a multi-byte log than the nominal budget costs
+# nothing worth the precision.
+_MAX_SCAN_CHARS = 4 * 1024 * 1024
+_CHUNK_CHARS = 256 * 1024
 
 
 def normalise_scheduler_state(state) -> str:
@@ -70,7 +87,7 @@ def _file_has_marker(path) -> bool:
     """Does this file contain the license-queue banner (bounded read)?
 
     Read in chunks with a one-marker overlap so a banner straddling a
-    chunk boundary is still found, and stop at :data:`_MAX_SCAN_BYTES`.
+    chunk boundary is still found, and stop at :data:`_MAX_SCAN_CHARS`.
     """
     if path is None:
         return False
@@ -79,8 +96,8 @@ def _file_has_marker(path) -> bool:
         with open(path, "r", errors="replace") as fh:
             read = 0
             tail = ""
-            while read < _MAX_SCAN_BYTES:
-                chunk = fh.read(_CHUNK_BYTES)
+            while read < _MAX_SCAN_CHARS:
+                chunk = fh.read(_CHUNK_CHARS)
                 if not chunk:
                     return False
                 read += len(chunk)
@@ -119,19 +136,30 @@ def job_output_paths(spec) -> list:
     return paths
 
 
-def classify_missing_result(spec, scheduler_state, *, classifiers) -> str | None:
+def classify_missing_result(
+    spec, scheduler_state, *, classifiers, scheduled: bool = True
+) -> str | None:
     """Why this job left no result, if it is a reason worth retrying.
 
     Returns the classifier name (today only ``"license-queue"``) or
     ``None`` — and ``None`` is the answer for everything the rule does not
-    positively recognise, including an unknown scheduler state, a backend
-    with no scheduler state at all, and a job whose artefacts show no
-    queue banner.
+    positively recognise, including an unknown scheduler state and a job
+    whose artefacts show no queue banner.
+
+    ``scheduled`` is the submitting backend's
+    :attr:`~rtl_buddy.dispatch.base.DispatchBackend.scheduled`. When True
+    (Slurm) a *resource* scheduler state is required, so a job that FAILED
+    or was CANCELLED on its own merits is never retried and a backend that
+    reports no state at all retries nothing. When False (the local pool)
+    there is no scheduler state to require — no accounting source exists —
+    so the banner carries the decision alone; demanding a state there would
+    make the rule unsatisfiable and retry silently dead on that backend.
     """
     if RETRY_CLASSIFIER_LICENSE_QUEUE not in (classifiers or ()):
         return None
-    if normalise_scheduler_state(scheduler_state) not in RESOURCE_KILL_STATES:
-        return None
+    if scheduled:
+        if normalise_scheduler_state(scheduler_state) not in RESOURCE_KILL_STATES:
+            return None
     if any(_file_has_marker(path) for path in job_output_paths(spec)):
         return RETRY_CLASSIFIER_LICENSE_QUEUE
     return None

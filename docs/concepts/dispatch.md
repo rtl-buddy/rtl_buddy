@@ -352,6 +352,17 @@ reservation twice. And a job that vanishes still fails when the budget
 runs out: **no retry ever turns a missing result green.** The exhausted
 row says how many attempts it got.
 
+On `local-parallel` there is no scheduler and no accounting source, so
+there is no state to require: the **banner alone** decides there. Nothing
+killed the job from outside, so a missing envelope from a sim that was
+demonstrably waiting for a seat is the same shape without a scheduler to
+name it.
+
+Retry covers **sim jobs only**. A build job's elaboration honours
+`-licqueue` the same way and can lose the same race, but a build kill
+dooms a whole suite's fan-out at once and re-running it is a much larger
+bet than re-running one sim, so it stays out for now.
+
 ```yaml
 cfg-dispatch:
   retry:
@@ -380,9 +391,13 @@ The wait is served by the **backend**, never slept in the head: Slurm gets
 allocation — the point, since the pool that killed the first attempt is
 not made freer by a second allocation sitting on it), and `local-parallel`
 holds it in its own queue, taking no pool slot. Each attempt writes its
-own scheduler log (`slurm-<tag>-retry<N>.log`), so the first attempt's
-banner — the evidence for the retry — survives; the result envelope path
-does not move.
+own **scheduler** log (`slurm-<tag>-retry<N>.log`), so those are kept side
+by side; the result envelope path does not move, and neither does the
+sim's own capture — `artefacts/<test>/test.log` and the per-job
+`rtl_buddy-<tag>.log` are **truncated by the next attempt**, so if the
+banner landed only there, the retry overwrites the evidence for itself.
+The `dispatch.retry` console line and the `dispatch.result_missing` entry
+in `rtl_buddy.log` are the durable record of why the retry happened.
 
 Every retry logs `dispatch.retry` **on the console**, naming the attempt,
 the delay and the classifier, so a green run that needed three attempts is
@@ -391,6 +406,30 @@ not indistinguishable from one that needed none:
 ```text
 dispatch: retrying seqr_add_fp16_cpc8 (job 6553_2) in 1m04s — license-queue, attempt 1 of 2
 ```
+
+A retry that cannot be launched — `sbatch` refusing the submission, or
+`max-wait` elapsing on the second round — is **not** fatal to the run: the
+rows for that pass are already written and already say the jobs produced
+no result, so rtl-buddy logs `dispatch.retry_abandoned` and keeps the
+regression it has scored rather than discarding the summary and the exit
+code.
+
+!!! note "Retry and `max-wait`"
+    `max-wait` bounds **each** wait, not their sum: a run with retry
+    enabled can take up to roughly `attempts × (backoff + max-wait)`. The
+    backoff itself is not charged against it — a held job is outstanding
+    for the whole delay (Slurm reports it `PENDING`/`BeginTime`, the pool
+    keeps it queued), so each retry round's deadline is widened by the
+    delay the head asked for. Without that, a `max-wait` shorter than the
+    backoff would trip on every retry before the job was allowed to start.
+
+!!! note "`--begin` and `sbatch-args`"
+    The retry's `--begin=now+<delay>` is emitted **before**
+    `cfg-dispatch.sbatch-args`, and `sbatch` takes the last occurrence of a
+    duplicated flag. A site that passes its own `--begin` through
+    `sbatch-args` therefore wins — consistent with how every other
+    `sbatch-args` override behaves, but it means the retry's hold does not
+    happen. Drop `--begin` from `sbatch-args` if you want the backoff.
 
 !!! warning "Retry is the portable half of the fix"
     A retried job still occupies a full allocation per attempt and can

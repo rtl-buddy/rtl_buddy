@@ -131,6 +131,30 @@ def test_run_fanout_reads_that_runs_own_artefacts(tmp_path):
     assert classify_missing_result(hung, "TIMEOUT", classifiers=ON) is None
 
 
+def test_an_unscheduled_backend_classifies_on_the_banner_alone(tmp_path):
+    """local-parallel reports no scheduler state, so requiring one is fatal.
+
+    The pool has no accounting source at all (``collect_telemetry`` is
+    empty by design), so demanding a resource kill state there would make
+    the rule unsatisfiable and retry dead code on that backend.
+    """
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, BANNER)
+    assert (
+        classify_missing_result(spec, None, classifiers=ON, scheduled=False)
+        == "license-queue"
+    )
+    # ...and the same job under a scheduler that reported nothing is not
+    # retried, because there the missing state is missing evidence.
+    assert classify_missing_result(spec, None, classifiers=ON, scheduled=True) is None
+
+
+def test_an_unscheduled_backend_still_needs_the_banner(tmp_path):
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, "sim started\nrunning...\n")
+    assert classify_missing_result(spec, None, classifiers=ON, scheduled=False) is None
+
+
 def test_paths_searched_include_both_job_logs(tmp_path):
     spec = _spec(tmp_path)
     names = [p.name for p in job_output_paths(spec)]
@@ -145,7 +169,7 @@ def test_paths_searched_include_both_job_logs(tmp_path):
 
 
 def test_marker_straddling_a_chunk_boundary_is_found(tmp_path, monkeypatch):
-    monkeypatch.setattr(retry_module, "_CHUNK_BYTES", 64)
+    monkeypatch.setattr(retry_module, "_CHUNK_CHARS", 64)
     spec = _spec(tmp_path)
     _write_sim_log(spec, "x" * 50 + BANNER + "y" * 200)
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
@@ -153,8 +177,8 @@ def test_marker_straddling_a_chunk_boundary_is_found(tmp_path, monkeypatch):
 
 def test_scan_stops_at_the_size_cap(tmp_path, monkeypatch):
     """Collection must not read a run's whole output back off a share."""
-    monkeypatch.setattr(retry_module, "_CHUNK_BYTES", 64)
-    monkeypatch.setattr(retry_module, "_MAX_SCAN_BYTES", 128)
+    monkeypatch.setattr(retry_module, "_CHUNK_CHARS", 64)
+    monkeypatch.setattr(retry_module, "_MAX_SCAN_CHARS", 128)
     spec = _spec(tmp_path)
     _write_sim_log(spec, "z" * 4096 + BANNER)
     assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) is None
