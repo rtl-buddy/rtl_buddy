@@ -12,21 +12,10 @@ from rtl_buddy.config.env_file import (
 from rtl_buddy.errors import FatalRtlBuddyError
 
 
-@pytest.fixture
-def clean_environ():
-    """Restore ``os.environ`` afterwards.
-
-    ``apply_env_file`` mutates ``os.environ`` directly, and
-    ``monkeypatch.delenv(..., raising=False)`` on a key that did not exist
-    records nothing to restore — so a test that applies an env file leaks
-    its keys into the rest of the session. Now that ``RootConfig.__init__``
-    applies the env file, that is a property of *any* test constructing a
-    RootConfig in a project carrying ``.rtl-buddy/.env``.
-    """
-    snapshot = dict(os.environ)
-    yield
-    os.environ.clear()
-    os.environ.update(snapshot)
+# The `clean_environ` fixture these tests take lives in conftest.py and
+# is autouse there: the leak it guards against belongs to
+# `RootConfig.__init__`, not to this file. Requested by name below anyway,
+# because here it is load-bearing rather than incidental.
 
 
 # ---------------------------------------------------------------------------

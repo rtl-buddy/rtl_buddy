@@ -1053,10 +1053,15 @@ def test_routing_a_tools_block_is_rejected(
         RootConfig(name="routed")
 
 
-def test_unrouted_blocks_add_no_detector(
+def test_unrouted_surfer_keeps_the_default_entrys_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """No routing keys → the pre-#439 chain, unchanged."""
+    """No routing keys → the pre-#439 chain, unchanged.
+
+    Asserted against the routable block. `cfg-*-tools` never contributed
+    a detector in the first place, routed or not, so asserting on `yosys`
+    here would pass whatever routing did.
+    """
     shared = tmp_path / "shared" / "bin"
     _write_routed_root_config(tmp_path, shared, "")
     monkeypatch.chdir(tmp_path)
@@ -1064,8 +1069,25 @@ def test_unrouted_blocks_add_no_detector(
     from rtl_buddy.config.root import RootConfig
 
     rc = RootConfig(name="unrouted")
-    by_name = {s.name: s for s in tm.get_manifest(rc)}
-    assert not isinstance(by_name["yosys"].detection[0], tm.AbsolutePathDetector)
+    unrouted = {s.name: s for s in tm.get_manifest(rc)}["surfer"]
+
+    # Routing absent must be exactly routing to `surfer-default`, which is
+    # the entry the unrouted accessor falls back to. Compared against the
+    # explicit form rather than against a fixed shape, because what
+    # `surfer-default` (a bare name) resolves to depends on the host's PATH.
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-default"\n')
+    routed_to_default = {s.name: s for s in tm.get_manifest(RootConfig(name="routed"))}[
+        "surfer"
+    ]
+
+    assert unrouted.detection == routed_to_default.detection
+    # …and not the routed-elsewhere chain, or the comparison proves nothing.
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-shared"\n')
+    routed_elsewhere = {s.name: s for s in tm.get_manifest(RootConfig(name="shared"))}[
+        "surfer"
+    ]
+    assert routed_elsewhere.detection != unrouted.detection
+    assert routed_elsewhere.detection[0].abs_path == str(shared / "surfer")
 
 
 def test_root_cfg_tools_min_version_honours_active_platform(

@@ -120,17 +120,29 @@ class PlatformConfigFile:
     surfer: str | None = None
 
     def get_routed_names(self) -> dict[str, str]:
-        """Configured ``block -> entry name`` routing, skipping unset blocks."""
-        raw = {"surfer": self.surfer}
-        return {block: name for block, name in raw.items() if name}
+        """Configured ``block -> entry name`` routing, skipping unset blocks.
+
+        Read off :data:`PLATFORM_TOOL_BLOCKS` rather than a hand-written
+        list, so adding a routable block is one edit: declare the field
+        here and the entry there, and routing, validation and the
+        accessors all follow.
+        """
+        return {
+            block: name
+            for block in PLATFORM_TOOL_BLOCKS
+            # YAML keys are hyphenated, the pyserde attribute is not.
+            if (name := getattr(self, block.replace("-", "_"), None))
+        }
 
     def validate_routing(self, tool_blocks: dict[str, dict]) -> None:
         """Fail if this entry routes a block to an entry that is not configured.
 
-        Called for *every* ``cfg-platforms`` entry at load, not just the one
-        whose ``unames`` matched: a typo in the Linux entry is otherwise
-        invisible to a macOS developer and only becomes fatal on the CI
-        host, which is the worst place to find it (#439).
+        Called by :class:`~rtl_buddy.config.root.RootConfig` for *every*
+        ``cfg-platforms`` entry at load, not just the one whose ``unames``
+        matched: a typo in the Linux entry is otherwise invisible to a
+        macOS developer and only becomes fatal on the CI host, which is
+        the worst place to find it (#439). That sweep covers the matched
+        entry too, so :meth:`initialise` does not re-check.
         """
         for block, entry_name in self.get_routed_names().items():
             available = tool_blocks.get(block) or {}
@@ -156,18 +168,17 @@ class PlatformConfigFile:
         builders: dict[str, RtlBuilderConfig],
         veribles: dict[str, VeribleConfig],
         builder_override: str | None,
-        tool_blocks: dict[str, dict] | None = None,
     ) -> PlatformConfig:
         """Resolve this platform entry against the root config's blocks.
+
+        Routing is *not* validated here: :meth:`validate_routing` has
+        already run over every entry at load, and repeating it for the
+        matched one only duplicates the work and the error.
 
         Args:
           builders: ``cfg-rtl-builder`` entries by name.
           veribles: ``cfg-verible`` entries by name.
           builder_override: ``--builder`` CLI override, or None.
-          tool_blocks: Available entries per :data:`PLATFORM_TOOL_BLOCKS`
-            key, used to validate the optional routing. Omitted (None)
-            skips validation — callers that only need builder/verible
-            (e.g. older tests) are unaffected.
         """
         builder = None
         if self.builder is not None:
@@ -223,8 +234,6 @@ class PlatformConfigFile:
             raise FatalRtlBuddyError(f'"{self.verible}" not in verible config')
 
         routed = self.get_routed_names()
-        if tool_blocks is not None:
-            self.validate_routing(tool_blocks)
         if routed:
             log_event(
                 logger,

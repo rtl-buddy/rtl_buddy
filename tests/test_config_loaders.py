@@ -1430,6 +1430,119 @@ def test_verible_get_exe_path_warns_once_on_path_fallback(
     assert len(records) == 1
 
 
+_TWO_VERIBLE_ROOT = """\
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "verible-active"
+  - os: "other-host"
+    unames: ["NoSuchUname"]
+    builder: "stub"
+    verible: "verible-inactive"
+
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "verible-active"
+    path: "{active}"
+    extra_args: {{}}
+  - name: "verible-inactive"
+    path: "{inactive}"
+    extra_args: {{}}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+"""
+
+
+def _write_two_verible_project(root, *, active: str, inactive: str) -> None:
+    """A project whose two platforms take one `cfg-verible` entry each."""
+    (root / "root_config.yaml").write_text(
+        _TWO_VERIBLE_ROOT.format(active=active, inactive=inactive)
+    )
+    (root / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: []\n"
+    )
+
+
+def _verible_records(caplog, level):
+    return [
+        r
+        for r in caplog.records
+        if r.name == "rtl_buddy.config.verible" and r.levelno == level
+    ]
+
+
+def test_verible_pin_diagnostics_skip_the_unrouted_entry(tmp_path, monkeypatch, caplog):
+    """The other platform's broken pin is not this host's warning.
+
+    Every `cfg-verible` entry is initialised at load, so a stock
+    two-platform project would otherwise WARN about the *other*
+    platform's directory on every single `rb` invocation — about a pin
+    that is not being used, and that nobody on this host can act on
+    (#439). It stays visible at DEBUG.
+    """
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    active = _mkdir(tmp_path / "verible-here")
+    _touch_exe(active / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-syntax")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    _write_two_verible_project(
+        tmp_path, active=str(active), inactive=str(tmp_path / "absent-elsewhere")
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.verible"):
+        rc = RootConfig(name="two-platforms")
+
+    assert rc.platform_cfg.get_verible().get_name() == "verible-active"
+    assert _verible_records(caplog, logging.WARNING) == []
+    debug = [r.getMessage() for r in _verible_records(caplog, logging.DEBUG)]
+    assert any("verible-inactive" in m for m in debug)
+
+
+def test_verible_pin_diagnostics_fire_for_the_routed_entry(
+    tmp_path, monkeypatch, caplog
+):
+    """Scoping the warning must not silence the case it exists for."""
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    inactive = _mkdir(tmp_path / "verible-elsewhere")
+    _touch_exe(inactive / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-syntax")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    _write_two_verible_project(
+        tmp_path, active=str(tmp_path / "absent-here"), inactive=str(inactive)
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.verible"):
+        RootConfig(name="two-platforms")
+
+    warnings = [r.getMessage() for r in _verible_records(caplog, logging.WARNING)]
+    assert len(warnings) == 1
+    assert "verible-active" in warnings[0]
+    assert str(tmp_path / "absent-here") in warnings[0]
+    assert str(site) in warnings[0]
+
+
 def test_verible_directory_candidate_without_separator_is_found(tmp_path):
     """A bare candidate on `path:` is a directory, never a PATH lookup.
 
@@ -1491,7 +1604,20 @@ cfg-fpga-tools:
 """
 
 
-def _write_routed_project(root: Path, *, routing: str = "", extra: str = "") -> None:
+#: A second, legitimately configured platform whose unames never match
+#: this host — for asserting that "another platform's" behaviour is the
+#: quiet skip, as distinct from naming a platform that does not exist.
+_INACTIVE_PLATFORM = """\
+  - os: "other-host"
+    unames: ["NoSuchUname"]
+    builder: "stub"
+    verible: "stub-verible"
+"""
+
+
+def _write_routed_project(
+    root: Path, *, routing: str = "", extra_platform: str = "", extra: str = ""
+) -> None:
     (root / "root_config.yaml").write_text(
         f"""\
 rtl-buddy-filetype: project_root_config
@@ -1501,7 +1627,7 @@ cfg-platforms:
     unames: ["Darwin", "Linux"]
     builder: "stub"
     verible: "stub-verible"
-{routing}
+{routing}{extra_platform}
 cfg-rtl-builder:
   - name: "stub"
     builder: "echo"
@@ -1600,7 +1726,7 @@ def test_tools_blocks_are_not_routable(tmp_path, monkeypatch):
     """
     _write_routed_project(tmp_path, routing='    synth-tools: "yosys-shared"\n')
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(FatalRtlBuddyError):
+    with pytest.raises(FatalRtlBuddyError, match="cannot be routed per platform"):
         RootConfig(name="routed")
 
 
@@ -1660,17 +1786,47 @@ def test_tool_min_version_platform_specific_wins_regardless_of_order(
 
 
 def test_tool_min_version_other_platform_entry_is_dropped(tmp_path, monkeypatch):
+    """A pin for a *configured* other platform is skipped, silently."""
     _write_routed_project(
         tmp_path,
+        extra_platform=_INACTIVE_PLATFORM,
         extra=(
             "\ncfg-tools:\n"
             "  - name: verilator\n"
             '    min-version: "5.049"\n'
             "  - name: verilator\n"
             '    min-version: "5.050"\n'
-            '    platform: "some-other-os"\n'
+            '    platform: "other-host"\n'
         ),
     )
     monkeypatch.chdir(tmp_path)
     rc = RootConfig(name="pins")
     assert rc.get_tool_version_cfg("verilator").min_version == "5.049"
+
+
+def test_tool_min_version_unknown_platform_is_fatal(tmp_path, monkeypatch):
+    """A `platform:` that names no cfg-platforms os is a config error.
+
+    Dropping it as "another platform's pin" is what makes a typo lethal:
+    the version floor then applies nowhere and `rb tool-check` goes green
+    on every host, which is exactly the silent no-op that naming an
+    unroutable block or a missing routed entry is already fatal for (#439).
+    """
+    _write_routed_project(
+        tmp_path,
+        extra_platform=_INACTIVE_PLATFORM,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "osxx"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        RootConfig(name="pins")
+    message = str(excinfo.value)
+    # The bad value and the set it had to come from — a message naming
+    # only one of the two leaves the reader guessing at the other.
+    assert "osxx" in message
+    assert "other-host" in message and "test-host" in message

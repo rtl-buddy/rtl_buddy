@@ -247,6 +247,29 @@ def _reject_unroutable_platform_keys(raw: dict) -> None:
             )
 
 
+def _detect_uname() -> str:
+    """This host's ``uname``, the key ``cfg-platforms[].unames`` matches on."""
+    result = subprocess.run(["uname"], capture_output=True, check=True, text=True)
+    uname = result.stdout.strip()
+    log_event(logger, logging.DEBUG, "platform.detected_uname", uname=uname)
+    return uname
+
+
+def _match_platform(
+    platforms: list[PlatformConfigFile], uname: str
+) -> PlatformConfigFile | None:
+    """The ``cfg-platforms`` entry this host selects, or None.
+
+    Last match wins, which is what the selection loop has always done by
+    overwriting ``platform_cfg`` on every match.
+    """
+    matched: PlatformConfigFile | None = None
+    for entry in platforms:
+        if uname in entry.get_unames():
+            matched = entry
+    return matched
+
+
 @serde
 class RootConfigFile:
     filetype: Literal["project_root_config"] = field(rename="rtl-buddy-filetype")
@@ -388,7 +411,13 @@ class RootConfig:
             with open(self.root_cfg_path, "r") as file:
                 text = file.read()
             data = from_yaml(RootConfigFile, text)
-            raw = yaml.safe_load(text) or {}
+            # Second, untyped read of the same text: pyserde drops keys it
+            # does not know, and `_reject_unroutable_platform_keys` needs
+            # to see them. A scalar or list document cannot reach here
+            # (pyserde would have raised), but guard anyway rather than
+            # let a `.get` on a str/list surface as a load failure.
+            reparsed = yaml.safe_load(text)
+            raw = reparsed if isinstance(reparsed, dict) else {}
 
         except Exception as e:
             log_event(
@@ -414,9 +443,27 @@ class RootConfig:
             for builder_cfg in self.rtl_builder_cfgs.values():
                 builder_cfg.set_base_dir(cfg_dir)
 
-            # Populate verible configs
+            # Which cfg-platforms entry this host takes, resolved before
+            # any tool block is initialised. The entry is only *built*
+            # further down (it needs the blocks), but knowing its name
+            # here is what lets a block scope its pin diagnostics to the
+            # entry that will actually be used (#439).
+            uname = _detect_uname()
+            active_platform_file = _match_platform(data.platforms, uname)
+
+            # Populate verible configs. Only the routed entry's broken pin
+            # is this host's problem; the others are initialised for
+            # `--verible`-style lookups and stay quiet.
+            active_verible = (
+                active_platform_file.verible
+                if active_platform_file is not None
+                else None
+            )
             self.verible_cfgs = {
-                cfg.name: cfg.initialise(self.root_cfg_path) for cfg in data.veribles
+                cfg.name: cfg.initialise(
+                    self.root_cfg_path, diagnostics=cfg.name == active_verible
+                )
+                for cfg in data.veribles
             }
 
             # Populate coverage configs
@@ -518,13 +565,8 @@ class RootConfig:
             # suite tests.yaml files it references (issue #248).
             self.cfg_rtl_reg = data.cfg_rtl_reg
 
-            # Select platform config
-            result = subprocess.run(
-                ["uname"], capture_output=True, check=True, text=True
-            )
-            uname = result.stdout.strip()
-            log_event(logger, logging.DEBUG, "platform.detected_uname", uname=uname)
-
+            # Select platform config (matched above, built here now that
+            # every block it may reference exists).
             tool_blocks = {
                 block: getattr(self, attr, {})
                 for block, (attr, _) in PLATFORM_TOOL_BLOCKS.items()
@@ -532,27 +574,26 @@ class RootConfig:
 
             # Validate *every* entry's routing, not only the one that
             # matches this host: a typo in the Linux entry must not wait
-            # for the CI host to become fatal (#439).
+            # for the CI host to become fatal (#439). This is the only
+            # call site — `PlatformConfigFile.initialise` deliberately
+            # does not repeat it for the matched entry.
             for platform_cfg in data.platforms:
                 platform_cfg.validate_routing(tool_blocks)
             _reject_unroutable_platform_keys(raw)
 
-            for platform_cfg in data.platforms:
-                for cfg_uname in platform_cfg.get_unames():
-                    if uname == cfg_uname:
-                        log_event(
-                            logger,
-                            logging.DEBUG,
-                            "platform.match",
-                            os=platform_cfg.get_os(),
-                            uname=uname,
-                        )
-                        self.platform_cfg = platform_cfg.initialise(
-                            self.rtl_builder_cfgs,
-                            self.verible_cfgs,
-                            self.builder_override,
-                            tool_blocks,
-                        )
+            if active_platform_file is not None:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "platform.match",
+                    os=active_platform_file.get_os(),
+                    uname=uname,
+                )
+                self.platform_cfg = active_platform_file.initialise(
+                    self.rtl_builder_cfgs,
+                    self.verible_cfgs,
+                    self.builder_override,
+                )
 
             if self.platform_cfg is None:
                 log_event(
@@ -583,11 +624,14 @@ class RootConfig:
             # one for the same tool, and entries naming another platform
             # are dropped.
             self.tool_version_cfgs = self._select_tool_version_cfgs(
-                self._tool_version_files
+                self._tool_version_files,
+                known_platforms={p.get_os() for p in data.platforms},
             )
 
     def _select_tool_version_cfgs(
-        self, entries: list[ToolVersionConfigFile]
+        self,
+        entries: list[ToolVersionConfigFile],
+        known_platforms: set[str],
     ) -> dict[str, ToolVersionConfig]:
         """Resolve ``cfg-tools`` entries against the active platform.
 
@@ -597,11 +641,35 @@ class RootConfig:
         declaration order, so a project can state the portable floor once
         and raise it where a platform pins a newer tool tree. Ordering
         among equally-qualified entries is last-wins, as before.
+
+        A ``platform:`` naming no configured platform is a fatal config
+        error, checked against ``known_platforms`` (every
+        ``cfg-platforms[].os``) rather than just the active one — which
+        is why that argument is required and not defaulted: a validation
+        anyone can switch off by omission is the bug, not the fix. Dropping
+        it as "another platform's pin" would make a typo'd floor silently
+        green on *every* host — the same do-nothing pin that naming an
+        unroutable block or a missing routed entry is already fatal for
+        (#439).
         """
         active_os = self.platform_cfg.get_os() if self.platform_cfg else None
         selected: dict[str, ToolVersionConfig] = {}
         pinned_for_platform: set[str] = set()
         for cfg in entries:
+            if cfg.platform is not None and cfg.platform not in known_platforms:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "tool_version.platform_unknown",
+                    name=cfg.name,
+                    entry_platform=cfg.platform,
+                    available=", ".join(sorted(known_platforms)),
+                )
+                raise FatalRtlBuddyError(
+                    f'cfg-tools[{cfg.name}].platform: "{cfg.platform}" is not a '
+                    f"configured cfg-platforms os "
+                    f"(available: {sorted(known_platforms)})"
+                )
             if cfg.platform is not None and cfg.platform != active_os:
                 log_event(
                     logger,

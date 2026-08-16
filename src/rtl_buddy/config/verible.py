@@ -113,7 +113,23 @@ class VeribleConfigFile:
     path: str | list[str]
     extra_args: dict[str, list[str]]
 
-    def initialise(self, root_cfg_path: str) -> VeribleConfig:
+    def initialise(
+        self, root_cfg_path: str, *, diagnostics: bool = True
+    ) -> VeribleConfig:
+        """Resolve this entry against the root-config directory.
+
+        Args:
+          root_cfg_path: Path to ``root_config.yaml``.
+          diagnostics: Whether an unhonoured pin is worth a WARNING. Only
+            true for the entry the *active* platform routes to. Every
+            ``cfg-verible`` entry is initialised at load, so a project
+            with one entry per platform would otherwise warn about the
+            other platform's directory on every single invocation — a
+            warning nobody on that host can act on, about a pin that is
+            not being used (#439). Unrouted entries still record the
+            same facts at DEBUG.
+        """
+        pin_level = logging.WARNING if diagnostics else logging.DEBUG
         base_dir = str(Path(root_cfg_path).parent)
         chosen = resolve_tool_path(
             self.path,
@@ -137,7 +153,7 @@ class VeribleConfigFile:
                 # than leaving `get_exe_path` to discover it per command.
                 log_event(
                     logger,
-                    logging.WARNING,
+                    pin_level,
                     "verible.path_incomplete",
                     name=res.get_name(),
                     configured_path=resolved,
@@ -156,7 +172,7 @@ class VeribleConfigFile:
                 res.available = True
                 log_event(
                     logger,
-                    logging.WARNING,
+                    pin_level,
                     "verible.path_fallback",
                     name=res.get_name(),
                     configured_path=resolved,
