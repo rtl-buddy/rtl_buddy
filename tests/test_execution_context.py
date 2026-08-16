@@ -265,3 +265,37 @@ def test_filelist_explicit_output_anchors_to_invocation_dir(
     assert (unrelated / "out.f").exists()
     # And the orchestration log lands under the command root (models.yaml dir).
     assert (minimal_project / "rtl_buddy.log").exists()
+
+
+def test_enter_command_context_log_path_override_attaches_there(
+    minimal_project: Path,
+):
+    """``log_path=`` moves the file handler without moving the context.
+
+    This is what keeps a dispatched job out of the head's
+    ``<suite>/rtl_buddy.log``: the job is rooted at the same
+    ``tests.yaml``, so only the override separates the two files (#437).
+    """
+    import logging
+
+    from rtl_buddy.logging_utils import setup_logging
+
+    setup_logging(debug=False, verbose=True, color=False, machine=False)
+
+    override = minimal_project / "artefacts" / "basic" / "dispatch" / "job.log"
+    rb = RtlBuddy(name="log_override")
+    rb.invocation_cwd = minimal_project
+    ctx = rb._enter_command_context(
+        primary_config=minimal_project / "tests.yaml",
+        list_only=True,
+        log_path=override,
+    )
+
+    handlers = [
+        h for h in logging.getLogger().handlers if isinstance(h, logging.FileHandler)
+    ]
+    assert [h.baseFilename for h in handlers] == [str(override)]
+    # The parent dir was created for it, and the context is unchanged.
+    assert override.parent.is_dir()
+    assert ctx.command_root == minimal_project
+    assert ctx.log_path == minimal_project / "rtl_buddy.log"

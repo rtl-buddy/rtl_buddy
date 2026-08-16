@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rtl_buddy.dispatch.argv import build_job_argv
+from rtl_buddy.dispatch.argv import build_job_argv, job_log_path
 
 # Alias so pytest does not collect them as a test function and a test class.
 from rtl_buddy.dispatch.argv import test_job_argv as sim_job_argv
@@ -77,3 +77,40 @@ def test_builder_globals_precede_the_subcommand():
     sub = argv.index("_test-job")
     for flag in ("-B", "-M", "--extra-sim-timeout"):
         assert argv.index(flag) < sub, f"{flag} must precede the subcommand"
+
+
+# --------------------------------------------- job_log_path (#437)
+
+
+def test_job_log_path_pairs_a_sim_envelope():
+    """A sim job's log sits beside its envelope, named after it."""
+    assert job_log_path(
+        Path("/proj/verif/blk/artefacts/alpha/dispatch/result-0003.json")
+    ) == Path("/proj/verif/blk/artefacts/alpha/dispatch/rtl_buddy-0003.log")
+    assert job_log_path(
+        Path("/proj/verif/blk/artefacts/alpha/dispatch/result-single.json")
+    ) == Path("/proj/verif/blk/artefacts/alpha/dispatch/rtl_buddy-single.log")
+
+
+def test_job_log_path_pairs_a_build_envelope():
+    """``build-result-<pid>`` keeps its ``build-`` prefix, so the build
+    job's log does not look like a sim job's in the shared .dispatch dir."""
+    assert job_log_path(
+        Path("/proj/verif/blk/artefacts/.dispatch/build-result-4711.json")
+    ) == Path("/proj/verif/blk/artefacts/.dispatch/build-rtl_buddy-4711.log")
+
+
+def test_job_log_path_falls_back_to_the_stem():
+    """A hand-written envelope name still gets a paired log, not a crash."""
+    assert job_log_path(Path("/tmp/foo.json")) == Path("/tmp/rtl_buddy-foo.log")
+
+
+def test_job_log_path_accepts_str_and_keeps_relative_input_relative():
+    """Resolution belongs to the caller: the helper only renames."""
+    assert job_log_path("dispatch/result-0001.json") == Path(
+        "dispatch/rtl_buddy-0001.log"
+    )
+    out = job_log_path("res.json")
+    assert isinstance(out, Path)
+    assert out == Path("rtl_buddy-res.log")
+    assert not out.is_absolute()

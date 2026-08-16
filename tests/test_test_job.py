@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
+from rtl_buddy.dispatch.argv import job_log_path
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.config import SuiteConfig
 from rtl_buddy.rtl_buddy import RtlBuddy
@@ -393,3 +394,104 @@ def test_build_job_plan_compiles_plan_configs_without_hook(
     br = load_build_result_json(minimal_project / "br.json")
     assert set(br["built"]) == {"basic", "extra"}
     assert br["failed"] == []
+
+
+# ------------------------------------- job log paths (#437)
+
+
+def _events(log_path: Path) -> list[str]:
+    """Event names in a machine-mode rtl_buddy log."""
+    return [
+        json.loads(line).get("event")
+        for line in log_path.read_text().splitlines()
+        if line.strip()
+    ]
+
+
+def test_test_job_logs_beside_its_envelope_and_never_the_suite_log(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """The head owns ``<suite>/rtl_buddy.log``; a job must not open it.
+
+    ``attach_file_log`` truncates on a process's first open of a path, so
+    a job that attached there would erase the head's records for that
+    suite (#437). The sentinel content below is the head's; it must come
+    back byte-identical.
+    """
+    stub_runner.canned = TestPassResults(name="basic/results")
+    suite_log = minimal_project / "rtl_buddy.log"
+    suite_log.write_bytes(b"head-only record\n")
+    before = suite_log.read_bytes()
+
+    result_json = (
+        minimal_project / "artefacts" / "basic" / "dispatch" / "result-0001.json"
+    )
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_test-job",
+            "basic",
+            "--result-json",
+            str(result_json),
+            "--run-id",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    job_log = job_log_path(result_json)
+    assert job_log == result_json.parent / "rtl_buddy-0001.log"
+    assert "command.test_job" in _events(job_log)
+    assert suite_log.read_bytes() == before, (
+        "the job rewrote the head's suite log — this is the #437 bug"
+    )
+
+
+def test_build_job_logs_beside_its_envelope_and_never_the_suite_log(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    suite_log = minimal_project / "rtl_buddy.log"
+    suite_log.write_bytes(b"head-only record\n")
+    before = suite_log.read_bytes()
+
+    result_json = minimal_project / "artefacts" / ".dispatch" / "build-result-4711.json"
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app,
+        [
+            "--machine",
+            "_build-job",
+            "-c",
+            "tests.yaml",
+            "--result-json",
+            str(result_json),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    job_log = job_log_path(result_json)
+    assert job_log == result_json.parent / "build-rtl_buddy-4711.log"
+    assert "command.build_job" in _events(job_log)
+    assert suite_log.read_bytes() == before
+
+
+def test_build_job_without_result_json_falls_back_to_the_suite_log(
+    minimal_project: Path, stub_runner: type[_StubTestRunner]
+):
+    """Run by hand there is no envelope to pair with and no head to
+    collide with, so the suite log is still the right place."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="compiled")
+    suite_log = minimal_project / "rtl_buddy.log"
+    assert not suite_log.exists()
+
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["--machine", "_build-job", "-c", "tests.yaml"])
+    assert result.exit_code == 0, result.output
+    assert "command.build_job" in _events(suite_log)
