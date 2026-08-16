@@ -2732,10 +2732,19 @@ class RtlBuddy:
                     results = CompileFailResults(
                         name=handle.spec.test_name + "/results"
                     )
+                    # BuildJobSpec.result_json is optional on the type (a
+                    # build job can be launched without one, and then has no
+                    # rtl_buddy log of its own to name); dispatch always sets
+                    # it, but an error branch must not be where that
+                    # assumption turns into a TypeError.
+                    build_logs = str(build_handle.spec.log_path)
+                    if build_handle.spec.result_json is not None:
+                        build_logs += (
+                            f" and {job_log_path(build_handle.spec.result_json)}"
+                        )
                     results.results["desc"] = (
                         f"compile failed in build job {build_handle.job_id} "
-                        f"(see {build_handle.spec.log_path} and "
-                        f"{job_log_path(build_handle.spec.result_json)})"
+                        f"(see {build_logs})"
                     )
                 else:
                     sched_state = tele.get("state") if tele else None

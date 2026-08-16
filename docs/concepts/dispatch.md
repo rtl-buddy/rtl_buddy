@@ -393,8 +393,9 @@ it:
 
 `<tag>` is the run id (`0001`) or `single` for an unnumbered run, and
 `<pid>` is the head's. The scheduler's log holds the job's raw
-stdout/stderr; the `rtl_buddy-*.log` beside it holds the same JSON Lines
-events the head writes for itself. A dispatch failure names both in its
+stdout/stderr; the `rtl_buddy-*.log` beside it holds the same events the
+head records for itself, as JSON Lines — a dispatched job runs in
+`--machine` mode. A dispatch failure names both in its
 result description, so a failed row leads to the files without a search.
 
 ## Per-test reservations
