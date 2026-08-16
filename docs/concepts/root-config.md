@@ -52,18 +52,51 @@ cfg-rtl-reg:
 
 Maps the current OS (detected via `uname`) to a builder and Verible config. `rtl_buddy` picks the first platform entry whose `unames` list contains the output of `uname`.
 
+A platform entry may also route any *other* tool block by naming one of its entries: `surfer`, `synth-tools`, `pnr-tools`, `power-tools`, `cdc-tools`, `fpv-tools`, `fpga-tools`. Each is optional; a block that is not routed keeps its previous global behaviour. Routing is what lets a path be pinned per platform — a shared Linux tool tree pinned absolutely (`PATH` cannot silently override it, and it survives a `--dispatch slurm` login shell re-prepending site paths) while macOS routes to an entry keeping a bare name off `PATH`:
+
+```yaml
+cfg-platforms:
+  - os: "linux"
+    unames: ["Linux"]
+    builder: "verilator-shared"
+    verible: "verible-x86_64"
+    surfer: "surfer-shared"      # absolute path into the shared tool tree
+    fpv-tools: "sby-shared"
+  - os: "osx"
+    unames: ["Darwin"]
+    builder: "verilator"
+    verible: "verible-macos"
+    surfer: "surfer-brew"        # bare name off PATH
+```
+
+Routing supplies the *default* entry for a block; anything that names an entry explicitly — a flow YAML's `tool:`, `--surfer`, `--builder` — still wins.
+
+**Tool paths: `~`, `$VAR`, and candidate lists**
+
+`cfg-rtl-builder[].builder`, `cfg-verible[].path`, `cfg-surfer[].path` and the `tool:` field of every `cfg-*-tools` block are expanded with `expanduser` + `expandvars` before use — the same treatment `cfg-systemc.home` has always had. An unset `${VAR}` makes that value not apply rather than producing a path containing a literal `${...}`.
+
+Each of those fields also accepts a *list* of candidates; the first that expands cleanly and exists wins, and a trailing bare name is the `PATH` fallback:
+
+```yaml
+cfg-surfer:
+  - name: "surfer-shared"
+    path: ["${RB_TOOLS}/bin/surfer", "/opt/rb-tools/current/bin/surfer", "surfer"]
+```
+
+That is the full chain a multi-platform project wants — **individual env override → committed canonical path → `PATH`** — expressed in one committed file. The individual half lives in the gitignored [`.rtl-buddy/.env`](#project-local-env-defaults-rtl-buddyenv) (`RB_TOOLS=/Users/me/tools/rb`), so a developer relocating their copy never dirties a tracked file, and everyone else gets the canonical path. CI wants the pin hard enough that a stray `PATH` cannot change it and laptops want it soft enough to relocate; expansion with a committed fallback satisfies both, because the value is still decided by a committed file and the only thing an individual supplies is *where their copy lives*.
+
 **`cfg-rtl-builder`**
 
 Defines simulation tool configurations. Each entry has:
 
-- `builder`: simulator executable name (`verilator`, `vcs`, etc.)
+- `builder`: simulator executable name (`verilator`, `vcs`, etc.), a path to it, or a candidate list
 - `builder-simv`: path to the compiled simulation binary
 - `sim-rand-seed` / `sim-rand-seed-prefix`: default seed value and the plusarg prefix used to pass it
 - `builder-opts`: named compile-time and run-time option sets, selected by builder mode
 
 **`cfg-verible`**
 
-Defines Verible tool configurations for lint and syntax checks. `path` is the directory containing Verible executables — absolute or relative to `root_config.yaml`.
+Defines Verible tool configurations for lint and syntax checks. `path` is the directory containing Verible executables — absolute or relative to `root_config.yaml`. If that directory is missing but `verible-verilog-syntax` is on `PATH`, Verible stays enabled and rtl_buddy warns, naming both the configured directory and what `PATH` resolved: a deliberately pinned path silently resolving elsewhere is exactly what pinning is meant to rule out.
 
 **`cfg-surfer`** *(optional)*
 

@@ -10,6 +10,7 @@ from serde.yaml import from_yaml
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .synth import SynthSuiteConfig
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 @serde
 class PnrToolConfigFile:
     name: str
-    tool: str
+    tool: str | list[str]
 
 
 class PnrToolConfig:
@@ -28,7 +29,17 @@ class PnrToolConfig:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        return self._cfg.tool
+        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
+
+        ``tool:`` may be a single value or a list of candidates in
+        preference order; see :mod:`rtl_buddy.config.toolpath`.
+        """
+        return resolve_tool_path(
+            self._cfg.tool,
+            block="cfg-pnr-tools",
+            name=self._cfg.name,
+            field="tool",
+        )
 
 
 @serde

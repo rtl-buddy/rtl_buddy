@@ -9,6 +9,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from serde import serde
 from ..logging_utils import log_event
+from .toolpath import resolve_tool_path
 
 
 @dataclass
@@ -73,26 +74,42 @@ class VeribleConfig:
 @serde
 class VeribleConfigFile:
     name: str
-    path: str
+    path: str | list[str]
     extra_args: dict[str, list[str]]
 
     def initialise(self, root_cfg_path: str) -> VeribleConfig:
-        resolved = str(Path(root_cfg_path).parent / self.path)
+        base_dir = str(Path(root_cfg_path).parent)
+        chosen = resolve_tool_path(
+            self.path,
+            base_dir=base_dir,
+            block="cfg-verible",
+            name=self.name,
+            field="path",
+        )
+        resolved = str(Path(base_dir) / chosen)
         res = VeribleConfig(self.name, resolved, self.extra_args, False)
         if os.path.exists(resolved):
             res.available = True
-        elif shutil.which("verible-verilog-syntax"):
-            # configured dir absent, but verible is on PATH (e.g. a site
-            # module load) — usable without editing the committed path.
-            res.available = True
-            log_event(
-                logger,
-                logging.DEBUG,
-                "verible.path_fallback",
-                name=res.get_name(),
-                path=resolved,
-            )
         else:
+            on_path = shutil.which("verible-verilog-syntax")
+            if on_path:
+                # The configured directory is absent but verible is on PATH
+                # (e.g. a site module load) — usable without editing the
+                # committed path. WARNING, not DEBUG: a project that pinned
+                # a directory deliberately has just had that pin silently
+                # replaced by whatever PATH resolves, and the whole point of
+                # pinning is that PATH cannot do that unannounced (#439).
+                res.available = True
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "verible.path_fallback",
+                    name=res.get_name(),
+                    configured_path=resolved,
+                    resolved_path=on_path,
+                )
+                return res
+
             log_event(
                 logger,
                 logging.DEBUG,

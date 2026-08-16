@@ -321,7 +321,9 @@ Usage: rtl-buddy wave [OPTIONS] TEST_NAME
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --test-config     -c      TEXT  tests.yaml to use [default: tests.yaml]              │
-│ --surfer                  TEXT  cfg-surfer entry name [default: surfer-default]      │
+│ --surfer                  TEXT  cfg-surfer entry name (default: the active           │
+│                                 platform's cfg-platforms surfer routing, else        │
+│                                 surfer-default)                                      │
 │ --resim                         force re-run of debug sim even if FST exists         │
 │ --focused-signal                annotate only the signal selected via Go to          │
 │                                 declaration; default annotates all signals in scope  │
@@ -341,7 +343,8 @@ Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --fpv-config  -c      TEXT  fpv.yaml to use [default: fpv.yaml]                      │
-│ --surfer              TEXT  cfg-surfer entry name [default: surfer-default]          │
+│ --surfer              TEXT  cfg-surfer entry name (default: the active platform's    │
+│                             cfg-platforms surfer routing, else surfer-default)       │
 │ --help                      Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

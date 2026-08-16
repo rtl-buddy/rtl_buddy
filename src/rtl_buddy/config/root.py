@@ -11,7 +11,7 @@ import yaml
 from serde import serde, field, from_dict
 from serde.yaml import from_yaml
 
-from .platform import PlatformConfigFile
+from .platform import PLATFORM_TOOL_BLOCKS, PlatformConfigFile
 from .reg import RegConfig
 from .rtl import RtlBuilderConfig
 from .verible import VeribleConfigFile
@@ -39,6 +39,7 @@ from .systemc import SystemCConfig, SystemCConfigFile
 from .tools import ToolVersionConfig, ToolVersionConfigFile
 from .xplr import XplrConfig, XplrConfigFile
 from .dispatch import DispatchConfig, DispatchConfigFile
+from .env_file import apply_env_file
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 
@@ -307,6 +308,13 @@ class RootConfig:
             logger, logging.INFO, "root_config.load_start", path=self.root_cfg_path
         )
 
+        # Project-local env defaults must be in the environment *before*
+        # any tool path field is expanded, and cfg-verible / cfg-surfer
+        # resolve theirs inside this constructor. Idempotent and
+        # fallback-only (a variable already set is never overridden), so
+        # the later call in the CLI's context setup is a no-op.
+        apply_env_file(os.path.dirname(self.root_cfg_path))
+
         self.builder_override = builder_override
         self.extra_sim_timeout_override = extra_sim_timeout_override
 
@@ -328,6 +336,7 @@ class RootConfig:
         self.synth_effort_cfgs: dict = {}
         self.systemc_cfg: SystemCConfig | None = None
         self.tool_version_cfgs: dict[str, ToolVersionConfig] = {}
+        self._tool_version_files: list[ToolVersionConfigFile] = []
         self.xplr_cfg: XplrConfig = XplrConfigFile().initialise()
         self.dispatch_cfg: DispatchConfig = DispatchConfigFile().initialise()
         self.platform_cfg = None
@@ -440,10 +449,10 @@ class RootConfig:
             if data.systemc is not None:
                 self.systemc_cfg = data.systemc.initialise()
 
-            # cfg-tools min-version overrides (optional)
-            self.tool_version_cfgs = {
-                cfg.name: ToolVersionConfig.from_file(cfg) for cfg in data.tools
-            }
+            # cfg-tools min-version overrides (optional). Entries carrying
+            # a `platform:` selector are filtered against the active
+            # platform below, once it has been selected.
+            self._tool_version_files = list(data.tools)
 
             # cfg-xplr experiment-ledger policy (optional, single block)
             if data.xplr is not None:
@@ -466,6 +475,11 @@ class RootConfig:
             uname = result.stdout.strip()
             log_event(logger, logging.DEBUG, "platform.detected_uname", uname=uname)
 
+            tool_blocks = {
+                block: getattr(self, attr, {})
+                for block, (attr, _) in PLATFORM_TOOL_BLOCKS.items()
+            }
+
             for platform_cfg in data.platforms:
                 for cfg_uname in platform_cfg.get_unames():
                     if uname == cfg_uname:
@@ -480,6 +494,7 @@ class RootConfig:
                             self.rtl_builder_cfgs,
                             self.verible_cfgs,
                             self.builder_override,
+                            tool_blocks,
                         )
 
             if self.platform_cfg is None:
@@ -494,6 +509,7 @@ class RootConfig:
                     f"{self.name}: cannot find cfg-platform for uname {uname}"
                 )
             else:
+                routed = self.platform_cfg.get_routed_tools()
                 log_event(
                     logger,
                     logging.INFO,
@@ -501,7 +517,67 @@ class RootConfig:
                     os=self.platform_cfg.get_os(),
                     builder=self.platform_cfg.get_builder().get_name(),
                     verible=self.platform_cfg.get_verible().get_name(),
+                    routed=", ".join(f"{k}={v}" for k, v in sorted(routed.items()))
+                    or "-",
                 )
+
+            # cfg-tools pins, now that the active platform is known: an
+            # entry with a matching ``platform:`` wins over an unqualified
+            # one for the same tool, and entries naming another platform
+            # are dropped.
+            self.tool_version_cfgs = self._select_tool_version_cfgs(
+                self._tool_version_files
+            )
+
+    def _select_tool_version_cfgs(
+        self, entries: list[ToolVersionConfigFile]
+    ) -> dict[str, ToolVersionConfig]:
+        """Resolve ``cfg-tools`` entries against the active platform.
+
+        An entry's optional ``platform:`` names a ``cfg-platforms[].os``.
+        Entries naming a *different* platform are dropped; a matching
+        entry beats an unqualified one for the same tool regardless of
+        declaration order, so a project can state the portable floor once
+        and raise it where a platform pins a newer tool tree. Ordering
+        among equally-qualified entries is last-wins, as before.
+        """
+        active_os = self.platform_cfg.get_os() if self.platform_cfg else None
+        selected: dict[str, ToolVersionConfig] = {}
+        pinned_for_platform: set[str] = set()
+        for cfg in entries:
+            if cfg.platform is not None and cfg.platform != active_os:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "tool_version.platform_skipped",
+                    name=cfg.name,
+                    entry_platform=cfg.platform,
+                    active_platform=active_os,
+                )
+                continue
+            if cfg.platform is None and cfg.name in pinned_for_platform:
+                # A platform-specific pin already won this tool.
+                continue
+            if cfg.platform is not None:
+                pinned_for_platform.add(cfg.name)
+            selected[cfg.name] = ToolVersionConfig.from_file(cfg)
+        return selected
+
+    def get_platform_tool_name(self, block: str) -> str | None:
+        """
+        Entry name the active platform routes for a tool block.
+
+        Args:
+          block (str): A :data:`~rtl_buddy.config.platform.PLATFORM_TOOL_BLOCKS`
+            key, e.g. ``"surfer"`` or ``"fpv-tools"``.
+        Returns:
+          name (str | None): Routed ``cfg-<block>`` entry name, or None
+            when this platform does not route the block — in which case
+            the block keeps whatever global default it had.
+        """
+        if self.platform_cfg is None:
+            return None
+        return self.platform_cfg.get_routed_tool(block)
 
     @staticmethod
     def discover_rtl_builder_names(max_levels: int = 8) -> list[str]:
@@ -690,78 +766,106 @@ class RootConfig:
         """
         return self.coverview_cfgs.get(simulator_name)
 
-    def get_surfer_cfg(self, name: str = "surfer-default") -> "SurferConfig | None":
+    def get_surfer_cfg(self, name: str | None = None) -> "SurferConfig | None":
         """
         Get Surfer configuration by name.
 
         Args:
-          name (str): cfg-surfer entry name. Defaults to "surfer-default".
+          name (str | None): cfg-surfer entry name. When omitted, the
+            active platform's ``cfg-platforms[].surfer`` routing decides,
+            falling back to ``"surfer-default"`` when the platform routes
+            nothing (the pre-#439 behaviour).
         Returns:
           cfg (SurferConfig|None): Matching Surfer configuration, if present.
         """
+        if name is None:
+            name = self.get_platform_tool_name("surfer") or "surfer-default"
         return self.surfer_cfgs.get(name)
 
-    def get_synth_tool_cfg(self, name: str):
+    def _routed_or(self, block: str, name: str | None) -> str | None:
+        """``name`` when given, else the active platform's routing for ``block``.
+
+        An explicit selection — a ``tool:`` in synth.yaml/pnr.yaml/…, or a
+        CLI flag — always wins; platform routing only supplies the default
+        for a caller that did not name an entry. Same precedence the
+        builder has had since ``cfg-platforms`` existed.
+        """
+        return name if name is not None else self.get_platform_tool_name(block)
+
+    def get_synth_tool_cfg(self, name: str | None = None):
         """
         Get synthesis tool configuration by name.
 
         Args:
-          name (str): Tool name as defined in cfg-synth-tools.
+          name (str | None): Tool name as defined in cfg-synth-tools.
+            When omitted, the active platform's ``cfg-platforms[].synth-tools``
+            routing supplies it.
         Returns:
           cfg (SynthToolConfig): Matching synthesis tool configuration.
         Raises:
-          FatalRtlBuddyError: If no tool with that name is configured.
+          FatalRtlBuddyError: If no tool with that name is configured, or
+            if no name was given and the platform routes nothing.
         """
-        cfg = self.synth_tool_cfgs.get(name)
+        name = self._routed_or("synth-tools", name)
+        cfg = self.synth_tool_cfgs.get(name) if name is not None else None
         if cfg is None:
             raise FatalRtlBuddyError(
                 f"synthesis tool '{name}' not found in cfg-synth-tools"
             )
         return cfg
 
-    def get_pnr_tool_cfg(self, name: str):
+    def get_pnr_tool_cfg(self, name: str | None = None):
         """
         Get P&R tool configuration by name.
 
         Args:
-          name (str): Tool name as defined in cfg-pnr-tools.
+          name (str | None): Tool name as defined in cfg-pnr-tools. When
+            omitted, the active platform's ``cfg-platforms[].pnr-tools``
+            routing supplies it.
         Returns:
           cfg (PnrToolConfig|None): Matching P&R tool configuration, or
             None if no entry with that name is configured. Callers fall
             back to the bare tool name on PATH when None is returned.
         """
-        return self.pnr_tool_cfgs.get(name)
+        name = self._routed_or("pnr-tools", name)
+        return self.pnr_tool_cfgs.get(name) if name is not None else None
 
-    def get_power_tool_cfg(self, name: str):
+    def get_power_tool_cfg(self, name: str | None = None):
         """
         Get power analysis tool configuration by name.
 
         Args:
-          name (str): Tool name as defined in cfg-power-tools.
+          name (str | None): Tool name as defined in cfg-power-tools. When
+            omitted, the active platform's ``cfg-platforms[].power-tools``
+            routing supplies it.
         Returns:
           cfg (PowerToolConfig): Matching power tool configuration.
         Raises:
           FatalRtlBuddyError: If no tool with that name is configured.
         """
-        cfg = self.power_tool_cfgs.get(name)
+        name = self._routed_or("power-tools", name)
+        cfg = self.power_tool_cfgs.get(name) if name is not None else None
         if cfg is None:
             raise FatalRtlBuddyError(
                 f"power tool '{name}' not found in cfg-power-tools"
             )
         return cfg
 
-    def get_fpga_tool_cfg(self, name: str):
+    def get_fpga_tool_cfg(self, name: str | None = None):
         """
         Get FPGA tool configuration by name.
 
         Args:
-          name (str): Tool name as defined in cfg-fpga-tools.
+          name (str | None): Tool name as defined in cfg-fpga-tools. When
+            omitted, the active platform's ``cfg-platforms[].fpga-tools``
+            routing supplies it.
         Returns:
           cfg (FpgaToolConfig|None): Matching FPGA tool configuration, or
             None if no entry with that name is configured. Callers fall
             back to the bare tool name on PATH when None is returned.
         """
-        return self.fpga_tool_cfgs.get(name)
+        name = self._routed_or("fpga-tools", name)
+        return self.fpga_tool_cfgs.get(name) if name is not None else None
 
     def get_fpga_platform_cfg(self, name: str) -> FpgaPlatformConfig:
         """Get an FPGA platform configuration by name (cfg-fpga-platforms entry)."""
@@ -773,34 +877,40 @@ class RootConfig:
             )
         return cfg
 
-    def get_cdc_tool_cfg(self, name: str):
+    def get_cdc_tool_cfg(self, name: str | None = None):
         """
         Get CDC tool configuration by name.
 
         Args:
-          name (str): Tool name as defined in cfg-cdc-tools.
+          name (str | None): Tool name as defined in cfg-cdc-tools. When
+            omitted, the active platform's ``cfg-platforms[].cdc-tools``
+            routing supplies it.
         Returns:
           cfg (CdcToolConfig): Matching CDC tool configuration.
         Raises:
           FatalRtlBuddyError: If no tool with that name is configured.
         """
-        cfg = self.cdc_tool_cfgs.get(name)
+        name = self._routed_or("cdc-tools", name)
+        cfg = self.cdc_tool_cfgs.get(name) if name is not None else None
         if cfg is None:
             raise FatalRtlBuddyError(f"CDC tool '{name}' not found in cfg-cdc-tools")
         return cfg
 
-    def get_fpv_tool_cfg(self, name: str):
+    def get_fpv_tool_cfg(self, name: str | None = None):
         """
         Get FPV tool configuration by name.
 
         Args:
-          name (str): Tool name as defined in cfg-fpv-tools.
+          name (str | None): Tool name as defined in cfg-fpv-tools. When
+            omitted, the active platform's ``cfg-platforms[].fpv-tools``
+            routing supplies it.
         Returns:
           cfg (FpvToolConfig): Matching FPV tool configuration.
         Raises:
           FatalRtlBuddyError: If no tool with that name is configured.
         """
-        cfg = self.fpv_tool_cfgs.get(name)
+        name = self._routed_or("fpv-tools", name)
+        cfg = self.fpv_tool_cfgs.get(name) if name is not None else None
         if cfg is None:
             raise FatalRtlBuddyError(f"FPV tool '{name}' not found in cfg-fpv-tools")
         return cfg

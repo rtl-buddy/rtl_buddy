@@ -19,6 +19,7 @@ from typing import Literal
 from .model import ModelConfig, ModelConfigLoader
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class FpvToolOptsFile:
 @serde
 class FpvToolConfigFile:
     name: str
-    tool: str
+    tool: str | list[str]
     opts: FpvToolOptsFile = field(default_factory=FpvToolOptsFile)
 
 
@@ -68,7 +69,17 @@ class FpvToolConfig:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        return self._cfg.tool
+        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
+
+        ``tool:`` may be a single value or a list of candidates in
+        preference order; see :mod:`rtl_buddy.config.toolpath`.
+        """
+        return resolve_tool_path(
+            self._cfg.tool,
+            block="cfg-fpv-tools",
+            name=self._cfg.name,
+            field="tool",
+        )
 
     def get_opts(self, overrides: dict | None = None) -> FpvToolOpts:
         timeout = self._cfg.opts.timeout

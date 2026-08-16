@@ -11,6 +11,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .pnr import PnrSuiteConfig
 from .synth import SynthSuiteConfig
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 @serde
 class PowerToolConfigFile:
     name: str
-    tool: str
+    tool: str | list[str]
 
 
 class PowerToolConfig:
@@ -29,7 +30,17 @@ class PowerToolConfig:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        return self._cfg.tool
+        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
+
+        ``tool:`` may be a single value or a list of candidates in
+        preference order; see :mod:`rtl_buddy.config.toolpath`.
+        """
+        return resolve_tool_path(
+            self._cfg.tool,
+            block="cfg-power-tools",
+            name=self._cfg.name,
+            field="tool",
+        )
 
 
 @serde

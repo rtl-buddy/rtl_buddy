@@ -1051,3 +1051,440 @@ def test_apply_test_xfail_skip_passes_through_unchanged():
     apply_xfail(res, strict=True)
     assert res.results["result"] == "SKIP"
     assert res.is_pass() is True
+
+
+# ---------------------------------------------------------------------------
+# Tool path resolution — $VAR / ~ expansion and candidate lists (#439)
+# ---------------------------------------------------------------------------
+
+
+def test_expand_path_resolves_set_var(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.setenv("RB_TEST_TOOLS", "/opt/rb")
+    assert expand_path("${RB_TEST_TOOLS}/bin/surfer") == "/opt/rb/bin/surfer"
+
+
+def test_expand_path_returns_none_for_unset_var(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    assert expand_path("${RB_TEST_TOOLS}/bin/surfer") is None
+
+
+def test_expand_path_expands_tilde(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.setenv("HOME", "/home/rb")
+    assert expand_path("~/tools/surfer") == "/home/rb/tools/surfer"
+
+
+def test_resolve_tool_path_single_string_passes_through(monkeypatch):
+    """The pre-#439 shape: one bare name, resolved by PATH at exec time."""
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    assert resolve_tool_path("definitely-not-installed") == "definitely-not-installed"
+
+
+def test_resolve_tool_path_env_override_wins_over_canonical(tmp_path, monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    mine = tmp_path / "mine" / "bin"
+    mine.mkdir(parents=True)
+    (mine / "surfer").write_text("")
+    canonical = tmp_path / "canonical" / "bin"
+    canonical.mkdir(parents=True)
+    (canonical / "surfer").write_text("")
+
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path / "mine"))
+    chosen = resolve_tool_path(
+        ["${RB_TEST_TOOLS}/bin/surfer", str(canonical / "surfer"), "surfer"]
+    )
+    assert chosen == str(mine / "surfer")
+
+
+def test_resolve_tool_path_falls_through_unset_var_to_canonical(tmp_path, monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    canonical = tmp_path / "canonical" / "bin"
+    canonical.mkdir(parents=True)
+    (canonical / "surfer").write_text("")
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    chosen = resolve_tool_path(
+        ["${RB_TEST_TOOLS}/bin/surfer", str(canonical / "surfer"), "surfer"]
+    )
+    assert chosen == str(canonical / "surfer")
+
+
+def test_resolve_tool_path_falls_through_missing_path_to_bare_name(
+    tmp_path, monkeypatch
+):
+    """Nothing on disk: the trailing bare name is the PATH fallback slot."""
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    chosen = resolve_tool_path(
+        [
+            "${RB_TEST_TOOLS}/bin/surfer",
+            str(tmp_path / "nowhere" / "surfer"),
+            "surfer-not-installed",
+        ]
+    )
+    assert chosen == "surfer-not-installed"
+
+
+def test_resolve_tool_path_all_candidates_unresolved_returns_literal(monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    assert (
+        resolve_tool_path("${RB_TEST_TOOLS}/bin/surfer")
+        == "${RB_TEST_TOOLS}/bin/surfer"
+    )
+
+
+def test_resolve_tool_path_relative_candidate_anchors_at_base_dir(tmp_path):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    (tmp_path / "vendor").mkdir()
+    (tmp_path / "vendor" / "yosys").write_text("")
+    chosen = resolve_tool_path(
+        ["vendor/nope/yosys", "vendor/yosys", "yosys"], base_dir=str(tmp_path)
+    )
+    # Returned unjoined — callers keep their own relative-path semantics.
+    assert chosen == "vendor/yosys"
+
+
+def test_builder_exe_expands_env_var(monkeypatch, tmp_path):
+    """cfg-rtl-builder.builder gets the cfg-systemc.home treatment."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "verilator").write_text("")
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path))
+
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML.replace(
+            "builder: verilator", 'builder: "${RB_TEST_TOOLS}/bin/verilator"'
+        ),
+    )
+    assert cfg.get_exe() == str(bindir / "verilator")
+    # Family inference reads the resolved path, not the literal.
+    assert cfg.get_simulator_family() == "verilator"
+
+
+def test_builder_exe_candidate_list_falls_back_to_bare_name(monkeypatch):
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    yaml = _VERILATOR_BUILDER_YAML.replace(
+        "builder: verilator",
+        'builder: ["${RB_TEST_TOOLS}/bin/verilator", "verilator"]',
+    )
+    cfg = from_yaml(RtlBuilderConfig, yaml)
+    assert cfg.get_exe() == "verilator"
+
+
+def test_surfer_path_candidate_list_picks_existing(tmp_path, monkeypatch):
+    from rtl_buddy.config.surfer import SurferConfigFile
+
+    bindir = tmp_path / "opt" / "bin"
+    bindir.mkdir(parents=True)
+    exe = bindir / "surfer"
+    exe.write_text("")
+    exe.chmod(0o755)
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+
+    cfg = SurferConfigFile(
+        name="surfer-shared",
+        path=["${RB_TEST_TOOLS}/bin/surfer", str(exe), "surfer"],
+    ).initialise(str(tmp_path / "root_config.yaml"))
+    assert cfg.path == str(exe)
+    assert cfg.available is True
+
+
+def test_synth_tool_executable_expands_env_var(monkeypatch, tmp_path):
+    from rtl_buddy.config.synth import SynthToolConfig, SynthToolConfigFile
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "yosys").write_text("")
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path))
+
+    cfg = SynthToolConfig(
+        SynthToolConfigFile(name="yosys", tool="${RB_TEST_TOOLS}/bin/yosys")
+    )
+    assert cfg.get_executable() == str(bindir / "yosys")
+
+
+def test_fpv_tool_executable_candidate_list(monkeypatch, tmp_path):
+    from rtl_buddy.config.fpv import FpvToolConfig, FpvToolConfigFile
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    cfg = FpvToolConfig(
+        FpvToolConfigFile(
+            name="sby", tool=["${RB_TEST_TOOLS}/bin/sby", str(tmp_path / "gone"), "sby"]
+        )
+    )
+    assert cfg.get_executable() == "sby"
+
+
+# ---------------------------------------------------------------------------
+# cfg-verible — a pinned path that silently falls back to PATH (#439)
+# ---------------------------------------------------------------------------
+
+
+def test_verible_path_fallback_warns_naming_both_paths(tmp_path, monkeypatch, caplog):
+    """A pin that resolves to something else must not pass unannounced."""
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    fake_path_bin = tmp_path / "site" / "verible-verilog-syntax"
+    fake_path_bin.parent.mkdir(parents=True)
+    fake_path_bin.write_text("")
+    monkeypatch.setattr(
+        "rtl_buddy.config.verible.shutil.which", lambda _n: str(fake_path_bin)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned/dir", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert records, "expected a WARNING for the silent PATH fallback"
+    text = records[0].getMessage()
+    assert str(tmp_path / "pinned" / "dir") in text
+    assert str(fake_path_bin) in text
+
+
+def test_verible_path_present_does_not_warn(tmp_path, caplog):
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    (tmp_path / "pinned").mkdir()
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+# ---------------------------------------------------------------------------
+# cfg-platforms — routing an entry in any tool block (#439)
+# ---------------------------------------------------------------------------
+
+_ROUTING_BLOCKS = """
+cfg-surfer:
+  - name: "surfer-shared"
+    path: "surfer-shared-bin"
+  - name: "surfer-default"
+    path: "surfer"
+
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"
+  - name: "yosys-shared"
+    tool: "yosys-shared-bin"
+
+cfg-fpv-tools:
+  - name: "sby-shared"
+    tool: "sby-shared-bin"
+
+cfg-cdc-tools:
+  - name: "cdc-shared"
+    tool: "rtl-buddy-cdc"
+
+cfg-pnr-tools:
+  - name: "openroad-shared"
+    tool: "openroad"
+
+cfg-power-tools:
+  - name: "power-shared"
+    tool: "opensta"
+
+cfg-fpga-tools:
+  - name: "vivado-shared"
+    tool: "vivado"
+"""
+
+
+def _write_routed_project(root: Path, *, routing: str = "", extra: str = "") -> None:
+    (root / "root_config.yaml").write_text(
+        f"""\
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "stub-verible"
+{routing}
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "stub-verible"
+    path: "/usr/bin"
+    extra_args: {{}}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+"""
+        + _ROUTING_BLOCKS
+        + extra
+    )
+    (root / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: []\n"
+    )
+
+
+def test_platform_routes_every_tool_block(tmp_path, monkeypatch):
+    _write_routed_project(
+        tmp_path,
+        routing=(
+            '    surfer: "surfer-shared"\n'
+            '    synth-tools: "yosys-shared"\n'
+            '    pnr-tools: "openroad-shared"\n'
+            '    power-tools: "power-shared"\n'
+            '    cdc-tools: "cdc-shared"\n'
+            '    fpv-tools: "sby-shared"\n'
+            '    fpga-tools: "vivado-shared"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="routed")
+
+    assert rc.get_platform_tool_name("surfer") == "surfer-shared"
+    assert rc.get_surfer_cfg().name == "surfer-shared"
+    assert rc.get_synth_tool_cfg().get_name() == "yosys-shared"
+    assert rc.get_pnr_tool_cfg().get_name() == "openroad-shared"
+    assert rc.get_power_tool_cfg().get_name() == "power-shared"
+    assert rc.get_cdc_tool_cfg().get_name() == "cdc-shared"
+    assert rc.get_fpv_tool_cfg().get_name() == "sby-shared"
+    assert rc.get_fpga_tool_cfg().get_name() == "vivado-shared"
+
+
+def test_unrouted_blocks_keep_their_global_default(tmp_path, monkeypatch):
+    """Zero impact on existing configs: no routing keys, today's behaviour."""
+    _write_routed_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="unrouted")
+
+    assert rc.get_platform_tool_name("surfer") is None
+    # cfg-surfer keeps the hardcoded "surfer-default" fallback.
+    assert rc.get_surfer_cfg().name == "surfer-default"
+    # An unrouted *-tools block has no default; the flow yaml must name one.
+    assert rc.get_pnr_tool_cfg() is None
+    with pytest.raises(FatalRtlBuddyError):
+        rc.get_synth_tool_cfg()
+    assert rc.get_synth_tool_cfg("yosys").get_name() == "yosys"
+
+
+def test_explicit_name_wins_over_platform_routing(tmp_path, monkeypatch):
+    _write_routed_project(
+        tmp_path,
+        routing=('    surfer: "surfer-shared"\n    synth-tools: "yosys-shared"\n'),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="routed")
+
+    assert rc.get_surfer_cfg("surfer-default").name == "surfer-default"
+    assert rc.get_synth_tool_cfg("yosys").get_name() == "yosys"
+
+
+def test_platform_routing_to_missing_entry_is_fatal(tmp_path, monkeypatch):
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-nope"\n')
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="cfg-surfer"):
+        RootConfig(name="routed")
+
+
+def test_platform_config_file_parses_routing_keys():
+    from rtl_buddy.config.platform import PlatformConfigFile
+
+    cfg = from_yaml(
+        PlatformConfigFile,
+        'os: "linux"\n'
+        'unames: ["Linux"]\n'
+        'builder: "verilator"\n'
+        'verible: "verible-x86_64"\n'
+        'surfer: "surfer-shared"\n'
+        'synth-tools: "synth-linux"\n'
+        'fpv-tools: "fpv-linux"\n',
+    )
+    assert cfg.get_routed_names() == {
+        "surfer": "surfer-shared",
+        "synth-tools": "synth-linux",
+        "fpv-tools": "fpv-linux",
+    }
+
+
+# ---------------------------------------------------------------------------
+# cfg-tools — per-platform min-version (#439)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_min_version_platform_specific_wins(tmp_path, monkeypatch):
+    _write_routed_project(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.050"
+
+
+def test_tool_min_version_platform_specific_wins_regardless_of_order(
+    tmp_path, monkeypatch
+):
+    _write_routed_project(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.050"
+
+
+def test_tool_min_version_other_platform_entry_is_dropped(tmp_path, monkeypatch):
+    _write_routed_project(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "some-other-os"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.049"

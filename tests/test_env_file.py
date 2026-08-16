@@ -148,3 +148,42 @@ def test_apply_feeds_slang_plugin_resolver(tmp_path, monkeypatch):
     _write_project_env(tmp_path, f"{SLANG_PLUGIN_ENV}=/tools/slang.so\n")
     apply_env_file(tmp_path)
     assert resolve_plugin_path(None, None) == "/tools/slang.so"
+
+
+def test_env_file_applies_before_tool_paths_expand(tmp_path, monkeypatch):
+    """`.rtl-buddy/.env` must land before cfg-surfer expands its path (#439).
+
+    cfg-verible and cfg-surfer resolve their paths inside RootConfig's
+    constructor, so an env file applied afterwards would be too late for
+    exactly the per-user override it exists to provide.
+    """
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    from rtl_buddy.config.root import RootConfig
+
+    fixtures = _Path(__file__).parent / "fixtures" / "minimal_project"
+    project = tmp_path / "project"
+    _shutil.copytree(fixtures, project)
+
+    tools = tmp_path / "mytools" / "bin"
+    tools.mkdir(parents=True)
+    exe = tools / "surfer"
+    exe.write_text("")
+    exe.chmod(0o755)
+
+    (project / ".rtl-buddy").mkdir()
+    (project / ".rtl-buddy" / ".env").write_text(
+        f"RB_ENV_ORDER_TOOLS={tmp_path / 'mytools'}\n"
+    )
+    with (project / "root_config.yaml").open("a") as fh:
+        fh.write(
+            "\ncfg-surfer:\n"
+            '  - name: "surfer-default"\n'
+            '    path: ["${RB_ENV_ORDER_TOOLS}/bin/surfer", "surfer"]\n'
+        )
+
+    monkeypatch.delenv("RB_ENV_ORDER_TOOLS", raising=False)
+    monkeypatch.chdir(project)
+    rc = RootConfig(name="env-order")
+    assert rc.get_surfer_cfg().path == str(exe)
