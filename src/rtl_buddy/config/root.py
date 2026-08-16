@@ -207,6 +207,46 @@ def resolve_reg_cfg_path(
     )
 
 
+#: ``cfg-platforms`` keys that name a ``cfg-*-tools`` block. They are not
+#: routable — see :data:`~rtl_buddy.config.platform.PLATFORM_TOOL_BLOCKS`
+#: — and pyserde ignores keys it does not know, so without this they would
+#: parse cleanly and do nothing at all. A pin that silently does nothing
+#: is the failure #439 exists to remove, so say so instead.
+_UNROUTABLE_PLATFORM_KEYS: dict[str, str] = {
+    "synth-tools": "cfg-synth-tools",
+    "pnr-tools": "cfg-pnr-tools",
+    "power-tools": "cfg-power-tools",
+    "cdc-tools": "cfg-cdc-tools",
+    "fpv-tools": "cfg-fpv-tools",
+    "fpga-tools": "cfg-fpga-tools",
+}
+
+
+def _reject_unroutable_platform_keys(raw: dict) -> None:
+    """Fail on a ``cfg-platforms`` key that would parse but never bind."""
+    for entry in raw.get("cfg-platforms") or []:
+        if not isinstance(entry, dict):
+            continue
+        for key, block in _UNROUTABLE_PLATFORM_KEYS.items():
+            if key not in entry:
+                continue
+            os_name = entry.get("os", "?")
+            log_event(
+                logger,
+                logging.ERROR,
+                "platform.tool_not_routable",
+                block=key,
+                os=os_name,
+            )
+            raise FatalRtlBuddyError(
+                f"cfg-platforms[{os_name}].{key}: {block} cannot be routed per "
+                "platform — its entry name is chosen by the flow yaml's "
+                "'tool:' and doubles as the backend selector. Pin the binary "
+                "in the entry itself instead, with a candidate list: "
+                'tool: ["${RB_TOOLS}/bin/yosys", "/opt/rb-tools/bin/yosys", "yosys"]'
+            )
+
+
 @serde
 class RootConfigFile:
     filetype: Literal["project_root_config"] = field(rename="rtl-buddy-filetype")
@@ -343,9 +383,12 @@ class RootConfig:
         self.reg_cfg = None  # initialise later when get_rtl_reg_cfg is called
 
         data = None
+        raw: dict = {}
         try:
             with open(self.root_cfg_path, "r") as file:
-                data = from_yaml(RootConfigFile, file.read())
+                text = file.read()
+            data = from_yaml(RootConfigFile, text)
+            raw = yaml.safe_load(text) or {}
 
         except Exception as e:
             log_event(
@@ -361,8 +404,15 @@ class RootConfig:
             ) from e
 
         if data is not None:
+            # Directory every relative tool path candidate is anchored at.
+            # `rb` is routinely invoked from a suite directory, so the
+            # process cwd is not it (#439).
+            cfg_dir = os.path.dirname(self.root_cfg_path)
+
             # Populate builder configs
             self.rtl_builder_cfgs = {cfg.get_name(): cfg for cfg in data.builders}
+            for builder_cfg in self.rtl_builder_cfgs.values():
+                builder_cfg.set_base_dir(cfg_dir)
 
             # Populate verible configs
             self.verible_cfgs = {
@@ -380,7 +430,7 @@ class RootConfig:
 
             # Populate synth tool configs
             self.synth_tool_cfgs = {
-                cfg.name: SynthToolConfig(cfg) for cfg in data.synth_tools
+                cfg.name: SynthToolConfig(cfg, cfg_dir) for cfg in data.synth_tools
             }
 
             # Populate PDK configs (referenced by synth + pnr platforms)
@@ -411,17 +461,17 @@ class RootConfig:
 
             # Populate P&R tool configs
             self.pnr_tool_cfgs = {
-                cfg.name: PnrToolConfig(cfg) for cfg in data.pnr_tools
+                cfg.name: PnrToolConfig(cfg, cfg_dir) for cfg in data.pnr_tools
             }
 
             # Populate power tool configs
             self.power_tool_cfgs = {
-                cfg.name: PowerToolConfig(cfg) for cfg in data.power_tools
+                cfg.name: PowerToolConfig(cfg, cfg_dir) for cfg in data.power_tools
             }
 
             # Populate FPGA tool configs
             self.fpga_tool_cfgs = {
-                cfg.name: FpgaToolConfig(cfg) for cfg in data.fpga_tools
+                cfg.name: FpgaToolConfig(cfg, cfg_dir) for cfg in data.fpga_tools
             }
 
             # Populate FPGA platform configs (device part + default XDC)
@@ -432,12 +482,12 @@ class RootConfig:
 
             # Populate CDC tool configs
             self.cdc_tool_cfgs = {
-                cfg.name: CdcToolConfig(cfg) for cfg in data.cdc_tools
+                cfg.name: CdcToolConfig(cfg, cfg_dir) for cfg in data.cdc_tools
             }
 
             # Populate FPV tool configs
             self.fpv_tool_cfgs = {
-                cfg.name: FpvToolConfig(cfg) for cfg in data.fpv_tools
+                cfg.name: FpvToolConfig(cfg, cfg_dir) for cfg in data.fpv_tools
             }
 
             # Populate synth effort configs
@@ -479,6 +529,13 @@ class RootConfig:
                 block: getattr(self, attr, {})
                 for block, (attr, _) in PLATFORM_TOOL_BLOCKS.items()
             }
+
+            # Validate *every* entry's routing, not only the one that
+            # matches this host: a typo in the Linux entry must not wait
+            # for the CI host to become fatal (#439).
+            for platform_cfg in data.platforms:
+                platform_cfg.validate_routing(tool_blocks)
+            _reject_unroutable_platform_keys(raw)
 
             for platform_cfg in data.platforms:
                 for cfg_uname in platform_cfg.get_unames():
@@ -782,90 +839,71 @@ class RootConfig:
             name = self.get_platform_tool_name("surfer") or "surfer-default"
         return self.surfer_cfgs.get(name)
 
-    def _routed_or(self, block: str, name: str | None) -> str | None:
-        """``name`` when given, else the active platform's routing for ``block``.
-
-        An explicit selection — a ``tool:`` in synth.yaml/pnr.yaml/…, or a
-        CLI flag — always wins; platform routing only supplies the default
-        for a caller that did not name an entry. Same precedence the
-        builder has had since ``cfg-platforms`` existed.
-        """
-        return name if name is not None else self.get_platform_tool_name(block)
-
-    def get_synth_tool_cfg(self, name: str | None = None):
+    def get_synth_tool_cfg(self, name: str):
         """
         Get synthesis tool configuration by name.
 
         Args:
-          name (str | None): Tool name as defined in cfg-synth-tools.
-            When omitted, the active platform's ``cfg-platforms[].synth-tools``
-            routing supplies it.
+          name (str): Tool name as defined in cfg-synth-tools, taken from
+            the flow YAML's ``tool:``. ``cfg-synth-tools`` is not routable
+            per platform — see
+            :data:`~rtl_buddy.config.platform.PLATFORM_TOOL_BLOCKS` for
+            why, and use a candidate list in ``tool:`` to pin a path.
         Returns:
           cfg (SynthToolConfig): Matching synthesis tool configuration.
         Raises:
-          FatalRtlBuddyError: If no tool with that name is configured, or
-            if no name was given and the platform routes nothing.
+          FatalRtlBuddyError: If no tool with that name is configured.
         """
-        name = self._routed_or("synth-tools", name)
-        cfg = self.synth_tool_cfgs.get(name) if name is not None else None
+        cfg = self.synth_tool_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(
                 f"synthesis tool '{name}' not found in cfg-synth-tools"
             )
         return cfg
 
-    def get_pnr_tool_cfg(self, name: str | None = None):
+    def get_pnr_tool_cfg(self, name: str):
         """
         Get P&R tool configuration by name.
 
         Args:
-          name (str | None): Tool name as defined in cfg-pnr-tools. When
-            omitted, the active platform's ``cfg-platforms[].pnr-tools``
-            routing supplies it.
+          name (str): Tool name as defined in cfg-pnr-tools.
         Returns:
           cfg (PnrToolConfig|None): Matching P&R tool configuration, or
             None if no entry with that name is configured. Callers fall
             back to the bare tool name on PATH when None is returned.
         """
-        name = self._routed_or("pnr-tools", name)
-        return self.pnr_tool_cfgs.get(name) if name is not None else None
+        return self.pnr_tool_cfgs.get(name)
 
-    def get_power_tool_cfg(self, name: str | None = None):
+    def get_power_tool_cfg(self, name: str):
         """
         Get power analysis tool configuration by name.
 
         Args:
-          name (str | None): Tool name as defined in cfg-power-tools. When
-            omitted, the active platform's ``cfg-platforms[].power-tools``
-            routing supplies it.
+          name (str): Tool name as defined in cfg-power-tools.
         Returns:
           cfg (PowerToolConfig): Matching power tool configuration.
         Raises:
           FatalRtlBuddyError: If no tool with that name is configured.
         """
-        name = self._routed_or("power-tools", name)
-        cfg = self.power_tool_cfgs.get(name) if name is not None else None
+        cfg = self.power_tool_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(
                 f"power tool '{name}' not found in cfg-power-tools"
             )
         return cfg
 
-    def get_fpga_tool_cfg(self, name: str | None = None):
+    def get_fpga_tool_cfg(self, name: str):
         """
         Get FPGA tool configuration by name.
 
         Args:
-          name (str | None): Tool name as defined in cfg-fpga-tools. When
-            omitted, the active platform's ``cfg-platforms[].fpga-tools``
-            routing supplies it.
+          name (str): Tool name as defined in cfg-fpga-tools.
         Returns:
           cfg (FpgaToolConfig|None): Matching FPGA tool configuration, or
             None if no entry with that name is configured. Callers fall
             back to the bare tool name on PATH when None is returned.
         """
-        name = self._routed_or("fpga-tools", name)
-        return self.fpga_tool_cfgs.get(name) if name is not None else None
+        return self.fpga_tool_cfgs.get(name)
 
     def get_fpga_platform_cfg(self, name: str) -> FpgaPlatformConfig:
         """Get an FPGA platform configuration by name (cfg-fpga-platforms entry)."""
@@ -877,40 +915,34 @@ class RootConfig:
             )
         return cfg
 
-    def get_cdc_tool_cfg(self, name: str | None = None):
+    def get_cdc_tool_cfg(self, name: str):
         """
         Get CDC tool configuration by name.
 
         Args:
-          name (str | None): Tool name as defined in cfg-cdc-tools. When
-            omitted, the active platform's ``cfg-platforms[].cdc-tools``
-            routing supplies it.
+          name (str): Tool name as defined in cfg-cdc-tools.
         Returns:
           cfg (CdcToolConfig): Matching CDC tool configuration.
         Raises:
           FatalRtlBuddyError: If no tool with that name is configured.
         """
-        name = self._routed_or("cdc-tools", name)
-        cfg = self.cdc_tool_cfgs.get(name) if name is not None else None
+        cfg = self.cdc_tool_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(f"CDC tool '{name}' not found in cfg-cdc-tools")
         return cfg
 
-    def get_fpv_tool_cfg(self, name: str | None = None):
+    def get_fpv_tool_cfg(self, name: str):
         """
         Get FPV tool configuration by name.
 
         Args:
-          name (str | None): Tool name as defined in cfg-fpv-tools. When
-            omitted, the active platform's ``cfg-platforms[].fpv-tools``
-            routing supplies it.
+          name (str): Tool name as defined in cfg-fpv-tools.
         Returns:
           cfg (FpvToolConfig): Matching FPV tool configuration.
         Raises:
           FatalRtlBuddyError: If no tool with that name is configured.
         """
-        name = self._routed_or("fpv-tools", name)
-        cfg = self.fpv_tool_cfgs.get(name) if name is not None else None
+        cfg = self.fpv_tool_cfgs.get(name)
         if cfg is None:
             raise FatalRtlBuddyError(f"FPV tool '{name}' not found in cfg-fpv-tools")
         return cfg

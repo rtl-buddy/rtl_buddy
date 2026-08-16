@@ -72,6 +72,17 @@ class RtlBuilderConfig:
         """
         return self.name
 
+    def set_base_dir(self, base_dir: str | None) -> None:
+        """Anchor relative ``builder:`` candidates at ``base_dir``.
+
+        Set by :class:`~rtl_buddy.config.root.RootConfig` to the directory
+        holding ``root_config.yaml``, so a relative candidate is
+        existence-tested there rather than against the process cwd — `rb`
+        is routinely invoked from a suite directory (#439). A config built
+        outside RootConfig (tests) simply has no anchor.
+        """
+        self._base_dir = base_dir
+
     def get_simulator_family(self) -> str:
         """
         Retrieve the simulator family for backend-specific handling.
@@ -148,7 +159,11 @@ class RtlBuilderConfig:
           exe (str): The effective compiler executable.
         """
         return resolve_tool_path(
-            self.exe, block="cfg-rtl-builder", name=self.name, field="builder"
+            self.exe,
+            base_dir=getattr(self, "_base_dir", None),
+            block="cfg-rtl-builder",
+            name=self.name,
+            field="builder",
         )
 
     def get_simv(self) -> str:

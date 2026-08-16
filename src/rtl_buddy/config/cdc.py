@@ -53,8 +53,12 @@ class CdcToolConfigFile:
 class CdcToolConfig:
     """One entry from ``cfg-cdc-tools`` in ``root_config.yaml``."""
 
-    def __init__(self, cfg: CdcToolConfigFile):
+    def __init__(self, cfg: CdcToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
+        # Directory relative `tool:` candidates are existence-tested
+        # against: the one holding root_config.yaml, never the process
+        # cwd (rb is routinely invoked from a suite directory).
+        self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
@@ -67,6 +71,7 @@ class CdcToolConfig:
         """
         return resolve_tool_path(
             self._cfg.tool,
+            base_dir=self._base_dir,
             block="cfg-cdc-tools",
             name=self._cfg.name,
             field="tool",

@@ -28,6 +28,14 @@ cfg-platforms:
     unames: ["Darwin"]
     builder: "verilator"
     verible: "verible-macos"
+    # Optional: route cfg-surfer to a named entry on this platform.
+    # Omit it and cfg-surfer stays global (its pre-existing behaviour).
+    surfer: "surfer-brew"
+  - os: "linux"
+    unames: ["Linux"]
+    builder: "verilator-shared"
+    verible: "verible-x86_64"
+    surfer: "surfer-shared"
 
 cfg-rtl-builder:
   - name: "verilator"
@@ -85,7 +93,9 @@ cfg-coverview:
 
 cfg-surfer:
   - name: "surfer-default"
-    path: "surfer"              # bare name → found via PATH; or relative/absolute path
+    # A path field may be one value or a list of candidates tried in order:
+    # individual env override → committed canonical path → PATH.
+    path: ["${RB_TOOLS}/bin/surfer", "/opt/rb-tools/current/bin/surfer", "surfer"]
     wcp-port: 0         # 0 = OS auto-assigns a free port
     editor-cmd: "vim +%l %f"   # %f = file path, %l = line number
     editor-terminal: "tmux"    # tmux | iterm2 | terminal | "" (empty = run cmd directly)
@@ -169,6 +179,13 @@ cfg-fpv-tools:
         z3: "4.13.0"         # btormc, abc. Hard-fails on mismatch.
       plugin-path: "tools/yosys-slang/build/slang.so"  # required when an fpv.yaml verification picks `frontend: slang`
 
+cfg-tools:                    # optional; project min-version pins for `rb tool-check`
+  - name: verilator
+    min-version: "5.049"      # applies everywhere
+  - name: verilator
+    min-version: "5.050"      # applies only on cfg-platforms[].os == "linux"
+    platform: "linux"
+
 cfg-rtl-reg:
   reg-cfg-path: "design/regression.yaml"
   # Optional per-flow manifest paths, for projects that keep a flow's
@@ -180,7 +197,7 @@ cfg-rtl-reg:
   cdc-reg-cfg-path: "lint/cdc/cdc_regression.yaml"
   fpv-reg-cfg-path: "fpv/fpv_regression.yaml"
 
-cfg-dispatch:                 # optional; parallel execution for regression/randtest
+cfg-dispatch:                 # optional; parallel execution for regression/randtest (and rb test --dispatch)
   backend: slurm             # local (default, in-process) | local-parallel | slurm
   jobs: 4                    # local-parallel only: concurrent subprocesses
   resources: { cpus: 2, mem: 4G, time: "01:00:00" }   # sim jobs
@@ -197,6 +214,9 @@ cfg-dispatch:                 # optional; parallel execution for regression/rand
 **Runtime effects:**
 
 - Platform is selected by matching `uname` output against `cfg-platforms[].unames`.
+- `cfg-platforms` entries route tool blocks by naming an entry in them. `builder` (→ `cfg-rtl-builder`) and `verible` (→ `cfg-verible`) are required; `surfer` (→ `cfg-surfer`) is optional. A routed name that is not a configured entry is a fatal config error, and **every** entry is checked at load, not just the one whose `unames` match this host — a typo in the Linux entry must not wait for the CI host to surface. **Routing supplies a default, it does not override an explicit choice**: `--surfer` / `--builder` on the command line still wins, exactly as `builder:` has always worked. Unrouted, `cfg-surfer` falls back to the `surfer-default` entry. The `cfg-*-tools` blocks are **not** routable and naming one on a platform entry is a fatal error: their entry is chosen per run by the flow YAML's `tool:`, and that name simultaneously selects the *backend* (`openroad` picks the OpenROAD P&R backend, `yosys` the Yosys synthesis backend), so a platform-level redirect could only be ignored or break dispatch. Pin one of those binaries per platform in the entry itself, with the candidate list `tool:` accepts — a Linux tool-tree path and a Homebrew path can share one committed entry and each host takes the one it has.
+- **Tool path fields expand `~` and `$VAR`, and accept a candidate list.** This applies to `cfg-rtl-builder[].builder`, `cfg-verible[].path`, `cfg-surfer[].path`, and the `tool:` field of every `cfg-*-tools` block — the same treatment `cfg-systemc.home` has always had. A `${VAR}` that is *unset* makes that value not apply (POSIX `expandvars` returns the literal; rtl_buddy detects it) rather than producing a path with a literal `${...}` in it. Written as a list, the first candidate that expands cleanly **and** exists wins, and a trailing bare name is the `PATH` fallback slot: `path: ["${RB_TOOLS}/bin/surfer", "/opt/rb-tools/current/bin/surfer", "surfer"]` gives the full chain **individual env override → committed canonical path → `PATH`** in one committed file. The individual half of that belongs in the gitignored, auto-loaded [`.rtl-buddy/.env`](../concepts/root-config.md#project-local-env-defaults-rtl-buddyenv) (`RB_TOOLS=/Users/me/tools/rb`), so relocating your copy never dirties a tracked file. When *every* candidate references an unset variable the literal is used and a warning names the field.
+- `cfg-tools` (optional) pins a project `min-version` per tool for `rb tool-check`, overriding the built-in manifest default. An entry may add `platform:` naming a `cfg-platforms[].os`; it then applies only on that platform and beats an unqualified entry for the same tool regardless of declaration order — so a project pinning Linux to a newer shared tool tree can declare that floor there instead of declaring the lowest floor any platform can satisfy. Entries naming another platform are ignored.
 - `--builder` overrides the platform-selected builder for the current run.
 - `--builder-mode` selects which named `builder-opts` entry to use for compile-time and run-time flags.
 - `cfg-rtl-builder` defines the named simulator builders. `builder` is the compiler executable (bare name on `PATH` or a path). `simulator-family` is optional and drives backend-specific handling (coverage, assertions, Icarus's two-phase `iverilog`→`vvp` flow); when omitted it is inferred from the executable name (`verilator*`→`verilator`, `iverilog*`/`icarus*`→`icarus`, `vcs*`→`vcs`). `wave-format` is optional and only affects `rb wave`: `fst-postproc` runs `vcd2fst` (GTKWave) on a VCD dump to produce a sibling FST before opening Surfer — useful for Icarus, which dumps VCD; if `vcd2fst` is absent the VCD is opened directly (Surfer reads VCD natively). `extra-sim-timeout` is optional: seconds added to every test's `sim_timeout` under that builder, for builders that queue for a license seat or are otherwise slower than the per-test value assumes. It is per-builder so a tight timeout survives where nothing legitimately blocks and a hung test still fails fast; `--extra-sim-timeout` overrides it for one run. See [Verilator vs Icarus](../concepts/simulators.md) for the capability split.

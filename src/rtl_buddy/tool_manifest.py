@@ -883,55 +883,6 @@ _FPV_SOLVER_DESCRIPTIONS: dict[str, str] = {
 # Reconciliation with root_config.yaml
 
 
-#: ``cfg-platforms`` routing key -> the ``RootConfig`` accessor that
-#: resolves it. Each accessor takes an optional entry name and, since
-#: #439, defaults to the active platform's routed entry when given none.
-_ROUTED_TOOL_BLOCKS: dict[str, str] = {
-    "synth-tools": "get_synth_tool_cfg",
-    "pnr-tools": "get_pnr_tool_cfg",
-    "power-tools": "get_power_tool_cfg",
-    "cdc-tools": "get_cdc_tool_cfg",
-    "fpv-tools": "get_fpv_tool_cfg",
-    "fpga-tools": "get_fpga_tool_cfg",
-}
-
-
-def _routed_tool_executable(root_cfg, block: str) -> str | None:
-    """Executable pinned by the platform's routed entry for ``block``.
-
-    Returns None when the platform routes nothing for the block, the
-    lookup fails, or the entry names a bare binary — a bare name is
-    exactly what ``PathDetector`` already covers, so prepending a
-    detector for it would add nothing.
-    """
-    if getattr(root_cfg, "get_platform_tool_name", None) is None:
-        return None
-    try:
-        if root_cfg.get_platform_tool_name(block) is None:
-            return None
-        tool_cfg = getattr(root_cfg, _ROUTED_TOOL_BLOCKS[block])()
-        exe = tool_cfg.get_executable() if tool_cfg is not None else None
-    except Exception:
-        return None
-    if not exe or os.sep not in exe:
-        return None
-    return exe
-
-
-def _spec_for_binary(by_name: dict[str, "ToolSpec"], exe: str) -> "ToolSpec | None":
-    """Find the spec whose binaries include ``exe``'s basename.
-
-    A ``cfg-*-tools`` entry names a path, not a manifest tool; the
-    basename is the join. ``/opt/rb-tools/bin/yosys`` -> the ``yosys``
-    spec. An unrecognised basename simply has no manifest entry to pin.
-    """
-    base = os.path.basename(exe)
-    for spec in by_name.values():
-        if base in spec.binaries:
-            return spec
-    return None
-
-
 def _reconcile_with_root_cfg(specs: list[ToolSpec], root_cfg) -> list[ToolSpec]:
     """Apply root-config overrides to manifest defaults.
 
@@ -943,11 +894,6 @@ def _reconcile_with_root_cfg(specs: list[ToolSpec], root_cfg) -> list[ToolSpec]:
     * ``cfg-surfer`` — the active platform's routed entry (falling back
       to ``surfer-default``) has its resolved path added to the surfer
       spec's detector chain in the same way.
-    * ``cfg-{synth,pnr,power,cdc,fpv,fpga}-tools`` — when the active
-      platform routes one of these blocks (``cfg-platforms[].fpv-tools:``
-      etc.), the routed entry's executable is added to the matching
-      spec's detector chain, so ``rb tool-check`` reports the binary the
-      run will actually use rather than whatever PATH offers.
     * ``cfg-tools`` — overrides ``minimum_version`` for any matching
       tool. Project pins always win over manifest defaults.
     * ``cfg-fpv-tools[*].opts.solver-versions`` — pins a project-wide
@@ -995,28 +941,6 @@ def _reconcile_with_root_cfg(specs: list[ToolSpec], root_cfg) -> list[ToolSpec]:
                 spec,
                 detection=(AbsolutePathDetector(surfer_path), *spec.detection),
             )
-
-    # Platform-routed *-tools entries. Only routed blocks are consulted:
-    # an unrouted block is global and its entry is selected per run by the
-    # flow's own yaml, which is not a per-platform statement about where
-    # the binary lives.
-    for block in _ROUTED_TOOL_BLOCKS:
-        exe = _routed_tool_executable(root_cfg, block)
-        if not exe:
-            continue
-        spec = _spec_for_binary(by_name, exe)
-        if spec is None:
-            log_event(
-                logger,
-                logging.DEBUG,
-                "tool_manifest.unknown_routed_tool",
-                block=block,
-                executable=exe,
-            )
-            continue
-        by_name[spec.name] = _replace(
-            spec, detection=(AbsolutePathDetector(exe), *spec.detection)
-        )
 
     # cfg-tools min-version pins
     for name, ver_cfg in getattr(root_cfg, "tool_version_cfgs", {}).items():

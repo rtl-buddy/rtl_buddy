@@ -309,6 +309,18 @@ def test_summary_adds_builder_column_when_multiple_builders(monkeypatch):
 # --- builder path pinning: env expansion + candidate lists (#439) ------------
 
 
+def _touch_exe(path):
+    """Create an executable stub.
+
+    Tool-path resolution requires the executable bit for binary-valued
+    fields, so its existence test agrees with the callers' availability
+    checks (#439) — a plain `touch` would be skipped.
+    """
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
 _BUILDER_YAML_TEMPLATE = """\
 name: verilator
 builder: {builder}
@@ -332,10 +344,10 @@ def test_builder_path_uses_individual_env_override(tmp_path, monkeypatch):
     """individual env override -> committed canonical path -> PATH."""
     mine = tmp_path / "mine" / "bin"
     mine.mkdir(parents=True)
-    (mine / "verilator").write_text("")
+    _touch_exe(mine / "verilator")
     canonical = tmp_path / "canonical" / "bin"
     canonical.mkdir(parents=True)
-    (canonical / "verilator").write_text("")
+    _touch_exe(canonical / "verilator")
 
     monkeypatch.setenv("RB_TOOLS_TEST", str(tmp_path / "mine"))
     cfg = _builder(
@@ -347,7 +359,7 @@ def test_builder_path_uses_individual_env_override(tmp_path, monkeypatch):
 def test_builder_path_falls_back_to_committed_canonical(tmp_path, monkeypatch):
     canonical = tmp_path / "canonical" / "bin"
     canonical.mkdir(parents=True)
-    (canonical / "verilator").write_text("")
+    _touch_exe(canonical / "verilator")
 
     monkeypatch.delenv("RB_TOOLS_TEST", raising=False)
     cfg = _builder(

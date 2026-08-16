@@ -19,6 +19,13 @@ Two things fall out of that:
   candidate, so a trailing bare name is the documented "fall back to
   ``PATH``" entry.
 
+"Exists" means *executable file* for the binary-valued fields, matching
+the availability check the callers apply afterwards, so a candidate that
+exists without being runnable falls through instead of winning and then
+being reported unavailable. ``cfg-verible.path`` is the one field naming
+a *directory*; it passes ``directory=True``, which tests candidates as
+directories under ``base_dir`` and never as ``PATH`` lookups.
+
 Together with the gitignored ``.rtl-buddy/.env`` — already loaded into
 the process environment before configs are read — that is the full
 precedence chain a multi-platform project wants, expressed in one
@@ -80,19 +87,65 @@ def is_bare_name(value: str) -> bool:
     return not (os.altsep and os.altsep in value)
 
 
-def _candidate_exists(value: str, base_dir: str | None) -> bool:
-    """Does ``value`` point at something that exists?
+def _binary_exists(value: str, base_dir: str | None) -> bool:
+    """Is ``value`` a usable *executable*?
 
-    Bare names are looked up on ``PATH``; relative paths are anchored at
-    ``base_dir`` when one is supplied (``cfg-verible`` / ``cfg-surfer``
-    resolve theirs against ``root_config.yaml``'s directory).
+    Bare names are looked up on ``PATH`` (``shutil.which`` already tests
+    the executable bit); everything else is anchored at ``base_dir`` when
+    relative and must be a file the process may execute. The executable
+    test — rather than a bare ``os.path.exists`` — is what keeps
+    resolution and the callers' own availability checks in agreement:
+    :meth:`SurferConfigFile.initialise
+    <rtl_buddy.config.surfer.SurferConfigFile.initialise>` requires
+    ``isfile`` + ``X_OK``, so a candidate that exists without being
+    executable must fall through to the next one rather than win here and
+    be reported unavailable afterwards.
     """
     if is_bare_name(value):
         return shutil.which(value) is not None
     probe = value
     if not os.path.isabs(probe) and base_dir:
         probe = os.path.join(base_dir, probe)
-    return os.path.exists(probe)
+    return os.path.isfile(probe) and os.access(probe, os.X_OK)
+
+
+def _directory_exists(value: str, base_dir: str | None) -> bool:
+    """Is ``value`` an existing directory?
+
+    ``cfg-verible.path`` names a *directory* of binaries, not a binary, so
+    a separator-free candidate is a relative directory name and must never
+    be handed to ``shutil.which`` — doing so makes an existing
+    ``verible-arm/`` next to ``root_config.yaml`` invisible.
+    """
+    probe = value
+    if not os.path.isabs(probe) and base_dir:
+        probe = os.path.join(base_dir, probe)
+    return os.path.isdir(probe)
+
+
+def _candidate_exists(value: str, base_dir: str | None, directory: bool) -> bool:
+    """Does ``value`` point at something usable? See the two helpers above."""
+    if directory:
+        return _directory_exists(value, base_dir)
+    return _binary_exists(value, base_dir)
+
+
+#: ``(block, name, field, candidates)`` tuples already reported through
+#: ``tool_path.unresolved_var``. Resolution runs on every ``get_exe()`` /
+#: ``get_executable()`` call — several times per test — so without this
+#: a single unset variable would emit thousands of identical WARNINGs
+#: across a regression. The condition is a static property of the config
+#: and the environment, so saying it once is saying it.
+_UNRESOLVED_WARNED: set[tuple[str, str, str, str]] = set()
+
+
+def reset_unresolved_warnings() -> None:
+    """Forget which ``tool_path.unresolved_var`` warnings were emitted.
+
+    Only for tests that assert on the warning; production code has no
+    reason to re-announce a condition that cannot change mid-run.
+    """
+    _UNRESOLVED_WARNED.clear()
 
 
 def resolve_tool_path(
@@ -102,6 +155,7 @@ def resolve_tool_path(
     block: str = "",
     name: str = "",
     field: str = "path",
+    directory: bool = False,
 ) -> str:
     """Pick the effective value of a tool path field.
 
@@ -112,6 +166,9 @@ def resolve_tool_path(
         callers keep their own relative-path semantics.
       block, name, field: Identify the config field in log events
         (e.g. ``cfg-surfer`` / ``surfer-macos`` / ``path``).
+      directory: The field names a directory of binaries rather than a
+        binary (``cfg-verible.path``). A separator-free candidate is then
+        a relative directory name, not a ``PATH`` lookup.
 
     Returns:
       The first candidate that expands cleanly and exists, else the last
@@ -131,7 +188,7 @@ def resolve_tool_path(
             unresolved.append(raw)
             continue
         expanded_ok.append(expanded)
-        if _candidate_exists(expanded, base_dir):
+        if _candidate_exists(expanded, base_dir, directory):
             if len(candidates) > 1:
                 log_event(
                     logger,
@@ -149,16 +206,21 @@ def resolve_tool_path(
         # Every candidate referenced an unset variable. There is nothing
         # to fall through to, so return the literal and say so loudly —
         # the alternative is a subprocess failing on a path with a
-        # literal "${...}" in it and no explanation.
-        log_event(
-            logger,
-            logging.WARNING,
-            "tool_path.unresolved_var",
-            block=block,
-            name=name,
-            field=field,
-            candidates=", ".join(unresolved),
-        )
+        # literal "${...}" in it and no explanation. Said once per field:
+        # resolution runs per command construction, not once at load.
+        listed = ", ".join(unresolved)
+        key = (block, name, field, listed)
+        if key not in _UNRESOLVED_WARNED:
+            _UNRESOLVED_WARNED.add(key)
+            log_event(
+                logger,
+                logging.WARNING,
+                "tool_path.unresolved_var",
+                block=block,
+                name=name,
+                field=field,
+                candidates=listed,
+            )
         return candidates[-1]
 
     # Nothing existed. The last cleanly-expanded candidate is the

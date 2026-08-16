@@ -4,7 +4,7 @@ logger = logging.getLogger(__name__)
 import pprint
 
 from dataclasses import dataclass, field as dc_field
-from serde import serde, field
+from serde import serde
 from .rtl import RtlBuilderConfig
 from .verible import VeribleConfig
 from ..errors import FatalRtlBuddyError
@@ -17,18 +17,28 @@ from ..logging_utils import log_event
 #:
 #: ``builder`` and ``verible`` are *not* here: they are resolved eagerly
 #: into :class:`PlatformConfig` objects (a platform without either cannot
-#: run), while these blocks are optional and resolved on demand by the
-#: matching ``RootConfig.get_*`` accessor. Everything else about them is
-#: the same indirection — the platform entry names an entry in the block,
-#: and an unrouted block keeps its pre-#439 global behaviour.
+#: run), while ``surfer`` is optional and resolved on demand by
+#: :meth:`RootConfig.get_surfer_cfg`. Everything else about it is the same
+#: indirection — the platform entry names an entry in the block, and an
+#: unrouted block keeps its pre-#439 global behaviour.
+#:
+#: The ``cfg-*-tools`` blocks are deliberately **not** routable (#439).
+#: Routing only means something for a block whose active entry is chosen
+#: by rtl-buddy: ``builder``, ``verible`` and ``surfer`` all are. A
+#: ``cfg-*-tools`` entry is chosen per run by the flow YAML's ``tool:``,
+#: and that name is simultaneously the *backend selector* — ``openroad``
+#: picks the OpenROAD P&R backend, ``yosys`` the Yosys synthesis backend,
+#: and ``rb power`` looks the name up in a backend registry. A platform
+#: cannot therefore redirect one of those entries without either being
+#: ignored (the flow named an entry, so routing never applies) or
+#: breaking backend dispatch (the routed name is not a backend). Pinning a
+#: ``cfg-*-tools`` binary per platform is done in the entry itself, with
+#: the candidate list ``tool:`` accepts — the first candidate that exists
+#: wins, so a Linux tool-tree path and a Homebrew path can sit in the same
+#: committed entry and each platform takes the one it has. See
+#: :mod:`rtl_buddy.config.toolpath`.
 PLATFORM_TOOL_BLOCKS: dict[str, tuple[str, str]] = {
     "surfer": ("surfer_cfgs", "cfg-surfer"),
-    "synth-tools": ("synth_tool_cfgs", "cfg-synth-tools"),
-    "pnr-tools": ("pnr_tool_cfgs", "cfg-pnr-tools"),
-    "power-tools": ("power_tool_cfgs", "cfg-power-tools"),
-    "cdc-tools": ("cdc_tool_cfgs", "cfg-cdc-tools"),
-    "fpv-tools": ("fpv_tool_cfgs", "cfg-fpv-tools"),
-    "fpga-tools": ("fpga_tool_cfgs", "cfg-fpga-tools"),
 }
 
 
@@ -108,25 +118,38 @@ class PlatformConfigFile:
     builder: str | None
     verible: str
     surfer: str | None = None
-    synth_tools: str | None = field(rename="synth-tools", default=None)
-    pnr_tools: str | None = field(rename="pnr-tools", default=None)
-    power_tools: str | None = field(rename="power-tools", default=None)
-    cdc_tools: str | None = field(rename="cdc-tools", default=None)
-    fpv_tools: str | None = field(rename="fpv-tools", default=None)
-    fpga_tools: str | None = field(rename="fpga-tools", default=None)
 
     def get_routed_names(self) -> dict[str, str]:
         """Configured ``block -> entry name`` routing, skipping unset blocks."""
-        raw = {
-            "surfer": self.surfer,
-            "synth-tools": self.synth_tools,
-            "pnr-tools": self.pnr_tools,
-            "power-tools": self.power_tools,
-            "cdc-tools": self.cdc_tools,
-            "fpv-tools": self.fpv_tools,
-            "fpga-tools": self.fpga_tools,
-        }
+        raw = {"surfer": self.surfer}
         return {block: name for block, name in raw.items() if name}
+
+    def validate_routing(self, tool_blocks: dict[str, dict]) -> None:
+        """Fail if this entry routes a block to an entry that is not configured.
+
+        Called for *every* ``cfg-platforms`` entry at load, not just the one
+        whose ``unames`` matched: a typo in the Linux entry is otherwise
+        invisible to a macOS developer and only becomes fatal on the CI
+        host, which is the worst place to find it (#439).
+        """
+        for block, entry_name in self.get_routed_names().items():
+            available = tool_blocks.get(block) or {}
+            if entry_name not in available:
+                _, yaml_block = PLATFORM_TOOL_BLOCKS[block]
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "platform.tool_missing",
+                    block=block,
+                    entry=entry_name,
+                    os=self.os,
+                    available=", ".join(sorted(available)),
+                )
+                raise FatalRtlBuddyError(
+                    f'cfg-platforms[{self.os}].{block}: "{entry_name}" '
+                    f"not in {yaml_block} "
+                    f"(available: {sorted(available)})"
+                )
 
     def initialise(
         self,
@@ -201,24 +224,7 @@ class PlatformConfigFile:
 
         routed = self.get_routed_names()
         if tool_blocks is not None:
-            for block, entry_name in routed.items():
-                available = tool_blocks.get(block) or {}
-                if entry_name not in available:
-                    _, yaml_block = PLATFORM_TOOL_BLOCKS[block]
-                    log_event(
-                        logger,
-                        logging.ERROR,
-                        "platform.tool_missing",
-                        block=block,
-                        entry=entry_name,
-                        os=self.os,
-                        available=", ".join(sorted(available)),
-                    )
-                    raise FatalRtlBuddyError(
-                        f'cfg-platforms[{self.os}].{block}: "{entry_name}" '
-                        f"not in {yaml_block} "
-                        f"(available: {sorted(available)})"
-                    )
+            self.validate_routing(tool_blocks)
         if routed:
             log_event(
                 logger,

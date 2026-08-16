@@ -717,6 +717,25 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('resolved_path')} from PATH. A deliberate pin is not "
                 f"being honoured — fix the path or drop it to silence this."
             )
+        case "verible.path_incomplete":
+            resolved = fields.get("resolved_path")
+            tail = (
+                f"falling back to {resolved} from PATH"
+                if resolved
+                else f"and {fields.get('exe')} is not on PATH either"
+            )
+            return (
+                f"cfg-verible[{fields.get('name')}]: configured path "
+                f"{fields.get('configured_path')} exists but does not contain "
+                f"{fields.get('exe')}; {tail}. A deliberate pin is not being "
+                f"honoured — fix the path or drop it to silence this."
+            )
+        case "verible.exe_fallback":
+            return (
+                f"cfg-verible[{fields.get('name')}]: {fields.get('exe')} not found at "
+                f"{fields.get('configured_path')}; using "
+                f"{fields.get('resolved_path')} from PATH instead."
+            )
         case "verible.command":
             return f"Running {fields.get('executable')}"
         case "verible.completed":
@@ -843,6 +862,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"cfg-platforms[{fields.get('os')}].{fields.get('block')}: "
                 f'"{fields.get("entry")}" is not a configured entry '
                 f"(available: {fields.get('available') or 'none'})"
+            )
+        case "platform.tool_not_routable":
+            return (
+                f"cfg-platforms[{fields.get('os')}].{fields.get('block')}: this "
+                "block cannot be routed per platform; pin the path in the entry "
+                "itself with a candidate list"
             )
         case "tool_path.unresolved_var":
             return (

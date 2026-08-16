@@ -1030,22 +1030,27 @@ def test_routed_surfer_entry_pins_the_detector(
     assert detectors[0].abs_path == str(shared / "surfer")
 
 
-def test_routed_synth_tool_pins_the_detector(
+def test_routing_a_tools_block_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    """`cfg-*-tools` is not routable, and saying so beats doing nothing.
+
+    tool-check must report the binary the run uses. A routed `*-tools`
+    entry could only ever change tool-check, because every flow yaml
+    names its own `tool:` — so routing one would make the report *dis*agree
+    with the run. The supported pin is a candidate list in the entry, which
+    both sides read (#439).
+    """
+    from rtl_buddy.errors import FatalRtlBuddyError
+
     shared = tmp_path / "shared" / "bin"
     _write_routed_root_config(tmp_path, shared, '    synth-tools: "yosys-shared"\n')
     monkeypatch.chdir(tmp_path)
 
     from rtl_buddy.config.root import RootConfig
 
-    rc = RootConfig(name="routed")
-    by_name = {s.name: s for s in tm.get_manifest(rc)}
-    detectors = by_name["yosys"].detection
-    assert isinstance(detectors[0], tm.AbsolutePathDetector)
-    assert detectors[0].abs_path == str(shared / "yosys")
-    # PATH is retained behind the pin.
-    assert any(isinstance(d, tm.PathDetector) for d in detectors)
+    with pytest.raises(FatalRtlBuddyError, match="cannot be routed per platform"):
+        RootConfig(name="routed")
 
 
 def test_unrouted_blocks_add_no_detector(

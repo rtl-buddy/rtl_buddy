@@ -23,8 +23,12 @@ class PowerToolConfigFile:
 
 
 class PowerToolConfig:
-    def __init__(self, cfg: PowerToolConfigFile):
+    def __init__(self, cfg: PowerToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
+        # Directory relative `tool:` candidates are existence-tested
+        # against: the one holding root_config.yaml, never the process
+        # cwd (rb is routinely invoked from a suite directory).
+        self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
@@ -37,6 +41,7 @@ class PowerToolConfig:
         """
         return resolve_tool_path(
             self._cfg.tool,
+            base_dir=self._base_dir,
             block="cfg-power-tools",
             name=self._cfg.name,
             field="tool",
