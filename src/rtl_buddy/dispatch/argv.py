@@ -16,12 +16,48 @@ Both forms re-invoke ``rb`` from the *same* Python environment
 (``sys.executable``) and in ``--machine`` mode: the job's result travels
 through its ``--result-json`` envelope, so its stdout is a log, not an
 interface.
+
+:func:`job_log_path` lives here for the same reason: the head passes
+``--result-json`` in the argv above and the job reads it back out, so the
+one path both sides must agree on is derived here, next to the argv that
+carries it — not once in the head's submit code and again in the command
+handler, where the two could drift into different files.
 """
 
 import sys
+from pathlib import Path
 
 from ..seed_mode import SeedMode
 from .base import BuildJobSpec, TestJobSpec
+
+
+def job_log_path(result_json: str | Path) -> Path:
+    """The rtl_buddy file log of the job that writes ``result_json``, beside it.
+
+    A dispatched job must not write the head's ``<suite>/rtl_buddy.log``:
+    both processes would open the same path and the first open of a path
+    in a process truncates it, so the jobs and the head overwrite each
+    other's records (#437). Each job therefore logs beside its own result
+    envelope, named after it so the pair is obvious in the directory:
+
+    - ``…/dispatch/result-<tag>.json`` → ``…/dispatch/rtl_buddy-<tag>.log``
+    - ``…/.dispatch/build-result-<pid>.json``
+      → ``…/.dispatch/build-rtl_buddy-<pid>.log``
+    - anything else (``foo.json``) → ``…/rtl_buddy-foo.log``
+
+    The result sits alongside the scheduler's own stdout log for the same
+    job (``slurm-<tag>.log`` / ``local-parallel-<tag>.log``,
+    ``build-<pid>.log``). Relative input yields a relative path.
+    """
+    path = Path(result_json)
+    stem = path.stem
+    if stem.startswith("build-result-"):
+        name = f"build-rtl_buddy-{stem[len('build-result-') :]}.log"
+    elif stem.startswith("result-"):
+        name = f"rtl_buddy-{stem[len('result-') :]}.log"
+    else:
+        name = f"rtl_buddy-{stem}.log"
+    return path.parent / name
 
 
 def _rb_argv(spec) -> list[str]:

@@ -365,9 +365,9 @@ warning. Four things appear, in this order:
    an interrupted run leaves a post-mortem trail either way.
 
 `progress-interval: 0` opts a developer's terminal out of all three
-console lines; `rtl_buddy.log` still records every change at INFO (with
-[one caveat](../known-issues.md#under-dispatch-the-jobs-and-the-head-write-the-same-suitertl_buddylog)
-about the jobs sharing that file today). There
+console lines; the head's `rtl_buddy.log` still records every change at
+INFO, and it is the head's alone — see
+[Where each log lives](#where-each-log-lives). There
 is no CLI flag for either knob — CI sets them once in `root_config.yaml`,
 where the value belongs to the site rather than to the invocation.
 
@@ -377,6 +377,25 @@ where the value belongs to the site rather than to the invocation.
     half-hour regression printed nothing at all between "Running
     regression from …" and the summary
     ([#435](https://github.com/rtl-buddy/rtl_buddy/issues/435)).
+
+### Where each log lives
+
+Head and jobs are separate processes, so they get separate log files
+([#437](https://github.com/rtl-buddy/rtl_buddy/issues/437)) — a job never
+opens the head's, because a process's first open of a log path truncates
+it:
+
+| Process | rtl_buddy log | Beside it |
+|---|---|---|
+| head | `<suite>/rtl_buddy.log` (and `dirname(regression.yaml)/rtl_buddy.log`, which a regression re-anchors back to between suites) | the console |
+| sim job | `artefacts/<test>/dispatch/rtl_buddy-<tag>.log` | `result-<tag>.json`, `slurm-<tag>.log` (`local-parallel-<tag>.log`) |
+| build job | `artefacts/.dispatch/build-rtl_buddy-<pid>.log` | `build-result-<pid>.json`, `build-<pid>.log` |
+
+`<tag>` is the run id (`0001`) or `single` for an unnumbered run, and
+`<pid>` is the head's. The scheduler's log holds the job's raw
+stdout/stderr; the `rtl_buddy-*.log` beside it holds the same JSON Lines
+events the head writes for itself. A dispatch failure names both in its
+result description, so a failed row leads to the files without a search.
 
 ## Per-test reservations
 

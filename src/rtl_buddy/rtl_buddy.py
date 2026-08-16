@@ -68,6 +68,7 @@ from .config.dispatch import (
     resolve_resources,
 )
 from .dispatch import LocalProcessBackend, create_dispatch_backend
+from .dispatch.argv import job_log_path
 from .dispatch.base import BuildJobSpec, TestJobSpec
 from .dispatch.plan import (
     read_plan_config,
@@ -767,6 +768,7 @@ class RtlBuddy:
         primary_config: str | Path | None = None,
         command_root: str | Path | None = None,
         list_only: bool = False,
+        log_path: str | Path | None = None,
     ) -> ExecutionContext:
         """Build the command's ExecutionContext and attach the file log.
 
@@ -775,6 +777,17 @@ class RtlBuddy:
           ``tests.yaml``); the command root is its parent directory.
         - ``command_root``: an explicit directory anchor for commands that
           don't have a single primary config file.
+
+        ``log_path`` overrides where the file log is attached (its parent
+        is created); the returned context is otherwise unchanged. The
+        dispatched jobs use it: ``rb _test-job`` / ``rb _build-job`` are
+        rooted at the same ``tests.yaml`` as the head that submitted them,
+        so without an override they would attach to the head's
+        ``<suite>/rtl_buddy.log`` — and a process's first open of a path
+        truncates it, so head and jobs would overwrite each other's
+        records. Each job instead logs beside its own result envelope
+        (:func:`~rtl_buddy.dispatch.argv.job_log_path`), so no two
+        processes ever share a log file (#437).
 
         Constructs :attr:`root_cfg` and :attr:`coverage` once the command
         root is known so ``root_config.yaml`` is discovered relative to
@@ -807,7 +820,12 @@ class RtlBuddy:
             )
 
         ctx.command_root.mkdir(parents=True, exist_ok=True)
-        attach_file_log(ctx.log_path)
+        if log_path is None:
+            attach_file_log(ctx.log_path)
+        else:
+            log_path = Path(log_path)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            attach_file_log(log_path)
         self.exec_ctx = ctx
 
         if list_only:
@@ -1640,7 +1658,13 @@ class RtlBuddy:
         if seed_mode == SeedMode.REPLAY and replay_run_id is None:
             replay_run_id = run_id
 
-        ctx = self._enter_command_context(primary_config=test_config)
+        # Log beside the envelope, never into the head's
+        # <suite>/rtl_buddy.log — the first open of that path in this
+        # process would truncate the head's own records (#437).
+        ctx = self._enter_command_context(
+            primary_config=test_config,
+            log_path=job_log_path(result_json_path),
+        )
         suite_cfg = SuiteConfig(path=str(ctx.primary_config))
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         log_event(
@@ -1775,12 +1799,28 @@ class RtlBuddy:
         reported but does not fail the job, so the dependent sim jobs still
         run (a test with no shared build just recompiles in its own sim
         job). Exit code is always 0 unless the setup itself is fatal.
+
+        With ``--result-json`` (how dispatch always invokes it) the job
+        logs beside that envelope instead of the head's
+        ``<suite>/rtl_buddy.log``; run by hand without it there is no head
+        to collide with, so it falls back to the suite log (#437).
         """
         self.rtl_builder_mode = (
             "reg" if self.rtl_builder_mode is None else self.rtl_builder_mode
         )
         self.share_build = share_build
-        ctx = self._enter_command_context(primary_config=test_config)
+        # Resolve before entering the context: a relative --result-json is
+        # the dispatching process's path, not the suite dir's, and the log
+        # that pairs with it is derived from the resolved envelope.
+        result_json_path = (
+            self._abs_invocation_path(result_json) if result_json is not None else None
+        )
+        ctx = self._enter_command_context(
+            primary_config=test_config,
+            log_path=(
+                job_log_path(result_json_path) if result_json_path is not None else None
+            ),
+        )
         suite_cfg = SuiteConfig(path=str(ctx.primary_config))
         suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
         log_event(
@@ -1846,12 +1886,10 @@ class RtlBuddy:
             built=len(built),
             failed=len(failed),
         )
-        if result_json is not None:
+        if result_json_path is not None:
             # Persist the outcome so the head can map a compile failure to a
             # CompileFail row (parity with the in-process path).
-            write_build_result_json(
-                self._abs_invocation_path(result_json), built=built, failed=failed
-            )
+            write_build_result_json(result_json_path, built=built, failed=failed)
         if self.machine:
             self._emit_machine_result("_build-job", 0, built=built, failed=failed)
         # Always exit 0: a per-test compile failure is not a build-job
@@ -2696,7 +2734,8 @@ class RtlBuddy:
                     )
                     results.results["desc"] = (
                         f"compile failed in build job {build_handle.job_id} "
-                        f"(see {build_handle.spec.log_path})"
+                        f"(see {build_handle.spec.log_path} and "
+                        f"{job_log_path(build_handle.spec.result_json)})"
                     )
                 else:
                     sched_state = tele.get("state") if tele else None
@@ -2708,6 +2747,10 @@ class RtlBuddy:
                         if build_handle is not None
                         else ""
                     )
+                    # The scheduler log holds the job's stdout; its own
+                    # rtl_buddy log holds the events, and after #437 that
+                    # is a separate file per job, so name both.
+                    job_note = f" and {job_log_path(handle.spec.result_json)}"
                     # A job the scheduler reports COMPLETED (exit 0) that left
                     # no envelope is a contradiction — it ran but its result is
                     # not visible here. On a shared filesystem that usually
@@ -2748,7 +2791,7 @@ class RtlBuddy:
                         name=handle.spec.test_name + "/results",
                         desc=f"dispatch job {handle.job_id} produced no "
                         f"result{state_note} ({cause}); see "
-                        f"{handle.spec.log_path}{build_note}: {e}",
+                        f"{handle.spec.log_path}{job_note}{build_note}: {e}",
                     )
             if tele is not None:
                 # In-memory for aggregation (P3 right-sizing) and folded

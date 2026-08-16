@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from rtl_buddy.dispatch.argv import job_log_path
+
 _REPO = Path(__file__).resolve().parent.parent
 _SHIMS = _REPO / "tests" / "dispatch_shims"
 _FIXTURE = _REPO / "tests" / "fixtures" / "dispatch_project"
@@ -95,6 +97,13 @@ def test_shim_regression_runs_real_pipeline_to_pass(shim_run):
     assert len(envelopes) == 2
     one = json.loads(envelopes[0].read_text())
     assert one["result"]["results"]["result"] == "PASS"
+
+    # Each job logged beside its own envelope, not into the head's
+    # verif/blk/rtl_buddy.log (#437).
+    for env in envelopes:
+        assert job_log_path(env).exists(), f"no job log beside {env}"
+    head_log = (project / "verif" / "blk" / "rtl_buddy.log").read_text()
+    assert "command.test_job" not in head_log
 
 
 def test_shim_regression_attaches_sacct_telemetry_and_advice(shim_run):
