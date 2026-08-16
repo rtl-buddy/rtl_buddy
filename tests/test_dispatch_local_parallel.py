@@ -644,3 +644,66 @@ def test_cancelled_warning_names_the_jobs(monkeypatch, tmp_path, caplog):
         r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.cancelled"
     ]
     assert record.__dict__["rtl_fields"]["job_ids"] == ["lp-1", "lp-2"]
+
+
+# ---- #405: the retry backoff, held by the pool --------------------------
+
+
+def test_a_delayed_job_waits_without_taking_a_slot(monkeypatch, tmp_path):
+    """The local stand-in for Slurm holding a job PENDING on ``--begin``.
+
+    There is no scheduler here to hold the job, so the pool holds it — but
+    holding it must not mean holding a slot, or one backed-off retry would
+    stall every job behind it in a small pool.
+    """
+    _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
+    backend = _backend(jobs=1)
+
+    delayed = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=30)
+    prompt = backend.submit(_sim_spec(tmp_path, "fresh"))
+    backend.advance()
+
+    assert not backend._jobs[delayed.job_id].running
+    assert backend._jobs[prompt.job_id].running  # the slot was never held
+
+    backend.cancel_all([delayed, prompt])
+
+
+def test_a_delayed_job_runs_once_its_backoff_elapses(monkeypatch, tmp_path):
+    _stub_argv(
+        monkeypatch,
+        sim=lambda spec: _python(
+            f"from pathlib import Path;"
+            f"Path({str(tmp_path / (spec.test_name + '.done'))!r}).write_text('x')"
+        ),
+    )
+    backend = _backend(jobs=2)
+    handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=0.2)
+
+    backend.advance()
+    assert not (tmp_path / "retried.done").exists()  # still inside the backoff
+
+    backend.wait_all([handle])
+    assert (tmp_path / "retried.done").is_file()
+    assert backend._jobs[handle.job_id].returncode == 0
+
+
+def test_a_delayed_job_stays_outstanding_for_the_wait(monkeypatch, tmp_path):
+    """wait_all must not declare the fleet drained while a retry is pending."""
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=2)
+    handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=0.2)
+
+    assert not backend._jobs[handle.job_id].finished
+    started = time.monotonic()
+    backend.wait_all([handle])
+    assert time.monotonic() - started >= 0.2
+
+
+def test_undelayed_submit_is_unchanged(monkeypatch, tmp_path):
+    _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
+    backend = _backend(jobs=1)
+    handle = backend.submit(_sim_spec(tmp_path, "t0"))
+    assert backend._jobs[handle.job_id].not_before is None
+    assert backend._jobs[handle.job_id].running
+    backend.cancel_all([handle])

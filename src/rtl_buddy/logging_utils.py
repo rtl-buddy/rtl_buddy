@@ -469,6 +469,19 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('backend')} backend — cancelling the fleet: "
                 f"{' '.join(map(str, ids))}"
             )
+        case "dispatch.retry":
+            # Names the classifier, not just the delay: the whole point of
+            # the rule is that only a license-queue kill is retried, and a
+            # reader must be able to see which one fired (#405).
+            target_job = fields.get("test")
+            if fields.get("run_id") is not None:
+                target_job = f"{target_job}:{fields.get('run_id')}"
+            return (
+                f"dispatch: retrying {target_job} (job {fields.get('job_id')}) "
+                f"in {_format_elapsed(fields.get('delay_sec'))} — "
+                f"{fields.get('classifier')}, attempt {fields.get('attempt')} "
+                f"of {fields.get('attempts')}"
+            )
         case "dispatch.result_missing":
             state = fields.get("scheduler_state")
             state_note = f" (scheduler state {state})" if state else ""

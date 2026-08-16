@@ -5,6 +5,7 @@
 #
 import logging
 import os
+import re
 import subprocess
 import sys
 import json
@@ -77,6 +78,7 @@ from .dispatch.plan import (
     write_plan,
 )
 from .dispatch.progress import group_job_ids
+from .dispatch.retry import backoff_delay, classify_missing_result
 from .dispatch.rightsize import analyze_suite_reservations
 from .runner.result_io import (
     attach_telemetry_json,
@@ -2679,7 +2681,104 @@ class RtlBuddy:
         return backend.submit_build(spec)
 
     def _dispatch_collect(self, backend, state):
-        """Load result envelopes for a submitted suite after the wait.
+        """Collect a submitted suite, retrying what deserves it (#405).
+
+        One pass over the fleet loads every envelope (see
+        :meth:`_dispatch_collect_pass`); jobs it classifies as retryable —
+        killed by the scheduler while queueing for a license seat, and only
+        those — are resubmitted after a jittered backoff, waited on, and
+        collected again, up to ``cfg-dispatch.retry.attempts`` extra
+        attempts. With no ``retry:`` block (the default) the first pass
+        finds nothing retryable and this is exactly the single-pass collect
+        it has always been.
+
+        Every pass writes a result for every row before any retry is
+        considered, so an interrupted or exhausted retry leaves the fleet
+        scored — a job that vanished never scores green, whatever the
+        budget says.
+        """
+        suite_results = state["suite_results"]
+        pending = state["pending"]
+        if not pending:
+            return suite_results
+        retry_cfg = self.root_cfg.get_dispatch_cfg().effective_retry()
+        attempt = 0
+        while True:
+            retryable = self._dispatch_collect_pass(
+                backend, state, pending, attempt=attempt, retry_cfg=retry_cfg
+            )
+            if not retryable:
+                return suite_results
+            attempt += 1
+            pending = self._resubmit_retryable(
+                backend, retryable, attempt=attempt, retry_cfg=retry_cfg
+            )
+
+    def _resubmit_retryable(self, backend, retryable, *, attempt, retry_cfg):
+        """Re-launch the retryable jobs after their backoff; wait; return them.
+
+        The delay is served by the **backend** (Slurm holds the job on
+        ``--begin``, the local pool holds it in its queue), never slept in
+        the head: the head is a planner and a poller, and a delayed job
+        must not hold an allocation the license pool needs to drain.
+
+        Each attempt gets its own scheduler log (``…-retry<N>.log``) so the
+        first attempt's evidence — the queue banner that justified the
+        retry — is still there afterwards. The result envelope path is
+        deliberately unchanged: it is the one path the job and the head
+        must agree on, and it is still guarded by this run's token.
+        """
+        resubmitted = []
+        try:
+            for idx, handle, classifier in retryable:
+                delay = backoff_delay(attempt, retry_cfg)
+                spec = self._retry_spec(handle.spec, attempt=attempt)
+                # Console-visible: a green run that needed three attempts
+                # must not read like one that needed none, and INFO alone
+                # never reaches a CI console (#435).
+                log_console_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.retry",
+                    backend=backend.name,
+                    job_id=handle.job_id,
+                    test=spec.test_name,
+                    run_id=spec.run_id,
+                    attempt=attempt,
+                    attempts=retry_cfg.attempts,
+                    delay_sec=round(delay, 1),
+                    classifier=classifier,
+                )
+                # No `dependency`: the build job this element was gated on
+                # has already finished (the fleet drained), and an afterok
+                # on a job the scheduler has forgotten never becomes
+                # satisfiable.
+                resubmitted.append((idx, backend.submit(spec, delay_sec=delay)))
+            backend.wait_all([h for _, h in resubmitted])
+        except BaseException:
+            # Same contract as the submit fan-out: a failure mid-retry must
+            # not leave this attempt's jobs running behind the head.
+            backend.cancel_all([h for _, h in resubmitted])
+            raise
+        return resubmitted
+
+    @staticmethod
+    def _retry_spec(spec, *, attempt):
+        """The spec for one more attempt at ``spec``'s job.
+
+        The scheduler log is tagged with the attempt number, stripping any
+        tag the previous attempt added — attempt 3 is ``…-retry3.log``, not
+        ``…-retry1-retry2-retry3.log``.
+        """
+        log_path = spec.log_path
+        if log_path is not None:
+            log_path = Path(log_path)
+            stem = re.sub(r"-retry\d+$", "", log_path.stem)
+            log_path = log_path.with_name(f"{stem}-retry{attempt}{log_path.suffix}")
+        return replace(spec, log_path=log_path)
+
+    def _dispatch_collect_pass(self, backend, state, pending, *, attempt, retry_cfg):
+        """Load result envelopes for one attempt; return what may be retried.
 
         Joins per-job scheduler telemetry (``sacct`` reserved-vs-used, when
         accounting exists) into both the in-memory results and the on-disk
@@ -2689,11 +2788,12 @@ class RtlBuddy:
         job recorded that test's compile as failed, in which case it becomes
         a ``CompileFailResults`` (parity with the in-process path, where a
         design error is a clean compile fail rather than an infra fail).
+
+        Returns ``[(row index, handle, classifier)]`` for the missing
+        results that a remaining retry budget covers.
         """
         suite_results = state["suite_results"]
-        pending = state["pending"]
-        if not pending:
-            return suite_results
+        retryable = []
         build_handle = state.get("build_handle")
         # Build-job compile outcome (advisory): map a compile failure to a
         # CompileFail rather than the sim job's downstream DispatchFail.
@@ -2751,6 +2851,7 @@ class RtlBuddy:
                     state_note = (
                         f" (scheduler state {sched_state})" if sched_state else ""
                     )
+                    attempt_note = f" after {attempt + 1} attempts" if attempt else ""
                     build_note = (
                         f" and build log {build_handle.spec.log_path}"
                         if build_handle is not None
@@ -2786,6 +2887,19 @@ class RtlBuddy:
                             "the job crashed or was cancelled, or its build job "
                             "failed so the job never ran"
                         )
+                    # Only a resource-condition kill whose artefacts still
+                    # show the license-queue banner is retryable; a hung
+                    # test reaches the same TIMEOUT with no banner and must
+                    # keep failing (#405). Classified even when the budget
+                    # is spent is pointless work, so the budget is checked
+                    # first.
+                    classifier = (
+                        classify_missing_result(
+                            handle.spec, sched_state, classifiers=retry_cfg.on
+                        )
+                        if retry_cfg.enabled and attempt < retry_cfg.attempts
+                        else None
+                    )
                     log_event(
                         logger,
                         logging.ERROR,
@@ -2794,21 +2908,25 @@ class RtlBuddy:
                         test=handle.spec.test_name,
                         run_id=handle.spec.run_id,
                         scheduler_state=sched_state,
+                        attempt=attempt + 1,
+                        retry_classifier=classifier,
                         error=str(e),
                     )
                     results = DispatchFailResults(
                         name=handle.spec.test_name + "/results",
                         desc=f"dispatch job {handle.job_id} produced no "
-                        f"result{state_note} ({cause}); see "
+                        f"result{state_note}{attempt_note} ({cause}); see "
                         f"{handle.spec.log_path}{job_note}{build_note}: {e}",
                     )
+                    if classifier is not None:
+                        retryable.append((idx, handle, classifier))
             if tele is not None:
                 # In-memory for aggregation (P3 right-sizing) and folded
                 # into the envelope so telemetry travels with the artifact.
                 results.results["telemetry"] = tele
                 attach_telemetry_json(handle.spec.result_json, tele)
             suite_results[idx]["results"] = results
-        return suite_results
+        return retryable
 
     def _simulator_family_of(self, builder_name):
         """Simulator family for a resolved builder name (advice gating).

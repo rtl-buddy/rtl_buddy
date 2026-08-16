@@ -117,9 +117,22 @@ class DispatchBackend(ABC):
         """Submit one suite's build job; return its handle without waiting."""
 
     @abstractmethod
-    def submit(self, spec: TestJobSpec, *, dependency: str | None = None) -> JobHandle:
-        """Submit one sim job, optionally gated on ``dependency`` (a build
-        job id that must succeed first); return its handle without waiting."""
+    def submit(
+        self,
+        spec: TestJobSpec,
+        *,
+        dependency: str | None = None,
+        delay_sec: float = 0.0,
+    ) -> JobHandle:
+        """Submit one sim job; return its handle without waiting.
+
+        ``dependency`` gates it on a build job id that must succeed first.
+        ``delay_sec`` holds it out of contention for that long before it
+        may start — the retry backoff (#405). It is the *backend's* job to
+        serve that wait, never the head's: a scheduler-backed backend hands
+        it to the scheduler (``sbatch --begin``), so a delayed job occupies
+        no allocation while it waits and the head stays a planner/poller.
+        """
 
     def submit_array(
         self,

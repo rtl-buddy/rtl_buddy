@@ -937,3 +937,90 @@ def test_cancelled_warning_carries_the_grouped_ids(monkeypatch, caplog):
     ]
     assert record.__dict__["rtl_fields"]["job_ids"] == ["500_[1-2]", "42"]
     assert "500_[1-2]" in record.message
+
+
+# ------------------------------------------- #405: retry backoff via --begin
+
+
+def test_retry_delay_becomes_a_begin_flag(monkeypatch):
+    """The scheduler serves the backoff, so the delayed job holds nothing.
+
+    Sleeping in the head would keep the reservation the license pool needs
+    to drain; ``--begin`` leaves the job PENDING instead.
+    """
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), delay_sec=90.0)
+
+    (argv,) = calls
+    assert "--begin=now+90" in argv
+
+
+def test_no_begin_flag_without_a_delay(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec())
+
+    (argv,) = calls
+    assert not any(a.startswith("--begin") for a in argv)
+
+
+@pytest.mark.parametrize(
+    "delay, expected",
+    [
+        (0.0, None),
+        (0.4, None),  # rounds to 0 s: an inert `now+0` is not worth emitting
+        (1.6, "--begin=now+2"),
+        (63.2, "--begin=now+63"),
+        (600.0, "--begin=now+600"),
+    ],
+)
+def test_begin_flag_rounds_to_whole_seconds(monkeypatch, delay, expected):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), delay_sec=delay)
+
+    (argv,) = calls
+    begin = [a for a in argv if a.startswith("--begin")]
+    assert begin == ([expected] if expected else [])
+
+
+def test_delayed_submit_still_carries_reservation_and_dependency(monkeypatch):
+    """A retry is a normal submit plus a hold — nothing else changes."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
+    )
+
+    backend.submit(_spec(), dependency="88", delay_sec=30.0)
+
+    (argv,) = calls
+    assert "--begin=now+30" in argv
+    assert "--dependency=afterok:88" in argv
+    assert "--time=01:00:00" in argv
+    assert "--partition=verif" in argv
+    # sbatch-args stay last, so a site value still wins any duplicate.
+    assert argv.index("--begin=now+30") < argv.index("--partition=verif")
+
+
+def test_submitted_event_records_the_backoff(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.INFO):
+        backend.submit(_spec(), delay_sec=45.0)
+
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.submitted"
+    ]
+    assert record.__dict__["rtl_fields"]["begin_delay_sec"] == 45.0

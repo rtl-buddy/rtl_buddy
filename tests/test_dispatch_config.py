@@ -13,6 +13,7 @@ from rtl_buddy.config.dispatch import (
     DispatchConfigFile,
     DispatchResourcesFile,
     JobResources,
+    RetryConfigFile,
     combine_for_in_job_compile,
     mem_to_bytes,
     resolve_resources,
@@ -340,3 +341,92 @@ def test_root_config_parses_progress_interval_and_max_wait(minimal_project: Path
     cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
     assert cfg.progress_interval == 30
     assert cfg.max_wait == 7200
+
+
+# ------------------------------------------------------ #405: retry budget
+
+
+def test_retry_absent_is_off_and_never_retries():
+    cfg = DispatchConfigFile().initialise()
+    # Nothing stored at all — the block is opt-in...
+    assert cfg.retry is None
+    # ...and the effective budget still answers, inertly.
+    retry = cfg.effective_retry()
+    assert retry.attempts == 0
+    assert retry.enabled is False
+
+
+def test_retry_defaults_when_only_attempts_is_set():
+    retry = DispatchConfigFile(retry=RetryConfigFile(attempts=2)).initialise().retry
+    assert retry.enabled is True
+    assert (retry.backoff_sec, retry.backoff_max_sec, retry.jitter) == (
+        60.0,
+        600.0,
+        0.5,
+    )
+    assert retry.on == ["license-queue"]
+
+
+def test_retry_with_empty_on_list_retries_nothing():
+    # A budget with no classifier selects nothing; treating it as "on" would
+    # resubmit jobs no rule matched.
+    retry = (
+        DispatchConfigFile(retry=RetryConfigFile(attempts=3, on=[])).initialise().retry
+    )
+    assert retry.enabled is False
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"attempts": -1}, "attempts must be >= 0"),
+        ({"attempts": 1, "backoff_sec": -1.0}, "backoff-sec/backoff-max-sec"),
+        (
+            {"attempts": 1, "backoff_sec": 600.0, "backoff_max_sec": 60.0},
+            "below backoff-sec",
+        ),
+        ({"attempts": 1, "jitter": 1.0}, r"jitter must be in \[0, 1\)"),
+        ({"attempts": 1, "jitter": -0.1}, r"jitter must be in \[0, 1\)"),
+        ({"attempts": 1, "on": ["node-fail"]}, "unknown classifier"),
+    ],
+)
+def test_retry_invalid_values_rejected(kwargs, match):
+    with pytest.raises(FatalRtlBuddyError, match=match):
+        DispatchConfigFile(retry=RetryConfigFile(**kwargs)).initialise()
+
+
+def test_root_config_parses_retry_block(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text()
+        + "\n".join(
+            [
+                "\ncfg-dispatch:",
+                "  retry:",
+                "    attempts: 2",
+                "    backoff-sec: 30",
+                "    backoff-max-sec: 300",
+                "    jitter: 0.25",
+                "    on: [license-queue]",
+            ]
+        )
+        + "\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    retry = cfg.effective_retry()
+    assert retry.attempts == 2
+    assert retry.backoff_sec == 30
+    assert retry.backoff_max_sec == 300
+    assert retry.jitter == 0.25
+    assert retry.on == ["license-queue"]
+    assert retry.enabled is True
+
+
+def test_root_config_without_retry_block_leaves_it_off(minimal_project: Path):
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text() + "\ncfg-dispatch:\n  poll-interval: 3\n"
+    )
+    cfg = RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
+    assert cfg.retry is None
+    assert cfg.effective_retry().enabled is False
