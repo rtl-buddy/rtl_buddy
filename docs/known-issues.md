@@ -167,8 +167,8 @@ Three consequences that can surprise:
 
 ## `--dispatch` silently implies `--share-build`
 
-`regression --dispatch <backend>` (and `randtest --dispatch <backend>`, for
-`slurm` and `local-parallel` alike) turn on
+`regression --dispatch <backend>` (and `randtest --dispatch <backend>` and
+`test --dispatch <backend>`, for `slurm` and `local-parallel` alike) turn on
 `--share-build` even if you didn't pass it: a **dispatched build job**
 compiling one shared `simv` per unique compile key on a compute node is
 exactly what lets each sim job skip compilation and re-enter at simulation.

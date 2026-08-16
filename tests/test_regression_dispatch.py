@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 
 import rtl_buddy.rtl_buddy as rtl_buddy_module
 from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
-from rtl_buddy.dispatch.plan import read_plan_token
+from rtl_buddy.dispatch.plan import read_plan_configs, read_plan_token
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 from rtl_buddy.runner.result_io import write_build_result_json, write_result_json
@@ -1890,3 +1890,223 @@ def test_a_head_side_bug_in_the_retry_path_is_not_swallowed(
     result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
     assert isinstance(result.exception, TypeError), result.output
     assert "giving up on retry attempt" not in result.output
+
+# ------------------------------------------- #440: single-test dispatch
+
+
+def test_single_test_dispatch_submits_one_build_and_one_gated_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test <name> --dispatch` is the regression plan narrowed to one test.
+
+    The point of #440: one build job, one sim job gated on it, and the
+    result collected from the job's envelope — no new machinery, and no
+    throwaway one-suite reg_config to author.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    result, rb = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert len(fake_backend.build_submitted) == 1
+    assert fake_backend.dependencies == ["fake-build"]
+    assert fake_backend.waited
+    assert not fake_backend.cancelled
+
+    # Dispatch implies share_build; the sim job carries a reservation and
+    # a single unnumbered run.
+    assert rb.share_build is True
+    (spec,) = fake_backend.submitted
+    assert spec.share_build is True
+    assert spec.run_id is None
+    assert spec.resources.time is not None
+    assert spec.result_json.is_file()
+    # ...and the run was scored from that envelope, not from a local run.
+    assert "PASS" in result.output
+
+
+def test_single_test_dispatch_keeps_the_test_commands_builder_mode(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test` defaults the builder mode to `debug`, `rb regression` to
+    `reg`. Dispatch must carry the *command's* default into its jobs, or a
+    dispatched `rb test` would compile with different opts than a local one.
+    """
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted[0].builder_mode == "debug"
+    assert fake_backend.build_submitted[0].builder_mode == "debug"
+
+
+def test_single_test_dispatch_narrows_the_plan_to_the_named_test(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """`rb test` applies no level filter, so an un-narrowed plan would sweep
+    the whole suite — the exact cost the issue calls out."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "extra", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    assert [spec.test_name for spec in fake_backend.submitted] == ["extra"]
+    (spec,) = fake_backend.submitted
+    assert [cfg.get_name() for cfg in read_plan_configs(spec.plan_path)] == ["extra"]
+
+
+def test_unnamed_test_dispatch_covers_the_suite(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """No test name selects the suite, dispatched or not — the same
+    selection the in-process path makes."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic", "extra"]
+
+
+def test_single_test_dispatch_respects_levels_and_share_build(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """The level options `rb test` already carries compose with dispatch."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, rb = _invoke(
+        ["test", "--reg-level", "0", "--share-build", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    # "extra" is reglvl 5 — filtered out before the plan, as in-process.
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert rb.share_build is True
+
+
+def test_test_without_dispatch_keeps_the_in_process_path(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """No `--dispatch`, no `cfg-dispatch`: byte-identical to before #440 —
+    nothing is submitted and the stubbed TestRunner runs in-process."""
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, rb = _invoke(["test", "basic"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+    assert fake_backend.build_submitted == []
+    assert stub_build_runner.inits, "expected an in-process TestRunner"
+    assert rb.share_build is False
+
+
+def test_explicit_dispatch_local_keeps_the_in_process_path(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["test", "basic", "--dispatch", "local"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+
+
+def test_single_test_dispatch_missing_result_is_dispatch_fail(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    fake_backend.write_results = False
+    result, _ = _invoke(["--machine", "test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    row = _rows(result)["basic"]
+    assert row["result"] == "FAIL"
+    assert "produced no result" in row["desc"]
+
+
+def test_single_test_dispatch_rejects_early_stop(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """A stop before POST is not expressible per job, on `rb test` either."""
+    result, _ = _invoke(
+        ["--early-stop", "comp", "test", "basic", "--dispatch", "slurm"]
+    )
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cannot be combined with --dispatch" in str(result.exception)
+    assert fake_backend.submitted == []
+
+
+def test_jobs_on_test_is_validated_against_the_backend(minimal_project: Path):
+    """`-j` must mean something on `rb test` too, or be rejected (#360)."""
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm", "-j", "4"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "max-jobs-per-array" in str(result.exception)
+
+
+def test_cfg_dispatch_backend_applies_to_test(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic"])
+    assert result.exit_code == 0, result.output
+    assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+
+
+def test_single_test_dispatch_announces_its_job_before_waiting(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    order = []
+    _spy_on_console_events(monkeypatch, order)
+    _spy_on_wait(monkeypatch, fake_backend, order)
+    _mark_stub_builder_verilator(minimal_project)
+
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+
+    names = [event for event, _ in order]
+    assert names.index("dispatch.suite_submitted") < names.index("wait_all")
+    (fields,) = [f for event, f in order if event == "dispatch.suite_submitted"]
+    assert fields["job_ids"] == ["fake-1"]
+    assert fields["build_job"] == "fake-build"
+    assert fields["jobs"] == 2
+    assert fields["suite"] == "tests.yaml"
+
+
+def test_single_test_machine_payload_carries_reservation_advice(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    backend = _RecordingBackend(
+        telemetry={
+            "fake-1": {"state": "COMPLETED", "elapsed_s": 15, "timelimit_s": 3600}
+        }
+    )
+    _use_backend(monkeypatch, backend)
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["--machine", "test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    advice = json.loads(payload_line)["payload"]["reservation_advice"]
+    (time_a,) = [a for a in advice if a["resource"] == "time"]
+    assert time_a["direction"] == "reduce"
+
+
+def test_non_dispatched_test_payload_has_no_reservation_advice(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+):
+    """The key is absent, not empty, when nothing was dispatched — same
+    contract the regression payload keeps."""
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+    result, _ = _invoke(["--machine", "test", "basic"])
+    assert result.exit_code == 0, result.output
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    assert "reservation_advice" not in json.loads(payload_line)["payload"]

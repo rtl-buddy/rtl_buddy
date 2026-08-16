@@ -128,6 +128,14 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]
 │                                                 (Verilator builders only)            │
 │ --reg-level                            INTEGER  regression level to stop at          │
 │ --start-level                          INTEGER  regression level to start at         │
+│ --dispatch                             TEXT     execution backend for the test run   │
+│                                                 (local, local-parallel, slurm)       │
+│                                                 [default: (cfg-dispatch backend,     │
+│                                                 else local)]                         │
+│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
+│                                                 local-parallel                       │
+│                                                 [default: (cfg-dispatch jobs, else   │
+│                                                 min(4, cpu count))]                  │
 │ --help                                          Show this message and exit.          │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯
 ```

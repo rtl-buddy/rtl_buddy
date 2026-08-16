@@ -1210,6 +1210,24 @@ class RtlBuddy:
             int | None,
             typer.Option("--start-level", help="regression level to start at"),
         ] = None,
+        dispatch: Annotated[
+            str,
+            typer.Option(
+                "--dispatch",
+                help="execution backend for the test run "
+                "(local, local-parallel, slurm)",
+                show_default="cfg-dispatch backend, else local",
+            ),
+        ] = None,
+        jobs: Annotated[
+            int,
+            typer.Option(
+                "-j",
+                "--jobs",
+                help="concurrent jobs for --dispatch local-parallel",
+                show_default="cfg-dispatch jobs, else min(4, cpu count)",
+            ),
+        ] = None,
     ):
         """
         run a simple test
@@ -1267,15 +1285,83 @@ class RtlBuddy:
             seed_mode = SeedMode.REPLAY
         self.share_build = share_build
 
-        suite_results = self._do_test_suite(
-            self.suite_cfg,
-            test_name=test_name,
-            run_ids=[None],
-            seed_mode=seed_mode,
-            replay_run_id=replay_run_id,
-            reg_level=reg_level,
-            start_level=start_level,
-        )
+        # `rb test` is the single-test entry point into the same planning
+        # path `rb regression --dispatch` already uses (#440): one plan, one
+        # build job, one gated sim job. No new dispatch machinery — the plan
+        # is simply narrowed to the named test (with no name it covers the
+        # suite, exactly as the in-process path selects).
+        dispatch_backend = self._resolve_dispatch_backend(dispatch, jobs=jobs)
+        reservation_findings = []
+        if dispatch_backend is None:
+            suite_results = self._do_test_suite(
+                self.suite_cfg,
+                test_name=test_name,
+                run_ids=[None],
+                seed_mode=seed_mode,
+                replay_run_id=replay_run_id,
+                reg_level=reg_level,
+                start_level=start_level,
+            )
+        else:
+            # Same two preconditions the dispatched regression states: no
+            # stop point earlier than POST is expressible per job (the build
+            # job compiles, the sim job runs sim+post), and the build job is
+            # what lets the sim job skip compilation, so share_build is
+            # implied rather than silently ignored.
+            if self.run_depth != RunDepth.POST:
+                raise FatalRtlBuddyError(
+                    f"--early-stop {self.run_depth.value} cannot be combined with "
+                    "--dispatch: a build job compiles and the sim job runs "
+                    "sim+post; run without --dispatch to stop earlier."
+                )
+            if not share_build:
+                self.share_build = True
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "dispatch.share_build_implied",
+                    backend=dispatch_backend.name,
+                )
+            suite_display = self._display_path(
+                str(ctx.primary_config), base_dir=str(self.invocation_cwd)
+            )
+            state = self._dispatch_suite_submit(
+                self.suite_cfg,
+                dispatch_backend,
+                run_token=uuid.uuid4().hex,
+                test_name=test_name,
+                run_ids=[None],
+                seed_mode=seed_mode,
+                replay_run_id=replay_run_id,
+                reg_level=reg_level,
+                start_level=start_level,
+            )
+            self._announce_dispatched_suite(
+                state,
+                backend=dispatch_backend,
+                suite=suite_display,
+            )
+            # Wait on the build job too, and cancel it on interrupt. Drop a
+            # None build_handle (nothing selected) — a None crashes wait_all
+            # and cancel_all (#361).
+            handles = [
+                h
+                for h in [state["build_handle"], *(h for _, h in state["pending"])]
+                if h is not None
+            ]
+            try:
+                dispatch_backend.wait_all(handles)
+            except BaseException:
+                dispatch_backend.cancel_all(handles)
+                raise
+            suite_results = self._dispatch_collect(dispatch_backend, state)
+            reservation_findings = self._analyze_reservations(
+                suite_results,
+                suite_display=suite_display,
+                suite_config_path=str(Path(ctx.primary_config).resolve()),
+                reg_level=reg_level,
+                backend=dispatch_backend,
+            )
         dir_summary_paths = self._resolve_coverage_dir_summary_paths(
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
@@ -1313,6 +1399,8 @@ class RtlBuddy:
         self._render_test_summary(
             "Test Results Summary", suite_results, metadata=metadata
         )
+        if reservation_findings and not self.machine:
+            self._render_reservation_advice(reservation_findings)
         if self.machine:
             payload = {
                 "results": [
@@ -1323,6 +1411,10 @@ class RtlBuddy:
             coverage = self._machine_coverage_payload(coverage_payload)
             if coverage is not None:
                 payload["coverage"] = coverage
+            if dispatch_backend is not None:
+                payload["reservation_advice"] = [
+                    finding.as_event() for finding in reservation_findings
+                ]
             self._emit_machine_result("test", exit_code, **payload)
         raise typer.Exit(exit_code)
 

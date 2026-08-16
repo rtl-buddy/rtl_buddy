@@ -12,6 +12,7 @@ build, with one of two backends:
 rb regression --dispatch slurm             # a cluster
 rb regression --dispatch local-parallel    # this machine, no scheduler
 rb randtest my_test 500 --dispatch slurm   # seed fan-out
+rb test my_test --dispatch slurm           # one test, on the cluster
 ```
 
 `--dispatch local` (the default) is the unchanged in-process path.
@@ -93,6 +94,36 @@ fail the build job — the other sims still run, and the failing test
 recompiles (and fails) in its own sim job. `--dispatch` cannot be combined
 with `--early-stop`, and dispatched jobs deliberately skip the per-tree
 lock (see [Known Issues](../known-issues.md#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)).
+
+## One test on the cluster: `rb test --dispatch`
+
+The three test-family commands take the same pair of flags, and they mean
+the same thing on each — only the *selection* differs:
+
+| Command | What is dispatched |
+|---|---|
+| `rb regression` | every suite in the regression config, at `-l`/`-s` |
+| `rb randtest <test> N` | one test, N seeds |
+| `rb test [<test>]` | one named test — or the suite, when no name is given |
+
+```bash
+rb -B verilator -M reg test my_test -c verif/sch/tests.yaml --dispatch slurm
+```
+
+This is the **same planning path**, narrowed: one plan manifest, one build
+job, one sim job gated on it with `afterok`, one collected envelope. It
+exists because a single-test cluster run is what iterating on one failing
+test needs, and because on a shared submit host a large top-level build is
+not something to run locally at all
+([#440](https://github.com/rtl-buddy/rtl_buddy/issues/440)).
+
+Everything `rb test` already carried composes unchanged: `-c`,
+`--reg-level` / `--start-level` (a test filtered out by level is skipped
+before the plan, exactly as in-process), `--share-build` (implied by
+`--dispatch` anyway), the `--coverage-*` set, and `-n` / `-l` seed
+selection, which travels to the job as its `--seed-mode`. Without
+`--dispatch` — and with no `cfg-dispatch.backend` — nothing about `rb test`
+changes.
 
 ## How arrays interact with the shared build
 

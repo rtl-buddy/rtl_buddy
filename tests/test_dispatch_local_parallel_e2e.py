@@ -35,7 +35,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run(work_dir: Path, fixture: Path, extra_args=(), extra_env=None):
+def _run(
+    work_dir: Path,
+    fixture: Path,
+    extra_args=(),
+    extra_env=None,
+    command=("regression", "-c", "regression.yaml"),
+    cwd_rel=".",
+):
     project = work_dir / "proj"
     shutil.copytree(fixture, project)
     env = dict(os.environ)
@@ -51,14 +58,12 @@ def _run(work_dir: Path, fixture: Path, extra_args=(), extra_env=None):
             "-m",
             "rtl_buddy",
             "--machine",
-            "regression",
-            "-c",
-            "regression.yaml",
+            *command,
             "--dispatch",
             "local-parallel",
             *extra_args,
         ],
-        cwd=project,
+        cwd=project / cwd_rel,
         capture_output=True,
         text=True,
         env=env,
@@ -149,3 +154,38 @@ def test_pool_expands_the_sweep_once_across_build_and_sim_jobs(tmp_path_factory)
     results = {r["name"]: r["result"] for r in envelope["payload"]["results"]}
     for name in ("wide_v0", "wide_v1", "wide_v2", "solo"):
         assert results.get(name) == "PASS", (name, results, diag)
+
+
+def test_pool_runs_a_single_test_from_its_suite_dir(tmp_path_factory):
+    """`rb test <name> --dispatch` end to end, with real subprocesses (#440).
+
+    The one thing the fake-backend tests cannot show: a real `rb _build-job`
+    and a real `rb _test-job` for a *single* named test, launched from the
+    suite directory the way anyone iterating on one failing test would. The
+    suite's other test must not be dragged along — that whole-suite cost is
+    what the throwaway-reg_config workaround charged.
+    """
+    work = tmp_path_factory.mktemp("local_parallel_single_test")
+    proc, envelope, project, diag = _run(
+        work,
+        _FIXTURE,
+        # `-M reg`: the fixture builder only declares a `reg` opts block,
+        # and `rb test` defaults the builder mode to `debug` (this is the
+        # unchanged default, not something dispatch alters).
+        command=("-M", "reg", "test", "alpha"),
+        cwd_rel="verif/blk",
+    )
+    assert proc.returncode == 0, diag
+    assert envelope is not None, diag
+    assert [(r["name"], r["result"]) for r in envelope["payload"]["results"]] == [
+        ("alpha", "PASS")
+    ], diag
+
+    # Exactly one sim job's envelope — "beta" was never planned, never built
+    # for, and never run.
+    envelopes = sorted(project.glob("verif/blk/artefacts/*/dispatch/result-*.json"))
+    assert [p.parent.parent.name for p in envelopes] == ["alpha"], diag
+    # ...gated on a real build job, which left its own log.
+    assert list(project.glob("verif/blk/artefacts/.dispatch/build-*.log")) != [], diag
+    # No scheduler was involved on this backend.
+    assert not (work / "jobs.db").exists(), "a Slurm CLI was invoked"
