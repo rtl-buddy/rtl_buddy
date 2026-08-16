@@ -42,6 +42,28 @@ def _is_banner_noise(line: str) -> bool:
     return any(pattern.match(line) for pattern in _BANNER_NOISE_RES)
 
 
+def is_queue_banner_line(line: str) -> bool:
+    """Does this *complete* line leave a queued sim still in the queue?
+
+    The queue banner's whole vocabulary: the marker itself, the polling
+    dots (and blank lines) VCS keeps appending, and the rest of the banner
+    such as the CTRL-C hint. Anything else is simulation output, which
+    means the seat was granted.
+
+    One implementation, two readers: the live monitor pauses the timeout
+    clock while it holds, and the post-hoc dispatch classifier (#405) uses
+    it to tell "killed while still queueing" from "queued, got a seat, ran,
+    then hung". A whole-file search for the marker cannot tell those two
+    apart — both contain it — and only the second must keep failing.
+    """
+    if _is_marker_line(line):
+        return True
+    if _DOTS_ONLY_RE.match(line):
+        # Also covers blank/whitespace-only lines: still queuing.
+        return True
+    return _is_banner_noise(line)
+
+
 def has_license_queue_marker(text: str) -> bool:
     """Did this captured output ever sit in the VCS license queue?
 
@@ -158,15 +180,10 @@ class VcsLicenseQueueMonitor:
                 self._enter_queue()
             return
 
-        stripped = line.strip()
-        if not stripped:
-            return  # blank line: still queuing
-        if _is_marker_line(line):
-            return  # still queuing
-        if _DOTS_ONLY_RE.match(line):
-            return  # VCS's queue-polling dots: still queuing
-        if _is_banner_noise(line):
-            return  # rest of the queue banner, e.g. the CTRL-C hint: still queuing
+        if is_queue_banner_line(line):
+            # A marker, the queue-polling dots (or a blank line), or the
+            # rest of the banner such as the CTRL-C hint: still queuing.
+            return
 
         # Real simulator output resumed: license was granted.
         queued_sec = time.time() - self._queue_started_at

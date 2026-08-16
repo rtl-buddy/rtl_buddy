@@ -2,15 +2,19 @@
 
 The rule these tests pin down is deliberately narrow: a job is retried
 only when the scheduler killed it for a *resource* reason AND its own
-artefacts show it was queueing for a license seat. Everything else — a
-hung testbench that hit the same TIMEOUT with no banner, a job that FAILED
-on its own merits, a backend with no scheduler state at all — keeps
-failing, because a vanished job must never score green.
+fresh output shows it was *still* queueing for a license seat when it
+died. Everything else — a hung testbench that hit the same TIMEOUT with no
+banner, one that queued, got its seat and then hung, a job that FAILED on
+its own merits, one whose build job never opened the gate, a days-old log
+left behind by a previous run — keeps failing, because a vanished job must
+never score green.
 """
 
 from __future__ import annotations
 
+import os
 import random
+import time
 from pathlib import Path
 
 import pytest
@@ -153,6 +157,131 @@ def test_an_unscheduled_backend_still_needs_the_banner(tmp_path):
     spec = _spec(tmp_path)
     _write_sim_log(spec, "sim started\nrunning...\n")
     assert classify_missing_result(spec, None, classifiers=ON, scheduled=False) is None
+
+
+# ---- queued when it died, or queued and then running? --------------------
+
+
+def test_a_sim_that_got_its_seat_and_then_hung_is_not_retried(tmp_path):
+    """The common shape, not a corner: most queued sims do get a seat.
+
+    Banner, then real simulator output, then the reservation runs out. The
+    seat was granted; whatever went wrong after that is the test's own, and
+    a whole-file search for the banner would resubmit it.
+    """
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, BANNER + "..\nVCS Simulation Report\nrunning...\n")
+    assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) is None
+    assert classify_missing_result(spec, None, classifiers=ON, scheduled=False) is None
+
+
+def test_the_banner_as_the_last_meaningful_content_is_retried(tmp_path):
+    """Everything after the last marker is queue-banner vocabulary."""
+    spec = _spec(tmp_path)
+    _write_sim_log(
+        spec,
+        "Chronologic VCS simulator copyright 1991-2024\n"
+        + BANNER
+        + "..........\n"
+        + "HIT CTRL-C to exit\n"
+        + BANNER
+        + "\n"
+        + "....",  # killed mid-poll: no trailing newline
+    )
+    assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
+
+
+def test_output_printed_before_the_banner_is_not_a_granted_seat(tmp_path):
+    """simv's startup lines precede the queue wait; they are not sim output."""
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, "starting sim\nloading design\n" + BANNER)
+    assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
+
+
+def test_a_capture_showing_the_seat_was_granted_outranks_one_that_does_not(tmp_path):
+    """The banner and what followed it can land in different files."""
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, BANNER + "VCS Simulation Report\n")
+    _write_sim_log(spec, BANNER, name="test.err")
+    assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) is None
+
+
+def test_a_partial_last_line_does_not_end_the_queue(tmp_path):
+    """A killed job's last line is truncated; only a complete line decides.
+
+    Same rule as the live monitor, which enters the queued state on a
+    partial marker line and leaves it only on a complete non-banner one.
+    """
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, BANNER.rstrip("\n"))  # banner with no newline yet
+    assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) == "license-queue"
+
+
+def test_sim_output_after_a_long_queue_wait_still_ends_the_queue(tmp_path, monkeypatch):
+    """The dots can outlast several read chunks; the line after them decides."""
+    monkeypatch.setattr(retry_module, "_CHUNK_CHARS", 64)
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, BANNER + "." * 300 + "\nVCS Simulation Report\n")
+    assert classify_missing_result(spec, "TIMEOUT", classifiers=ON) is None
+
+
+# ---- evidence has to be this attempt's ------------------------------------
+
+
+def test_a_stale_artefact_is_not_this_attempts_evidence(tmp_path):
+    """`artefacts/<test>/test.log` is never cleaned between runs.
+
+    Without a recency check a banner printed days ago would satisfy the
+    rule forever — including for a job that never started at all.
+    """
+    spec = _spec(tmp_path)
+    log = _write_sim_log(spec, BANNER)
+    submitted_at = time.time()
+    os.utime(log, (submitted_at - 2 * 86400, submitted_at - 2 * 86400))
+    assert (
+        classify_missing_result(
+            spec, "TIMEOUT", classifiers=ON, submitted_at=submitted_at
+        )
+        is None
+    )
+    assert (
+        classify_missing_result(
+            spec, None, classifiers=ON, scheduled=False, submitted_at=submitted_at
+        )
+        is None
+    )
+
+
+def test_an_artefact_written_after_submission_is_evidence(tmp_path):
+    spec = _spec(tmp_path)
+    submitted_at = time.time()
+    _write_sim_log(spec, BANNER)
+    assert (
+        classify_missing_result(
+            spec, "TIMEOUT", classifiers=ON, submitted_at=submitted_at
+        )
+        == "license-queue"
+    )
+
+
+def test_a_build_job_that_did_not_succeed_blocks_every_retry(tmp_path):
+    """A sim gated on a failed build never started, so it is not retryable.
+
+    Its artefacts cannot be this attempt's evidence, and resubmitting it
+    would run — with no gate at all — a job the head deliberately skipped.
+    """
+    spec = _spec(tmp_path)
+    _write_sim_log(spec, BANNER)
+    assert (
+        classify_missing_result(spec, "TIMEOUT", classifiers=ON, build_succeeded=False)
+        is None
+    )
+    assert (
+        classify_missing_result(
+            spec, None, classifiers=ON, scheduled=False, build_succeeded=False
+        )
+        is None
+    )
 
 
 def test_paths_searched_include_both_job_logs(tmp_path):

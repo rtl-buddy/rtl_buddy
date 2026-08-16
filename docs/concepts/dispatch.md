@@ -341,22 +341,45 @@ wrong; it never got to run.
 - the scheduler state is a **resource condition**: `TIMEOUT`, `NODE_FAIL`
   or `PREEMPTED` (a `FAILED` or `CANCELLED` job decided its own outcome
   and is never retried), **and**
-- the job's own artefacts show the **license-queue banner** — the same
-  `-licqueue` marker the compile phase already classifies on. rtl-buddy
-  looks in `test.log` / `test.err`, then the job's `rtl_buddy-*.log` and
-  the scheduler's log beside it.
+- the job's own output ends **inside the license queue**: after the last
+  `-licqueue` marker, everything the job captured is queue-banner
+  vocabulary — the repeated banner, the polling dots, the `HIT CTRL-C to
+  exit` hint, a truncated last line. rtl-buddy looks in `test.log` /
+  `test.err`, then the job's `rtl_buddy-*.log` and the scheduler's log
+  beside it, and only accepts files written since this attempt was
+  submitted (`artefacts/<test>/test.log` is keyed on the test, not on the
+  run, so an older one is a previous run's).
 
-A hung testbench reaches the same `TIMEOUT` with no banner, so it keeps
-failing — retrying it would re-run a genuine failure and burn the
-reservation twice. And a job that vanishes still fails when the budget
-runs out: **no retry ever turns a missing result green.** The exhausted
-row says how many attempts it got.
+The banner's *presence* is deliberately not the rule. Most jobs that
+print it go on to get a seat and run perfectly well — 376 of 657 in the
+run that motivated this — so a sim that queued, was granted its seat, ran
+and *then* hung would be resubmitted by a rule that only looked for the
+marker. The discriminator is the same one that pauses the `sim_timeout`
+clock live: a complete line outside the banner's vocabulary means the seat
+was granted. A testbench that hung after its seat has such a line; a
+testbench that hung without ever queueing has no marker at all. Neither is
+retried — retrying either would re-run a genuine failure and burn the
+reservation twice.
+
+A job is also never retried when its suite's **build job did not report
+success**. Such a sim never started (`afterok` cancelled it), so it has no
+evidence of its own to classify, and resubmitting it would launch a job
+the head deliberately skipped — ungated, because a retry carries no
+`afterok` edge (the build job has left the queue and an `afterok` on a job
+the scheduler has forgotten never becomes satisfiable). Requiring the gate
+to have opened is what keeps the retry safe: the shared build's stamp is
+on disk, so the retried element short-circuits its own compile exactly as
+the first attempt did.
+
+And a job that vanishes still fails when the budget runs out: **no retry
+ever turns a missing result green.** The exhausted row says how many
+attempts it got.
 
 On `local-parallel` there is no scheduler and no accounting source, so
-there is no state to require: the **banner alone** decides there. Nothing
-killed the job from outside, so a missing envelope from a sim that was
-demonstrably waiting for a seat is the same shape without a scheduler to
-name it.
+there is no state to require: the **queue evidence alone** decides there.
+Nothing killed the job from outside, so a missing envelope from a sim that
+was demonstrably still waiting for a seat is the same shape without a
+scheduler to name it.
 
 Retry covers **sim jobs only**. A build job's elaboration honours
 `-licqueue` the same way and can lose the same race, but a build kill
