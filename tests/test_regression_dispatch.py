@@ -27,6 +27,7 @@ from rtl_buddy.runner.test_results import (
     EarlyStopResults,
     TestPassResults,
 )
+from rtl_buddy.seed_mode import SeedMode
 
 
 class _FakeBackend(DispatchBackend):
@@ -1891,6 +1892,7 @@ def test_a_head_side_bug_in_the_retry_path_is_not_swallowed(
     assert isinstance(result.exception, TypeError), result.output
     assert "giving up on retry attempt" not in result.output
 
+
 # ------------------------------------------- #440: single-test dispatch
 
 
@@ -2031,7 +2033,10 @@ def test_single_test_dispatch_rejects_early_stop(
         ["--early-stop", "comp", "test", "basic", "--dispatch", "slurm"]
     )
     assert isinstance(result.exception, FatalRtlBuddyError), result.output
-    assert "cannot be combined with --dispatch" in str(result.exception)
+    assert "cannot be combined with dispatch (--dispatch slurm)" in str(
+        result.exception
+    )
+    assert "run without --dispatch" in str(result.exception)
     assert fake_backend.submitted == []
 
 
@@ -2042,16 +2047,177 @@ def test_jobs_on_test_is_validated_against_the_backend(minimal_project: Path):
     assert "max-jobs-per-array" in str(result.exception)
 
 
-def test_cfg_dispatch_backend_applies_to_test(
+def test_jobs_on_test_without_dispatch_is_rejected_not_dropped(
+    minimal_project: Path,
+):
+    """`rb test` never reads `cfg-dispatch.backend`, so a bare `-j` sizes a
+    pool that will not exist — reject it rather than drop it (#360)."""
+    result, _ = _invoke(["test", "basic", "-j", "4"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "the backend is local" in str(result.exception)
+
+
+def test_dispatch_flags_are_validated_before_the_list_short_circuit(
     minimal_project: Path,
     fake_backend: _FakeBackend,
 ):
+    """`--list` exits without running anything, so a dispatch flag beside it
+    is unusable — and an unusable flag is rejected, never dropped (#360)."""
+    result, _ = _invoke(["test", "--list", "-j", "4"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "the backend is local" in str(result.exception)
+
+    result, _ = _invoke(["test", "--list", "--dispatch", "slurm"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--list cannot be combined with --dispatch slurm" in str(result.exception)
+    assert fake_backend.submitted == []
+
+    # `--dispatch local` is the in-process default spelled out: no conflict.
+    result, _ = _invoke(["test", "--list", "--dispatch", "local"])
+    assert result.exit_code == 0, result.output
+    assert "basic" in result.output
+
+
+def test_cfg_dispatch_backend_does_not_apply_to_test(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """Dispatching `rb test` is opt-in per invocation (#440 review).
+
+    `rb regression` and `rb randtest` default their backend from
+    `cfg-dispatch.backend`; `rb test` deliberately does not. It is the local
+    iteration command, and a project that set `backend: slurm` for its
+    regressions must not find single-test runs queueing after an upgrade —
+    nor be told to drop a `--dispatch` flag it never passed.
+    """
     root_cfg = minimal_project / "root_config.yaml"
     root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
     _mark_stub_builder_verilator(minimal_project)
-    result, _ = _invoke(["test", "basic"])
+    stub_build_runner.canned = TestPassResults(name="basic/results")
+
+    result, rb = _invoke(["test", "basic"])
     assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+    assert fake_backend.build_submitted == []
+    assert stub_build_runner.inits, "expected an in-process TestRunner"
+    assert rb.share_build is False
+
+
+def test_cfg_dispatch_backend_leaves_early_stop_on_test_alone(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    fake_backend: _FakeBackend,
+):
+    """The corollary: `rb test --early-stop` keeps working under a project
+    that configured a cluster backend, instead of failing with advice to
+    drop a `--dispatch` flag the command line never carried."""
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
+    result, _ = _invoke(["--early-stop", "comp", "test", "basic"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.submitted == []
+
+
+def test_cfg_dispatch_settings_still_configure_an_opted_in_test_run(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """Only `backend` is ignored: once `--dispatch` opts in, the rest of the
+    `cfg-dispatch` block configures the run as it does everywhere else."""
+    _add_dispatch_resources(
+        minimal_project,
+        "\ncfg-dispatch:\n"
+        "  backend: slurm\n"
+        '  resources:\n    cpus: 3\n    mem: 7G\n    time: "00:20:00"\n',
+    )
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    (spec,) = fake_backend.submitted
+    assert (spec.resources.cpus, spec.resources.mem) == (3, "7G")
+
+
+def test_cfg_dispatch_backend_early_stop_error_names_the_config(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """On the commands that *do* read the config, the rejection has to name
+    it: "run without --dispatch" is unactionable when no flag was passed."""
+    root_cfg = minimal_project / "root_config.yaml"
+    root_cfg.write_text(root_cfg.read_text() + "\ncfg-dispatch:\n  backend: slurm\n")
+    result, _ = _invoke(["--early-stop", "comp", "regression", "-c", "regression.yaml"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "cfg-dispatch.backend: fake" in str(result.exception)
+    assert "pass --dispatch local" in str(result.exception)
+    assert fake_backend.submitted == []
+
+
+def test_single_test_dispatch_without_a_shareable_builder_has_no_build_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+):
+    """One test whose builder cannot share a build gets no build job (#358).
+
+    `rb test` plans one row per entry, so nothing fans out in-job: the lone
+    sim job compiles inside its own allocation and is ungated — the shape
+    the "one build job, one gated sim job" summary does *not* describe.
+    """
+    # No `_mark_stub_builder_verilator`: the fixture's inferred "echo"
+    # family has no shared-build support.
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    assert fake_backend.build_submitted == []
     assert [spec.test_name for spec in fake_backend.submitted] == ["basic"]
+    assert fake_backend.dependencies == [None]
+
+
+@pytest.mark.parametrize(
+    "flag, expected_mode",
+    [("-n", SeedMode.NEW), ("-l", SeedMode.REPLAY)],
+)
+def test_seed_selection_travels_to_the_dispatched_job(
+    minimal_project: Path,
+    fake_backend: _FakeBackend,
+    flag: str,
+    expected_mode: SeedMode,
+):
+    """`-n` / `-l` are `rb test` options that only the job can act on, so
+    they have to reach it as its `--seed-mode` (documented contract)."""
+    _mark_stub_builder_verilator(minimal_project)
+    result, _ = _invoke(["test", "basic", flag, "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    (spec,) = fake_backend.submitted
+    assert spec.seed_mode == expected_mode
+    # One unnumbered run either way: `rb test` never fans out over seeds.
+    assert spec.run_id is None
+    assert spec.replay_run_id is None
+
+
+def test_an_interrupted_single_test_wait_cancels_its_jobs(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Ctrl-C on the head must not leave the build and sim jobs running
+    after it exits and releases the tree lock (#361)."""
+
+    class _InterruptBackend(_FakeBackend):
+        def wait_all(self, handles, *, extra_wait=0.0):
+            self.waited = True
+            raise KeyboardInterrupt
+
+        def cancel_all(self, handles):
+            self.cancelled = [handle.job_id for handle in handles]
+
+    backend = _InterruptBackend()
+    _use_backend(monkeypatch, backend)
+    _mark_stub_builder_verilator(minimal_project)
+
+    result, _ = _invoke(["test", "basic", "--dispatch", "slurm"])
+    # The interrupt is reported as the conventional 128+SIGINT exit...
+    assert result.exit_code == 130, result.output
+    # ...and both jobs were cancelled on the way out, build included.
+    assert backend.cancelled == ["fake-build", "fake-1"]
 
 
 def test_single_test_dispatch_announces_its_job_before_waiting(

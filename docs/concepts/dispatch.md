@@ -110,20 +110,33 @@ the same thing on each — only the *selection* differs:
 rb -B verilator -M reg test my_test -c verif/sch/tests.yaml --dispatch slurm
 ```
 
-This is the **same planning path**, narrowed: one plan manifest, one build
-job, one sim job gated on it with `afterok`, one collected envelope. It
-exists because a single-test cluster run is what iterating on one failing
-test needs, and because on a shared submit host a large top-level build is
-not something to run locally at all
+This is the **same planning path**, narrowed: one plan manifest, one sim
+job, one collected envelope — with a build job in front of it, gated with
+`afterok`, whenever the test's builder can share a build. When it cannot
+(a VCS builder, or one pinned with an absolute `builder-simv:`) there is no
+build job at all and the single sim job compiles inside its own allocation,
+ungated — the same rule the whole page follows,
+[below](#how-arrays-interact-with-the-shared-build). It exists because a
+single-test cluster run is what iterating on one failing test needs, and
+because on a shared submit host a large top-level build is not something to
+run locally at all
 ([#440](https://github.com/rtl-buddy/rtl_buddy/issues/440)).
 
 Everything `rb test` already carried composes unchanged: `-c`,
 `--reg-level` / `--start-level` (a test filtered out by level is skipped
 before the plan, exactly as in-process), `--share-build` (implied by
 `--dispatch` anyway), the `--coverage-*` set, and `-n` / `-l` seed
-selection, which travels to the job as its `--seed-mode`. Without
-`--dispatch` — and with no `cfg-dispatch.backend` — nothing about `rb test`
-changes.
+selection, which travels to the job as its `--seed-mode`.
+
+**Dispatching `rb test` is opt-in per invocation.** It is the one command
+that does *not* take its backend from `cfg-dispatch.backend`: `rb test` is
+the local iteration command, and a project that configured a cluster
+backend for its regressions should not find single-test runs queueing (nor
+`--early-stop` rejected) because of a config key it set for something else.
+Without `--dispatch` on the command line, nothing about `rb test` changes.
+The rest of the `cfg-dispatch` block — `resources`, `compile`, `retry`,
+`jobs`, `max-wait`, … — configures the run as usual once `--dispatch`
+selects a backend.
 
 ## How arrays interact with the shared build
 

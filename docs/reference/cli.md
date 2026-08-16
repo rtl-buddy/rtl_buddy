@@ -129,9 +129,11 @@ Usage: rtl-buddy test [OPTIONS] [TEST_NAME]
 │ --reg-level                            INTEGER  regression level to stop at          │
 │ --start-level                          INTEGER  regression level to start at         │
 │ --dispatch                             TEXT     execution backend for the test run   │
-│                                                 (local, local-parallel, slurm)       │
-│                                                 [default: (cfg-dispatch backend,     │
-│                                                 else local)]                         │
+│                                                 (local, local-parallel, slurm);      │
+│                                                 opt-in per run —                     │
+│                                                 cfg-dispatch.backend does not        │
+│                                                 redirect rb test                     │
+│                                                 [default: (local)]                   │
 │ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
 │                                                 local-parallel                       │
 │                                                 [default: (cfg-dispatch jobs, else   │
