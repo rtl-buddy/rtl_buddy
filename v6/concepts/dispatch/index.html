@@ -639,6 +639,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Watching a run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-each-log-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where each log lives
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1700,6 +1717,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Watching a run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#where-each-log-lives" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where each log lives
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2137,9 +2171,9 @@ many jobs as it has elements. At most one line per interval, so a 10 s
 </li>
 </ol>
 <p><code>progress-interval: 0</code> opts a developer's terminal out of all three
-console lines; <code>rtl_buddy.log</code> still records every change at INFO (with
-<a href="../../known-issues/#under-dispatch-the-jobs-and-the-head-write-the-same-suitertl_buddylog">one caveat</a>
-about the jobs sharing that file today). There
+console lines; the head's <code>rtl_buddy.log</code> still records every change at
+INFO, and it is the head's alone — see
+<a href="#where-each-log-lives">Where each log lives</a>. There
 is no CLI flag for either knob — CI sets them once in <code>root_config.yaml</code>,
 where the value belongs to the site rather than to the invocation.</p>
 <div class="admonition note">
@@ -2150,6 +2184,43 @@ half-hour regression printed nothing at all between "Running
 regression from …" and the summary
 (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/435">#435</a>).</p>
 </div>
+<h3 id="where-each-log-lives">Where each log lives</h3>
+<p>Head and jobs are separate processes, so they get separate log files
+(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/437">#437</a>) — a job never
+opens the head's, because a process's first open of a log path truncates
+it:</p>
+<table>
+<thead>
+<tr>
+<th>Process</th>
+<th>rtl_buddy log</th>
+<th>Beside it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>head</td>
+<td><code>&lt;suite&gt;/rtl_buddy.log</code> (and <code>dirname(regression.yaml)/rtl_buddy.log</code>, which a regression re-anchors back to between suites)</td>
+<td>the console</td>
+</tr>
+<tr>
+<td>sim job</td>
+<td><code>artefacts/&lt;test&gt;/dispatch/rtl_buddy-&lt;tag&gt;.log</code></td>
+<td><code>result-&lt;tag&gt;.json</code>, <code>slurm-&lt;tag&gt;.log</code> (<code>local-parallel-&lt;tag&gt;.log</code>)</td>
+</tr>
+<tr>
+<td>build job</td>
+<td><code>artefacts/.dispatch/build-rtl_buddy-&lt;pid&gt;.log</code></td>
+<td><code>build-result-&lt;pid&gt;.json</code>, <code>build-&lt;pid&gt;.log</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>&lt;tag&gt;</code> is the run id (<code>0001</code>) or <code>single</code> for an unnumbered run, and
+<code>&lt;pid&gt;</code> is the head's. The scheduler's log holds the job's raw
+stdout/stderr; the <code>rtl_buddy-*.log</code> beside it holds the same events the
+head records for itself, as JSON Lines — a dispatched job runs in
+<code>--machine</code> mode. A dispatch failure names both in its
+result description, so a failed row leads to the files without a search.</p>
 <h2 id="per-test-reservations">Per-test reservations</h2>
 <p>Not every test deserves the same slot. Override the reservation per
 testbench or per test in <code>tests.yaml</code>, using the same fields; the
