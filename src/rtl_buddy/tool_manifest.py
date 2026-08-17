@@ -701,16 +701,21 @@ def _builtin_manifest() -> list[ToolSpec]:
             # PEP 440 dev/local segments ("0.1.dev1+gcc59b55") so
             # editable installs keep a full fingerprint.
             version_regex=r"rb-graph-extract\s+v?(\d[\w.+]*)",
-            minimum_version=None,
+            # Mirrors the graph-extract extra's `>= 0.1.0` floor for the
+            # installs that bypass pip's resolver (uv tool install,
+            # editable). Dev builds of 0.1 ("0.1.dev1+g…") still satisfy
+            # it: _version_satisfies compares digit tuples, and the dev
+            # segment's digits only extend the tuple past the floor.
+            minimum_version="0.1.0",
             detection=(
                 PathDetector(),
                 PythonPackageDetector("rtl-buddy-graph-extract"),
             ),
             install_hint={
-                "any": "pip install 'rtl_buddy[graph-extract]'  (or uv pip "
-                "install rtl-buddy-graph-extract) "
-                "(optional — the bundled binding-tier extractor; rb graph "
-                "build writes the design + config tiers without it)",
+                "any": 'uv add "rtl_buddy[graph-extract]"  (or pip install '
+                '"rtl_buddy[graph-extract]"; optional — the bundled '
+                "binding-tier extractor; rb graph build writes the design "
+                "+ config tiers without it)",
             },
             used_by=("graph",),
             optional=True,

@@ -931,6 +931,12 @@ def test_graph_extract_spec_is_optional_with_anchored_regex():
     m = re.search(spec.version_regex, "rb-graph-extract 0.1.dev1+g0d74f48e0")
     assert m is not None and m.group(1) == "0.1.dev1+g0d74f48e0"
     assert re.search(spec.version_regex, "rb-graph-extract (python 3.12) 0.2.0") is None
+    # The floor mirrors the graph-extract extra's `>= 0.1.0` for installs
+    # that bypass pip's resolver — and a dev build of 0.1 must satisfy it
+    # (the digit-tuple comparator extends past the floor), or an editable
+    # checkout would probe as "outdated".
+    assert spec.minimum_version == "0.1.0"
+    assert tm._version_satisfies("0.1.dev1+g0d74f48e0", spec.minimum_version)
 
 
 def test_rtl_buddy_view_is_required_for_graph():

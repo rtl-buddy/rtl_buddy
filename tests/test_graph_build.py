@@ -34,6 +34,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from packaging.requirements import Requirement
 from typer.testing import CliRunner
 
 from rtl_buddy.graph import build as graph_build
@@ -1541,7 +1542,11 @@ def test_graph_extract_is_a_published_extra():
         (Path(__file__).parent.parent / "pyproject.toml").read_text()
     )
     extras = pyproject["project"]["optional-dependencies"]
-    assert extras["graph-extract"] == ["rtl-buddy-graph-extract >= 0.1.0"]
+    # Parse rather than string-compare: the invariant is "one dependency,
+    # this name, this floor" — not the author's whitespace.
+    (req,) = [Requirement(s) for s in extras["graph-extract"]]
+    assert req.name == "rtl-buddy-graph-extract"
+    assert str(req.specifier) == ">=0.1.0"
     assert "graph-extract" not in pyproject.get("dependency-groups", {})
     assert "rtl-buddy-graph-extract" not in pyproject.get("tool", {}).get("uv", {}).get(
         "sources", {}
