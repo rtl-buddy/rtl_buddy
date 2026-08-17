@@ -34,6 +34,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from packaging.requirements import Requirement
 from typer.testing import CliRunner
 
 from rtl_buddy.graph import build as graph_build
@@ -1529,23 +1530,32 @@ def test_resolve_extractor_none_when_not_installed(monkeypatch):
     assert extract_mod.resolve_extractor() is None
 
 
-def test_graph_extract_is_an_unpublished_dependency_group():
-    """Groups stay out of wheel metadata; extras do not. The extractor
-    has no PyPI release, so advertising it as an extra ships a
-    dependency pip cannot resolve — exactly what v6.26.0 did. This is
-    the automated guard on that invariant, and the test that should
-    FAIL in the promotion PR (rtl-buddy-graph-extract#1), which is when
-    the extra becomes legal and gets its version floor."""
+def test_graph_extract_is_a_published_extra():
+    """The extra must only exist while pip can resolve it — v6.26.0
+    advertised `rtl_buddy[graph-extract]` before the extractor had a
+    PyPI release, and the install failed at resolution. Since
+    rtl-buddy-graph-extract 0.1.0 landed (rtl-buddy-graph-extract#1)
+    the extra is legal: assert it is a real floor-carrying extra, that
+    the interim dependency group is gone, and that no uv git pin
+    shadows the PyPI resolution."""
     pyproject = tomllib.loads(
         (Path(__file__).parent.parent / "pyproject.toml").read_text()
     )
-    assert "graph-extract" not in pyproject["project"].get("optional-dependencies", {})
-    assert "graph-extract" in pyproject["dependency-groups"]
+    extras = pyproject["project"]["optional-dependencies"]
+    # Parse rather than string-compare: the invariant is "one dependency,
+    # this name, this floor" — not the author's whitespace.
+    (req,) = [Requirement(s) for s in extras["graph-extract"]]
+    assert req.name == "rtl-buddy-graph-extract"
+    assert str(req.specifier) == ">=0.1.0"
+    assert "graph-extract" not in pyproject.get("dependency-groups", {})
+    assert "rtl-buddy-graph-extract" not in pyproject.get("tool", {}).get("uv", {}).get(
+        "sources", {}
+    )
 
 
 @pytest.mark.skipif(
     shutil.which(extract_mod.GRAPH_EXTRACT_BINARY) is None,
-    reason="rb-graph-extract not installed (uv sync --group graph-extract)",
+    reason="rb-graph-extract not installed (uv sync --extra graph-extract)",
 )
 def test_resolve_extractor_against_the_real_binary():
     """Discovery for real, no stubs and no hand-fed strings: the manifest
@@ -1575,7 +1585,7 @@ def test_resolve_extractor_against_the_real_binary():
 
 @pytest.mark.skipif(
     shutil.which(extract_mod.GRAPH_EXTRACT_BINARY) is None,
-    reason="rb-graph-extract not installed (uv sync --group graph-extract)",
+    reason="rb-graph-extract not installed (uv sync --extra graph-extract)",
 )
 def test_bundled_extractor_end_to_end(graph_project: Path, tmp_path: Path):
     """The real rb-graph-extract binary, not a stub, reached the same way

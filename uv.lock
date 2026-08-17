@@ -1459,6 +1459,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+graph-extract = [
+    { name = "rtl-buddy-graph-extract" },
+]
 mcp = [
     { name = "mcp" },
 ]
@@ -1482,9 +1485,6 @@ docs = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
 ]
-graph-extract = [
-    { name = "rtl-buddy-graph-extract" },
-]
 lint = [
     { name = "ruff" },
 ]
@@ -1503,12 +1503,13 @@ requires-dist = [
     { name = "pyserde", extras = ["yaml"], specifier = ">=0.27.0" },
     { name = "pywellen", specifier = ">=0.20.0,<0.25" },
     { name = "rich", specifier = ">=14.0.0" },
+    { name = "rtl-buddy-graph-extract", marker = "extra == 'graph-extract'", specifier = ">=0.1.0" },
     { name = "rtl-buddy-xeno", extras = ["slang", "verible"], marker = "extra == 'mut'", specifier = ">=0.1.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.15" },
     { name = "typer", specifier = ">=0.19.2" },
     { name = "websockets", specifier = ">=12.0" },
 ]
-provides-extras = ["mcp", "mut"]
+provides-extras = ["graph-extract", "mcp", "mut"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1526,7 +1527,6 @@ docs = [
     { name = "mkdocs", specifier = ">=1.6.0" },
     { name = "mkdocs-material", specifier = ">=9.5.0" },
 ]
-graph-extract = [{ name = "rtl-buddy-graph-extract", git = "https://github.com/rtl-buddy/rtl-buddy-graph-extract" }]
 lint = [{ name = "ruff", specifier = ">=0.11.0" }]
 test = [
     { name = "mcp", specifier = ">=1.2.0" },
@@ -1537,8 +1537,12 @@ test = [
 
 [[package]]
 name = "rtl-buddy-graph-extract"
-version = "0.1.dev1+g0d74f48e0"
-source = { git = "https://github.com/rtl-buddy/rtl-buddy-graph-extract#0d74f48e0e1e89a8fd37d4d877f2f39498249391" }
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/0b/cd5539a847c0a549fd4bfb1c127da24ea9b23f493f343a3c7180b1ad6706/rtl_buddy_graph_extract-0.1.0.tar.gz", hash = "sha256:cc3397e2064a3b809dfee55a4b746d0ce6bb306f49bd1d0c3d8f6e287930b300", size = 21099, upload-time = "2026-08-16T14:18:33.783Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/36/1af1fd202203e11526e4c8a697b3e7d5fb4b577ed48cf39c3d8026789d3d/rtl_buddy_graph_extract-0.1.0-py3-none-any.whl", hash = "sha256:d53db953973d5202da4b62d280e51e3abbe2d9e7f335906a2fca86cac1a24eae", size = 12684, upload-time = "2026-08-16T14:18:32.61Z" },
+]
 
 [[package]]
 name = "rtl-buddy-view"
