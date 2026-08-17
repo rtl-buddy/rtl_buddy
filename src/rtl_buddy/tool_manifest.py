@@ -707,8 +707,8 @@ def _builtin_manifest() -> list[ToolSpec]:
                 PythonPackageDetector("rtl-buddy-graph-extract"),
             ),
             install_hint={
-                "any": "uv pip install "
-                "git+https://github.com/rtl-buddy/rtl-buddy-graph-extract "
+                "any": "pip install 'rtl_buddy[graph-extract]'  (or uv pip "
+                "install rtl-buddy-graph-extract) "
                 "(optional — the bundled binding-tier extractor; rb graph "
                 "build writes the design + config tiers without it)",
             },

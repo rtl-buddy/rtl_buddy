@@ -33,14 +33,11 @@ jobs:
           cache-dependency-glob: uv.lock
 
       - name: Install test dependencies
-        # --group graph-extract installs the bundled binding-tier
-        # extractor (git-pinned until its first PyPI release), so the
-        # extractor subprocess path and the merge-graphs cross-check
+        # --extra graph-extract installs the bundled binding-tier
+        # extractor (from PyPI since rtl-buddy-graph-extract 0.1.0), so
+        # the extractor subprocess path and the merge-graphs cross-check
         # run for real here instead of being skip-if-missing everywhere.
-        # A dependency group, not an extra: groups stay out of the
-        # published wheel metadata, so the wheel never advertises a
-        # dependency PyPI cannot resolve.
-        run: uv sync --group test --group graph-extract
+        run: uv sync --group test --extra graph-extract
 
       - name: Run pytest with coverage
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml

@@ -12,7 +12,7 @@ Keep this page alive. When you hit or introduce a quirk, write it down rather th
 
 The v6.26.0 wheel advertises a `graph-extract` extra whose dependency, `rtl-buddy-graph-extract`, has no PyPI release yet — so `pip install "rtl_buddy[graph-extract]"` (or `uv add "rtl_buddy[graph-extract]"`) fails with a resolution error on that version. Nothing is wrong with your environment.
 
-Workaround on v6.26.0: install rtl_buddy without the extra and add the extractor directly with `uv pip install git+https://github.com/rtl-buddy/rtl-buddy-graph-extract` — `rb graph build` discovers it on PATH; without it the binding tier is simply reported as skipped. Later releases do not advertise the extra at all (the dependency moved to an unpublished dev group); it will return as a real extra once the extractor's first PyPI release lands.
+Workaround on v6.26.0: install rtl_buddy without the extra and add the extractor directly with `uv pip install rtl-buddy-graph-extract` — `rb graph build` discovers it on PATH; without it the binding tier is simply reported as skipped. Releases between v6.26.1 and v6.33.x do not advertise the extra at all (the dependency moved to an unpublished dev group); since rtl-buddy-graph-extract 0.1.0 landed on PyPI, the extra is back as a normal `rtl_buddy[graph-extract]` with a version floor.
 
 ## Coverage follows the platform builder, not a per-test/suite `builder:`
 
