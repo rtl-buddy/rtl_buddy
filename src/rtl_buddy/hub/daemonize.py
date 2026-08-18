@@ -181,9 +181,10 @@ def wait_for_record(
     log tail attached, so the user sees the child's real error) or when
     the timeout expires.
     """
-    deadline = time.monotonic() + (
-        timeout_s if timeout_s is not None else ready_timeout_s()
-    )
+    # Resolved once: reading the env var again in the timeout message below
+    # would report a number the deadline was not computed from.
+    effective_timeout_s = timeout_s if timeout_s is not None else ready_timeout_s()
+    deadline = time.monotonic() + effective_timeout_s
     while True:
         record = discovery.read_record(project_root)
         if record is not None and record.pid == proc.pid:
@@ -207,7 +208,7 @@ def wait_for_record(
 
         if time.monotonic() >= deadline:
             raise DaemonStartError(
-                f"timed out after {timeout_s if timeout_s is not None else ready_timeout_s():.0f}s "
+                f"timed out after {effective_timeout_s:.0f}s "
                 f"waiting for the detached hub (pid {proc.pid}) to write "
                 f"{discovery.discovery_path(project_root)}.",
                 log_tail=tail_log(log_path),

@@ -308,6 +308,92 @@ def test_cli_daemon_defers_all_start_work_to_the_child(
     assert "127.0.0.1:6666" in result.output
 
 
+def test_cli_daemon_absolutises_relative_paths_before_the_handoff(
+    project_root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A relative path must not change meaning across the detach.
+
+    The child runs with ``cwd=project_root`` while the user typed the path
+    against the invocation cwd, so anything forwarded verbatim would resolve
+    somewhere else entirely in the daemon. `--axi-perf-from` is the sharpest
+    case: its existence check runs in the parent, against the invocation
+    cwd, so an unresolved hand-off means the preflight no longer guards the
+    file the child opens.
+    """
+    from rtl_buddy.hub import cli as hub_cli
+
+    monkeypatch.setattr(
+        hub_cli.hub_view_builder,
+        "build_view_json",
+        lambda *a, **k: None,
+        raising=False,
+    )
+
+    workdir = project_root / "design" / "example_block" / "verif"
+    workdir.mkdir(parents=True)
+    bundle = project_root / "viewer" / "dist"
+    bundle.mkdir(parents=True)
+    (bundle / "index.html").write_text("<html></html>")
+    perf = project_root / "viewer" / "axi-perf.json"
+    perf.write_text("{}")
+    monkeypatch.chdir(workdir)
+
+    seen: dict[str, object] = {}
+
+    def _fake_start(root, **kwargs):
+        seen.update(kwargs)
+        return discovery.HubRecord(
+            v=1,
+            pid=999,
+            tcp="127.0.0.1:5555",
+            server_version="0.0.0+test",
+            project_root=str(root),
+            started_at="2026-01-01T00:00:00+00:00",
+            http_port=6666,
+        )
+
+    monkeypatch.setattr(daemonize, "start_detached", _fake_start)
+
+    result = CliRunner().invoke(
+        hub_app,
+        [
+            "start",
+            "--daemon",
+            "--serve-viewer",
+            "--viewer-bundle",
+            "../../../viewer/dist",
+            "--axi-perf-from",
+            "../../../viewer/axi-perf.json",
+            "--http-port",
+            "6666",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["viewer_bundle"] == bundle.resolve()
+    assert seen["axi_perf_from"] == perf.resolve()
+
+
+def test_wait_for_record_timeout_message_reports_the_deadline_it_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The reported number is the one the deadline was computed from.
+
+    Reading `$RTL_BUDDY_HUB_DAEMON_TIMEOUT` a second time to format the
+    message would let the two disagree — and a message that names a timeout
+    the code did not use sends the reader looking in the wrong place.
+    """
+    monkeypatch.setenv(daemonize.READY_TIMEOUT_ENV, "0.05")
+    proc = _FakeProc(pid=4242)
+
+    with pytest.raises(daemonize.DaemonStartError) as excinfo:
+        daemonize.wait_for_record(tmp_path, proc=proc, log_path=tmp_path / "hub.log")
+
+    # Env is re-read as something else; the message must still say 0s, the
+    # value the deadline came from.
+    monkeypatch.setenv(daemonize.READY_TIMEOUT_ENV, "999")
+    assert "timed out after 0s" in str(excinfo.value)
+
+
 def test_cli_daemon_reports_a_failed_child_with_the_log_tail(
     project_root: Path, monkeypatch: pytest.MonkeyPatch
 ):

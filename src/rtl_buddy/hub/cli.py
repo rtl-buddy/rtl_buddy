@@ -259,16 +259,27 @@ def cmd_start(
         # the ordinary --foreground path, which is both fork-safe (see
         # daemonize's module docstring) and the code path already under
         # test. The parent only waits for hub.json to appear.
+        #
+        # Path arguments are absolutised at the handoff. Typer hands them
+        # over unresolved, and the child runs with `cwd=project_root`, so a
+        # relative `--viewer-bundle ../../../viewer/dist` given from a
+        # `verif/` subdirectory would mean one thing in the foreground and a
+        # different (usually non-existent) thing in the daemon. Worse for
+        # `--axi-perf-from`, whose existence check above runs against the
+        # invocation cwd: without this, the preflight would no longer be
+        # guarding the file the child opens. Guidelines: explicit CLI paths
+        # stay relative to `invocation_cwd`, and a path handed to another
+        # process is made absolute.
         _start_daemon(
             project_root,
             cfg,
             serve_viewer=serve_viewer,
-            viewer_bundle=viewer_bundle,
+            viewer_bundle=viewer_bundle.resolve() if viewer_bundle else None,
             listen_port=listen_port,
             http_port=http_port,
             model=model,
-            models_file=models_file,
-            axi_perf_from=axi_perf_from,
+            models_file=models_file.resolve() if models_file else None,
+            axi_perf_from=axi_perf_from.resolve() if axi_perf_from else None,
         )
         return
 
