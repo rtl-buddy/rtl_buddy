@@ -13,6 +13,9 @@ Covers:
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -185,8 +188,8 @@ def test_write_output_anchors_test_filelist_on_explicit_suite_dir(
         ln for ln in text.splitlines() if ln and "tb.sv" in ln and "+incdir+" not in ln
     ]
     assert tb_lines, f"tb.sv not found in {text!r}"
-    import os
 
+    assert not os.path.isabs(tb_lines[0])
     resolved = os.path.normpath(os.path.join(str(artefact_dir), tb_lines[0]))
     assert resolved == str((suite_dir / "tb.sv").resolve())
 
@@ -250,6 +253,105 @@ def test_write_output_no_escape_warning_for_in_tree_sources(tmp_path: Path):
 
     assert run_f.is_file()
     assert "resolve outside the project root" not in log_path.read_text()
+
+
+def _nested_worktree_repro(tmp_path: Path):
+    """Build the path geometry from #457, including an ancestor with spaces."""
+    primary = tmp_path / "project with spaces"
+    primary_source = primary / "design" / "dut.sv"
+    primary_source.parent.mkdir(parents=True)
+    primary_source.write_text("module primary_dut; endmodule\n")
+
+    worktree = primary / ".claude" / "worktrees" / "feature"
+    (worktree / ".git").mkdir(parents=True)
+    (worktree / "root_config.yaml").write_text("{}\n")
+    worktree_source = worktree / "design" / "dut.sv"
+    worktree_source.parent.mkdir()
+    worktree_source.write_text("module dut; endmodule\n")
+    (worktree / "common").mkdir()
+    (worktree / "lib").mkdir()
+
+    suite = worktree / "verif" / "block"
+    suite.mkdir(parents=True)
+    testbench = suite / "tb_top.sv"
+    testbench.write_text("module tb_top; dut u_dut(); endmodule\n")
+    output_dir = suite / "artefacts" / "basic"
+    output_dir.mkdir(parents=True)
+
+    model = ModelConfig(
+        name="dut",
+        filelist=["-v dut.sv", "+libext+.sv"],
+        path=str(worktree / "design" / "models.yaml"),
+    )
+    run_f = output_dir / "run.f"
+    filelist = VlogFilelist(name="t", model_cfg=model, output_path=str(run_f))
+    filelist.write_output(
+        unroll=True,
+        absolute_sources=True,
+        test_filelist=[
+            "+incdir+../../common",
+            "-y ../../lib",
+            "+define+WIDTH=8",
+            "tb_top.sv",
+        ],
+        suite_dir=str(suite),
+    )
+    return primary_source, worktree_source, testbench, run_f
+
+
+def test_write_output_absolute_sources_blocks_nested_worktree_composition(
+    tmp_path: Path,
+):
+    """Explicit sources are pinned while search options retain their spelling."""
+    primary_source, worktree_source, testbench, run_f = _nested_worktree_repro(tmp_path)
+    output_dir = run_f.parent
+    lines = run_f.read_text().splitlines()
+
+    assert f'-v "{worktree_source}"' in lines
+    assert f'"{testbench}"' in lines
+    assert "+incdir+../../../../common" in lines
+    assert "-y ../../../../lib" in lines
+    assert "+define+WIDTH=8" in lines
+    assert "+libext+.sv" in lines
+
+    # Before #457, Verilator tried this composed candidate before its cwd
+    # fallback. It exists in the primary checkout, so the wrong source won.
+    old_source_entry = os.path.relpath(worktree_source, output_dir)
+    incdir_entry = next(
+        line.removeprefix("+incdir+") for line in lines if line.startswith("+incdir+")
+    )
+    composed = Path(os.path.normpath(output_dir / incdir_entry / old_source_entry))
+    assert composed == primary_source
+
+
+@pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
+def test_verilator_compiles_nested_worktree_source_from_absolute_run_f(tmp_path: Path):
+    """The real builder consumes the worktree source, including a spaced path."""
+    primary_source, worktree_source, _testbench, run_f = _nested_worktree_repro(
+        tmp_path
+    )
+    obj_dir = run_f.parent / "obj_dir"
+    result = subprocess.run(
+        [
+            "verilator",
+            "--cc",
+            "--top-module",
+            "tb_top",
+            "--Mdir",
+            str(obj_dir),
+            "-f",
+            str(run_f),
+        ],
+        cwd=run_f.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    ver_files = next(obj_dir.glob("*__verFiles.dat")).read_text()
+    assert str(worktree_source) in ver_files
+    assert str(primary_source) not in ver_files
 
 
 # --- rb verible filelist (integration through Typer) ---------------------

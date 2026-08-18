@@ -235,6 +235,35 @@ def test_vlog_sim_compile_uses_explicit_filelist_path_and_suite_cwd(
     assert (tmp_path / "artefacts" / "basic" / "run.f").is_file()
 
 
+def test_vlog_sim_run_file_pins_explicit_sources(tmp_path, monkeypatch):
+    source = tmp_path / "source.sv"
+    source.write_text("module source; endmodule\n")
+    sim = _make_sim(tmp_path, monkeypatch)
+    sim.test_cfg.model.get_filelist = lambda: ["source.sv"]
+    sim._ensure_artifact_dir()
+
+    sim._write_filelist(sim._get_filelist_path())
+
+    lines = Path(sim._get_filelist_path()).read_text().splitlines()
+    assert str(source) in lines
+
+
+def test_compile_fingerprint_stats_quoted_absolute_source(tmp_path, monkeypatch):
+    source = tmp_path / "source tree" / "source.sv"
+    source.parent.mkdir()
+    source.write_text("module source; endmodule\n")
+    sim = _make_sim(tmp_path, monkeypatch)
+    sim._ensure_artifact_dir()
+    run_f = Path(sim._get_filelist_path())
+    raw_line = f'"{source}"'
+    run_f.write_text(f"// generated\n{raw_line}\n")
+
+    stamps = sim._fingerprint_filelist_sources(str(run_f))
+
+    stat = source.stat()
+    assert stamps == [[raw_line, stat.st_size, stat.st_mtime_ns]]
+
+
 def test_vlog_sim_execute_runs_in_artifact_dir_and_updates_symlinks(
     tmp_path, monkeypatch
 ):

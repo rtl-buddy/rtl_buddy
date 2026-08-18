@@ -310,7 +310,8 @@ Per-test simulation output goes to `artefacts/{test_name}/`:
 - `test.randseed` — the seed used
 - `coverage.dat` — coverage database (if coverage is enabled)
 - `compile.log` — compile transcript
-- `run.f` — generated filelist
+- `run.f` — generated, non-portable filelist; explicit source entries are pinned
+  to the resolved checkout with absolute paths
 
 For repeated runs (`randtest`), each iteration writes into a numbered subdirectory — `artefacts/{test_name}/run-0001/`, `run-0002/`, etc. — while compile outputs remain at the top of `artefacts/{test_name}/`.
 

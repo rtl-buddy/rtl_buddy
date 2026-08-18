@@ -540,6 +540,7 @@ class VlogSim:
             flatten=False,
             strip=False,
             deduplicate=True,
+            absolute_sources=True,
             test_filelist=self.testbench.get_filelist(),
             suite_dir=self.suite_work_dir,
         )
@@ -596,6 +597,10 @@ class VlogSim:
                     continue
                 option_match = _FILELIST_OPTION_RE.match(line)
                 entry_path = option_match.group(1) if option_match else line
+                if entry_path.startswith('"') and entry_path.endswith('"'):
+                    parsed = shlex.split(entry_path)
+                    if len(parsed) == 1:
+                        entry_path = parsed[0]
                 resolved = os.path.normpath(os.path.join(base, entry_path))
                 if os.path.isfile(resolved):
                     stat = os.stat(resolved)
