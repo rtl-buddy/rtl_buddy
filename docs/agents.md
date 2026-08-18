@@ -101,7 +101,7 @@ Passing `--machine` switches `rtl_buddy` into a mode designed for programmatic c
 - `rtl_buddy.log` is written as **JSON Lines** instead of human-readable text.
 - Console output drops Rich formatting, colors, and spinners.
 - Commands that produce structured results print a single JSON envelope to **stdout** on exit.
-- Stdout carries nothing else: anything a `sweep` / `preproc` hook script prints is captured and re-emitted as a `hook.stdout` log event (console on stderr, plus `rtl_buddy.log` with the hook `script` and `stage`), so a hook's own progress output can never precede the envelope.
+- Anything a `sweep` / `preproc` hook script **prints** is captured and re-emitted as a `hook.stdout` log event (console on stderr, plus `rtl_buddy.log` with the hook `script` and `stage`), so a hook's own progress output can never precede the envelope. The capture rebinds `sys.stdout`, so it does not cover a hook that shells out to a tool inheriting fd 1 — see [Hooks](concepts/plugins.md#hooks).
 
 The intent is that an orchestrator can determine the outcome of a run by parsing the stdout envelope, and reconstruct timing or per-event detail from `rtl_buddy.log`, without screen-scraping human-formatted output.
 
@@ -139,7 +139,7 @@ The envelope shape is the same across commands:
 - `meta` — version, argv, working directory, and git status at invocation.
 - `payload` — command-specific structured data.
 
-`json.loads()` on the whole of stdout is the supported way to read it — no line-scanning for the object is needed, including for suites whose hooks print.
+`json.loads()` on the whole of stdout is the supported way to read it — no line-scanning for the object is needed, including for suites whose hooks print. The one way a suite can still break that is a hook that runs an external process without redirecting its stdout; `docs/concepts/plugins.md` says how to avoid it.
 
 The top-level envelope fields are reserved and versioned by `meta.rtl_buddy_version` under `rtl_buddy`'s normal semantic-versioning rules. Adding optional fields under `meta` or `payload` is non-breaking; removing fields, renaming fields, changing field types, or changing the meaning of an existing field is breaking.
 

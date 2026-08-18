@@ -1174,6 +1174,13 @@ def log_console_event(
     and raising global verbosity to see them turns on DEBUG for everything
     else in the one place that cannot afford it (#435).
 
+    The second sanctioned case is output that was **already on stdout and is
+    being re-framed**, not newly added: hook ``print()`` capture (#371) moves
+    text the user could always see onto the log system, so a plain
+    ``log_event()`` would make it vanish at default verbosity — a regression
+    dressed up as a cleanup. Newly-invented chatter does not qualify; it goes
+    through ``log_event()`` and earns its console line with ``-v``.
+
     ``render_summary`` already establishes the pattern — print to the
     console AND keep the structured record — and this is its generalisation.
     When the console *would* show ``level`` anyway the extra print is

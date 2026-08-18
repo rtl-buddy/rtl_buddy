@@ -28,6 +28,18 @@ so a `print()` in a hook would otherwise land on `rtl_buddy`'s own stdout —
 under `--machine` the stream reserved for the JSON envelope, which the extra
 text makes unparseable. Captured lines are re-emitted as `hook.stdout` log
 events, which reach stderr and `rtl_buddy.log` but never stdout.
+
+The capture is Python-level (`contextlib.redirect_stdout` rebinds
+`sys.stdout`), so the guarantee is precisely "anything the hook *prints* is
+captured" — not "fd 1 is closed to the hook". A hook that shells out
+(`subprocess.run(["gen", ...])` — a documented pattern, see
+`docs/concepts/plugins.md`) hands the child rtl_buddy's own fd 1, and that
+child's output still lands on stdout. Delivering the stronger guarantee
+needs an os-level `dup2` of fd 1 into a pipe; it is deliberately not done
+here, because redirecting a descriptor the whole process shares would also
+capture output from anything else holding it. Redirect the child instead:
+`subprocess.run(cmd, stdout=subprocess.DEVNULL)`, or capture and `print()`
+the result so it goes through this path.
 """
 
 import contextlib
@@ -57,6 +69,15 @@ class _HookStdout(io.TextIOBase):
 
     Line-buffered rather than accumulated so a long-running hook still
     reports as it goes; the trailing partial line is flushed by the caller.
+
+    This is a text sink, not a file: inheriting ``io.TextIOBase`` means
+    ``fileno()`` raises ``io.UnsupportedOperation`` and there is no
+    ``.buffer``, so a hook doing ``subprocess.run(cmd, stdout=sys.stdout)``
+    or ``sys.stdout.buffer.write(...)`` now raises where it previously
+    worked. That is the intended trade: both are ways of writing bytes
+    straight to fd 1, i.e. exactly what would corrupt the envelope, and an
+    exception naming the unsupported operation beats a silently unparseable
+    run. ``docs/known-issues.md`` records it.
     """
 
     def __init__(self, script_path, stage=None):

@@ -592,3 +592,34 @@ def test_hook_stdout_is_restored_when_the_hook_raises(tmp_path):
         pass
 
     assert sys.stdout is outer
+
+
+def test_hook_stdout_is_a_text_sink_not_a_file(tmp_path):
+    """The capture is Python-level, and the boundary is deliberate (#371).
+
+    `_HookStdout` is an `io.TextIOBase`, so the two byte-level routes to
+    fd 1 — `sys.stdout.fileno()` (as in `subprocess.run(..., stdout=
+    sys.stdout)`) and `sys.stdout.buffer` — raise rather than reaching the
+    envelope stream. Pinned because it is a behaviour change for hooks that
+    used either, and `docs/known-issues.md` promises exactly this shape.
+    """
+    import io
+
+    setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
+    script = tmp_path / "hook.py"
+    script.write_text("pass\n")
+
+    ns = exec_hook_script(
+        str(script),
+        "import io, sys\n"
+        "try:\n"
+        "    sys.stdout.fileno()\n"
+        "    fileno_error = None\n"
+        "except io.UnsupportedOperation as exc:\n"
+        "    fileno_error = type(exc).__name__\n"
+        "has_buffer = hasattr(sys.stdout, 'buffer')\n",
+        stage="preproc",
+    )
+
+    assert ns["fileno_error"] == io.UnsupportedOperation.__name__
+    assert ns["has_buffer"] is False
