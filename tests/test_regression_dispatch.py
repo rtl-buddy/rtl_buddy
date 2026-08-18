@@ -1482,7 +1482,7 @@ def _enable_retry(project: Path, *, attempts=2, backoff=5, cap=20, jitter=0.0):
         + f"    backoff-sec: {backoff}\n"
         + f"    backoff-max-sec: {cap}\n"
         + f"    jitter: {jitter}\n"
-        + "    on: [license-queue]\n"
+        + "    classifiers: [license-queue]\n"
     )
 
 

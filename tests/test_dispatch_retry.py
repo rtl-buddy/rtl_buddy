@@ -402,3 +402,49 @@ def test_zero_jitter_is_deterministic_and_touches_no_rng():
             raise AssertionError("jitter 0 must not consult the rng")
 
     assert backoff_delay(2, cfg, rng=_Explode()) == 60
+
+
+def test_result_missing_says_retrying_when_a_classifier_fired():
+    """Human mode must not call a row a failure while it is being retried.
+
+    The event carries ``attempt`` and ``retry_classifier``, but only
+    ``--machine`` renders fields; ``rtl_buddy.log`` and the console read
+    the human message, and three byte-identical "counting it as a
+    failure" lines would contradict the ``dispatch.retry`` line that
+    follows each of the first two (#405 review).
+    """
+    from rtl_buddy.logging_utils import _human_message
+
+    retried = _human_message(
+        "dispatch.result_missing",
+        {
+            "job_id": "6553_2",
+            "test": "seqr_add",
+            "scheduler_state": "TIMEOUT",
+            "attempt": 1,
+            "retry_classifier": "license-queue",
+        },
+    )
+    assert "license-queue" in retried
+    assert "retrying" in retried
+    assert "counting it as a failure" not in retried
+
+    exhausted = _human_message(
+        "dispatch.result_missing",
+        {
+            "job_id": "6553_2",
+            "test": "seqr_add",
+            "scheduler_state": "TIMEOUT",
+            "attempt": 3,
+            "retry_classifier": None,
+        },
+    )
+    assert "attempt 3" in exhausted
+    assert "counting it as a failure" in exhausted
+
+    # No retry configured: the message is exactly what it always was.
+    plain = _human_message(
+        "dispatch.result_missing",
+        {"job_id": "1", "test": "t", "scheduler_state": None, "attempt": 1},
+    )
+    assert plain == "Dispatch job 1 for t produced no result — counting it as a failure"

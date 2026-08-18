@@ -293,7 +293,7 @@ cfg-dispatch:
     backoff-sec: 60         # first delay, doubling per attempt
     backoff-max-sec: 600    # cap
     jitter: 0.5             # +/- fraction applied to each delay
-    on: [license-queue]     # what may be retried
+    classifiers: [license-queue]   # what may be retried
   rightsize:                # reservation right-sizing (see below)
     report: true
     over-threshold: 0.5
@@ -393,8 +393,12 @@ cfg-dispatch:
     backoff-sec: 60
     backoff-max-sec: 600
     jitter: 0.5
-    on: [license-queue]    # the only classifier that exists today
+    classifiers: [license-queue]   # the only classifier that exists today
 ```
+
+(The key is `classifiers`, not `on`: PyYAML parses YAML 1.1, where an
+unquoted `on:` key is the boolean `true` — the pin would never reach the
+config and an unknown classifier could never be rejected.)
 
 The delay before attempt *n* is
 `min(backoff-max-sec, backoff-sec × 2^(n-1))`, multiplied by

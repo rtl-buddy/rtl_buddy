@@ -495,10 +495,23 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "dispatch.result_missing":
             state = fields.get("scheduler_state")
             state_note = f" (scheduler state {state})" if state else ""
+            attempt = fields.get("attempt")
+            attempt_note = f" on attempt {attempt}" if attempt and attempt > 1 else ""
+            # A classified row is about to be resubmitted, so it is *not*
+            # counted as a failure yet — saying so would contradict the
+            # dispatch.retry line that follows it, and human mode is where
+            # a reader reconstructs the run (the fields are only legible
+            # under --machine otherwise) (#405 review).
+            classifier = fields.get("retry_classifier")
+            tail = (
+                f" — {classifier}, retrying"
+                if classifier
+                else " — counting it as a failure"
+            )
             return (
                 f"Dispatch job {fields.get('job_id')} for "
-                f"{fields.get('test')} produced no result{state_note} — "
-                "counting it as a failure"
+                f"{fields.get('test')} produced no result{state_note}"
+                f"{attempt_note}{tail}"
             )
         case "suite.skip":
             reason = "skip reason unavailable"

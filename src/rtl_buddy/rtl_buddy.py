@@ -2896,7 +2896,10 @@ class RtlBuddy:
         # in _dispatch_suite_submit, so a missing key is a bug that must fail
         # loud — .get() would silently disable the staleness check and let a
         # stale PASS through (a wrong-green, worse than the #362 false-red).
-        run_token = state["run_token"] if state["pending"] else None
+        # The guard asks about *this* pass's jobs, the same list the loop
+        # below walks; the first attempt's full fleet lives in
+        # ``state["pending"]`` and is not what this pass collects (#405 review).
+        run_token = state["run_token"] if pending else None
         telemetry = backend.collect_telemetry([h for _, h in pending])
         for idx, handle in pending:
             tele = telemetry.get(handle.job_id)
@@ -2990,7 +2993,7 @@ class RtlBuddy:
                         classify_missing_result(
                             handle.spec,
                             sched_state,
-                            classifiers=retry_cfg.on,
+                            classifiers=retry_cfg.classifiers,
                             scheduled=backend.scheduled,
                             build_succeeded=build_gate_open,
                             submitted_at=submitted_at,

@@ -26,7 +26,7 @@ execution backend for regression test runs:
         backoff-sec: 60        # first delay, doubling per attempt
         backoff-max-sec: 600   # cap
         jitter: 0.5            # +/- fraction, to decorrelate a batch
-        on: [license-queue]    # which classifiers may be retried
+        classifiers: [license-queue]   # which kills may be retried
 
 Per-test reservation overrides use the same ``resources`` shape in
 tests.yaml at testbench and test level; :func:`resolve_resources` layers
@@ -116,7 +116,7 @@ class RightsizeConfigFile:
     margin: float = field(rename="margin", default=1.5)
 
 
-# The classifiers ``retry.on`` accepts. Only one exists today: a job the
+# The classifiers ``retry.classifiers`` accepts. Only one exists today: a job the
 # scheduler killed while its simulation was still sitting in the VCS
 # license queue (#405). Retrying anything else — a hung testbench, an
 # undersized reservation — would re-run work that failed on its own merits
@@ -148,7 +148,13 @@ class RetryConfigFile:
     backoff_sec: float = field(rename="backoff-sec", default=60.0)
     backoff_max_sec: float = field(rename="backoff-max-sec", default=600.0)
     jitter: float = 0.5
-    on: list[str] = field(default_factory=lambda: [RETRY_CLASSIFIER_LICENSE_QUEUE])
+    # Not spelled ``on:``: PyYAML is a YAML 1.1 parser, so an unquoted
+    # ``on`` key deserialises as the *boolean* ``True`` and never reaches
+    # this field — the pin would silently do nothing and the
+    # unknown-classifier check below could never fire (#405 review).
+    classifiers: list[str] = field(
+        default_factory=lambda: [RETRY_CLASSIFIER_LICENSE_QUEUE]
+    )
 
     def validated(self) -> "RetryConfigFile":
         """Reject a budget that cannot mean what it says."""
@@ -173,11 +179,11 @@ class RetryConfigFile:
                 f"cfg-dispatch retry jitter must be in [0, 1) (got {self.jitter}); "
                 "1 or more would allow a zero or negative delay."
             )
-        unknown = [c for c in self.on if c not in RETRY_CLASSIFIERS]
+        unknown = [c for c in self.classifiers if c not in RETRY_CLASSIFIERS]
         if unknown:
             raise FatalRtlBuddyError(
-                f"cfg-dispatch retry on: unknown classifier(s) {unknown} — "
-                f"known: {list(RETRY_CLASSIFIERS)}."
+                f"cfg-dispatch retry classifiers: unknown classifier(s) "
+                f"{unknown} — known: {list(RETRY_CLASSIFIERS)}."
             )
         return RetryConfigFile(
             attempts=self.attempts,
@@ -187,18 +193,18 @@ class RetryConfigFile:
             backoff_sec=float(self.backoff_sec),
             backoff_max_sec=float(self.backoff_max_sec),
             jitter=float(self.jitter),
-            on=list(self.on),
+            classifiers=list(self.classifiers),
         )
 
     @property
     def enabled(self) -> bool:
         """Would this budget ever retry anything?
 
-        An ``attempts`` with an empty ``on:`` retries nothing: there is no
-        classifier left that could match, and treating that as "on" would
-        make the head re-submit jobs no rule selected.
+        An ``attempts`` with an empty ``classifiers:`` retries nothing:
+        there is no classifier left that could match, and treating that as
+        "on" would make the head re-submit jobs no rule selected.
         """
-        return self.attempts > 0 and bool(self.on)
+        return self.attempts > 0 and bool(self.classifiers)
 
 
 @serde

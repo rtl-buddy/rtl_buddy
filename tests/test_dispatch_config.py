@@ -364,14 +364,16 @@ def test_retry_defaults_when_only_attempts_is_set():
         600.0,
         0.5,
     )
-    assert retry.on == ["license-queue"]
+    assert retry.classifiers == ["license-queue"]
 
 
-def test_retry_with_empty_on_list_retries_nothing():
+def test_retry_with_empty_classifier_list_retries_nothing():
     # A budget with no classifier selects nothing; treating it as "on" would
     # resubmit jobs no rule matched.
     retry = (
-        DispatchConfigFile(retry=RetryConfigFile(attempts=3, on=[])).initialise().retry
+        DispatchConfigFile(retry=RetryConfigFile(attempts=3, classifiers=[]))
+        .initialise()
+        .retry
     )
     assert retry.enabled is False
 
@@ -387,7 +389,7 @@ def test_retry_with_empty_on_list_retries_nothing():
         ),
         ({"attempts": 1, "jitter": 1.0}, r"jitter must be in \[0, 1\)"),
         ({"attempts": 1, "jitter": -0.1}, r"jitter must be in \[0, 1\)"),
-        ({"attempts": 1, "on": ["node-fail"]}, "unknown classifier"),
+        ({"attempts": 1, "classifiers": ["node-fail"]}, "unknown classifier"),
     ],
 )
 def test_retry_invalid_values_rejected(kwargs, match):
@@ -407,7 +409,7 @@ def test_root_config_parses_retry_block(minimal_project: Path):
                 "    backoff-sec: 30",
                 "    backoff-max-sec: 300",
                 "    jitter: 0.25",
-                "    on: [license-queue]",
+                "    classifiers: [license-queue]",
             ]
         )
         + "\n"
@@ -418,8 +420,27 @@ def test_root_config_parses_retry_block(minimal_project: Path):
     assert retry.backoff_sec == 30
     assert retry.backoff_max_sec == 300
     assert retry.jitter == 0.25
-    assert retry.on == ["license-queue"]
+    assert retry.classifiers == ["license-queue"]
     assert retry.enabled is True
+
+
+def test_root_config_rejects_an_unknown_classifier(minimal_project: Path):
+    """The classifier list must actually bind to the YAML key.
+
+    The happy-path test above cannot tell a parsed ``[license-queue]``
+    from the default of the same value, so an inert key would look green
+    there. A bogus entry can only be rejected if the key reached the
+    field — which is why this list is not spelled ``on:``: PyYAML is a
+    YAML 1.1 parser and an unquoted ``on`` key deserialises as the
+    boolean ``True`` (#405 review).
+    """
+    root_cfg_path = minimal_project / "root_config.yaml"
+    root_cfg_path.write_text(
+        root_cfg_path.read_text() + "\ncfg-dispatch:\n  retry:\n    attempts: 2\n"
+        "    classifiers: [node-fail]\n"
+    )
+    with pytest.raises(FatalRtlBuddyError, match="unknown classifier"):
+        RootConfig(name="t/root", start_dir=minimal_project).get_dispatch_cfg()
 
 
 def test_root_config_without_retry_block_leaves_it_off(minimal_project: Path):
