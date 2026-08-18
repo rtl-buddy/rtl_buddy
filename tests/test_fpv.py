@@ -2,12 +2,14 @@
 config, suite/regression YAML loading, sby driver helpers. Mirrors the
 structure of ``test_cdc.py``."""
 
+import os
 from pathlib import Path
 from textwrap import dedent
 from unittest.mock import patch
 
 import pytest
 
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.config.fpv import (
     FpvConfig,
     FpvRegConfig,
@@ -1578,3 +1580,247 @@ def test_sby_fpv_define_in_model_filelist_survives_write_round_trip(tmp_path):
     content = Path(sby._write_sby_file(sources, incdirs, defines)).read_text()
     assert "verilog_defaults -add -DVERILATOR" in content
     assert "verilog_defaults -add -DWIDTH=8" in content
+
+
+# ---------------------------------------------------------------------------
+# `params:` — reduced-configuration proofs (#359)
+# ---------------------------------------------------------------------------
+
+
+_PARAMS_SUITE_YAML = dedent("""\
+    rtl-buddy-filetype: fpv_config
+
+    verifications:
+      - name: "mod_a_k8"
+        desc: "Reduced-configuration proof at K=8"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "sby"
+        top: "mod_a"
+        mode: "bmc"
+        depth: 24
+        params:
+          K: 8
+          WIDTH: "8'h20"
+          ENABLE: true
+""")
+
+
+def _write_params_suite(tmp_path, body=None):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "fpv.yaml"
+    suite_yaml.write_text(body or _PARAMS_SUITE_YAML)
+    return suite_yaml
+
+
+def test_fpv_params_default_is_empty():
+    assert _make_fpv_cfg().get_params() == {}
+    assert _make_fpv_cfg().get_param_tokens() == []
+
+
+def test_fpv_suite_config_loads_params(tmp_path):
+    cfg = FpvSuiteConfig(str(_write_params_suite(tmp_path)))
+    v = cfg.get_verifications("mod_a_k8")[0]
+    assert v.get_params() == {"K": 8, "WIDTH": "8'h20", "ENABLE": True}
+
+
+def test_fpv_param_tokens_render_scalars_for_yosys(tmp_path):
+    """int -> decimal, bool -> 1/0 (SystemVerilog has no bare `true`),
+    string -> verbatim expression text so a sized literal survives. Order
+    is declaration order so the generated script is stable."""
+    cfg = FpvSuiteConfig(str(_write_params_suite(tmp_path)))
+    v = cfg.get_verifications("mod_a_k8")[0]
+    assert v.get_param_tokens() == [
+        ("K", "8"),
+        ("WIDTH", "8'h20"),
+        ("ENABLE", "1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "params_block,match",
+    [
+        # non-scalar values: a parameter override is one token
+        ("params:\n      K: [1, 2]\n", "must be an integer"),
+        ("params:\n      K: {a: 1}\n", "must be an integer"),
+        ("params:\n      K: 1.5\n", "must be an integer"),
+        ("params:\n      K: null\n", "must be an integer"),
+        # not a map at all — pyserde rejects the shape before the
+        # validator sees it, so the suite load is what fails
+        ("params: 8\n", "failed to load"),
+        ("params:\n      - K\n", "failed to load"),
+        # a value yosys could not tokenise: it splits script lines on
+        # whitespace and does not honour quotes
+        ('params:\n      K: "8 + 1"\n', "whitespace"),
+        ('params:\n      K: ""\n', "empty"),
+        # PyYAML is YAML 1.1: a bare `on:` key parses as the boolean True,
+        # which is not an identifier — caught here rather than emitted as
+        # `chparam -set True ...`
+        ("params:\n      on: 1\n", "identifier"),
+        ("params:\n      2FOO: 1\n", "identifier"),
+    ],
+)
+def test_fpv_params_rejected_shapes(tmp_path, params_block, match):
+    body = (
+        dedent("""\
+        rtl-buddy-filetype: fpv_config
+
+        verifications:
+          - name: "v"
+            desc: "d"
+            model: "mod_a"
+            model_path: "models.yaml"
+            tool: "sby"
+            top: "mod_a"
+            %s
+    """)
+        % params_block.replace("\n", "\n        ").rstrip()
+    )
+    with pytest.raises(FatalRtlBuddyError, match=match):
+        FpvSuiteConfig(str(_write_params_suite(tmp_path, body)))
+
+
+def test_fpv_validate_params_rejects_non_mapping():
+    """Reachable only from a hand-built FpvConfigFile — pyserde catches the
+    shape first when the value comes from YAML."""
+    from rtl_buddy.config.fpv import validate_params
+
+    with pytest.raises(FatalRtlBuddyError, match="must be a map"):
+        validate_params("v", ["K"])
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: the generated script really elaborates the reduced
+# configuration. Runs yosys itself (no sby / no solver needed — the
+# question is whether the override reached elaboration), and is skipped
+# when yosys is not installed. The slang half additionally needs
+# RTL_BUDDY_SLANG_PLUGIN, the same env var the runner honours.
+# ---------------------------------------------------------------------------
+
+
+_PARAM_DUT = dedent("""\
+    module ctr #(parameter int K = 16) (
+      input  logic clk,
+      input  logic rst_n,
+      output logic [K-1:0] cnt
+    );
+      always_ff @(posedge clk or negedge rst_n)
+        if (!rst_n) cnt <= '0;
+        else if (cnt != {K{1'b1}}) cnt <= cnt + 1'b1;
+      `ifdef FORMAL
+      always @(posedge clk) assert property (cnt <= {K{1'b1}});
+      `endif
+    endmodule
+""")
+
+
+def _yosys_port_bits(sby_path, work_dir) -> int:
+    """Run the `[script]` section of a generated .sby through yosys and
+    return the top module's port-bit count."""
+    import re
+    import shutil
+    import subprocess
+
+    text = Path(sby_path).read_text()
+    script = text.split("[script]", 1)[1].split("[files]", 1)[0].strip()
+    # The sby script names sources by basename (sby stages them in its
+    # workdir); stage them the same way here.
+    for src in text.split("[files]", 1)[1].strip().splitlines():
+        if src.strip():
+            shutil.copy(src.strip(), Path(work_dir) / Path(src.strip()).name)
+    ys = Path(work_dir) / "run.ys"
+    ys.write_text(script + "\nstat\n")
+    res = subprocess.run(
+        ["yosys", "-s", str(ys)],
+        capture_output=True,
+        text=True,
+        cwd=str(work_dir),
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    m = re.search(r"^\s*(\d+)\s+port bits\s*$", res.stdout, re.MULTILINE)
+    assert m, res.stdout
+    return int(m.group(1))
+
+
+def _render_param_proof(tmp_path, frontend, params, plugin_path=None):
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    (tmp_path / "ctr.sv").write_text(_PARAM_DUT)
+    (tmp_path / "models.yaml").write_text("rtl-buddy-filetype: model_config\n")
+    model = ModelConfig(
+        name="ctr", filelist=["ctr.sv"], path=str(tmp_path / "models.yaml")
+    )
+    fpv_cfg = FpvConfig(
+        name="ctr_proof",
+        desc="t",
+        model=model,
+        tool="sby",
+        top="ctr",
+        properties=[],
+        constraints=None,
+        mode="bmc",
+        depth=8,
+        engines=["smtbmc yices"],
+        _reglvl=None,
+        tool_overrides=None,
+        frontend=frontend,
+        params=dict(params),
+    )
+    tool_cfg = FpvToolConfig(
+        FpvToolConfigFile(
+            name="sby",
+            tool="sby",
+            opts=FpvToolOptsFile(plugin_path=plugin_path),
+        )
+    )
+    suite_dir = tmp_path / frontend
+    suite_dir.mkdir()
+    sby = SbyFpv(
+        name="t/sby", fpv_cfg=fpv_cfg, tool_cfg=tool_cfg, suite_dir=str(suite_dir)
+    )
+    sources, incdirs, defines = sby._parse_filelist(sby._write_filelist())
+    return sby._write_sby_file(sources, incdirs, defines)
+
+
+def _yosys_missing():
+    import shutil
+
+    return shutil.which("yosys") is None
+
+
+@pytest.mark.skipif(_yosys_missing(), reason="yosys not installed")
+def test_params_reduce_elaboration_verilog_frontend(tmp_path):
+    """`chparam` in the generated script must actually shrink the design:
+    clk + rst_n + cnt[K-1:0] is 18 port bits at the default K=16 and 6 at
+    K=4."""
+    sby_path = _render_param_proof(tmp_path, "verilog", {"K": 4})
+    work = tmp_path / "run_verilog"
+    work.mkdir()
+    assert _yosys_port_bits(sby_path, work) == 6
+
+
+@pytest.mark.skipif(_yosys_missing(), reason="yosys not installed")
+def test_no_params_keeps_default_elaboration_verilog_frontend(tmp_path):
+    sby_path = _render_param_proof(tmp_path, "verilog", {})
+    work = tmp_path / "run_verilog"
+    work.mkdir()
+    assert _yosys_port_bits(sby_path, work) == 18
+
+
+@pytest.mark.skipif(
+    _yosys_missing() or not os.environ.get("RTL_BUDDY_SLANG_PLUGIN"),
+    reason="yosys + RTL_BUDDY_SLANG_PLUGIN required",
+)
+def test_params_reduce_elaboration_slang_frontend(tmp_path):
+    """`read_slang -G` is the slang-side mechanism — `chparam` cannot work
+    there, since slang has already elaborated the module by then."""
+    sby_path = _render_param_proof(
+        tmp_path,
+        "slang",
+        {"K": 4},
+        plugin_path=os.environ["RTL_BUDDY_SLANG_PLUGIN"],
+    )
+    work = tmp_path / "run_slang"
+    work.mkdir()
+    assert _yosys_port_bits(sby_path, work) == 6

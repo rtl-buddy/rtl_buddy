@@ -10,6 +10,7 @@ declares the available FPV tools under ``cfg-fpv-tools``.
 import logging
 import os
 import pprint
+import re
 from dataclasses import dataclass, field as dc_field
 
 from serde import field, serde
@@ -111,6 +112,64 @@ class FpvToolConfig:
 _VALID_MODES = ("bmc", "prove", "cover", "live")
 _VALID_FRONTENDS = ("verilog", "slang")
 
+# A `params:` name must be a plain SystemVerilog identifier — it is
+# emitted straight into a yosys script line.
+_PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
+
+def render_param_value(value: int | bool | str) -> str:
+    """Render one `params:` value as the token a yosys script takes.
+
+    - `bool` -> `1` / `0`. YAML's `true` is the natural way to write a
+      one-bit enable; SystemVerilog has no bare `true`.
+    - `int` -> decimal, verbatim.
+    - `str` -> **verbatim SystemVerilog expression text**, so a sized
+      literal (`"8'h20"`) passes through unchanged. A *string-typed*
+      parameter therefore needs its own quotes inside the YAML scalar
+      (`MODE: '"small"'`); yosys tokenises a script line on whitespace
+      and does not strip quotes, so the inner quotes survive to slang.
+    """
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value)
+
+
+def validate_params(name: str, params: dict | None) -> dict[str, int | bool | str]:
+    """Validate a verification's `params:` map, or raise.
+
+    Fatal at config-load time rather than at elaboration: a bad override
+    otherwise surfaces as a yosys syntax error inside a generated script,
+    which is a much longer walk back to the typo.
+    """
+    if params is None:
+        return {}
+    if not isinstance(params, dict):
+        raise FatalRtlBuddyError(
+            f"{name}: fpv `params:` must be a map of parameter name -> value"
+        )
+    out: dict[str, int | bool | str] = {}
+    for key, value in params.items():
+        if not isinstance(key, str) or not _PARAM_NAME_RE.match(key):
+            raise FatalRtlBuddyError(
+                f"{name}: fpv `params:` name {key!r} is not a valid "
+                f"SystemVerilog identifier"
+            )
+        if not isinstance(value, (int, bool, str)):
+            raise FatalRtlBuddyError(
+                f"{name}: fpv `params:` value for '{key}' must be an integer, "
+                f"a boolean, or a string holding a SystemVerilog literal "
+                f"(got {type(value).__name__})"
+            )
+        rendered = render_param_value(value)
+        if not rendered or rendered.split() != [rendered]:
+            raise FatalRtlBuddyError(
+                f"{name}: fpv `params:` value for '{key}' may not be empty or "
+                f"contain whitespace (yosys splits a script line on "
+                f"whitespace): {value!r}"
+            )
+        out[key] = value
+    return out
+
 
 @serde
 class FpvConfigFile:
@@ -131,6 +190,13 @@ class FpvConfigFile:
     mode: str = "bmc"
     depth: int = 20
     engines: list[str] = field(default_factory=lambda: ["smtbmc yices"])
+    # Top-module parameter overrides applied at elaboration, for
+    # reduced-configuration proofs (#359): the properties are
+    # size-generic, and shrinking a depth/width parameter collapses the
+    # state space enough to make the bounded proof tractable. Values are
+    # scalars — int, bool, or a string carrying SystemVerilog literal
+    # text (`K: "8'h20"`); see `validate_params`.
+    params: dict | None = None
     reglvl: int | dict | None = field(rename="reglvl", default=None)
     # IDs of spec coverage items this verification addresses — the same
     # `covers:` a test declares in `tests.yaml` (see `config/test.py`).
@@ -193,6 +259,7 @@ class FpvConfigFile:
                 f"{self.name}: fpv frontend '{self.frontend}' is not one of "
                 f"{', '.join(_VALID_FRONTENDS)}"
             )
+        params = validate_params(self.name, self.params)
         return FpvConfig(
             name=self.name,
             desc=self.desc,
@@ -210,6 +277,7 @@ class FpvConfigFile:
             vacuity=self.vacuity,
             coi=self.coi,
             frontend=self.frontend,
+            params=params,
             xfail=self.xfail,
             xfail_strict=self.xfail_strict,
         )
@@ -236,11 +304,21 @@ class FpvConfig:
     vacuity: bool | None = dc_field(default=None)
     coi: bool | None = dc_field(default=None)
     frontend: str = dc_field(default="verilog")
+    # Validated top-module parameter overrides (#359), insertion-ordered
+    # so the generated script is stable across runs.
+    params: dict[str, int | bool | str] = dc_field(default_factory=dict)
     xfail: bool = dc_field(default=False)
     xfail_strict: bool = dc_field(default=False)
 
     def get_frontend(self) -> str:
         return self.frontend
+
+    def get_params(self) -> dict[str, int | bool | str]:
+        return self.params
+
+    def get_param_tokens(self) -> list[tuple[str, str]]:
+        """`(name, yosys-ready value token)` pairs, in declaration order."""
+        return [(k, render_param_value(v)) for k, v in self.params.items()]
 
     def is_xfail(self) -> bool:
         """Whether this verification is expected to fail (either flag set)."""

@@ -30,7 +30,7 @@ from .fpv_vacuity import (
     parse_vacuity_log,
     write_vacuity_module,
 )
-from .fpv_coi import render_slang_read, run_coi_analysis
+from .fpv_coi import render_chparam, render_slang_read, run_coi_analysis
 from .synth_yosys import SLANG_PLUGIN_ENV, resolve_plugin_path
 
 
@@ -355,6 +355,10 @@ class SbyFpv:
         # are carried on the read_slang line by render_slang_read (read_slang
         # ignores verilog_defaults -add -I).
         defines = list(defines or [])
+        # Reduced-configuration proofs (#359): the same overrides go to the
+        # proof, the vacuity pass and the COI walk, or the three would
+        # measure differently sized designs.
+        params = cfg.get_param_tokens()
         if frontend != "slang":
             for inc in incdirs:
                 lines.append(f"verilog_defaults -add -I {inc}")
@@ -379,12 +383,20 @@ class SbyFpv:
             # Basenames: files are dropped into the sby workdir under [files].
             slang_sources = [os.path.basename(s) for s in all_sources]
             lines.append(
-                render_slang_read(cfg.get_top(), incdirs, slang_sources, defines)
+                render_slang_read(
+                    cfg.get_top(), incdirs, slang_sources, defines, params
+                )
             )
         else:
             for src in all_sources:
                 # Use basename — files are dropped into the sby workdir under [files].
                 lines.append(f"read -sv -formal {os.path.basename(src)}")
+            # `chparam` between the reads and `prep`: prep runs `hierarchy`,
+            # which is when yosys derives the parametric module. (The slang
+            # frontend cannot use chparam at all — it elaborates during the
+            # read, so the module is no longer parametric here; its overrides
+            # ride on the read_slang line as `-G`.)
+            lines.extend(render_chparam(cfg.get_top(), params))
         lines.append(f"prep -top {cfg.get_top()}")
         if emit_formal_guard:
             # Fail loud on a vacuous proof: a compilation-unit-scope
@@ -484,6 +496,7 @@ class SbyFpv:
                 top=cfg.get_top(),
                 mode=cfg.get_mode(),
                 depth=cfg.get_depth(),
+                params=cfg.get_params() or None,
             )
             start = time.monotonic()
             proc = self._run(cmd, log_path)
@@ -527,6 +540,7 @@ class SbyFpv:
                 frontend=cfg.get_frontend(),
                 plugin_path=self._resolve_plugin_path(opts_for_coi.plugin_path),
                 defines=defines,
+                params=cfg.get_param_tokens(),
             )
 
         # Sby exit code conventions:

@@ -818,6 +818,11 @@ def _add_flow_suite_nodes(
                 reglvl=getattr(entry, "_reglvl", None),
                 tool=entry.get_tool_name(),
                 toplevel=top,
+                # Reduced-configuration formal runs (#359) elaborate the top
+                # at overridden parameters — the run node says which, so a
+                # reader can tell two runs of the same top apart. `getattr`
+                # because only fpv entries carry the field.
+                params=getattr(entry, "params", None) or None,
                 flow=flow,
             )
             gb.add_link(suite_node, test_node, "declares")
