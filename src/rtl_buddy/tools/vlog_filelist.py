@@ -19,6 +19,14 @@ import re
 import uuid
 
 
+# `+define+NAME[=VALUE]` — a preprocessor define, not a path. Kept as its
+# own option so `_process` skips the path resolution / existence check every
+# other entry goes through, and so the marker survives into the generated
+# filelist for the consumers that act on it (`rb fpv`, and any simulator
+# reading the filelist with `-f`).
+_DEFINE_PREFIX = "+define+"
+
+
 class VlogFilelist:
     """
     Verilog Filelist Parser and Builder
@@ -66,8 +74,9 @@ class VlogFilelist:
           |                         # OR
           (\+(?:
             incdir|									# '+incdir+'
-            libext									# '+libext+'
-					)\+))             
+            libext|									# '+libext+'
+            define									# '+define+'
+					)\+))
         ?                           # group 1 optional, so path only works
         (.*)                        # group 3: the path part (required)
         $""",
@@ -85,7 +94,7 @@ class VlogFilelist:
                 )
 
             # Determine which style matched, return (option, path)
-            if m.group(2):  # +incdir+, +libext+
+            if m.group(2):  # +incdir+, +libext+, +define+
                 line_option = m.group(2)
                 line_path = m.group(3)
             elif m.group(1):  # -v, -F, -f, -y
@@ -131,6 +140,17 @@ class VlogFilelist:
             elif line_option == "+libext+":  # +libext+ isn't actually a path
                 libexts.update(line_path.split("+"))
 
+            elif line_option == _DEFINE_PREFIX:
+                # A preprocessor define is not a path: it never gets joined
+                # against the filelist's directory and never gets an
+                # existence check. The multi-define form `+define+A+B=C` is
+                # split here (verilator / VCS filelist semantics) so
+                # downstream consumers only ever see one NAME[=VALUE] per
+                # entry; a define VALUE therefore cannot itself contain `+`.
+                for one in line_path.split("+"):
+                    if one:
+                        entries.append((one, _DEFINE_PREFIX))
+
             else:  # Base case. Handles -v, source lines, and -F if not unroll
                 out_path = os.path.join(prefix_parent, line_path)
                 entries.append((out_path, line_option))
@@ -150,6 +170,15 @@ class VlogFilelist:
         escaped: list[str] = []
         out_lines = []
         for line_path, line_option in entries:
+            if line_option == _DEFINE_PREFIX:
+                # Defines pass through verbatim: no path resolution, no
+                # flatten (basename would eat a `/` in a value), and no
+                # strip (a bare `NAME=VALUE` line reads as a source path to
+                # every downstream filelist parser).
+                line = f"{_DEFINE_PREFIX}{line_path}\n"
+                if not (deduplicate and line in out_lines):
+                    out_lines.append(line)
+                continue
             resolved_line_path = os.path.normpath(os.path.join(output_dir, line_path))
             line_path = os.path.relpath(
                 resolved_line_path, start=output_dir
@@ -343,7 +372,9 @@ class VlogFilelist:
             )
 
         filtered = [
-            (path, opt) for path, opt in entries if opt is None or opt == "+incdir+"
+            (path, opt)
+            for path, opt in entries
+            if opt is None or opt in ("+incdir+", _DEFINE_PREFIX)
         ]
         lines = self._process(
             filtered,

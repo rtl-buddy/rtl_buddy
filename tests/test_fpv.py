@@ -523,7 +523,7 @@ def test_sby_fpv_writes_sby_file_with_expected_sections(tmp_path):
         tool_cfg=tool_cfg,
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     sby_path = sby._write_sby_file(sources, incdirs)
 
     content = Path(sby_path).read_text()
@@ -571,7 +571,7 @@ def test_sby_fpv_writes_constraints_before_properties(tmp_path):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     sby_path = sby._write_sby_file(sources, incdirs)
     content = Path(sby_path).read_text()
 
@@ -616,7 +616,7 @@ def test_sby_fpv_constraints_optional_default_unchanged(tmp_path):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     content = Path(sby._write_sby_file(sources, incdirs)).read_text()
     # Exactly two read statements: design + props.
     assert content.count("read -sv -formal ") == 2
@@ -661,7 +661,7 @@ def test_sby_fpv_incdir_in_model_filelist_reaches_sby_as_include_dir(tmp_path):
         name="t/sby", fpv_cfg=fpv_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
     )
 
-    sources, incdirs = sby._parse_filelist(sby._write_filelist())
+    sources, incdirs, _defines = sby._parse_filelist(sby._write_filelist())
 
     # the include dir is captured as an incdir, NOT a (missing) source
     assert any(Path(d).resolve() == inc.resolve() for d in incdirs)
@@ -700,7 +700,7 @@ def _sby_for(tmp_path, *, properties, frontend="verilog"):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     return sby, sources, incdirs
 
 
@@ -793,7 +793,7 @@ def test_sby_fpv_parse_filelist_extracts_incdirs(tmp_path):
         tool_cfg=_tool_cfg(),
         suite_dir=str(tmp_path),
     )
-    sources, incdirs = sby._parse_filelist(str(fl))
+    sources, incdirs, _defines = sby._parse_filelist(str(fl))
     assert sources == [str((tmp_path / "design.sv").resolve())] or sources == [
         str(tmp_path / "design.sv")
     ]
@@ -1389,3 +1389,107 @@ def test_apply_xfail_skip_passes_through_unchanged():
     apply_xfail(res, strict=True)
     assert res.results["result"] == "SKIP"
     assert res.is_pass() is True
+
+
+# ---------------------------------------------------------------------------
+# `+define+` in a model filelist (#305): a preprocessor define is an option,
+# not a source path. It must survive the VlogFilelist round-trip unresolved
+# and reach the generated script as a `-D` flag on whichever frontend runs.
+# ---------------------------------------------------------------------------
+
+
+def test_sby_fpv_parse_filelist_extracts_defines(tmp_path):
+    """`+define+NAME` / `+define+NAME=VALUE` / the multi `+define+A+B=C` form
+    become defines, never (missing) source files."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+VERILATOR\n+define+WIDTH=8\n+define+A+B=3\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    sources, incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["VERILATOR", "WIDTH=8", "A", "B=3"]
+    assert incdirs == []
+    # the design source is the only thing treated as a path
+    assert [Path(s).name for s in sources] == ["design.sv"]
+
+
+def test_sby_fpv_parse_filelist_drops_reserved_formal_define(tmp_path, caplog):
+    """rtl-buddy owns FORMAL: a filelist define for it is dropped with a
+    warning rather than silently changing what `ifdef FORMAL elaborates.
+    The two frontends do not even agree on which duplicate `-D` wins
+    (verilog keeps the last, yosys-slang the first), so the only safe
+    answer is to refuse the override."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+FORMAL=0\n+define+KEEP=1\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["KEEP=1"]
+    assert "FORMAL" in caplog.text and "cannot be overridden" in caplog.text
+
+
+def test_sby_fpv_define_in_model_filelist_survives_write_round_trip(tmp_path):
+    """Regression for #305: `+define+FOO` in models.yaml used to be resolved
+    as a file path by VlogFilelist and fail with "filelist source missing"
+    before _parse_filelist ever saw it."""
+    from rtl_buddy.config.model import ModelConfig
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "top.sv"
+    src.write_text("module top(); endmodule\n")
+    models = tmp_path / "models.yaml"
+    models.write_text("rtl-buddy-filetype: model_config\n")
+
+    model = ModelConfig(
+        name="top",
+        filelist=["+define+VERILATOR", "+define+WIDTH=8", "top.sv"],
+        path=str(models),
+    )
+    fpv_cfg = FpvConfig(
+        name="demo",
+        desc="t",
+        model=model,
+        tool="sby",
+        top="top",
+        properties=[],
+        constraints=None,
+        mode="bmc",
+        depth=20,
+        engines=["smtbmc yices"],
+        _reglvl=None,
+        tool_overrides=None,
+    )
+    sby = SbyFpv(
+        name="t/sby", fpv_cfg=fpv_cfg, tool_cfg=_tool_cfg(), suite_dir=str(tmp_path)
+    )
+
+    sources, incdirs, defines = sby._parse_filelist(sby._write_filelist())
+
+    assert defines == ["VERILATOR", "WIDTH=8"]
+    assert [Path(s).name for s in sources] == ["top.sv"]
+    assert incdirs == []
+
+    # ... and reaches the verilog frontend as a yosys define directive.
+    content = Path(sby._write_sby_file(sources, incdirs, defines)).read_text()
+    assert "verilog_defaults -add -DVERILATOR" in content
+    assert "verilog_defaults -add -DWIDTH=8" in content

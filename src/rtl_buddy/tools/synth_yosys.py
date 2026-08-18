@@ -185,7 +185,7 @@ class YosysSynth:
     def _source_files_from_filelist(self, fl_path: str) -> list[str]:
         """Return absolute source file paths from a (possibly stripped) filelist."""
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
-        _SKIP = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+        _SKIP = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
         _SOURCE_PREFIX = "-v "
         paths = []
         with open(fl_path) as f:

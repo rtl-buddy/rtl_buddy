@@ -43,8 +43,17 @@ MIN_SBY_VERSION = "0.40"
 
 _INCDIR_PREFIX = "+incdir+"
 _LIBEXT_PREFIX = "+libext+"
+_DEFINE_PREFIX = "+define+"
 _SOURCE_OPT_PREFIX = "-v "
 _FILELIST_SKIP_PREFIXES = ("-y ", "-F ", "-f ")
+
+# rtl-buddy owns `FORMAL`: both frontends are told to define it so in-RTL
+# `\`ifdef FORMAL` asserts survive preprocessing (#246). A model filelist
+# must not be able to take that away — and it would not even fail the same
+# way on both frontends (yosys's verilog frontend takes the *last* -D for a
+# name, yosys-slang takes the *first*), so a user `+define+FORMAL=...` is
+# dropped with a warning rather than silently changing what gets proved.
+_RESERVED_DEFINE_NAMES = ("FORMAL",)
 
 
 # Union selector for every formal-cell flavor across yosys generations:
@@ -131,21 +140,30 @@ class SbyFpv:
             model_cfg=self.fpv_cfg.get_model(),
             output_path=fl_path,
         )
-        # strip=False: keep the option markers (+incdir+, -v, +libext+, ...) in
-        # the emitted filelist. _parse_filelist below dispatches on exactly
-        # those prefixes to separate include dirs from sources; stripping them
-        # collapses a `+incdir+<dir>` entry to a bare path, which
-        # _parse_filelist then misreads as a (non-existent) source file.
+        # strip=False: keep the option markers (+incdir+, +define+, -v,
+        # +libext+, ...) in the emitted filelist. _parse_filelist below
+        # dispatches on exactly those prefixes to separate include dirs and
+        # defines from sources; stripping them collapses a `+incdir+<dir>`
+        # entry to a bare path, which _parse_filelist then misreads as a
+        # (non-existent) source file.
         vlog_fl.write_output(
             output_filepath=fl_path, unroll=True, strip=False, deduplicate=True
         )
         return fl_path
 
-    def _parse_filelist(self, fl_path: str) -> tuple[list[str], list[str]]:
-        """Return (source paths, include dirs) from the model filelist."""
+    def _parse_filelist(self, fl_path: str) -> tuple[list[str], list[str], list[str]]:
+        """Return (source paths, include dirs, defines) from the model filelist.
+
+        Defines come back as raw ``NAME[=VALUE]`` tokens — the frontend
+        renderers turn them into `-D` flags. Anything in
+        `_RESERVED_DEFINE_NAMES` is dropped here (with a warning) so the
+        proof, the vacuity pass and the COI walk all see the same
+        sanitised set.
+        """
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
         sources: list[str] = []
         incdirs: list[str] = []
+        defines: list[str] = []
         with open(fl_path) as f:
             for raw in f:
                 line = raw.strip()
@@ -155,6 +173,26 @@ class SbyFpv:
                     inc = line[len(_INCDIR_PREFIX) :]
                     incdirs.append(os.path.normpath(os.path.join(fl_dir, inc)))
                     continue
+                if line.startswith(_DEFINE_PREFIX):
+                    # `+define+A+B=C` is already split one-per-line by
+                    # VlogFilelist; split again so a hand-written filelist
+                    # read directly (tests, `-F` chains) behaves the same.
+                    for token in line[len(_DEFINE_PREFIX) :].split("+"):
+                        if not token:
+                            continue
+                        name = token.split("=", 1)[0]
+                        if name in _RESERVED_DEFINE_NAMES:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "fpv.filelist_define_reserved",
+                                verification=self.fpv_cfg.get_name(),
+                                define=token,
+                                name=name,
+                            )
+                            continue
+                        defines.append(token)
+                    continue
                 if line.startswith(_LIBEXT_PREFIX):
                     continue
                 if any(line.startswith(opt) for opt in _FILELIST_SKIP_PREFIXES):
@@ -162,7 +200,7 @@ class SbyFpv:
                 if line.startswith(_SOURCE_OPT_PREFIX):
                     line = line[len(_SOURCE_OPT_PREFIX) :]
                 sources.append(os.path.normpath(os.path.join(fl_dir, line)))
-        return sources, incdirs
+        return sources, incdirs, defines
 
     def _probe_sby_version(self, executable: str) -> str | None:
         try:
@@ -186,12 +224,18 @@ class SbyFpv:
         m = re.search(r"sby\s+(\S+)", out)
         return m.group(1) if m else None
 
-    def _write_sby_file(self, sources: list[str], incdirs: list[str]) -> str:
+    def _write_sby_file(
+        self,
+        sources: list[str],
+        incdirs: list[str],
+        defines: list[str] | None = None,
+    ) -> str:
         """Render the ``fpv.sby`` config that sby consumes."""
         return self._render_sby(
             output_path=self._sby_path(),
             sources=sources,
             incdirs=incdirs,
+            defines=defines or [],
             mode=self.fpv_cfg.get_mode(),
             extra_property_files=[],
             # Guard the primary proof against a vacuous PASS whenever the
@@ -209,6 +253,7 @@ class SbyFpv:
         incdirs: list[str],
         mode: str,
         extra_property_files: list[str],
+        defines: list[str] | None = None,
         emit_formal_guard: bool = False,
     ) -> str:
         cfg = self.fpv_cfg
@@ -253,9 +298,14 @@ class SbyFpv:
         # Verilog-frontend incdirs go through verilog_defaults; for slang they
         # are carried on the read_slang line by render_slang_read (read_slang
         # ignores verilog_defaults -add -I).
+        defines = list(defines or [])
         if frontend != "slang":
             for inc in incdirs:
                 lines.append(f"verilog_defaults -add -I {inc}")
+            # yosys's verilog frontend takes defines the same way it takes
+            # include dirs; `read -formal` already defines FORMAL itself.
+            for define in defines:
+                lines.append(f"verilog_defaults -add -D{define}")
         constraints = cfg.get_constraints()
         constraint_files = [constraints] if constraints else []
         all_sources = (
@@ -272,7 +322,9 @@ class SbyFpv:
             # in fpv_coi, which the COI walk shares so it parses the same design.
             # Basenames: files are dropped into the sby workdir under [files].
             slang_sources = [os.path.basename(s) for s in all_sources]
-            lines.append(render_slang_read(cfg.get_top(), incdirs, slang_sources))
+            lines.append(
+                render_slang_read(cfg.get_top(), incdirs, slang_sources, defines)
+            )
         else:
             for src in all_sources:
                 # Use basename — files are dropped into the sby workdir under [files].
@@ -306,7 +358,7 @@ class SbyFpv:
         cfg = self.fpv_cfg
 
         fl_path = self._write_filelist()
-        sources, incdirs = self._parse_filelist(fl_path)
+        sources, incdirs, defines = self._parse_filelist(fl_path)
         if not sources and not cfg.get_properties():
             raise FatalRtlBuddyError(
                 f"{cfg.get_name()}: filelist {fl_path} produced no sources and "
@@ -345,7 +397,7 @@ class SbyFpv:
                 resolved=resolved,
             )
 
-        sby_path = self._write_sby_file(sources, incdirs)
+        sby_path = self._write_sby_file(sources, incdirs, defines)
         log_path = self._log_path()
         workdir = self._workdir_path()
         executable = self.tool_cfg.get_executable() or "sby"
@@ -392,7 +444,7 @@ class SbyFpv:
         if cfg.vacuity_enabled() and (
             status == "PASS" or (status is None and proc.returncode == 0)
         ):
-            vacuity = self._run_vacuity(executable, sources, incdirs)
+            vacuity = self._run_vacuity(executable, sources, incdirs, defines)
 
         # Cone-of-influence coverage: structural-only yosys walk, runs
         # regardless of the primary verdict because the coverage signal
@@ -418,6 +470,7 @@ class SbyFpv:
                 log_path=self._coi_log_path(),
                 frontend=cfg.get_frontend(),
                 plugin_path=self._resolve_plugin_path(opts_for_coi.plugin_path),
+                defines=defines,
             )
 
         # Sby exit code conventions:
@@ -503,6 +556,7 @@ class SbyFpv:
         executable: str,
         sources: list[str],
         incdirs: list[str],
+        defines: list[str] | None = None,
     ) -> dict | None:
         """Run a secondary sby cover-mode pass for `|->` antecedents.
 
@@ -534,6 +588,7 @@ class SbyFpv:
             output_path=self._vacuity_sby_path(),
             sources=sources,
             incdirs=incdirs,
+            defines=defines,
             mode="cover",
             extra_property_files=[vacuity_sv],
         )

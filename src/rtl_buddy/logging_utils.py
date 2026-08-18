@@ -716,6 +716,12 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "inside your working tree — a false-green risk in nested git "
                 "worktrees. Verify these paths are intended."
             )
+        case "fpv.filelist_define_reserved":
+            return (
+                f"ignoring `+define+{fields.get('define')}` from the model "
+                f"filelist: `{fields.get('name')}` is set by rtl-buddy for "
+                "every formal run and cannot be overridden"
+            )
         case "filelist.write_done":
             return f"Wrote filelist to {fields.get('output')}"
         case "verible.path_missing":

@@ -27,7 +27,7 @@ from ..process_utils import run_managed_process
 from ..runner.cdc_results import CdcFailResults, CdcPassResults, CdcResults
 
 
-_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
 

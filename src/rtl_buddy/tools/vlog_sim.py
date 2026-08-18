@@ -123,8 +123,10 @@ def share_build_unsupported_reason(builder_cfg):
 
 
 # Matches the option prefixes VlogFilelist emits into run.f (see
-# VlogFilelist._extract): `+incdir+`, `+libext+`, `-v `, `-y `, `-F `.
-_FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext)\+|-[vyF]\s+)?(.*)$")
+# VlogFilelist._extract): `+incdir+`, `+libext+`, `+define+`, `-v `, `-y `,
+# `-F `. A `+define+` entry never resolves to a file, so it stamps as a raw
+# line — enough for the fingerprint to notice when the defines change.
+_FILELIST_OPTION_RE = re.compile(r"^(?:\+(?:incdir|libext|define)\+|-[vyF]\s+)?(.*)$")
 
 # Verilator writes a make-style dependency file naming every input the
 # verilation consumed — sources, headers reached through `+incdir+`/`-y`,

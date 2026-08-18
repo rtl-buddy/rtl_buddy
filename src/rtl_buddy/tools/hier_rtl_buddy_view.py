@@ -102,7 +102,7 @@ def _is_non_source_filelist_line(line: str) -> bool:
     layout.
     """
     s = line.strip()
-    if s.startswith("+incdir+") or s.startswith("+libext+"):
+    if s.startswith(("+incdir+", "+libext+", "+define+")):
         return True
     # ``-y <dir>`` / ``-v <file>`` use a space (or tab) separator.
     for prefix in ("-y", "-v"):
