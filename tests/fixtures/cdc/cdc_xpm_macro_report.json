@@ -1,0 +1,43 @@
+{
+  "tool": {
+    "name": "rtl-buddy-cdc",
+    "version": "0.4.0"
+  },
+  "module": "cdc_xpm_macro_top",
+  "summary": {
+    "ports": 6,
+    "cells": 7,
+    "flops": 4,
+    "crossings": 0,
+    "async_crossings": 0,
+    "violations": 0,
+    "suppressed": 0,
+    "baseline_carryover": 0,
+    "domain_unknown": 0
+  },
+  "domain_unknown_flops": [],
+  "inferred_clock_candidates": [],
+  "by_instance": [],
+  "domains": [
+    {
+      "flop": "$procdff$6",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "$procdff$7",
+      "clock": "clk_b"
+    },
+    {
+      "flop": "$procdff$8",
+      "clock": "clk_a"
+    },
+    {
+      "flop": "$procdff$9",
+      "clock": "clk_a"
+    }
+  ],
+  "crossings": [],
+  "violations": [],
+  "suppressed": [],
+  "baseline_carryover": []
+}
