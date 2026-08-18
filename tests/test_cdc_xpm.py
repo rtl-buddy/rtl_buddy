@@ -25,7 +25,26 @@ Two tiers, deliberately:
   alongside XPM recognition. Version floors go stale and lie about
   pre-release builds; the help surface is the thing that actually
   predicts whether the run will work. The same probe-the-help-surface
-  idiom is already used by `cdc_rtl_buddy._lint_supports_project_root`.
+  idiom is already used by `cdc_rtl_buddy._lint_supports_project_root`,
+  and this module matches it exactly — both streams, no return-code
+  condition — so the two probes cannot drift into failing closed.
+
+Regenerate the fixtures from the repository ROOT, so the emitted
+`location.file` entries stay repo-relative and a regeneration is a no-op
+diff rather than four lines of someone's home directory:
+
+    rtl-buddy-cdc lint --top cdc_xpm_macro_top \
+        --sdc tests/fixtures/cdc/cdc_xpm_macro_top.sdc \
+        --format json --output tests/fixtures/cdc/cdc_xpm_macro_report.json \
+        --emit-domain-map tests/fixtures/cdc/cdc_xpm_macro_domain_map.json \
+        tests/fixtures/cdc/cdc_xpm_macro_top.sv
+
+Nothing here reads `flop_domains[*].location`, and
+`test_installed_engine_reproduces_the_checked_in_map` deliberately compares
+only `crossings` / `clocks` / `clock_groups` / `design.top` — so the paths
+are documentation, not contract. They are still checked-in bytes, though,
+and a machine-specific absolute path is noise every regeneration has to
+undo by hand.
 
 Note the older `cdc_xpm_top` fixture in the same directory is NOT
 superseded: it models `xpm_cdc_single` as a bare single flop to exercise
@@ -82,7 +101,13 @@ def _cdc_supports_xpm() -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return probe.returncode == 0 and XPM_CAPABILITY_FLAG in probe.stdout
+    # Match the cited idiom exactly: both streams, and no return-code
+    # condition. The point of a capability probe is that the engine is NOT
+    # pinned by rtl_buddy, so "this version prints help on stdout and exits
+    # 0" is precisely the assumption that cannot be made. Both extra
+    # conditions fail CLOSED — the gate would skip forever and nobody would
+    # notice, the one failure mode a capability probe must not have.
+    return XPM_CAPABILITY_FLAG in (probe.stdout + probe.stderr)
 
 
 requires_xpm_engine = pytest.mark.skipif(
@@ -186,7 +211,14 @@ def test_checked_in_maps_came_from_a_recognising_engine(domain_map) -> None:
     a map regenerated with an older release would show the same empty
     crossing list for the wrong reason (the run failed on CDC-BBX)."""
     assert domain_map["generator"]["name"] == "rtl-buddy-cdc"
-    assert domain_map["generator"]["version"] >= XPM_MIN_CDC_VERSION
+    # Tuple compare, not string: `"0.10.0" >= "0.4.0"` is False in Python,
+    # so a lexicographic guard starts failing on the first two-digit minor
+    # for a reason that has nothing to do with XPM recognition — while
+    # claiming the fixture came from a non-recognising engine. `packaging`
+    # is not a dependency of this repo, and these are plain dotted numbers.
+    got = tuple(int(part) for part in domain_map["generator"]["version"].split(".")[:3])
+    want = tuple(int(part) for part in XPM_MIN_CDC_VERSION.split("."))
+    assert got >= want, f"fixture map came from rtl-buddy-cdc {got}, needs >= {want}"
 
 
 # --------------------------------------------------------------------------

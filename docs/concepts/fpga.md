@@ -167,7 +167,7 @@ runs:
 
 The platform owns the *default* constraint set (board-level clocks and pinout); `fpga.yaml` owns per-run selection — the same split as `pnr.yaml` owning the floorplan while `cfg-pnr-platforms` owns the technology. Per-run `xdc:` entries **extend** (never replace) the platform's list, and the read order is platform files first, run files after. Vivado applies XDC in read order with later commands winning, so a run-level constraint overrides a platform default for the same object.
 
-### CDC timing exceptions and XPM macros
+## CDC timing exceptions and XPM macros
 
 The CDC-relevant part of an XDC — `set_clock_groups -asynchronous`, per-crossing `set_max_delay -datapath_only`, `set_bus_skew` — can be generated from the verified crossing set rather than hand-written, and an existing XDC can be audited against it:
 

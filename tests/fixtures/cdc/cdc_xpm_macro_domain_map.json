@@ -47,7 +47,7 @@
       "source_instance_path": "cdc_xpm_macro_top",
       "clock": "clk_b",
       "location": {
-        "file": "/Users/zloh/Work/hern_claude_4/design-graph/wt/feat-315/tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
         "start_line": 98,
         "start_column": 5,
         "end_line": 98,
@@ -59,7 +59,7 @@
       "source_instance_path": "cdc_xpm_macro_top",
       "clock": "clk_b",
       "location": {
-        "file": "/Users/zloh/Work/hern_claude_4/design-graph/wt/feat-315/tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
         "start_line": 97,
         "start_column": 5,
         "end_line": 97,
@@ -71,7 +71,7 @@
       "source_instance_path": "cdc_xpm_macro_top",
       "clock": "clk_a",
       "location": {
-        "file": "/Users/zloh/Work/hern_claude_4/design-graph/wt/feat-315/tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
         "start_line": 70,
         "start_column": 5,
         "end_line": 70,
@@ -83,7 +83,7 @@
       "source_instance_path": "cdc_xpm_macro_top",
       "clock": "clk_a",
       "location": {
-        "file": "/Users/zloh/Work/hern_claude_4/design-graph/wt/feat-315/tests/fixtures/cdc/cdc_xpm_macro_top.sv",
+        "file": "tests/fixtures/cdc/cdc_xpm_macro_top.sv",
         "start_line": 69,
         "start_column": 5,
         "end_line": 69,
