@@ -51,7 +51,7 @@ _VIVADO_ERROR_RE = re.compile(r"^ERROR: \[")
 # ASYNC_REG-synchronized crossing) are informational.
 _VIOLATION_SEVERITIES = frozenset({"Critical", "Warning"})
 
-_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
 

@@ -716,6 +716,27 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "inside your working tree — a false-green risk in nested git "
                 "worktrees. Verify these paths are intended."
             )
+        case "fpv.filelist_define_reserved":
+            return (
+                f"ignoring `+define+{fields.get('define')}` from the model "
+                f"filelist: `{fields.get('name')}` is set by rtl-buddy for "
+                "every formal run and cannot be overridden"
+            )
+        case "fpv.filelist_define_unquotable":
+            return (
+                f"ignoring `+define+{fields.get('define')}` from the model "
+                "filelist: the value contains whitespace, and a yosys script "
+                "line is tokenised on whitespace with no quoting that "
+                "survives, so the define cannot be expressed"
+            )
+        case "fpv.filelist_define_redefined":
+            return (
+                f"`{fields.get('name')}` is defined more than once in the "
+                f"model filelist: keeping `{fields.get('kept')}`, dropping "
+                f"`{fields.get('dropped')}` — the two frontends disagree "
+                "about which duplicate wins, so the last definition is used "
+                "for both"
+            )
         case "filelist.write_done":
             return f"Wrote filelist to {fields.get('output')}"
         case "verible.path_missing":

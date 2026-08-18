@@ -433,3 +433,87 @@ def test_yaml_round_trip_with_slang_frontend(tmp_path):
     suite = FpvSuiteConfig(str(fpv_yaml))
     v = suite.get_verifications("slang_proof")[0]
     assert v.get_frontend() == "slang"
+
+
+# ---------------------------------------------------------------------------
+# Filelist defines (#305) — both frontends
+# ---------------------------------------------------------------------------
+
+
+def test_render_sby_slang_emits_filelist_defines(tmp_path):
+    """`+define+` entries reach the read_slang line as `-D` flags, and the
+    rtl-buddy-owned `-DFORMAL=1` still leads: yosys-slang keeps the FIRST
+    definition of a macro, so emitting ours first is what stops a user
+    define from displacing it."""
+    sby = _sby_with_frontend(
+        tmp_path,
+        frontend="slang",
+        plugin_path="/path/to/slang.so",
+    )
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        defines=["VERILATOR", "WIDTH=8"],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert (
+        "read_slang --top dut --single-unit --no-synthesis-define -DFORMAL=1 "
+        "-DVERILATOR -DWIDTH=8 dut.sv" in text
+    )
+    read_line = next(ln for ln in text.splitlines() if ln.startswith("read_slang"))
+    assert read_line.index("-DFORMAL=1") < read_line.index("-DVERILATOR")
+
+
+def test_render_sby_verilog_emits_filelist_defines(tmp_path):
+    """The verilog frontend takes defines through `verilog_defaults`, the
+    same channel its include dirs use; `read -formal` supplies FORMAL."""
+    sby = _sby_with_frontend(tmp_path, frontend="verilog")
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        defines=["VERILATOR", "WIDTH=8"],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert "verilog_defaults -add -DVERILATOR" in text
+    assert "verilog_defaults -add -DWIDTH=8" in text
+    # the define directives must precede the reads they configure
+    assert text.index("verilog_defaults -add -DVERILATOR") < text.index(
+        "read -sv -formal dut.sv"
+    )
+    assert "read_slang" not in text
+
+
+def test_coi_script_carries_filelist_defines_slang(tmp_path):
+    """The COI walk must parse the design the proof parsed — same defines."""
+    script = build_yosys_script(
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        properties=[],
+        constraints=None,
+        top="dut",
+        frontend="slang",
+        plugin_path="/path/to/slang.so",
+        defines=["VERILATOR"],
+    )
+    assert "-DFORMAL=1 -DVERILATOR" in script
+
+
+def test_coi_script_carries_filelist_defines_verilog(tmp_path):
+    script = build_yosys_script(
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        properties=[],
+        constraints=None,
+        top="dut",
+        frontend="verilog",
+        defines=["VERILATOR"],
+    )
+    assert "verilog_defaults -add -DVERILATOR" in script

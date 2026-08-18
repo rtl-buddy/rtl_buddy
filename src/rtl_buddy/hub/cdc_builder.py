@@ -113,7 +113,7 @@ def _resolve_cdc_executable() -> str:
 # Filelist entries we drop from the rtl-buddy-cdc command line —
 # CDC takes plain SystemVerilog source paths; ``-y`` / ``-F`` /
 # ``+incdir+`` directives don't apply.
-_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "-y ", "-F ", "-f ")
+_FILELIST_SKIP_PREFIXES = ("+incdir+", "+libext+", "+define+", "-y ", "-F ", "-f ")
 _FILELIST_SOURCE_PREFIX = "-v "
 
 

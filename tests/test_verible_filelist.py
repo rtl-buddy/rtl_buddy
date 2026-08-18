@@ -296,3 +296,100 @@ def test_rb_verible_filelist_output_override(minimal_project: Path, tmp_path: Pa
     assert result.exit_code == 0, result.output
     assert custom.is_file()
     assert not (minimal_project / "verible.filelist").exists()
+
+
+# --- +define+ (#305) ------------------------------------------------------
+
+
+def test_write_output_passes_defines_through_verbatim(tmp_path: Path):
+    """A `+define+` entry is an option, not a path: it must not be joined
+    against the filelist dir, existence-checked, flattened or stripped.
+    Before #305 it fell through to the source branch and every flow died
+    with "filelist source missing: <dir>/+define+FOO"."""
+    design = tmp_path / "design"
+    design.mkdir()
+    (design / "m.sv").write_text("module m; endmodule\n")
+
+    model = ModelConfig(
+        name="m",
+        filelist=["+define+VERILATOR", "+define+WIDTH=8", "+define+A+B=3", "m.sv"],
+        path=str(design / "models.yaml"),
+    )
+    out = tmp_path / "run.f"
+    fl = VlogFilelist(name="t", model_cfg=model, output_path=str(out))
+    # flatten is the harshest surviving case: the marker must not be
+    # basename'd away, or the line reads back as a source path.
+    fl.write_output(unroll=True, strip=False, flatten=True, deduplicate=True)
+
+    lines = [ln for ln in out.read_text().splitlines() if not ln.startswith("//")]
+    assert "+define+VERILATOR" in lines
+    assert "+define+WIDTH=8" in lines
+    # multi-define form is split one per line (verilator / VCS semantics)
+    assert "+define+A" in lines
+    assert "+define+B=3" in lines
+    assert "m.sv" in lines
+
+
+def test_write_output_drops_defines_under_strip(tmp_path: Path):
+    """`strip=True` means "bare source paths", which a define has no
+    spelling for. The rtl-buddy-view consumers (`rb hier`, `rb hier-query`,
+    `rb graph build`, `rb axi-profile`) hand the file straight to a
+    subprocess that opens every line as a path, so a surviving
+    `+define+FOO` is at best ignored and at worst opened — on exactly the
+    models #305 is meant to unblock. Consumers that want the defines read
+    the filelist back themselves and never pass `strip`."""
+    design = tmp_path / "design"
+    design.mkdir()
+    (design / "m.sv").write_text("module m; endmodule\n")
+
+    model = ModelConfig(
+        name="m",
+        filelist=["+define+VERILATOR", "+define+WIDTH=8", "m.sv"],
+        path=str(design / "models.yaml"),
+    )
+    out = tmp_path / "run.f"
+    fl = VlogFilelist(name="t", model_cfg=model, output_path=str(out))
+    fl.write_output(unroll=True, strip=True, deduplicate=True)
+
+    text = out.read_text()
+    lines = [ln for ln in text.splitlines() if not ln.startswith("//")]
+    assert "+define+" not in text
+    # Nor as a bare `VERILATOR` line the renderer would try to open.
+    assert "VERILATOR" not in text
+    assert "WIDTH=8" not in text
+    assert lines == ["design/m.sv"]
+
+
+def test_write_output_rejects_empty_define(tmp_path: Path):
+    """`+define+` with nothing after it is malformed, same as a bare
+    `+incdir+`."""
+    design = tmp_path / "design"
+    design.mkdir()
+    (design / "m.sv").write_text("module m; endmodule\n")
+    model = ModelConfig(
+        name="m", filelist=["+define+", "m.sv"], path=str(design / "models.yaml")
+    )
+    fl = VlogFilelist(name="t", model_cfg=model, output_path=str(tmp_path / "run.f"))
+    with pytest.raises(FilelistError):
+        fl.write_output(unroll=True)
+
+
+def test_verible_filelist_keeps_defines(tmp_path: Path):
+    """verible-verilog-ls honours `+define+` alongside `+incdir+`, so unlike
+    `-y` / `-v` / `+libext+` it survives into the LSP filelist."""
+    src = tmp_path / "src" / "a.sv"
+    src.parent.mkdir()
+    src.write_text("module a; endmodule\n")
+
+    model = ModelConfig(
+        name="m",
+        filelist=["src/a.sv", "+define+VERILATOR", "+libext+.sv"],
+        path=str(tmp_path / "models.yaml"),
+    )
+    out = tmp_path / "verible.filelist"
+    fl = VlogFilelist(name="t", model_cfg=None, output_path=str(out))
+    fl.write_verible_filelist([model])
+
+    text = out.read_text()
+    assert "+define+VERILATOR" in text
+    assert "+libext+" not in text

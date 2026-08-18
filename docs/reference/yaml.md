@@ -296,7 +296,7 @@ models:
 **Runtime effects:**
 
 - `tests.yaml` references a model by `name` using the `model` and `model_path` fields.
-- Model filelists are parsed by the filelist logic: `-F` recursion, `+incdir+`, `+libext+`, `-v`, `-y`, and plain source paths are all supported.
+- Model filelists are parsed by the filelist logic: `-F` recursion, `+incdir+`, `+libext+`, `+define+`, `-v`, `-y`, and plain source paths are all supported. A `+define+NAME[=VALUE]` entry (multi form `+define+A+B=C` included) is carried through as a preprocessor define, never resolved as a path; `rb fpv` passes it to the frontend as `-D`, and any flow that has no use for it ignores it. The flows that render a *bare source path* filelist for `rtl-buddy-view` — `rb hier`, `rb hier-query`, `rb graph build`, `rb axi-profile` — drop define entries instead, since that renderer opens every line as a file. A define VALUE cannot contain `+` (the multi-define separator), and it is expanded by `os.path.expandvars()` like any other entry, so `+define+CFG=$HOME` takes the caller's environment and the literal token `$FOO` cannot be defined.
 - `spec` is not used at simulation time; it is only consumed by the `rb spec` traceability commands.
 - `synth` / `tests` are *back-pointers* — the downstream files still carry their own `model:` + `model_path:` references back to this one. The model-side entry is the source of truth for "which flow owns this model" when there could otherwise be ambiguity.
 

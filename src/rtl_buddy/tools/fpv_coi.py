@@ -84,7 +84,12 @@ _ALL_MARKERS = (
 )
 
 
-def render_slang_read(top: str, incdirs: list[str], sources: list[str]) -> str:
+def render_slang_read(
+    top: str,
+    incdirs: list[str],
+    sources: list[str],
+    defines: list[str] | None = None,
+) -> str:
     """Render the single ``read_slang`` command shared by the proof
     (``SbyFpv._render_sby``) and the COI walk (``build_yosys_script``).
 
@@ -101,17 +106,32 @@ def render_slang_read(top: str, incdirs: list[str], sources: list[str]) -> str:
       ``verilog_defaults -add -I``, which only configures yosys's built-in
       verilog frontend).
     - ``--no-synthesis-define -DFORMAL=1`` mirrors ``read -formal`` so in-RTL
-      ``\\`ifdef FORMAL`` asserts survive preprocessing (#246).
+      ``\\`ifdef FORMAL`` asserts survive preprocessing (#246). It is emitted
+      *before* the model's own defines because yosys-slang keeps the FIRST
+      definition of a macro (yosys's verilog frontend keeps the last), so
+      leading with it is what makes a stray ``+define+FORMAL=0`` inert on
+      this frontend; ``SbyFpv._parse_filelist`` drops such a define outright,
+      with a warning, so neither frontend can lose it silently (#305).
+    - ``+define+NAME[=VALUE]`` entries from the model filelist become ``-D``
+      flags (#305). They are passed through verbatim — yosys tokenises a
+      script line on whitespace only and does *not* strip quotes, so a define
+      value containing whitespace cannot be expressed here. Nothing arrives
+      in that shape: ``SbyFpv._parse_filelist`` drops such an entry with a
+      warning that names it, rather than letting a malformed script line
+      surface as an unrelated ``read_slang`` error deep in ``fpv.log``. It
+      also collapses a name defined twice to its last definition, because
+      the two frontends disagree about which duplicate survives.
 
     Filesystem paths are ``shlex.quote``d: yosys tokenises each script line
     shell-style, so a single unquoted space (e.g. a path with a space) would
     break the whole read_slang line (same convention as ``synth_yosys.py``).
     """
     inc_args = "".join(f" -I {shlex.quote(inc)}" for inc in incdirs)
+    def_args = "".join(f" -D{d}" for d in (defines or []))
     src_args = " ".join(shlex.quote(s) for s in sources)
     return (
         f"read_slang --top {top} --single-unit{inc_args} "
-        f"--no-synthesis-define -DFORMAL=1 {src_args}"
+        f"--no-synthesis-define -DFORMAL=1{def_args} {src_args}"
     )
 
 
@@ -124,6 +144,7 @@ def build_yosys_script(
     top: str,
     frontend: str = "verilog",
     plugin_path: str | None = None,
+    defines: list[str] | None = None,
 ) -> str:
     """Render the yosys script that runs the COI analysis.
 
@@ -147,12 +168,14 @@ def build_yosys_script(
     if frontend != "slang":
         for inc in incdirs:
             lines.append(f"verilog_defaults -add -I {inc}")
+        for define in defines or []:
+            lines.append(f"verilog_defaults -add -D{define}")
     constraint_files = [constraints] if constraints else []
     all_files = list(sources) + constraint_files + list(properties)
     if frontend == "slang":
         # Shared with the SbyFpv proof renderer so the COI walk parses the same
         # design; COI passes full paths (no sby workdir) rather than basenames.
-        lines.append(render_slang_read(top, incdirs, all_files))
+        lines.append(render_slang_read(top, incdirs, all_files, defines))
     else:
         for src in all_files:
             lines.append(f"read -sv -formal {src}")
@@ -340,6 +363,7 @@ def run_coi_analysis(
     log_path: str,
     frontend: str = "verilog",
     plugin_path: str | None = None,
+    defines: list[str] | None = None,
 ) -> dict | None:
     """Run yosys and return the parsed coverage summary, or None on error.
 
@@ -355,6 +379,7 @@ def run_coi_analysis(
         top=top,
         frontend=frontend,
         plugin_path=plugin_path,
+        defines=defines,
     )
     Path(script_path).write_text(script)
     cmd = [yosys_exe, "-s", script_path]
