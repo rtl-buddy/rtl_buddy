@@ -535,6 +535,47 @@ def test_wrapper_drops_non_source_tb_filelist_entries(tmp_path: Path):
     assert "tb.sv" in fl
 
 
+def test_wrapper_drops_model_filelist_defines_from_hier_f(tmp_path: Path):
+    """A `+define+` in the MODEL's own filelist must not reach hier.f.
+
+    The TB-side filter (`_is_non_source_filelist_line`) never sees the
+    model's entries — they go straight through `write_output(strip=True)`,
+    and #305 made `_process` skip the strip branch for defines so the
+    marker survives for the FPV consumers that read the file back. `rb
+    hier` does not read it back: it hands the path to rtl-buddy-view, which
+    opens every line as a source. So the skip has to happen at write time,
+    keyed on `strip` — otherwise the models this feature exists to unblock
+    are exactly the ones `rb hier` / `rb hier-query` / `rb graph build`
+    start failing on.
+    """
+    src = tmp_path / "src" / "example.sv"
+    src.parent.mkdir()
+    src.write_text("module example; endmodule\n")
+    model = ModelConfig(
+        name="example",
+        filelist=["+define+SYNTHESIS", "+define+WIDTH=8", str(src)],
+        path=str(tmp_path / "models.yaml"),
+    )
+    script, _ = _make_fake_view(tmp_path)
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=model,
+        suite_dir=str(tmp_path),
+        format="json",
+        executable=str(script),
+    )
+    assert view.run() == 0
+
+    fl = (tmp_path / "artefacts" / "hier" / "example" / "hier.f").read_text()
+    body = [ln for ln in fl.splitlines() if ln and not ln.startswith("//")]
+    assert "+define+" not in fl
+    # ...and not as a bare `SYNTHESIS` line the renderer would try to open.
+    assert "SYNTHESIS" not in fl
+    assert "WIDTH=8" not in fl
+    assert [ln for ln in body if ln.endswith("example.sv")]
+    assert all(ln.endswith(".sv") for ln in body), body
+
+
 def test_wrapper_dut_only_does_not_emit_tb_top(tmp_path: Path):
     """Sanity: when ``test_cfg`` is None (today's ``rb hier <model>``
     path), the wrapper invokes the renderer with no ``--tb-top``

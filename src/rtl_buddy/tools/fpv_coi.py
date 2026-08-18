@@ -115,7 +115,12 @@ def render_slang_read(
     - ``+define+NAME[=VALUE]`` entries from the model filelist become ``-D``
       flags (#305). They are passed through verbatim — yosys tokenises a
       script line on whitespace only and does *not* strip quotes, so a define
-      value containing whitespace cannot be expressed here.
+      value containing whitespace cannot be expressed here. Nothing arrives
+      in that shape: ``SbyFpv._parse_filelist`` drops such an entry with a
+      warning that names it, rather than letting a malformed script line
+      surface as an unrelated ``read_slang`` error deep in ``fpv.log``. It
+      also collapses a name defined twice to its last definition, because
+      the two frontends disagree about which duplicate survives.
 
     Filesystem paths are ``shlex.quote``d: yosys tokenises each script line
     shell-style, so a single unquoted space (e.g. a path with a space) would

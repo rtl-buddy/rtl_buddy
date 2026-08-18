@@ -1448,6 +1448,91 @@ def test_sby_fpv_parse_filelist_drops_reserved_formal_define(tmp_path, caplog):
     assert "FORMAL" in caplog.text and "cannot be overridden" in caplog.text
 
 
+def test_sby_fpv_parse_filelist_drops_a_define_it_cannot_express(tmp_path, caplog):
+    """A define value carrying whitespace has no honourable rendering.
+
+    Both renderers splice the token into a yosys *script* line, which yosys
+    tokenises on whitespace, so `+define+MSG=hello world` becomes
+    `-DMSG=hello` plus a stray `world` argument and the failure surfaces as
+    an unrelated read_slang error deep in `fpv.log`. Drop it where the
+    message can still name the entry — the same shape as the reserved-name
+    rule, and the outcome the FORMAL handling exists to avoid."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+MSG=hello world\n+define+KEEP=1\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["KEEP=1"]
+    assert "MSG=hello world" in caplog.text
+    assert "whitespace" in caplog.text
+
+
+def test_sby_fpv_parse_filelist_collapses_a_redefined_name_to_the_last(
+    tmp_path, caplog
+):
+    """Two definitions of one name is the reserved-name failure in a new
+    costume: yosys's verilog frontend keeps the LAST `-D` and yosys-slang
+    keeps the FIRST, so passing both through proves `WIDTH=16` on one
+    frontend and `WIDTH=8` on the other, silently. Easy to reach through a
+    `-F` chain pulling in two vendor filelists. Last wins — filelist
+    convention, and what the verilog frontend would have done anyway."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+WIDTH=8\n+define+KEEP=1\n+define+WIDTH=16\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    # One WIDTH, the last one, and it keeps the position of the first
+    # appearance so a duplicate-free filelist is byte-identical.
+    assert defines == ["WIDTH=16", "KEEP=1"]
+    assert "WIDTH" in caplog.text and "dropping" in caplog.text
+
+
+def test_sby_fpv_parse_filelist_is_quiet_about_an_identical_repeat(tmp_path, caplog):
+    """The same define twice with the same value changes nothing, so it is
+    deduped without a warning — a `-F` chain that includes one common
+    filelist twice is ordinary, not a mistake."""
+    from rtl_buddy.tools.sby_fpv import SbyFpv
+
+    src = tmp_path / "design.sv"
+    src.write_text("// design")
+    fl = tmp_path / "fpv.f"
+    fl.write_text(f"+define+WIDTH=8\n+define+WIDTH=8\n{src.name}\n")
+
+    sby = SbyFpv(
+        name="t/sby",
+        fpv_cfg=_make_fpv_cfg(),
+        tool_cfg=_tool_cfg(),
+        suite_dir=str(tmp_path),
+    )
+    with caplog.at_level("WARNING"):
+        _sources, _incdirs, defines = sby._parse_filelist(str(fl))
+
+    assert defines == ["WIDTH=8"]
+    assert "dropping" not in caplog.text
+
+
 def test_sby_fpv_define_in_model_filelist_survives_write_round_trip(tmp_path):
     """Regression for #305: `+define+FOO` in models.yaml used to be resolved
     as a file path by VlogFilelist and fail with "filelist source missing"

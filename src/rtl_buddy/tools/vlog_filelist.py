@@ -147,6 +147,11 @@ class VlogFilelist:
                 # split here (verilator / VCS filelist semantics) so
                 # downstream consumers only ever see one NAME[=VALUE] per
                 # entry; a define VALUE therefore cannot itself contain `+`.
+                # Note also that `line_path` has already been through
+                # `os.path.expandvars()` above — right for a path entry,
+                # and inherited here — so `+define+CFG=$HOME` takes the
+                # caller's environment and a filelist cannot define the
+                # literal token `$FOO`.
                 for one in line_path.split("+"):
                     if one:
                         entries.append((one, _DEFINE_PREFIX))
@@ -171,10 +176,22 @@ class VlogFilelist:
         out_lines = []
         for line_path, line_option in entries:
             if line_option == _DEFINE_PREFIX:
-                # Defines pass through verbatim: no path resolution, no
-                # flatten (basename would eat a `/` in a value), and no
-                # strip (a bare `NAME=VALUE` line reads as a source path to
-                # every downstream filelist parser).
+                # `strip` means "emit bare source paths" — the mode the
+                # rtl-buddy-view consumers (`rb hier`, `rb hier-query`,
+                # `rb graph build`, `rb axi-profile`) write for, since they
+                # hand the file straight to a subprocess that opens every
+                # line as a path. A define is not a path and has no bare
+                # spelling, so it is dropped rather than emitted as either
+                # `+define+FOO` (which that parser cannot read) or `FOO`
+                # (which it would try to open). Consumers that *want* the
+                # defines read the filelist back themselves and never pass
+                # `strip`.
+                if strip:
+                    continue
+                # Otherwise verbatim: no path resolution, no flatten
+                # (basename would eat a `/` in a value), and no strip (a
+                # bare `NAME=VALUE` line reads as a source path to every
+                # downstream filelist parser).
                 line = f"{_DEFINE_PREFIX}{line_path}\n"
                 if not (deduplicate and line in out_lines):
                     out_lines.append(line)

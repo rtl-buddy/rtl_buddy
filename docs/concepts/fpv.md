@@ -105,6 +105,13 @@ The runner reads the model's filelist via `VlogFilelist` (the same helper `rb sy
 
 `+define+NAME` / `+define+NAME=VALUE` in the model filelist becomes a preprocessor define on whichever frontend runs — `-DNAME=VALUE` on the `read_slang` line, `verilog_defaults -add -DNAME=VALUE` before the `read -sv -formal` calls — and the same defines are used by the vacuity pass and the COI walk, so all three parse the same design. This is what a design needs when it only elaborates under a build define (selecting a config branch, or neutralising a TB-only macro that sits inside `// synthesis translate_off` — **slang still preprocesses `translate_off` regions**, so an `` `include `` or macro in there must resolve). `FORMAL` is reserved: a `+define+FORMAL=...` entry is dropped with a warning, because the two frontends disagree on which duplicate `-D` wins (yosys's verilog frontend keeps the last, yosys-slang the first) and silently proving the wrong thing is the worse failure.
 
+Two more entries are dropped or normalised for the same reason, each with a warning naming the entry:
+
+- **A value containing whitespace** (`+define+MSG=hello world`) cannot be expressed. Both frontends receive the define on a yosys *script* line, which yosys tokenises on whitespace and does not unquote, so the stray word would become a bogus argument and fail as an unrelated `read_slang` error. The entry is dropped.
+- **A name defined more than once** — easy to reach through a `-F` chain pulling in two vendor filelists — collapses to its **last** definition, matching verilator/VCS filelist convention. Left alone, `--frontend verilog` would prove `WIDTH=16` while `--frontend slang` proved `WIDTH=8`.
+
+An identical repeat of the same `NAME=VALUE` is deduped silently: it changes nothing.
+
 Both frontends define `FORMAL` (and not `SYNTHESIS`) when reading sources, so `` `ifdef FORMAL `` guards behave the same either way: the verilog path uses `read -sv -formal` (which swaps yosys's implicit `SYNTHESIS=1` define for `FORMAL=1`), and the slang path passes `--no-synthesis-define -DFORMAL=1` to `read_slang` for the same effect — in the main proof script, the COI script, and the vacuity pass.
 
 ## Root config: `cfg-fpv-tools`

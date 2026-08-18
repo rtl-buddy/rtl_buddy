@@ -155,10 +155,27 @@ class SbyFpv:
         """Return (source paths, include dirs, defines) from the model filelist.
 
         Defines come back as raw ``NAME[=VALUE]`` tokens — the frontend
-        renderers turn them into `-D` flags. Anything in
-        `_RESERVED_DEFINE_NAMES` is dropped here (with a warning) so the
-        proof, the vacuity pass and the COI walk all see the same
-        sanitised set.
+        renderers turn them into `-D` flags. Three classes are dropped here
+        (each with a warning) so the proof, the vacuity pass and the COI
+        walk all see the same sanitised set, and so the two frontends
+        cannot end up proving different things:
+
+        * `_RESERVED_DEFINE_NAMES` — rtl-buddy owns these (`FORMAL`).
+        * a token carrying **whitespace** (`+define+MSG=hello world`). Both
+          renderers splice the token into a yosys *script line*, which
+          yosys tokenises on whitespace, so the stray word becomes a bogus
+          argument and the failure surfaces as an unrelated `read_slang`
+          error deep in `fpv.log`. There is no quoting that survives, so
+          the entry cannot be honoured — say so at parse time, where the
+          message can name it.
+        * an **earlier** definition of a name defined more than once. This
+          is easy to reach through a `-F` chain that pulls in two vendor
+          filelists, and it is the same failure the reserved-name rule
+          exists to prevent: yosys's verilog frontend keeps the LAST `-D`
+          for a name and yosys-slang keeps the FIRST, so passing both
+          through would prove `WIDTH=16` on one frontend and `WIDTH=8` on
+          the other, silently. Last wins — filelist convention (verilator /
+          VCS) and what the verilog frontend would have done anyway.
         """
         fl_dir = os.path.dirname(os.path.abspath(fl_path))
         sources: list[str] = []
@@ -191,6 +208,16 @@ class SbyFpv:
                                 name=name,
                             )
                             continue
+                        if token.split() != [token]:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "fpv.filelist_define_unquotable",
+                                verification=self.fpv_cfg.get_name(),
+                                define=token,
+                                name=name,
+                            )
+                            continue
                         defines.append(token)
                     continue
                 if line.startswith(_LIBEXT_PREFIX):
@@ -200,7 +227,36 @@ class SbyFpv:
                 if line.startswith(_SOURCE_OPT_PREFIX):
                     line = line[len(_SOURCE_OPT_PREFIX) :]
                 sources.append(os.path.normpath(os.path.join(fl_dir, line)))
-        return sources, incdirs, defines
+        return sources, incdirs, self._last_definition_wins(defines)
+
+    def _last_definition_wins(self, defines: list[str]) -> list[str]:
+        """Collapse repeated define NAMEs to the last one, warning on each.
+
+        See `_parse_filelist`'s docstring: the two frontends disagree about
+        which duplicate survives, so leaving both in is the "silently proves
+        something different per frontend" failure in a new costume. Order is
+        otherwise preserved — a name keeps the position of its FIRST
+        appearance, so a filelist with no duplicates is byte-identical.
+        """
+        latest: dict[str, str] = {}
+        order: list[str] = []
+        for token in defines:
+            name = token.split("=", 1)[0]
+            if name in latest:
+                if latest[name] != token:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "fpv.filelist_define_redefined",
+                        verification=self.fpv_cfg.get_name(),
+                        name=name,
+                        dropped=latest[name],
+                        kept=token,
+                    )
+            else:
+                order.append(name)
+            latest[name] = token
+        return [latest[name] for name in order]
 
     def _probe_sby_version(self, executable: str) -> str | None:
         try:

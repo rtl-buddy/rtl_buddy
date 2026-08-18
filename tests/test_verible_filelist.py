@@ -317,9 +317,9 @@ def test_write_output_passes_defines_through_verbatim(tmp_path: Path):
     )
     out = tmp_path / "run.f"
     fl = VlogFilelist(name="t", model_cfg=model, output_path=str(out))
-    # strip=True is the harshest case: the marker must still survive, or the
-    # line reads back as a source path.
-    fl.write_output(unroll=True, strip=True, flatten=True, deduplicate=True)
+    # flatten is the harshest surviving case: the marker must not be
+    # basename'd away, or the line reads back as a source path.
+    fl.write_output(unroll=True, strip=False, flatten=True, deduplicate=True)
 
     lines = [ln for ln in out.read_text().splitlines() if not ln.startswith("//")]
     assert "+define+VERILATOR" in lines
@@ -328,6 +328,36 @@ def test_write_output_passes_defines_through_verbatim(tmp_path: Path):
     assert "+define+A" in lines
     assert "+define+B=3" in lines
     assert "m.sv" in lines
+
+
+def test_write_output_drops_defines_under_strip(tmp_path: Path):
+    """`strip=True` means "bare source paths", which a define has no
+    spelling for. The rtl-buddy-view consumers (`rb hier`, `rb hier-query`,
+    `rb graph build`, `rb axi-profile`) hand the file straight to a
+    subprocess that opens every line as a path, so a surviving
+    `+define+FOO` is at best ignored and at worst opened — on exactly the
+    models #305 is meant to unblock. Consumers that want the defines read
+    the filelist back themselves and never pass `strip`."""
+    design = tmp_path / "design"
+    design.mkdir()
+    (design / "m.sv").write_text("module m; endmodule\n")
+
+    model = ModelConfig(
+        name="m",
+        filelist=["+define+VERILATOR", "+define+WIDTH=8", "m.sv"],
+        path=str(design / "models.yaml"),
+    )
+    out = tmp_path / "run.f"
+    fl = VlogFilelist(name="t", model_cfg=model, output_path=str(out))
+    fl.write_output(unroll=True, strip=True, deduplicate=True)
+
+    text = out.read_text()
+    lines = [ln for ln in text.splitlines() if not ln.startswith("//")]
+    assert "+define+" not in text
+    # Nor as a bare `VERILATOR` line the renderer would try to open.
+    assert "VERILATOR" not in text
+    assert "WIDTH=8" not in text
+    assert lines == ["design/m.sv"]
 
 
 def test_write_output_rejects_empty_define(tmp_path: Path):
