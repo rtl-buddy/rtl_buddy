@@ -167,8 +167,8 @@ Three consequences that can surprise:
 
 ## `--dispatch` silently implies `--share-build`
 
-`regression --dispatch <backend>` (and `randtest --dispatch <backend>`, for
-`slurm` and `local-parallel` alike) turn on
+`regression --dispatch <backend>` (and `randtest --dispatch <backend>` and
+`test --dispatch <backend>`, for `slurm` and `local-parallel` alike) turn on
 `--share-build` even if you didn't pass it: a **dispatched build job**
 compiling one shared `simv` per unique compile key on a compute node is
 exactly what lets each sim job skip compilation and re-enter at simulation.
@@ -188,6 +188,20 @@ expressible per job (rtl_buddy rejects the combination loudly rather than
 ignoring the flag). And `randtest -r <n> --dispatch slurm` runs locally — a
 single-seed replay gains nothing from the queue — logging
 `randtest.dispatch_ignored_for_replay` so the ignored flag isn't silent.
+
+## `cfg-dispatch.backend` does not apply to `rb test`
+
+`cfg-dispatch.backend` defaults the backend for `rb regression` and
+`rb randtest` only. **`rb test` dispatches only when `--dispatch` is passed
+on the command line** — set `backend: slurm` in `root_config.yaml`, run
+`rb test basic`, and it still runs in-process. That is deliberate: `rb test`
+is the local iteration command, and a project that pointed its regressions
+at a cluster must not find single-test runs queueing behind it after an
+upgrade (it also keeps `--early-stop`, which dispatch rejects, usable by
+default). Nothing else in `cfg-dispatch` is ignored — `resources`, `retry`,
+`jobs`, `max-wait` and the rest all configure the run once `--dispatch`
+opts in. Pass `--dispatch slurm` (or `local-parallel`) explicitly. See
+[Parallel dispatch](concepts/dispatch.md).
 
 ## `--dispatch local-parallel` ignores `resources:` — `-j` is the only limit
 

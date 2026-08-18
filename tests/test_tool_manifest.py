@@ -543,6 +543,21 @@ def test_icarus_simulator_declared():
     assert icarus.used_by == ("test", "randtest", "regression")
 
 
+def test_slurm_gates_test_as_well_as_regression():
+    """`rb test --dispatch slurm` needs the client too (#440).
+
+    `--required-for test` and `--explain slurm` are the gate the bundled
+    SKILL.md tells agents to check before dispatching, so `used_by` has
+    to name every command that can dispatch.
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+
+    slurm = by_name["slurm"]
+    assert slurm.optional  # the default --dispatch local needs nothing
+    assert set(slurm.used_by) == {"regression", "randtest", "test"}
+    assert "rb test --dispatch slurm" in slurm.notes
+
+
 def test_rtl_buddy_view_declares_floor_and_version_probe():
     """rtl-buddy-view carries a 0.3.0 FLOOR (no upper cap) and a probe.
 
