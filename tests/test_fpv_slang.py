@@ -517,3 +517,126 @@ def test_coi_script_carries_filelist_defines_verilog(tmp_path):
         defines=["VERILATOR"],
     )
     assert "verilog_defaults -add -DVERILATOR" in script
+
+
+# ---------------------------------------------------------------------------
+# `params:` — reduced-configuration proofs (#359)
+#
+# The two frontends need different mechanisms, and this is not a style
+# choice: yosys-slang elaborates during `read_slang`, so by the time a
+# script could run `chparam` the module is no longer parametric and the
+# following `prep` aborts with "Module `X' is used with parameters but is
+# not parametric!" (checked against yosys 0.64 + yosys-slang). slang's own
+# `-G` top-level override is the only route there; `chparam` before `prep`
+# is the route on the native verilog frontend.
+# ---------------------------------------------------------------------------
+
+
+def _sby_with_params(tmp_path, *, frontend, params, plugin_path=None) -> SbyFpv:
+    sby = _sby_with_frontend(tmp_path, frontend=frontend, plugin_path=plugin_path)
+    sby.fpv_cfg.params = dict(params)
+    return sby
+
+
+def test_render_sby_slang_emits_param_overrides_as_dash_g(tmp_path):
+    sby = _sby_with_params(
+        tmp_path,
+        frontend="slang",
+        params={"K": 8, "WIDTH": "8'h20"},
+        plugin_path="/path/to/slang.so",
+    )
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert "-G K=8 -G WIDTH=8'h20" in text
+    # chparam would abort the run on this frontend
+    assert "chparam" not in text
+
+
+def test_render_sby_verilog_emits_chparam_after_read_before_prep(tmp_path):
+    sby = _sby_with_params(tmp_path, frontend="verilog", params={"K": 8})
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    lines = [ln for ln in open(out_path).read().splitlines()]
+    assert "chparam -set K 8 dut" in lines
+    assert (
+        lines.index("read -sv -formal dut.sv")
+        < lines.index("chparam -set K 8 dut")
+        < lines.index("prep -top dut")
+    )
+
+
+def test_render_sby_without_params_emits_no_override(tmp_path):
+    sby = _sby_with_frontend(tmp_path, frontend="verilog")
+    out_path = str(tmp_path / "fpv.sby")
+    sby._render_sby(
+        output_path=out_path,
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        mode="bmc",
+        extra_property_files=[],
+    )
+    text = open(out_path).read()
+    assert "chparam" not in text
+    assert "-G " not in text
+
+
+def test_coi_script_carries_params_slang(tmp_path):
+    """The COI walk reports coverage as a fraction of design cells — it has
+    to measure the same (reduced) elaboration the proof ran."""
+    script = build_yosys_script(
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        properties=[],
+        constraints=None,
+        top="dut",
+        frontend="slang",
+        plugin_path="/path/to/slang.so",
+        params=[("K", "8")],
+    )
+    assert "-G K=8" in script
+    assert "chparam" not in script
+
+
+def test_coi_script_carries_params_verilog(tmp_path):
+    script = build_yosys_script(
+        sources=["/abs/dut.sv"],
+        incdirs=[],
+        properties=[],
+        constraints=None,
+        top="dut",
+        frontend="verilog",
+        params=[("K", "8")],
+    )
+    lines = script.splitlines()
+    assert "chparam -set K 8 dut" in lines
+    assert lines.index("chparam -set K 8 dut") < lines.index("prep -flatten -top dut")
+
+
+def test_vacuity_pass_carries_params(tmp_path, monkeypatch):
+    """The vacuity cover pass re-renders the design; a differently sized
+    elaboration there would chase covers the proof never had."""
+    props = tmp_path / "props.sv"
+    props.write_text("assert property (@(posedge clk) a |-> b);\n")
+    sby = _sby_with_params(
+        tmp_path, frontend="verilog", params={"K": 8}, plugin_path=None
+    )
+    sby.fpv_cfg.properties = [str(props)]
+
+    monkeypatch.setattr(SbyFpv, "_run", lambda self, cmd, log: None)
+    sby._run_vacuity("sby", sources=["/abs/dut.sv"], incdirs=[], defines=[])
+
+    text = open(sby._vacuity_sby_path()).read()
+    assert "chparam -set K 8 dut" in text

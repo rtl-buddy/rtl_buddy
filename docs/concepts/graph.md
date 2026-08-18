@@ -785,7 +785,7 @@ Config tier (`rtl_buddy`):
 | Type | Id | Notable attributes |
 | --- | --- | --- |
 | `suite` | `suite:<suite dir>` | `flow` |
-| `test` | `test:<suite dir>#<test name>` | `flow`, `reglvl` (raw, as written), `cocotb`, `cocotb_modules`, `xfail`; on a non-simulation run also `tool` and `toplevel` |
+| `test` | `test:<suite dir>#<test name>` | `flow`, `reglvl` (raw, as written), `cocotb`, `cocotb_modules`, `xfail`; on a non-simulation run also `tool` and `toplevel`, and on a formal run with `params:` the top-module parameter overrides as `params` |
 | `testbench` | `tb:<suite dir>#<tb name>` | `flow`, `toplevel`, `kind` (`cocotb`/`systemc`/`hdl`), `cocotb` |
 | `model` | `model:<models.yaml>#<name>` | `desc` |
 | `spec_block` | `spec:<block name>` | `desc` |

@@ -83,6 +83,7 @@ verifications:
 | `mode` | One of `bmc` (bounded), `prove` (k-induction), `cover`, `live` |
 | `depth` | Cycle depth passed to sby; defaults to 20 |
 | `engines` | List of sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |
+| `params` | Optional map of top-module parameter name → value, applied at elaboration. See [Reduced-configuration proofs](#reduced-configuration-proofs). |
 | `reglvl` | Regression level for filtering (same semantics as `rb synth`) |
 | `tool_overrides` | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
 | `vacuity` | Optional bool. When true (default for `bmc` / `prove`), run a secondary sby cover-mode pass over auto-derived cover properties for every `a \|-> b` antecedent in the property set — flags vacuous proofs. Defaults to false for `cover` / `live` modes. See [Vacuity covers](#vacuity-covers). |
@@ -424,6 +425,91 @@ as the `demo_abv_induction` block in the
 For the theory paper, the first-party YosysHQ guidance the "companion
 assertion" lever above is taken from, and a hands-on practitioner
 walk-through of the same pattern, see [References](#references) below.
+
+## Reduced-configuration proofs
+
+A parameterised block is often provable at a *smaller* configuration than
+it ships at. The properties are size-generic — a FIFO's "never overflows"
+does not mention the depth — while the state space the solver has to
+search is exponential in it. Shrinking one depth/width parameter is
+frequently the difference between a proof that returns in seconds and one
+that never returns at all. The classic case is per-entry ECC: the parity
+trees are hard for SAT, and BMC re-instantiates them in every unrolled
+frame, so a K-entry store measured at `K=16` can cost ~11 minutes at frame
+30 and grow ~40% per frame beyond it, while the same properties at `K=8`
+close in a fraction of that.
+
+`params:` states that configuration:
+
+```yaml
+verifications:
+  - name: "my_block_proof_k8"
+    desc: "Bounded proof of the 8-entry configuration"
+    tool: "sby"
+    model: "my_block"
+    top: "my_block"
+    params:
+      K: 8
+    mode: "bmc"
+    depth: 24
+```
+
+Values are scalars: an integer (`K: 8`), a boolean (`ENABLE: true`, which
+becomes `1` — SystemVerilog has no bare `true`), or a string carrying
+**verbatim SystemVerilog literal text** (`WIDTH: "8'h20"`). A
+*string-typed* parameter therefore needs its own quotes inside the YAML
+scalar: `MODE: '"small"'`. A value may not contain whitespace — yosys
+splits a script line on whitespace and does not honour quotes — and a
+name must be a plain identifier. (PyYAML is YAML 1.1, so an unquoted
+`on:` / `off:` / `yes:` / `no:` key parses as a boolean; those are
+rejected with a message rather than silently emitted.) Bad values are
+fatal at config load, not at elaboration, so a typo does not surface as a
+yosys syntax error inside a generated script.
+
+The override is applied per frontend, and the two are not interchangeable:
+
+| Frontend | Emitted |
+|----------|---------|
+| `verilog` | `chparam -set <NAME> <value> <top>`, between the reads and `prep` (which is when yosys derives the parametric module) |
+| `slang` | `read_slang ... -G <NAME>=<value>`, on the read line |
+
+`chparam` cannot be used on the slang frontend: yosys-slang elaborates
+during `read_slang`, so by the time the script reaches `chparam` the
+module is no longer parametric and the following `prep` aborts with
+`Module 'X' is used with parameters but is not parametric!`. slang's own
+top-level `-G` override is the route there. Either way the same overrides
+go to the proof, the [vacuity pass](#vacuity-covers) and the
+[COI walk](#cone-of-influence-coverage), so all three measure the same
+elaboration.
+
+**Bound checkers.** A checker that needs the parameter should take it as
+a `parameter` and let its `bind` pick the value up from the core's scope
+(`bind my_block my_block_props #(.K(K)) u_props (...)`), not hard-code it
+or declare it as a `localparam`. Then one checker file serves every
+configuration, and a run at `K: 8` and a run at the default agree by
+construction.
+
+**The old way.** Before `params:`, the only route was a hand-written
+wrapper per configuration:
+
+```systemverilog
+// the workaround this feature replaces
+module my_block_fpv_k8 ( /* the block's full port list, duplicated */ );
+  my_block #(.K(8)) u_core (.*);
+endmodule
+```
+
+listed under `properties:` with `top:` pointing at the wrapper. It works,
+but the duplicated port list rots on every interface change and each
+configuration costs another file. If you have these wrappers, `params:`
+replaces them.
+
+**What a reduced proof does and does not establish.** It is a real proof
+of the configuration it names, and typically strong evidence for the
+family — most control-path bugs are not width-sensitive. It is *not* a
+proof of the shipping configuration. Keep the full-size run in the
+regression (at whatever depth it can reach) alongside the reduced one,
+and let the reduced run be the one that closes the property.
 
 ## Artefacts
 

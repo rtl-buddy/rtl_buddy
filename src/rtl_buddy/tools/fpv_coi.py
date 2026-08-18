@@ -89,6 +89,7 @@ def render_slang_read(
     incdirs: list[str],
     sources: list[str],
     defines: list[str] | None = None,
+    params: list[tuple[str, str]] | None = None,
 ) -> str:
     """Render the single ``read_slang`` command shared by the proof
     (``SbyFpv._render_sby``) and the COI walk (``build_yosys_script``).
@@ -122,17 +123,59 @@ def render_slang_read(
       also collapses a name defined twice to its last definition, because
       the two frontends disagree about which duplicate survives.
 
-    Filesystem paths are ``shlex.quote``d: yosys tokenises each script line
-    shell-style, so a single unquoted space (e.g. a path with a space) would
-    break the whole read_slang line (same convention as ``synth_yosys.py``).
+    - top-module parameter overrides become ``-G NAME=VALUE`` (#359).
+      ``chparam`` is **not** an option on this frontend: yosys-slang
+      elaborates eagerly, so by the time the script could run ``chparam`` the
+      module is already non-parametric and yosys aborts the following
+      ``prep`` with "Module `X' is used with parameters but is not
+      parametric!". slang's own top-level override is the only route.
+
+    Filesystem paths are ``shlex.quote``d, the same convention as
+    ``synth_yosys.py``. Measured against yosys 0.64+193, that convention is
+    weaker than it looks and the rule it protects against is worth stating
+    exactly, because two comments in this function used to disagree:
+
+    * yosys splits a script line on **whitespace**. It is not a shell:
+      ``read_verilog -DX="a b" t.v`` fails with ``File `b"' not found``,
+      i.e. the quotes did not group anything and the closing one stayed
+      attached.
+    * A token that *begins* with ``"`` is the one exception — it is grouped
+      to the matching ``"`` and those quotes are stripped.
+    * Quotes anywhere else in a token pass through **verbatim**:
+      ``-DW="4"`` reaches the frontend as the string literal ``"4"``
+      (``[`W-1:0]`` becomes 52 bits wide, not 4).
+
+    So ``shlex.quote`` is a no-op on an ordinary path and does not rescue
+    one containing a space: it emits *single* quotes, which yosys does not
+    honour, so ``'a dir/x.v'`` fails as ``File `'a' not found``. Whitespace
+    in a source path simply does not work on a yosys script line; see
+    ``docs/known-issues.md``. The call is kept for the escaping it does do
+    and for parity with ``synth_yosys.py``.
     """
     inc_args = "".join(f" -I {shlex.quote(inc)}" for inc in incdirs)
     def_args = "".join(f" -D{d}" for d in (defines or []))
+    # Not shlex.quote()d, per the third rule above: a quote inside a token
+    # survives verbatim, so quoting here would hand slang the quote
+    # characters. Values are whitespace-free by config validation, and a
+    # string-typed parameter carries its own inner quotes — which is exactly
+    # what makes it work: `-G MODE="small"` elaborates, `-G MODE=small` is
+    # rejected by slang as "not a valid form of parameter override".
+    param_args = "".join(f" -G {name}={value}" for name, value in (params or []))
     src_args = " ".join(shlex.quote(s) for s in sources)
     return (
         f"read_slang --top {top} --single-unit{inc_args} "
-        f"--no-synthesis-define -DFORMAL=1{def_args} {src_args}"
+        f"--no-synthesis-define -DFORMAL=1{def_args}{param_args} {src_args}"
     )
+
+
+def render_chparam(top: str, params: list[tuple[str, str]] | None) -> list[str]:
+    """Render the ``chparam`` lines for the yosys **verilog** frontend.
+
+    Emitted after the reads and before ``prep``/``hierarchy``, which is when
+    yosys derives the parametric module. Returns an empty list when there is
+    nothing to override, so callers can splice unconditionally.
+    """
+    return [f"chparam -set {name} {value} {top}" for name, value in (params or [])]
 
 
 def build_yosys_script(
@@ -145,6 +188,7 @@ def build_yosys_script(
     frontend: str = "verilog",
     plugin_path: str | None = None,
     defines: list[str] | None = None,
+    params: list[tuple[str, str]] | None = None,
 ) -> str:
     """Render the yosys script that runs the COI analysis.
 
@@ -175,10 +219,13 @@ def build_yosys_script(
     if frontend == "slang":
         # Shared with the SbyFpv proof renderer so the COI walk parses the same
         # design; COI passes full paths (no sby workdir) rather than basenames.
-        lines.append(render_slang_read(top, incdirs, all_files, defines))
+        lines.append(render_slang_read(top, incdirs, all_files, defines, params))
     else:
         for src in all_files:
             lines.append(f"read -sv -formal {src}")
+        # The COI walk must measure the same elaboration the proof did, so
+        # the parameter overrides apply here too.
+        lines.extend(render_chparam(top, params))
     # `prep -flatten -top` mirrors what sby itself runs for proof:
     # hierarchy + proc + opt while preserving formal cells, then
     # collapses everything into the top module. Flattening matters
@@ -364,6 +411,7 @@ def run_coi_analysis(
     frontend: str = "verilog",
     plugin_path: str | None = None,
     defines: list[str] | None = None,
+    params: list[tuple[str, str]] | None = None,
 ) -> dict | None:
     """Run yosys and return the parsed coverage summary, or None on error.
 
@@ -380,6 +428,7 @@ def run_coi_analysis(
         frontend=frontend,
         plugin_path=plugin_path,
         defines=defines,
+        params=params,
     )
     Path(script_path).write_text(script)
     cmd = [yosys_exe, "-s", script_path]

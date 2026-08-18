@@ -766,6 +766,8 @@ verifications:
       - "demo_fifo_props.sv"
     mode: "bmc"
     depth: 32
+    params:                                # optional elaboration-time overrides
+      DEPTH: 8                             #   prove the 8-entry configuration
     engines:
       - "smtbmc yices"
     reglvl: 1000
@@ -808,6 +810,7 @@ verifications:
 | `mode` | string | One of `bmc`, `prove`, `cover`, `live`; defaults to `bmc` |
 | `depth` | int | Cycle depth for the proof; defaults to 20 |
 | `engines` | list | Sby engine specs (e.g. `smtbmc yices`, `abc pdr`); defaults to `["smtbmc yices"]` |
+| `params` | dict | Optional map of top-module parameter name → value, applied at elaboration. The mechanism behind [reduced-configuration proofs](../concepts/fpv.md#reduced-configuration-proofs): shrink a depth/width parameter and the same size-generic properties prove in a fraction of the time. Values are scalars — an integer (`K: 8`), a boolean (`ENABLE: true` → `1`), or a string carrying SystemVerilog literal text verbatim (`WIDTH: "8'h20"`). A *string-typed* parameter needs its own quotes inside the scalar (`MODE: '"small"'`). Values may not contain whitespace, and names must be plain identifiers — remember PyYAML is YAML 1.1, so an unquoted `on:` / `no:` key parses as a boolean and is rejected. Applies to the proof, the vacuity pass and the COI walk alike. |
 | `reglvl` | int or dict | Regression level; int for all tools, dict for per-tool with `default` |
 | `covers` | list of strings | Optional. IDs of spec coverage items this verification addresses, exactly as a test's `covers` in `tests.yaml` (e.g. `["BLOCK-COV-01"]`). Counted by `rb spec check-coverage` and emitted as `covers` edges in the [design knowledge graph](../concepts/graph.md); has no effect on the proof. |
 | `tool_overrides` | dict | Optional per-tool overrides for `timeout` or `extra_args`, keyed by FPV tool name |
@@ -823,6 +826,7 @@ verifications:
 - The bundled `sby` backend generates a `.sby` config containing `[options]` (mode, depth, optional timeout), `[engines]`, `[script]` (Yosys read + prep), and `[files]` (resolved source paths), then invokes `sby -f -d <workdir> <config>`.
 - Each verification writes the generated config, the full sby log, and the sby workdir under `artefacts/{name}/`; the workdir's `status` file is the authoritative pass/fail signal, with the process exit code as fallback.
 - Counterexample VCDs (on FAIL) land at `artefacts/{name}/sby_workdir/engine_<N>/trace.vcd`.
+- `params:` is emitted per frontend: `chparam -set <NAME> <value> <top>` between the reads and `prep` on the verilog frontend, `read_slang -G <NAME>=<value>` on the slang frontend (slang elaborates during the read, so `chparam` is too late there and yosys aborts `prep` with "is used with parameters but is not parametric").
 - `rtl-buddy fpv <name> --list` lists configured verifications without running them.
 
 ---
