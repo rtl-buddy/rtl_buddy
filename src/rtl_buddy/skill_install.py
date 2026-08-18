@@ -126,18 +126,40 @@ def _same_content(path: Path, text: str) -> bool:
     )
 
 
+def _legacy_pattern(pattern: str) -> str:
+    """The pre-rename spelling of one snippet pattern line.
+
+    Derived from the shipped snippet rather than hardcoded, so the two stay
+    in lockstep if the ignored paths ever change again.
+    """
+    return pattern.replace(f"/{SKILL_DIRNAME}/", f"/{LEGACY_SKILL_DIRNAME}/")
+
+
 def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> str:
+    """Add the snippet's patterns, and drop the pre-rename ones (#434).
+
+    `.gitignore` is the one *tracked* file the directory rename touches, so
+    appending alone would leave four lines under a single comment — two
+    live, two dead — and every future reader has to work out which pair is
+    real. A legacy line is removed only when it matches the pre-rename
+    snippet text exactly; anything a user hand-edited (a different path, a
+    trailing comment, a negation) does not match and is left alone.
+    """
     snippet_lines = snippet.strip().splitlines()
     comment_lines = [line for line in snippet_lines if line.startswith("#")]
     pattern_lines = [
         line for line in snippet_lines if line and not line.startswith("#")
     ]
+    legacy_patterns = {
+        _legacy_pattern(p) for p in pattern_lines if _legacy_pattern(p) != p
+    }
 
     existing_text = gitignore_path.read_text() if gitignore_path.is_file() else ""
     existing_lines = {line.strip() for line in existing_text.splitlines()}
 
     missing = [p for p in pattern_lines if p.strip() not in existing_lines]
-    if not missing:
+    stale = [line for line in existing_lines if line in legacy_patterns]
+    if not missing and not stale:
         return "already present"
 
     lines_to_add = []
@@ -147,17 +169,39 @@ def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> s
     lines_to_add.extend(missing)
 
     if dry_run:
-        return f"would add {len(missing)} pattern(s) (dry run)"
+        return _gitignore_summary(len(missing), len(stale), dry_run=True)
 
-    if not existing_text:
-        prefix = ""
-    elif existing_text.endswith("\n"):
-        prefix = "\n"
-    else:
-        prefix = "\n\n"
+    if stale:
+        kept = [
+            line
+            for line in existing_text.splitlines()
+            if line.strip() not in legacy_patterns
+        ]
+        existing_text = "\n".join(kept) + ("\n" if kept else "")
+        gitignore_path.write_text(existing_text)
 
-    gitignore_path.open("a").write(prefix + "\n".join(lines_to_add) + "\n")
-    return f"added {len(missing)} pattern(s)"
+    if lines_to_add:
+        if not existing_text:
+            prefix = ""
+        elif existing_text.endswith("\n"):
+            prefix = "\n"
+        else:
+            prefix = "\n\n"
+        gitignore_path.open("a").write(prefix + "\n".join(lines_to_add) + "\n")
+
+    return _gitignore_summary(len(missing), len(stale), dry_run=False)
+
+
+def _gitignore_summary(added: int, removed: int, *, dry_run: bool) -> str:
+    verbs = []
+    if added:
+        verbs.append(f"{'would add' if dry_run else 'added'} {added} pattern(s)")
+    if removed:
+        verbs.append(
+            f"{'would remove' if dry_run else 'removed'} {removed} legacy pattern(s)"
+        )
+    text = ", ".join(verbs)
+    return f"{text} (dry run)" if dry_run else text
 
 
 @app.command("install")
@@ -367,6 +411,12 @@ def cmd_status(
         marker = target_dir / VERSION_MARKER
         skill_path = target_dir / SKILL_FILENAME
         legacy = _legacy_dir(target_dir)
+        # Current install wins; the legacy path is only ever a FALLBACK
+        # report. A target carrying both spellings is unreachable through
+        # `install` (which migrates the sibling every time) but reachable by
+        # a partial invocation — `install --no-codex` on a machine an older
+        # release wrote both targets on — and there the current directory is
+        # the one in use, so reporting it alone is correct, not an oversight.
         if not skill_path.is_file():
             if (legacy / SKILL_FILENAME).is_file() and _is_ours(legacy):
                 state = (

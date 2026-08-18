@@ -47,6 +47,25 @@ broken) while one is up is never re-announced. Restart the daemon after
 editing `root_config.yaml` or `.rtl-buddy/.env` if you are relying on those
 warnings.
 
+## The skill-directory rename migrates only the scope you install at
+
+The bundled skill's directory was renamed `rtl_buddy/` -> `rtl-buddy/` so it matches the `name:` in its own `SKILL.md` frontmatter, as the Agent Skills spec requires. `rtl-buddy skill install` migrates the old directory away — but only for **the targets of the scope you invoked**, because reaching into `$HOME` from a `--project` install would be a worse surprise than the one it fixes.
+
+So a user who upgrades and then runs only `rtl-buddy skill install --project` is left with `~/.claude/skills/rtl_buddy/` still on disk beside `<root>/.claude/skills/rtl-buddy/`. Claude Code keys skills by directory name, so it loads **both** — two directories whose frontmatter both say `name: rtl-buddy`, with no precedence dedupe, because the directory names differ. That is silent, and it is the same spec violation the rename set out to fix.
+
+After upgrading, run the install once at **each** scope you actually use, and confirm with both status commands:
+
+```
+rtl-buddy skill install
+rtl-buddy skill install --project
+rtl-buddy skill status
+rtl-buddy skill status --project
+```
+
+`status` reports a leftover directory as `installed at legacy path ...`, so a clean pair of reports means there is nothing left behind. `rtl-buddy skill uninstall` cleans both spellings at the scope it is given, with the same per-scope caveat.
+
+A project-level install also rewrites `.gitignore`: the pre-rename patterns are removed and the new ones added, but only when a line matches the shipped snippet **exactly**. A hand-edited variant (a trailing comment, a negation, a different path) is deliberately left alone, so a project that customised those lines keeps a dead pattern until someone removes it by hand.
+
 ## Hook scripts run at the invocation directory, not the suite
 
 `sweep` and `preproc` hooks execute via `exec()` inside the `rb` process and share its working directory, which is `invocation_cwd` — your shell's cwd — not the suite directory. Resolve suite-local inputs and outputs from the injected `suite_dir` / `artifact_dir` variables, never from `os.getcwd()`.

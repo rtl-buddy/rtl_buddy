@@ -292,3 +292,63 @@ def test_uninstall_nothing_to_remove(tmp_path):
     result = runner.invoke(app, ["uninstall", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "Nothing to remove." in result.output
+
+
+def test_gitignore_drops_the_pre_rename_patterns(tmp_path):
+    """`.gitignore` is the one tracked file the #434 rename touches, so the
+    dead patterns come out rather than accumulating under the same comment."""
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(
+        "# rtl_buddy skill (materialized by `rtl-buddy skill install --project`)\n"
+        ".claude/skills/rtl_buddy/\n"
+        ".agents/skills/rtl_buddy/\n"
+    )
+
+    result = _update_gitignore(gitignore, _SNIPPET, dry_run=False)
+
+    text = gitignore.read_text()
+    assert ".claude/skills/rtl_buddy/" not in text
+    assert ".agents/skills/rtl_buddy/" not in text
+    assert ".claude/skills/rtl-buddy/" in text
+    assert ".agents/skills/rtl-buddy/" in text
+    # The comment was already there, so it is not duplicated.
+    assert text.count("# rtl_buddy skill") == 1
+    assert "removed 2 legacy pattern(s)" in result
+
+
+def test_gitignore_leaves_hand_edited_legacy_lines_alone(tmp_path):
+    """Only an exact match on the shipped pre-rename text is ours to remove."""
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(
+        ".claude/skills/rtl_buddy/   # keep: vendored by hand\n"
+        "!.agents/skills/rtl_buddy/keepme\n"
+    )
+
+    _update_gitignore(gitignore, _SNIPPET, dry_run=False)
+
+    text = gitignore.read_text()
+    assert ".claude/skills/rtl_buddy/   # keep: vendored by hand" in text
+    assert "!.agents/skills/rtl_buddy/keepme" in text
+
+
+def test_gitignore_prunes_legacy_even_when_new_patterns_are_present(tmp_path):
+    """The early "already present" return must not skip the prune."""
+    gitignore = tmp_path / ".gitignore"
+    gitignore.write_text(_SNIPPET + ".claude/skills/rtl_buddy/\n")
+
+    result = _update_gitignore(gitignore, _SNIPPET, dry_run=False)
+
+    assert ".claude/skills/rtl_buddy/" not in gitignore.read_text()
+    assert result == "removed 1 legacy pattern(s)"
+
+
+def test_gitignore_dry_run_reports_the_prune_without_writing(tmp_path):
+    gitignore = tmp_path / ".gitignore"
+    original = _SNIPPET + ".claude/skills/rtl_buddy/\n"
+    gitignore.write_text(original)
+
+    result = _update_gitignore(gitignore, _SNIPPET, dry_run=True)
+
+    assert gitignore.read_text() == original
+    assert "would remove 1 legacy pattern(s)" in result
+    assert "(dry run)" in result
