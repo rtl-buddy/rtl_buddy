@@ -426,6 +426,162 @@ For the theory paper, the first-party YosysHQ guidance the "companion
 assertion" lever above is taken from, and a hands-on practitioner
 walk-through of the same pattern, see [References](#references) below.
 
+## Practical authoring gotchas
+
+The sections above are about *what to prove*. These are the things that
+cost time when actually bringing `rb fpv` up on real RTL — collected from
+a 40-verification bring-up across library cells and DMA control logic
+([#306](https://github.com/rtl-buddy/rtl_buddy/issues/306)) and re-checked
+against yosys 0.64 + the [rtl-buddy yosys-slang branch](#which-yosys-slang-build-to-use).
+
+### Confirm your slang build's SVA surface before authoring
+
+[Which yosys-slang build to use](#which-yosys-slang-build-to-use) tells you
+which build lowers `|->` / `|=>`. The subset question does not stop there:
+**system tasks are accepted per build too**, and the two axes are
+independent. On the rtl-buddy branch, `|->`, `|=>`, `$past`, `##N`,
+`disable iff`, and `assert` / `assume` / `cover property` all elaborate,
+while `$stable`, `$rose` and `$onehot0` are rejected with
+`error: unsupported system task '$stable'`. A site build reported in #306
+was the other way round on two of them — `$past` and `|=>` rejected,
+`$onehot0` fine. So do not infer the surface from a version number: probe
+the build you actually have, with a throwaway module, before writing forty
+properties against it.
+
+```systemverilog
+// probe.sv — elaborate this with your build before authoring
+module probe (input logic clk, input logic a, input logic b);
+  a1: assert property (@(posedge clk) a |-> b);
+  a2: assert property (@(posedge clk) a |=> b);
+  a3: assert property (@(posedge clk) $past(a) |-> b);
+  a4: assert property (@(posedge clk) $stable(a) |-> b);
+  a5: cover  property (@(posedge clk) a && b);
+endmodule
+```
+
+One rejected construct fails the whole read, so comment them out and
+re-elaborate one at a time — the point is a list of what your build takes,
+not a single pass/fail.
+
+When `$past` / `$stable` are missing, capture the previous-cycle value in
+an explicit one-cycle history register and write the property as a
+same-cycle `|->`:
+
+```systemverilog
+logic a_q;
+always_ff @(posedge clk) a_q <= a;
+assert property (@(posedge clk) a_q |-> b);   // stands in for $past(a) |-> b
+```
+
+### `(* anyconst *)` may not survive the frontend
+
+On the build above, `(* anyconst *)` produces **no `$anyconst` cell** —
+`stat` after `prep` shows only the `$check` cells. The wire then behaves as
+a *free* signal that may take a different value every cycle, so a
+symbolic-index data tracker ("whatever entry `idx` names, its data is
+preserved") reads as a *varying* index and produces counterexamples that
+say nothing about the design. Check for the cell before relying on it:
+
+```
+yosys -p 'read_slang ...; prep -top dut; select -assert-min 1 t:$anyconst'
+```
+
+For data integrity, a concrete behavioural reference model (a scoreboard
+the checker compares against) is the more portable choice.
+
+### No variable index into an unpacked array inside a property
+
+`mem[idx]` where `mem` is an *unpacked* array and `idx` is not a constant
+fails to elaborate with `error: unsupported operation on a memory
+variable` — the array became a `$mem`, which the property engine cannot
+address. Declare checker-side storage as a **packed** array so the index
+compiles to a mux instead:
+
+```systemverilog
+logic [3:0] bad  [0:3];        // unpacked — bad[sel] is rejected in a property
+logic [3:0][3:0] good;         // packed   — good[sel] elaborates
+```
+
+### Pin the reset at t=0 for stateful blocks
+
+The [induction discussion](#writing-properties-that-prove-bmc-vs-induction)
+explains why the inductive step starts from an arbitrary state. The same
+thing bites in **`mode: bmc`**, which surprises people: a register with no
+`initial` value powers up unconstrained, so a bounded run starts from a
+state the design can never be in. A saturating counter with
+`assert property (cnt <= 5)` fails at depth 10 for exactly that reason —
+the trace starts at `cnt == 9`. Constrain the first cycle to be a reset
+cycle:
+
+```systemverilog
+logic f_init = 1'b1;
+always_ff @(posedge clk) f_init <= 1'b0;
+assume property (@(posedge clk) f_init |-> !rst_n);   // active-low reset
+```
+
+With that assume, the same property proves. `constraints:` is the natural
+home for it — it is environment, not a property, and one file can serve
+every verification of the block. Purely combinational blocks (an arbiter
+whose grant decode does not depend on its own registers, say) do **not**
+need it, and adding it there only costs proof states.
+
+### Pipelined blocks also need their stage-consistency lemmas
+
+A reset pin fixes the power-up state; it does not fix *mutually
+inconsistent* registers within a pipeline. A burst calculator can disprove
+its own 4 KB-boundary check from a `max_bytes` beside an address that
+stage 1 would never have produced together. The fix is to assert the
+one-step invariants the property silently assumes (`max_bytes <=
+remaining`, `max_bytes <= 4KB headroom`) — they are the practical form of
+[Assertions strengthen each other](#assertions-strengthen-each-other), and
+they typically turn a `bmc`-only result into one that proves by induction.
+
+### Keep reachability covers in a reset-pin-free checker
+
+The reset pin above can make a **cover** unreachable: pinning reset at t=0
+empties the FIFO, so a "full-FIFO backpressure" cover that was only ever
+reached from a free initial state stops reaching within a shallow depth.
+Split them — assertions in the reset-pinned checker, reachability covers in
+a separate checker (and a separate verification) with no reset pin, so they
+keep the free initial states. Pairs with [Vacuity covers](#vacuity-covers):
+an unreached cover is a signal either way, and you want to know which of
+the two causes it.
+
+### Match `disable iff` polarity to your reset
+
+With an active-low reset, the guard is `disable iff (!rst_n)`. An in-RTL
+assertion written `disable iff (rst_n)` against an active-low signal is not
+disabled during reset — it is disabled *everywhere else*, so it only checks
+while the block is held in reset and reports a cheerful PASS. Grep for
+`disable iff` when adopting assertions written for another block.
+
+### `bind` reaches interface members and internal nets
+
+A bound checker is not limited to the DUT's ports. Its instantiation can
+wire ports to interface members (`iface.sig[idx]`) and to the target's
+internal wires (`fifo_slv.ocnt[0]`, `push_vld`, an arbiter's `winner` /
+`locked`) — this is what makes white-box checking practical without
+editing the RTL. Parameters come through the same route: take the
+parameter on the checker and let the `bind` pick it up from the core's
+scope (see [Reduced-configuration
+proofs](#reduced-configuration-proofs)). `bind` requires
+`frontend: slang`.
+
+### Validate the proof, not just the verdict
+
+[Vacuity covers](#vacuity-covers), [COI coverage](#cone-of-influence-coverage)
+and [dead-assume detection](#dead-assume-detection) are the automated
+signals. Two manual checks belong beside them, because a green proof can
+still be weak:
+
+1. **Confirm each `cover` was actually reached** in the sby log, rather
+   than trusting the run's PASS.
+2. **Run a negative check.** Mutate the RTL deliberately (or tighten the
+   property past what the design guarantees) and confirm the run fails on
+   the assertion you expect. `rb mut` is the systematic version of this —
+   see [Mutation testing](mut.md) — but one hand-made mutation per unit
+   already catches the property that constrains nothing.
+
 ## Reduced-configuration proofs
 
 A parameterised block is often provable at a *smaller* configuration than
