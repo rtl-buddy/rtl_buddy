@@ -528,6 +528,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{fields.get('test')}: preproc completed"
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
+        case "hook.stdout":
+            # A hook's own print(), re-framed rather than dropped: the
+            # prefix says which script the line came from, since it is now
+            # interleaved with rtl_buddy's own console output on stderr
+            # instead of arriving as a contiguous block on stdout (#371).
+            stage = fields.get("stage")
+            script = fields.get("script")
+            name = Path(str(script)).name if script else "hook"
+            label = f"{stage} {name}" if stage else name
+            return f"[{label}] {fields.get('line')}"
         case "preproc.import_collision":
             return (
                 f"{fields.get('test')}: preproc import collision "

@@ -11,6 +11,9 @@ a hook body silently no-op. `build_hook_namespace()` fixes this by always
 setting `__name__` to the `HOOK_MODULE_NAME` sentinel, never `"__main__"`.
 These tests exercise both exec() sites (VlogSim.pre() for preproc,
 RtlBuddy._expand_tests_with_sweep() for sweep) plus the helper directly.
+
+The last section covers issue #371: a hook's own `print()` used to land on
+`rtl_buddy`'s stdout, which under `--machine` is the envelope stream.
 """
 
 import json
@@ -471,3 +474,121 @@ def test_exec_hook_script_restores_previous_sys_modules_binding(tmp_path):
         assert sys.modules[HOOK_MODULE_NAME] is marker
     finally:
         del sys.modules[HOOK_MODULE_NAME]
+
+
+# --- hook stdout capture (issue #371) ----------------------------------------
+
+# The reproducer from the issue: the template's example_preproc.py prints a
+# progress line, which used to arrive on stdout ahead of the envelope.
+_PRINTING_PREPROC = (
+    "print(f'Running example_preproc.py for test: {test_cfg.get_name()}')\n"
+)
+_PRINTING_SWEEP = (
+    "print(f'Running example_sweep.py for test: {test_cfg.get_name()}')\n"
+    "out_test_cfgs = [test_cfg]\n"
+)
+
+
+def test_machine_envelope_parses_with_a_printing_preproc_hook(tmp_path, capsys):
+    """The #371 repro: json.loads(stdout) failed at 'line 1 column 1'."""
+    setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
+    sim = _make_preproc_sim(tmp_path, _PRINTING_PREPROC)
+
+    assert sim.pre() is None
+    RtlBuddy(name="rtl_buddy")._emit_machine_result("test", 0, results=[])
+
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+    assert envelope["command"] == "test"
+    assert envelope["exit_code"] == 0
+    assert "Running example_preproc.py" not in captured.out
+    # Not dropped — still on stderr, where it cannot corrupt the envelope.
+    assert "Running example_preproc.py for test: basic" in captured.err
+
+
+def test_machine_envelope_parses_with_a_printing_sweep_hook(tmp_path, capsys):
+    setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
+
+    test_cfgs, error = _run_sweep(tmp_path, _PRINTING_SWEEP)
+    RtlBuddy(name="rtl_buddy")._emit_machine_result("regression", 0, results=[])
+
+    assert error is None
+    assert len(test_cfgs) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["command"] == "regression"
+    assert "Running example_sweep.py" not in captured.out
+    assert "Running example_sweep.py for test: basic" in captured.err
+
+
+def test_human_mode_still_shows_the_hook_print(tmp_path, capsys):
+    """Human mode must lose no information — the line is re-framed, not hidden.
+
+    The console handler sits at WARNING, so this only holds because the
+    capture routes through log_console_event rather than a plain INFO record.
+    """
+    setup_logging(color=False, log_path=tmp_path / "rtl_buddy.log")
+    sim = _make_preproc_sim(tmp_path, _PRINTING_PREPROC)
+
+    assert sim.pre() is None
+
+    captured = capsys.readouterr()
+    assert "Running example_preproc.py for test: basic" in captured.err
+    assert "preproc.py" in captured.err
+    assert captured.out == ""
+
+
+def test_hook_stdout_is_logged_with_stage_and_script(tmp_path):
+    """The text stays recoverable from rtl_buddy.log as structured events."""
+    log_path = tmp_path / "rtl_buddy.log"
+    setup_logging(color=False, machine=True, log_path=log_path)
+    script = tmp_path / "hook.py"
+    script.write_text("pass\n")
+
+    exec_hook_script(
+        str(script),
+        "import sys\nprint('first')\nprint()\nsys.stdout.write('trailing')\n",
+        stage="preproc",
+    )
+
+    records = [json.loads(line) for line in log_path.read_text().splitlines()]
+    hook_records = [r for r in records if r.get("event") == "hook.stdout"]
+    # A partial final line is flushed; a blank line carries nothing.
+    assert [r["line"] for r in hook_records] == ["first", "trailing"]
+    assert hook_records[0]["stage"] == "preproc"
+    assert hook_records[0]["script"] == str(script)
+
+
+def test_hook_rebinding_sys_stdout_does_not_crash_and_is_restored(tmp_path):
+    """Hooks that manage sys.stdout themselves are out of scope, not fatal."""
+    import sys
+
+    setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
+    script = tmp_path / "hook.py"
+    script.write_text("pass\n")
+    outer = sys.stdout
+
+    exec_hook_script(
+        str(script),
+        "import io, sys\nsys.stdout = io.StringIO()\nprint('hook owned')\n",
+        stage="preproc",
+    )
+
+    assert sys.stdout is outer
+
+
+def test_hook_stdout_is_restored_when_the_hook_raises(tmp_path):
+    import sys
+
+    setup_logging(color=False, machine=True, log_path=tmp_path / "rtl_buddy.log")
+    script = tmp_path / "hook.py"
+    script.write_text("pass\n")
+    outer = sys.stdout
+
+    try:
+        exec_hook_script(
+            str(script), "print('before the raise')\nraise RuntimeError('boom')\n"
+        )
+    except RuntimeError:
+        pass
+
+    assert sys.stdout is outer

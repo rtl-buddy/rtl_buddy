@@ -2038,6 +2038,7 @@ class RtlBuddy:
             ns = exec_hook_script(
                 script_path,
                 code,
+                stage="sweep",
                 logger=logger,
                 TestConfig=TestConfig,
                 test_cfg=test_cfg,
