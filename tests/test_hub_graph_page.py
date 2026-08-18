@@ -673,6 +673,152 @@ def test_a_node_without_an_instance_still_syncs_the_schematic():
     assert "case 'graph_focus':\n        if (env.origin === 'graph') { break; }" in js
 
 
+def test_a_models_roots_come_off_the_maps_to_stitch():
+    """Which elaborations belong to the schematic's active model is read
+    off the payload, not assumed: a ``model:`` node's ``maps_to`` target
+    IS the module its instances are rooted at. The model name seeds the
+    set as well, because the stitch only exists once a config tier has
+    been built."""
+
+    out = _node_eval(
+        _marked_js("active-model")
+        + """
+        var links = [
+          { type: 'maps_to', source: 'model:design/common/models.yaml#fifo',
+            target: 'module:fifo' },
+          { type: 'maps_to', source: 'model:design/cdc/models.yaml#cdc',
+            target: 'module:cdc' },
+          // A model whose top module is named something else entirely,
+          // and whose module id had to be suite-qualified.
+          { type: 'maps_to', source: 'model:design/x/models.yaml#alias',
+            target: 'module:real_top@verif/x' },
+          // Not a model->module stitch, and not `maps_to` at all.
+          { type: 'maps_to', source: 'tb:verif/x#tb', target: 'module:tb_top' },
+          { type: 'instance_of', source: 'inst:fifo/fifo', target: 'module:fifo' },
+          null
+        ];
+        ['fifo', 'alias', 'nope', '', null, undefined].forEach(function (m) {
+          console.log(JSON.stringify(Object.keys(activeModelRoots(links, m)).sort()));
+        });
+        console.log(JSON.stringify(Object.keys(activeModelRoots(null, 'fifo'))));
+        """
+    )
+    assert [json.loads(line) for line in out.strip().splitlines()] == [
+        ["fifo"],
+        # The model name AND the module it actually maps to; the suite
+        # qualifier is not part of the module name.
+        ["alias", "real_top"],
+        # A model this graph knows nothing about still owns its own name:
+        # a design-tier-only graph has no `model:` nodes to stitch.
+        ["nope"],
+        # No active model -> no roots -> no preference (see below).
+        [],
+        [],
+        [],
+        # No links yet is the same answer as an unbuilt config tier.
+        ["fifo"],
+    ]
+
+
+def test_the_active_models_instance_wins_over_a_shallower_stranger():
+    """#414: ranking every loaded model's instances together landed the
+    selection in a model that is not on screen, where the schematic
+    highlights nothing. A candidate rooted in the active model beats a
+    shallower one from anywhere else."""
+
+    out = _node_eval(
+        _marked_js("active-model")
+        + """
+        var links = [{ type: 'maps_to',
+                       source: 'model:design/common/models.yaml#fifo',
+                       target: 'module:fifo' }];
+        var roots = activeModelRoots(links, 'fifo');
+        console.log(shallowestInstancePath(
+          ['cdc.u_sync', 'fifo.u_top.u_deep.u_x'], roots));
+        // …and inside the active model the shallowest still wins.
+        console.log(shallowestInstancePath(
+          ['fifo.u_top.u_deep.u_x', 'fifo.u_x', 'cdc.u_sync'], roots));
+        // Ties keep the first candidate — link order, as before.
+        console.log(shallowestInstancePath(['fifo.u_a', 'fifo.u_b'], roots));
+        """
+    )
+    assert out.strip().splitlines() == [
+        "fifo.u_top.u_deep.u_x",
+        "fifo.u_x",
+        "fifo.u_a",
+    ]
+
+
+def test_a_module_the_active_model_never_instantiates_still_resolves():
+    """The fallback the issue asks for is kept: a vendor block the
+    current model does not touch is still worth landing on, and an
+    active model the pane has not learned yet (no ``state_snapshot``
+    reply, or a hub with none) must behave exactly as it did before."""
+
+    out = _node_eval(
+        _marked_js("active-model")
+        + """
+        var links = [{ type: 'maps_to',
+                       source: 'model:design/common/models.yaml#fifo',
+                       target: 'module:fifo' }];
+        var paths = ['cdc.u_a.u_sync', 'cdc.u_sync'];
+        // Active model known, but it instantiates the module nowhere:
+        // the all-models shallowest answer stands.
+        console.log(shallowestInstancePath(paths, activeModelRoots(links, 'fifo')));
+        // Active model unknown: the same shallowest answer, unchanged.
+        console.log(shallowestInstancePath(paths, activeModelRoots(links, null)));
+        console.log(shallowestInstancePath(paths, null));
+        // Nothing to resolve at all is still null, not a crash.
+        console.log(JSON.stringify([
+          shallowestInstancePath([], activeModelRoots(links, 'fifo')),
+          shallowestInstancePath(null, null),
+          shallowestInstancePath(['', null, 7], activeModelRoots(links, 'fifo'))
+        ]));
+        """
+    )
+    lines = out.strip().splitlines()
+    assert lines[:3] == ["cdc.u_sync"] * 3
+    assert json.loads(lines[3]) == [None, None, None]
+
+
+def test_the_module_branch_resolves_through_the_active_model_preference():
+    """``instancePathFor`` closes over the page's DOM state, so the wiring
+    — collect every instance, then rank them against the active model's
+    roots — is asserted on the source. The two halves live apart on
+    purpose: the ranking is pure and gets tested in ``node`` above."""
+
+    js = _page_js()
+    branch = js.split("if (n.type === 'module') {")[1].split("\n    }")[0]
+    # Still only `instance_of` links, still recursing for the path.
+    assert "if (l.type !== 'instance_of') { return; }" in branch
+    assert "var p = instancePathFor(state.byId[l.source]);" in branch
+    # …but every candidate is collected and the choice is made once.
+    assert "if (p) { paths.push(p); }" in branch
+    assert "return shallowestInstancePath(paths, currentModelRoots());" in branch
+    # The roots are the ACTIVE model's, over the payload on screen.
+    roots = js.split("function currentModelRoots() {")[1].split("\n  }")[0]
+    assert "activeModelRoots(state.links, activeModel)" in roots
+    assert "modelRootsCache.model !== activeModel" in roots
+    assert "modelRootsCache.links !== state.links" in roots
+
+
+def test_the_cached_active_model_follows_the_schematic():
+    """The resolution above is synchronous — it cannot go ask the hub
+    mid-click — so the cached model has to be right when the click
+    arrives. The hub already broadcasts ``view_changed`` on every SPA
+    model switch; the pane keeps its copy off that, on top of the
+    ``state_snapshot`` it asks for at welcome."""
+
+    js = _page_js()
+    assert "case 'view_changed':" in js
+    changed = js.split("case 'view_changed':")[1].split("break;")[0]
+    assert "activeModel = env.payload.model;" in changed
+    # The welcome-time read is still there, and so is the reconfirm the
+    # cross-model warning does before accusing a click.
+    assert "function refreshActiveModel() {" in js
+    assert "activeModel = reply.payload.active_model;" in js
+
+
 def test_the_sync_toggle_advertises_the_module_fallback():
     body = graph_page.render_graph_html(hub_addr="127.0.0.1:1").decode("utf-8")
     label = [line for line in body.splitlines() if 'id="opt-select"' in line]

@@ -580,6 +580,17 @@
           if (reply.kind === 'response' && reply.payload) { setPeers(reply.payload.peers); }
         });
         break;
+      case 'view_changed':
+        // The schematic switched models. Nothing repaints here, but the
+        // cached model is now what a `module:` click resolves AGAINST
+        // (`currentModelRoots`), and that decision is synchronous — it
+        // cannot go ask the hub mid-click. So take the model off the
+        // broadcast the hub already sends instead of resolving against
+        // the model the SPA left half an hour ago.
+        if (env.payload && typeof env.payload.model === 'string' && env.payload.model) {
+          activeModel = env.payload.model;
+        }
+        break;
       case 'graph_focus':
         if (env.origin === 'graph') { break; }
         focusById(env.payload && env.payload.node, { emit: false, announce: true });
@@ -1306,6 +1317,94 @@
   // selection → hub envelopes
   // ---------------------------------------------------------------
 
+  // >>> active-model
+  // Which elaboration roots belong to the schematic's ACTIVE model.
+  //
+  // A design-tier instance id is `inst:<root>/<dot.path>` and the dot
+  // path starts at that same root (`inst:X/X` is X's own root scope),
+  // so the first component of an instance path names the elaboration it
+  // was reached through — which is exactly what `maybeWarnCrossModel`
+  // already compares against the active model.
+  //
+  // The model → root mapping is read off the served payload rather than
+  // assumed: a `model:` node is stitched to the module it names by a
+  // `maps_to` link (`config_tier.MAPS_TO`), so the targets of the ACTIVE
+  // model's own `maps_to` links are its roots. The model name seeds the
+  // set as well, because that stitch exists only once a config tier has
+  // been built and a design-tier-only graph still roots its instances at
+  // the model's top module. A suite qualifier (`@<suite>`,
+  // `graph.build.QUALIFIER_SEP`) is appended to an id two files claimed;
+  // it is not part of the module name, so it comes off.
+  //
+  // An unknown model — no `state_snapshot` yet, or a hub with no active
+  // model at all — returns an EMPTY set, and an empty set is what makes
+  // `shallowestInstancePath` behave exactly as it did before: no state
+  // from the hub, no new preference.
+  function activeModelRoots(links, model) {
+    var roots = Object.create(null);
+    if (typeof model !== 'string' || !model) { return roots; }
+    roots[model] = true;
+    (links || []).forEach(function (l) {
+      if (!l || l.type !== 'maps_to') { return; }
+      var source = String(l.source == null ? '' : l.source);
+      var target = String(l.target == null ? '' : l.target);
+      if (source.indexOf('model:') !== 0 || target.indexOf('module:') !== 0) { return; }
+      var hash = source.indexOf('#');
+      if (hash < 0 || source.slice(hash + 1) !== model) { return; }
+      var name = target.slice('module:'.length).split('@')[0];
+      if (name) { roots[name] = true; }
+    });
+    return roots;
+  }
+
+  // The instance a person means by "show me this module": the shallowest
+  // one, PREFERRING the active model's own elaboration (#414).
+  //
+  // Ranking every loaded model's instances together silently landed the
+  // selection in a model that is not on screen — where the schematic
+  // highlights nothing, so the pane read as stuck, and the cross-model
+  // warning that followed named a model the user never picked. A
+  // candidate rooted in the active model therefore beats a shallower one
+  // from anywhere else. Only when the active model instantiates the
+  // module NOWHERE does the old all-models shallowest answer stand: a
+  // vendor block the current model never touches is still worth landing
+  // on, and refusing to resolve it would trade one silent miss for
+  // another.
+  //
+  // Depth ties keep the first candidate — link order, the same rule and
+  // the same answer as before.
+  function shallowestInstancePath(paths, roots) {
+    var best = null, bestOwned = false;
+    (paths || []).forEach(function (p) {
+      if (typeof p !== 'string' || !p) { return; }
+      var owned = !!(roots && roots[p.split('.')[0]]);
+      if (best === null || (owned && !bestOwned)) {
+        best = p; bestOwned = owned; return;
+      }
+      if (owned === bestOwned && p.split('.').length < best.split('.').length) {
+        best = p;
+      }
+    });
+    return best;
+  }
+  // <<< active-model
+
+  // `activeModelRoots` over the payload on screen, memoised on the two
+  // things that can change it: the hub's active model and the ingested
+  // graph (`ingest` replaces `state.links` wholesale, so identity is a
+  // sound cache key).
+  var modelRootsCache = null;
+  function currentModelRoots() {
+    if (!modelRootsCache || modelRootsCache.model !== activeModel ||
+        modelRootsCache.links !== state.links) {
+      modelRootsCache = {
+        model: activeModel, links: state.links,
+        roots: activeModelRoots(state.links, activeModel)
+      };
+    }
+    return modelRootsCache.roots;
+  }
+
   // The design tier's instance ids carry the hub resolver's identity
   // verbatim: `inst:<top>/<dot.path>`. An explicit `instance_path`
   // attribute wins when the exporter provides one.
@@ -1319,15 +1418,16 @@
     }
     if (n.type === 'module') {
       // A module is not a coordinate the schematic can select — its
-      // instances are. Pick the shallowest instance of it, which is the
-      // one a person means by "show me this module".
-      var best = null;
+      // instances are. Collect every one of them and let
+      // `shallowestInstancePath` pick: the shallowest, inside the
+      // active model when the active model has any.
+      var paths = [];
       (state.inc[n.id] || []).forEach(function (l) {
         if (l.type !== 'instance_of') { return; }
         var p = instancePathFor(state.byId[l.source]);
-        if (p && (best === null || p.split('.').length < best.split('.').length)) { best = p; }
+        if (p) { paths.push(p); }
       });
-      return best;
+      return shallowestInstancePath(paths, currentModelRoots());
     }
     return null;
   }
