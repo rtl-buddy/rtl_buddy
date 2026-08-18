@@ -692,7 +692,8 @@ def test_a_models_roots_come_off_the_maps_to_stitch():
           // and whose module id had to be suite-qualified.
           { type: 'maps_to', source: 'model:design/x/models.yaml#alias',
             target: 'module:real_top@verif/x' },
-          // Not a model->module stitch, and not `maps_to` at all.
+          // Not a model->module stitch: the right type, the wrong source
+          // prefix — a `tb:` node's roots are not a model's.
           { type: 'maps_to', source: 'tb:verif/x#tb', target: 'module:tb_top' },
           { type: 'instance_of', source: 'inst:fifo/fifo', target: 'module:fifo' },
           null
@@ -747,6 +748,39 @@ def test_the_active_models_instance_wins_over_a_shallower_stranger():
         "fifo.u_x",
         "fifo.u_a",
     ]
+
+
+def test_a_suite_qualified_root_still_counts_as_the_active_models_own():
+    """The two halves of the same identity must agree about `@`.
+
+    `_qualify_graph` appends `@<suite>` to a whole `inst:` id, so on a
+    root-scope instance (`inst:fifo/fifo` -> `inst:fifo/fifo@verif/x`) the
+    derived path is `fifo@verif/x` and the qualifier sits on the ONLY
+    component there is — while `activeModelRoots` strips `@` from the module
+    name on its side. Two models that each instantiate the module at their
+    own root then tie on depth, and the tie is broken by ownership: without
+    de-qualifying the lookup, neither counts as owned, link order decides,
+    and the click lands in the model that is not on screen — the exact miss
+    #414 is about.
+    """
+
+    out = _node_eval(
+        _marked_js("active-model")
+        + """
+        var links = [{ type: 'maps_to',
+                       source: 'model:design/common/models.yaml#fifo',
+                       target: 'module:fifo@verif/x' }];
+        var roots = activeModelRoots(links, 'fifo');
+        // Same depth; the active model's own elaboration must win despite
+        // carrying the suite qualifier.
+        console.log(shallowestInstancePath(['cdc', 'fifo@verif/x'], roots));
+        // The ordinary case, where the qualifier lands on the LAST
+        // component, was already clean and stays that way.
+        console.log(shallowestInstancePath(
+          ['cdc.u_sync', 'fifo.u_top.u_x@verif/x'], roots));
+        """
+    )
+    assert out.strip().splitlines() == ["fifo@verif/x", "fifo.u_top.u_x@verif/x"]
 
 
 def test_a_module_the_active_model_never_instantiates_still_resolves():

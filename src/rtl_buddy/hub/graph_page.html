@@ -587,6 +587,16 @@
         // cannot go ask the hub mid-click. So take the model off the
         // broadcast the hub already sends instead of resolving against
         // the model the SPA left half an hour ago.
+        //
+        // Both broadcasters of `view_changed` carry `model`, so caching it
+        // is right in both — but note what is cached is the ACTIVE MODEL's
+        // roots, not "the roots the schematic is showing". Under
+        // `view_mode: 'tb'` the elaboration on screen is rooted at the
+        // testbench top, which `activeModelRoots` does not model: it
+        // follows `maps_to`, which only ever reaches the model's DUT top.
+        // Harmless, because the DUT-rooted path is the shallower one and
+        // therefore already won before #414 — so tb mode gets exactly its
+        // old answer, not a wrong new one.
         if (env.payload && typeof env.payload.model === 'string' && env.payload.model) {
           activeModel = env.payload.model;
         }
@@ -1373,11 +1383,24 @@
   //
   // Depth ties keep the first candidate — link order, the same rule and
   // the same answer as before.
+  //
+  // The root component is de-qualified before the lookup. `_qualify_graph`
+  // appends `@<suite>` to a whole `inst:` id, so it normally lands on the
+  // LAST path component (`inst:tb/tb.u_dut@verif/x` -> `tb.u_dut@verif/x`)
+  // and the first component is already clean — but a root-scope instance
+  // (`inst:X/X@verif/x` -> `X@verif/x`) has the qualifier on the only
+  // component there is. `activeModelRoots` strips `@` from its side, so
+  // without this the two halves of the same identity disagree and an
+  // instance genuinely inside the active model scores as foreign.
+  function rootComponent(p) {
+    return p.split('.')[0].split('@')[0];
+  }
+
   function shallowestInstancePath(paths, roots) {
     var best = null, bestOwned = false;
     (paths || []).forEach(function (p) {
       if (typeof p !== 'string' || !p) { return; }
-      var owned = !!(roots && roots[p.split('.')[0]]);
+      var owned = !!(roots && roots[rootComponent(p)]);
       if (best === null || (owned && !bestOwned)) {
         best = p; bestOwned = owned; return;
       }
