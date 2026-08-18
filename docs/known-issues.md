@@ -32,7 +32,20 @@ If you require reproducible randomized testing on macOS (where VCS is not availa
 
 `rb verible` resolves each executable in a fixed precedence: the configured `cfg-verible.path` directory wins **when it actually contains the binary**, otherwise rtl_buddy falls back to whatever is on `PATH`, and only as a last resort returns the configured join (so a genuine "not found" still names the expected directory).
 
-This means a site can expose Verible through its environment (a `module load`, or a sourced setup script that puts `verible-verilog-*` on `PATH`) and leave `cfg-verible.path` at the committed default — no per-checkout edit to `root_config.yaml`. The flip side: if your configured directory does not contain the binaries but a *different* Verible is on `PATH`, that PATH copy is used silently. If `rb verible` seems to run a different build than the one you configured, check `PATH` — the configured directory only takes precedence when the binary is present there. This mirrors how `cfg-surfer` already resolves its executable.
+This means a site can expose Verible through its environment (a `module load`, or a sourced setup script that puts `verible-verilog-*` on `PATH`) and leave `cfg-verible.path` at the committed default — no per-checkout edit to `root_config.yaml`. The flip side: if your configured directory does not contain the binaries but a *different* Verible is on `PATH`, that PATH copy is used instead. rtl_buddy **warns** when that happens (`verible.exe_fallback`), naming both the configured path and what `PATH` resolved — but only for the entry the active platform routes to, so another platform's entry stays quiet. If `rb verible` seems to run a different build than the one you configured, check `PATH` — the configured directory only takes precedence when the binary is present there. This mirrors how `cfg-surfer` already resolves its executable.
+
+## A broken tool pin is announced once per process, so a daemon never repeats it
+
+The `verible.exe_fallback` warning above and `tool_path.unresolved_var` (every
+candidate of a `builder:` / `path:` / `tool:` list referencing an unset
+variable) are deduped in a module-level set: resolution runs on every
+`get_exe()` call — several times per test — so an undeduped warning would emit
+thousands of identical lines across a regression. The condition is a static
+property of the config plus the environment, so saying it once is saying it —
+but `rb mcp` and `rb hub` are long-running processes, and a pin fixed (or
+broken) while one is up is never re-announced. Restart the daemon after
+editing `root_config.yaml` or `.rtl-buddy/.env` if you are relying on those
+warnings.
 
 ## Hook scripts run at the invocation directory, not the suite
 

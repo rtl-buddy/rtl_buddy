@@ -8963,8 +8963,14 @@ class RtlBuddy:
             str, typer.Option("-c", "--test-config", help="tests.yaml to use")
         ] = "tests.yaml",
         surfer_name: Annotated[
-            str, typer.Option("--surfer", help="cfg-surfer entry name")
-        ] = "surfer-default",
+            str | None,
+            typer.Option(
+                "--surfer",
+                help="cfg-surfer entry name "
+                "(default: the active platform's cfg-platforms surfer routing, "
+                "else surfer-default)",
+            ),
+        ] = None,
         resim: Annotated[
             bool,
             typer.Option(
@@ -8991,8 +8997,11 @@ class RtlBuddy:
 
         surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
         if surfer_cfg is None:
+            effective = surfer_name or (
+                self.root_cfg.get_platform_tool_name("surfer") or "surfer-default"
+            )
             raise FatalRtlBuddyError(
-                f'No cfg-surfer entry named "{surfer_name}" in root_config.yaml. '
+                f'No cfg-surfer entry named "{effective}" in root_config.yaml. '
                 f"Add a cfg-surfer section to enable waveform viewing."
             )
         if not surfer_cfg.available:
@@ -9079,8 +9088,14 @@ class RtlBuddy:
             typer.Option("-c", "--fpv-config", help="fpv.yaml to use"),
         ] = "fpv.yaml",
         surfer_name: Annotated[
-            str, typer.Option("--surfer", help="cfg-surfer entry name")
-        ] = "surfer-default",
+            str | None,
+            typer.Option(
+                "--surfer",
+                help="cfg-surfer entry name "
+                "(default: the active platform's cfg-platforms surfer routing, "
+                "else surfer-default)",
+            ),
+        ] = None,
     ):
         """
         open SymbiYosys counterexample VCD for a failed FPV verification
@@ -9097,8 +9112,11 @@ class RtlBuddy:
 
         surfer_cfg = self.root_cfg.get_surfer_cfg(surfer_name)
         if surfer_cfg is None:
+            effective = surfer_name or (
+                self.root_cfg.get_platform_tool_name("surfer") or "surfer-default"
+            )
             raise FatalRtlBuddyError(
-                f'No cfg-surfer entry named "{surfer_name}" in root_config.yaml. '
+                f'No cfg-surfer entry named "{effective}" in root_config.yaml. '
                 f"Add a cfg-surfer section to enable waveform viewing."
             )
         if not surfer_cfg.available:

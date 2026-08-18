@@ -1051,3 +1051,801 @@ def test_apply_test_xfail_skip_passes_through_unchanged():
     apply_xfail(res, strict=True)
     assert res.results["result"] == "SKIP"
     assert res.is_pass() is True
+
+
+# ---------------------------------------------------------------------------
+# Tool path resolution — $VAR / ~ expansion and candidate lists (#439)
+# ---------------------------------------------------------------------------
+
+
+def _mkdir(path):
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _touch_exe(path):
+    """Create an executable stub.
+
+    Tool-path resolution requires the executable bit for binary-valued
+    fields, so its existence test agrees with the callers' availability
+    checks (#439) — a plain `touch` would be skipped.
+    """
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+    return path
+
+
+def test_expand_path_resolves_set_var(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.setenv("RB_TEST_TOOLS", "/opt/rb")
+    assert expand_path("${RB_TEST_TOOLS}/bin/surfer") == "/opt/rb/bin/surfer"
+
+
+def test_expand_path_returns_none_for_unset_var(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    assert expand_path("${RB_TEST_TOOLS}/bin/surfer") is None
+
+
+def test_expand_path_expands_tilde(monkeypatch):
+    from rtl_buddy.config.toolpath import expand_path
+
+    monkeypatch.setenv("HOME", "/home/rb")
+    assert expand_path("~/tools/surfer") == "/home/rb/tools/surfer"
+
+
+def test_resolve_tool_path_single_string_passes_through(monkeypatch):
+    """The pre-#439 shape: one bare name, resolved by PATH at exec time."""
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    assert resolve_tool_path("definitely-not-installed") == "definitely-not-installed"
+
+
+def test_resolve_tool_path_env_override_wins_over_canonical(tmp_path, monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    mine = tmp_path / "mine" / "bin"
+    mine.mkdir(parents=True)
+    _touch_exe(mine / "surfer")
+    canonical = tmp_path / "canonical" / "bin"
+    canonical.mkdir(parents=True)
+    _touch_exe(canonical / "surfer")
+
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path / "mine"))
+    chosen = resolve_tool_path(
+        ["${RB_TEST_TOOLS}/bin/surfer", str(canonical / "surfer"), "surfer"]
+    )
+    assert chosen == str(mine / "surfer")
+
+
+def test_resolve_tool_path_falls_through_unset_var_to_canonical(tmp_path, monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    canonical = tmp_path / "canonical" / "bin"
+    canonical.mkdir(parents=True)
+    _touch_exe(canonical / "surfer")
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    chosen = resolve_tool_path(
+        ["${RB_TEST_TOOLS}/bin/surfer", str(canonical / "surfer"), "surfer"]
+    )
+    assert chosen == str(canonical / "surfer")
+
+
+def test_resolve_tool_path_falls_through_missing_path_to_bare_name(
+    tmp_path, monkeypatch
+):
+    """Nothing on disk: the trailing bare name is the PATH fallback slot."""
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    chosen = resolve_tool_path(
+        [
+            "${RB_TEST_TOOLS}/bin/surfer",
+            str(tmp_path / "nowhere" / "surfer"),
+            "surfer-not-installed",
+        ]
+    )
+    assert chosen == "surfer-not-installed"
+
+
+def test_resolve_tool_path_all_candidates_unresolved_returns_literal(monkeypatch):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    assert (
+        resolve_tool_path("${RB_TEST_TOOLS}/bin/surfer")
+        == "${RB_TEST_TOOLS}/bin/surfer"
+    )
+
+
+def test_resolve_tool_path_relative_candidate_anchors_at_base_dir(tmp_path):
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    (tmp_path / "vendor").mkdir()
+    _touch_exe(tmp_path / "vendor" / "yosys")
+    chosen = resolve_tool_path(
+        ["vendor/nope/yosys", "vendor/yosys", "yosys"], base_dir=str(tmp_path)
+    )
+    # Returned unjoined — callers keep their own relative-path semantics.
+    assert chosen == "vendor/yosys"
+
+
+def test_builder_exe_expands_env_var(monkeypatch, tmp_path):
+    """cfg-rtl-builder.builder gets the cfg-systemc.home treatment."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _touch_exe(bindir / "verilator")
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path))
+
+    cfg = from_yaml(
+        RtlBuilderConfig,
+        _VERILATOR_BUILDER_YAML.replace(
+            "builder: verilator", 'builder: "${RB_TEST_TOOLS}/bin/verilator"'
+        ),
+    )
+    assert cfg.get_exe() == str(bindir / "verilator")
+    # Family inference reads the resolved path, not the literal.
+    assert cfg.get_simulator_family() == "verilator"
+
+
+def test_builder_exe_candidate_list_falls_back_to_bare_name(monkeypatch):
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    yaml = _VERILATOR_BUILDER_YAML.replace(
+        "builder: verilator",
+        'builder: ["${RB_TEST_TOOLS}/bin/verilator", "verilator"]',
+    )
+    cfg = from_yaml(RtlBuilderConfig, yaml)
+    assert cfg.get_exe() == "verilator"
+
+
+def test_surfer_path_candidate_list_picks_existing(tmp_path, monkeypatch):
+    from rtl_buddy.config.surfer import SurferConfigFile
+
+    bindir = tmp_path / "opt" / "bin"
+    bindir.mkdir(parents=True)
+    exe = _touch_exe(bindir / "surfer")
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+
+    cfg = SurferConfigFile(
+        name="surfer-shared",
+        path=["${RB_TEST_TOOLS}/bin/surfer", str(exe), "surfer"],
+    ).initialise(str(tmp_path / "root_config.yaml"))
+    assert cfg.path == str(exe)
+    assert cfg.available is True
+
+
+def test_synth_tool_executable_expands_env_var(monkeypatch, tmp_path):
+    from rtl_buddy.config.synth import SynthToolConfig, SynthToolConfigFile
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    _touch_exe(bindir / "yosys")
+    monkeypatch.setenv("RB_TEST_TOOLS", str(tmp_path))
+
+    cfg = SynthToolConfig(
+        SynthToolConfigFile(name="yosys", tool="${RB_TEST_TOOLS}/bin/yosys")
+    )
+    assert cfg.get_executable() == str(bindir / "yosys")
+
+
+def test_fpv_tool_executable_candidate_list(monkeypatch, tmp_path):
+    from rtl_buddy.config.fpv import FpvToolConfig, FpvToolConfigFile
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    cfg = FpvToolConfig(
+        FpvToolConfigFile(
+            name="sby", tool=["${RB_TEST_TOOLS}/bin/sby", str(tmp_path / "gone"), "sby"]
+        )
+    )
+    assert cfg.get_executable() == "sby"
+
+
+def test_resolve_tool_path_warns_once_for_unresolved_var(monkeypatch, caplog):
+    """The WARNING is emitted, and emitted once.
+
+    `resolve_tool_path` runs on every `get_exe()` / `get_executable()` —
+    several times per test — so an unset variable would otherwise put
+    thousands of identical lines through a regression (#439).
+    """
+    import logging
+
+    from rtl_buddy.config import toolpath
+
+    monkeypatch.delenv("RB_TEST_TOOLS", raising=False)
+    toolpath.reset_unresolved_warnings()
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.toolpath"):
+        for _ in range(3):
+            chosen = toolpath.resolve_tool_path(
+                "${RB_TEST_TOOLS}/bin/surfer",
+                block="cfg-surfer",
+                name="surfer-shared",
+                field="path",
+            )
+
+    assert chosen == "${RB_TEST_TOOLS}/bin/surfer"
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(records) == 1
+    assert "RB_TEST_TOOLS" in records[0].getMessage()
+
+
+def test_resolve_tool_path_skips_a_non_executable_candidate(tmp_path):
+    """Existence test and availability test must agree.
+
+    `os.path.exists` let a non-executable file (or a directory named
+    `surfer`) win resolution and then be reported unavailable, skipping a
+    later candidate that would have worked (#439).
+    """
+    from rtl_buddy.config.toolpath import resolve_tool_path
+
+    not_exec = tmp_path / "readonly" / "surfer"
+    not_exec.parent.mkdir()
+    not_exec.write_text("")
+    not_exec.chmod(0o644)
+    a_directory = tmp_path / "dir" / "surfer"
+    a_directory.mkdir(parents=True)
+    good = _touch_exe(_mkdir(tmp_path / "good") / "surfer")
+
+    chosen = resolve_tool_path([str(not_exec), str(a_directory), str(good)])
+    assert chosen == str(good)
+
+
+def test_tool_candidates_anchor_at_root_config_not_cwd(tmp_path, monkeypatch):
+    """A relative `tool:` candidate resolves next to root_config.yaml.
+
+    `rb` is routinely invoked from a suite directory, so testing a
+    relative candidate against the process cwd made resolution depend on
+    where the user stood (#439).
+    """
+    _write_routed_project(tmp_path)
+    _touch_exe(_mkdir(tmp_path / "vendor" / "bin") / "yosys")
+    cfg = tmp_path / "root_config.yaml"
+    cfg.write_text(
+        cfg.read_text().replace(
+            'cfg-synth-tools:\n  - name: "yosys"\n    tool: "yosys"\n',
+            'cfg-synth-tools:\n  - name: "yosys"\n'
+            '    tool: ["vendor/bin/yosys", "yosys"]\n',
+            1,
+        )
+    )
+    suite = tmp_path / "suite"
+    suite.mkdir()
+    monkeypatch.chdir(suite)
+
+    rc = RootConfig(name="anchored", start_dir=str(tmp_path))
+    assert rc.get_synth_tool_cfg("yosys").get_executable() == "vendor/bin/yosys"
+
+
+# ---------------------------------------------------------------------------
+# cfg-verible — a pinned path that silently falls back to PATH (#439)
+# ---------------------------------------------------------------------------
+
+
+def test_verible_path_fallback_warns_naming_both_paths(tmp_path, monkeypatch, caplog):
+    """A pin that resolves to something else must not pass unannounced."""
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    fake_path_bin = tmp_path / "site" / "verible-verilog-syntax"
+    fake_path_bin.parent.mkdir(parents=True)
+    fake_path_bin.write_text("")
+    monkeypatch.setattr(
+        "rtl_buddy.config.verible.shutil.which", lambda _n: str(fake_path_bin)
+    )
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned/dir", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert records, "expected a WARNING for the silent PATH fallback"
+    text = records[0].getMessage()
+    assert str(tmp_path / "pinned" / "dir") in text
+    assert str(fake_path_bin) in text
+
+
+def test_verible_path_present_does_not_warn(tmp_path, caplog):
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    _touch_exe(pinned / "verible-verilog-syntax")
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+def test_verible_path_exists_but_is_empty_warns(tmp_path, monkeypatch, caplog):
+    """The other half of the silent-pin case: directory there, binaries not.
+
+    `initialise` only saw the missing-directory case, so a pin at an empty
+    directory reported available with no diagnostic at all (#439).
+    """
+    import logging
+
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    (tmp_path / "pinned").mkdir()
+    site = _touch_exe(
+        _mkdir(tmp_path / "site") / "verible-verilog-syntax",
+    )
+    monkeypatch.setattr("rtl_buddy.config.verible.shutil.which", lambda _n: str(site))
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        cfg = VeribleConfigFile(
+            name="verible-pinned", path="pinned", extra_args={}
+        ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.available is True
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert records, "expected a WARNING for the empty pinned directory"
+    text = records[0].getMessage()
+    assert str(tmp_path / "pinned") in text
+    assert "verible-verilog-syntax" in text
+
+
+def test_verible_get_exe_path_warns_once_on_path_fallback(
+    tmp_path, monkeypatch, caplog
+):
+    """Per-binary fallback is the same broken pin, and must not be silent."""
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    pinned = tmp_path / "pinned"
+    pinned.mkdir()
+    _touch_exe(pinned / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-lint")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    verible_mod.reset_exe_fallback_warnings()
+
+    cfg = verible_mod.VeribleConfigFile(
+        name="verible-pinned", path="pinned", extra_args={}
+    ).initialise(str(tmp_path / "root_config.yaml"))
+
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.config.verible"):
+        first = cfg.get_exe_path("verible-verilog-lint")
+        second = cfg.get_exe_path("verible-verilog-lint")
+
+    assert first == str(site)
+    assert second == str(site)
+    records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "verible-verilog-lint" in r.getMessage()
+    ]
+    # Warned, and warned once: get_exe_path runs per lint invocation.
+    assert len(records) == 1
+
+
+_TWO_VERIBLE_ROOT = """\
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "verible-active"
+  - os: "other-host"
+    unames: ["NoSuchUname"]
+    builder: "stub"
+    verible: "verible-inactive"
+
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "verible-active"
+    path: "{active}"
+    extra_args: {{}}
+  - name: "verible-inactive"
+    path: "{inactive}"
+    extra_args: {{}}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+"""
+
+
+def _write_two_verible_project(root, *, active: str, inactive: str) -> None:
+    """A project whose two platforms take one `cfg-verible` entry each."""
+    (root / "root_config.yaml").write_text(
+        _TWO_VERIBLE_ROOT.format(active=active, inactive=inactive)
+    )
+    (root / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: []\n"
+    )
+
+
+def _verible_records(caplog, level):
+    return [
+        r
+        for r in caplog.records
+        if r.name == "rtl_buddy.config.verible" and r.levelno == level
+    ]
+
+
+def test_verible_pin_diagnostics_skip_the_unrouted_entry(tmp_path, monkeypatch, caplog):
+    """The other platform's broken pin is not this host's warning.
+
+    Every `cfg-verible` entry is initialised at load, so a stock
+    two-platform project would otherwise WARN about the *other*
+    platform's directory on every single `rb` invocation — about a pin
+    that is not being used, and that nobody on this host can act on
+    (#439). It stays visible at DEBUG.
+    """
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    active = _mkdir(tmp_path / "verible-here")
+    _touch_exe(active / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-syntax")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    _write_two_verible_project(
+        tmp_path, active=str(active), inactive=str(tmp_path / "absent-elsewhere")
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.verible"):
+        rc = RootConfig(name="two-platforms")
+
+    assert rc.platform_cfg.get_verible().get_name() == "verible-active"
+    assert _verible_records(caplog, logging.WARNING) == []
+    debug = [r.getMessage() for r in _verible_records(caplog, logging.DEBUG)]
+    assert any("verible-inactive" in m for m in debug)
+
+
+def test_verible_pin_diagnostics_fire_for_the_routed_entry(
+    tmp_path, monkeypatch, caplog
+):
+    """Scoping the warning must not silence the case it exists for."""
+    import logging
+
+    from rtl_buddy.config import verible as verible_mod
+
+    inactive = _mkdir(tmp_path / "verible-elsewhere")
+    _touch_exe(inactive / "verible-verilog-syntax")
+    site = _touch_exe(_mkdir(tmp_path / "site") / "verible-verilog-syntax")
+    monkeypatch.setattr(verible_mod.shutil, "which", lambda _n: str(site))
+    _write_two_verible_project(
+        tmp_path, active=str(tmp_path / "absent-here"), inactive=str(inactive)
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with caplog.at_level(logging.DEBUG, logger="rtl_buddy.config.verible"):
+        RootConfig(name="two-platforms")
+
+    warnings = [r.getMessage() for r in _verible_records(caplog, logging.WARNING)]
+    assert len(warnings) == 1
+    assert "verible-active" in warnings[0]
+    assert str(tmp_path / "absent-here") in warnings[0]
+    assert str(site) in warnings[0]
+
+
+def test_verible_directory_candidate_without_separator_is_found(tmp_path):
+    """A bare candidate on `path:` is a directory, never a PATH lookup.
+
+    `cfg-verible.path` names a directory, so routing a separator-free
+    candidate through `shutil.which` made an existing `verible-arm/` next
+    to root_config.yaml invisible and silently selected the absent one
+    (#439).
+    """
+    from rtl_buddy.config.verible import VeribleConfigFile
+
+    present = tmp_path / "verible-arm"
+    present.mkdir()
+    _touch_exe(present / "verible-verilog-syntax")
+
+    cfg = VeribleConfigFile(
+        name="v", path=["verible-arm", "verible-x86"], extra_args={}
+    ).initialise(str(tmp_path / "root_config.yaml"))
+
+    assert cfg.path == str(present)
+    assert cfg.available is True
+
+
+# ---------------------------------------------------------------------------
+# cfg-platforms — routing an entry in any tool block (#439)
+# ---------------------------------------------------------------------------
+
+_ROUTING_BLOCKS = """
+cfg-surfer:
+  - name: "surfer-shared"
+    path: "surfer-shared-bin"
+  - name: "surfer-default"
+    path: "surfer"
+
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"
+  - name: "yosys-shared"
+    tool: "yosys-shared-bin"
+
+cfg-fpv-tools:
+  - name: "sby-shared"
+    tool: "sby-shared-bin"
+
+cfg-cdc-tools:
+  - name: "cdc-shared"
+    tool: "rtl-buddy-cdc"
+
+cfg-pnr-tools:
+  - name: "openroad-shared"
+    tool: "openroad"
+
+cfg-power-tools:
+  - name: "power-shared"
+    tool: "opensta"
+
+cfg-fpga-tools:
+  - name: "vivado-shared"
+    tool: "vivado"
+"""
+
+
+#: A second, legitimately configured platform whose unames never match
+#: this host — for asserting that "another platform's" behaviour is the
+#: quiet skip, as distinct from naming a platform that does not exist.
+_INACTIVE_PLATFORM = """\
+  - os: "other-host"
+    unames: ["NoSuchUname"]
+    builder: "stub"
+    verible: "stub-verible"
+"""
+
+
+def _write_routed_project(
+    root: Path, *, routing: str = "", extra_platform: str = "", extra: str = ""
+) -> None:
+    (root / "root_config.yaml").write_text(
+        f"""\
+rtl-buddy-filetype: project_root_config
+
+cfg-platforms:
+  - os: "test-host"
+    unames: ["Darwin", "Linux"]
+    builder: "stub"
+    verible: "stub-verible"
+{routing}{extra_platform}
+cfg-rtl-builder:
+  - name: "stub"
+    builder: "echo"
+    builder-simv: "obj_dir/simv"
+    sim-rand-seed: 1
+    sim-rand-seed-prefix: "+seed="
+    builder-opts:
+      debug:
+        compile-time: "--no-op"
+        run-time: "--no-op"
+
+cfg-verible:
+  - name: "stub-verible"
+    path: "/usr/bin"
+    extra_args: {{}}
+
+cfg-rtl-reg:
+  reg-cfg-path: "regression.yaml"
+"""
+        + _ROUTING_BLOCKS
+        + extra
+    )
+    (root / "regression.yaml").write_text(
+        "rtl-buddy-filetype: reg_config\ntest-configs: []\n"
+    )
+
+
+def test_platform_routes_surfer(tmp_path, monkeypatch):
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-shared"\n')
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="routed")
+
+    assert rc.get_platform_tool_name("surfer") == "surfer-shared"
+    assert rc.get_surfer_cfg().name == "surfer-shared"
+
+
+def test_unrouted_blocks_keep_their_global_default(tmp_path, monkeypatch):
+    """Zero impact on existing configs: no routing keys, today's behaviour."""
+    _write_routed_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="unrouted")
+
+    assert rc.get_platform_tool_name("surfer") is None
+    # cfg-surfer keeps the hardcoded "surfer-default" fallback.
+    assert rc.get_surfer_cfg().name == "surfer-default"
+    # *-tools blocks are not routable: the flow yaml's `tool:` names one.
+    assert rc.get_synth_tool_cfg("yosys").get_name() == "yosys"
+
+
+def test_explicit_name_wins_over_platform_routing(tmp_path, monkeypatch):
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-shared"\n')
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="routed")
+
+    assert rc.get_surfer_cfg("surfer-default").name == "surfer-default"
+
+
+def test_platform_routing_to_missing_entry_is_fatal(tmp_path, monkeypatch):
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-nope"\n')
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="cfg-surfer"):
+        RootConfig(name="routed")
+
+
+def test_routing_typo_on_an_inactive_platform_is_still_fatal(tmp_path, monkeypatch):
+    """A bad Linux entry must not wait for the CI host to be discovered.
+
+    The second entry's unames never match this host, so only a load-time
+    sweep over *every* platform entry catches it (#439).
+    """
+    _write_routed_project(tmp_path, routing='    surfer: "surfer-shared"\n')
+    cfg = tmp_path / "root_config.yaml"
+    cfg.write_text(
+        cfg.read_text().replace(
+            "cfg-rtl-builder:\n",
+            '  - os: "never-this-host"\n'
+            '    unames: ["NoSuchUname"]\n'
+            '    builder: "stub"\n'
+            '    verible: "stub-verible"\n'
+            '    surfer: "surfer-typo"\n\n'
+            "cfg-rtl-builder:\n",
+            1,
+        )
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="never-this-host"):
+        RootConfig(name="routed")
+
+
+def test_tools_blocks_are_not_routable(tmp_path, monkeypatch):
+    """`*-tools` keys are rejected, not silently ignored.
+
+    Their entry name doubles as the backend selector, so routing them
+    could never bind at run time; the candidate list in `tool:` is the
+    supported way to pin one of those binaries per platform (#439).
+    """
+    _write_routed_project(tmp_path, routing='    synth-tools: "yosys-shared"\n')
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError, match="cannot be routed per platform"):
+        RootConfig(name="routed")
+
+
+def test_platform_config_file_parses_routing_keys():
+    from rtl_buddy.config.platform import PlatformConfigFile
+
+    cfg = from_yaml(
+        PlatformConfigFile,
+        'os: "linux"\n'
+        'unames: ["Linux"]\n'
+        'builder: "verilator"\n'
+        'verible: "verible-x86_64"\n'
+        'surfer: "surfer-shared"\n',
+    )
+    assert cfg.get_routed_names() == {"surfer": "surfer-shared"}
+
+
+# ---------------------------------------------------------------------------
+# cfg-tools — per-platform min-version (#439)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_min_version_platform_specific_wins(tmp_path, monkeypatch):
+    _write_routed_project(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.050"
+
+
+def test_tool_min_version_platform_specific_wins_regardless_of_order(
+    tmp_path, monkeypatch
+):
+    _write_routed_project(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.050"
+
+
+def test_tool_min_version_other_platform_entry_is_dropped(tmp_path, monkeypatch):
+    """A pin for a *configured* other platform is skipped, silently."""
+    _write_routed_project(
+        tmp_path,
+        extra_platform=_INACTIVE_PLATFORM,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "other-host"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = RootConfig(name="pins")
+    assert rc.get_tool_version_cfg("verilator").min_version == "5.049"
+
+
+def test_tool_min_version_unknown_platform_is_fatal(tmp_path, monkeypatch):
+    """A `platform:` that names no cfg-platforms os is a config error.
+
+    Dropping it as "another platform's pin" is what makes a typo lethal:
+    the version floor then applies nowhere and `rb tool-check` goes green
+    on every host, which is exactly the silent no-op that naming an
+    unroutable block or a missing routed entry is already fatal for (#439).
+    """
+    _write_routed_project(
+        tmp_path,
+        extra_platform=_INACTIVE_PLATFORM,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "osxx"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FatalRtlBuddyError) as excinfo:
+        RootConfig(name="pins")
+    message = str(excinfo.value)
+    # The bad value and the set it had to come from — a message naming
+    # only one of the two leaves the reader guessing at the other.
+    assert "osxx" in message
+    assert "other-host" in message and "test-host" in message
+
+
+def test_unknown_platform_pin_has_a_dedicated_human_message():
+    """The ERROR event must not render through the dotted-event fallback.
+
+    A typo in `cfg-tools[].platform` is the config error a user is most
+    likely to hit here, and `rtl_buddy.log` reads the human message —
+    without a case it would say less than the console does (#439 review).
+    """
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "tool_version.platform_unknown",
+        {"name": "verilator", "entry_platform": "osxx", "available": "linux, macos"},
+    )
+    assert msg != "tool_version platform_unknown"
+    assert "verilator" in msg
+    assert "osxx" in msg
+    assert "linux, macos" in msg

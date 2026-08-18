@@ -711,7 +711,31 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "verible.path_missing":
             return f"Verible disabled: path not found at {fields.get('path')}"
         case "verible.path_fallback":
-            return f"Verible: configured path not found at {fields.get('path')}, using PATH"
+            return (
+                f"cfg-verible[{fields.get('name')}]: configured path "
+                f"{fields.get('configured_path')} does not exist; falling back to "
+                f"{fields.get('resolved_path')} from PATH. A deliberate pin is not "
+                f"being honoured — fix the path or drop it to silence this."
+            )
+        case "verible.path_incomplete":
+            resolved = fields.get("resolved_path")
+            tail = (
+                f"falling back to {resolved} from PATH"
+                if resolved
+                else f"and {fields.get('exe')} is not on PATH either"
+            )
+            return (
+                f"cfg-verible[{fields.get('name')}]: configured path "
+                f"{fields.get('configured_path')} exists but does not contain "
+                f"{fields.get('exe')}; {tail}. A deliberate pin is not being "
+                f"honoured — fix the path or drop it to silence this."
+            )
+        case "verible.exe_fallback":
+            return (
+                f"cfg-verible[{fields.get('name')}]: {fields.get('exe')} not found at "
+                f"{fields.get('configured_path')}; using "
+                f"{fields.get('resolved_path')} from PATH instead."
+            )
         case "verible.command":
             return f"Running {fields.get('executable')}"
         case "verible.completed":
@@ -833,6 +857,35 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"no builder configured for platform (os={fields.get('os')})"
         case "platform.verible_missing":
             return f'verible "{fields.get("verible")}" not found in config (os={fields.get("os")})'
+        case "platform.tool_missing":
+            return (
+                f"cfg-platforms[{fields.get('os')}].{fields.get('block')}: "
+                f'"{fields.get("entry")}" is not a configured entry '
+                f"(available: {fields.get('available') or 'none'})"
+            )
+        case "platform.tool_not_routable":
+            return (
+                f"cfg-platforms[{fields.get('os')}].{fields.get('block')}: this "
+                "block cannot be routed per platform; pin the path in the entry "
+                "itself with a candidate list"
+            )
+        case "tool_path.unresolved_var":
+            return (
+                f"{fields.get('block')}[{fields.get('name')}].{fields.get('field')}: "
+                f"every candidate references an unset environment variable "
+                f"({fields.get('candidates')}); using it literally, which will "
+                f"almost certainly fail. Set the variable (e.g. in "
+                f".rtl-buddy/.env) or add a fallback candidate."
+            )
+        case "tool_version.platform_unknown":
+            # The one cfg-tools error a typo produces, so rtl_buddy.log must
+            # carry the same text the console gets from FatalRtlBuddyError
+            # rather than the dotted-event fallback (#439 review).
+            return (
+                f"cfg-tools[{fields.get('name')}].platform: "
+                f'"{fields.get("entry_platform")}" is not a configured '
+                f"cfg-platforms os (available: {fields.get('available') or 'none'})"
+            )
         case "platform.match_missing":
             return f'{fields.get("name")}: no platform config matches uname "{fields.get("uname")}"'
         case "project_path.missing_directory":

@@ -8,6 +8,7 @@ import re
 
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
+from .toolpath import resolve_tool_path
 
 
 def process_opts(opts):
@@ -39,7 +40,9 @@ class RtlBuilderConfig:
       name (str): Unique builder identifier.
       simulator_family (str | None): Simulator family identifier used for
         backend-specific behavior such as coverage processing.
-      exe (str): Name of the compiler executable (without location).
+      exe (str | list[str]): Name of the compiler executable, a path to
+        it, or a list of candidates in preference order (see
+        :mod:`rtl_buddy.config.toolpath`). ``~`` and ``$VAR`` are expanded.
       simv (str): Name of the executable file for simulation (on disc).
       sim_rand_seed (int): Random seed for the simulation.
       sim_rand_prefix (str): Simulator-specific prefix for the random seed.
@@ -51,7 +54,7 @@ class RtlBuilderConfig:
     """
 
     name: str
-    exe: str = field(rename="builder")
+    exe: str | list[str] = field(rename="builder")
     simv: str = field(rename="builder-simv")
     sim_rand_seed: int = field(rename="sim-rand-seed")
     sim_rand_prefix: str = field(rename="sim-rand-seed-prefix")
@@ -59,6 +62,14 @@ class RtlBuilderConfig:
     simulator_family: str | None = field(rename="simulator-family", default=None)
     wave_format: str | None = field(rename="wave-format", default=None)
     extra_sim_timeout: int | None = field(rename="extra-sim-timeout", default=None)
+    #: Directory relative ``builder:`` candidates are anchored at, set by
+    #: :meth:`set_base_dir`. Declared (``skip=True``: it is not a YAML key
+    #: and must never be serialised) rather than attached post hoc, so an
+    #: unanchored config reads its real default instead of a ``getattr``
+    #: fallback — a construction path that forgot the anchor would
+    #: otherwise existence-test relative candidates against the process
+    #: cwd and look exactly like "the tool is not installed" (#439 review).
+    _base_dir: str | None = field(default=None, skip=True)
 
     def get_name(self) -> str:
         """
@@ -68,6 +79,17 @@ class RtlBuilderConfig:
           name (str): The value of name.
         """
         return self.name
+
+    def set_base_dir(self, base_dir: str | None) -> None:
+        """Anchor relative ``builder:`` candidates at ``base_dir``.
+
+        Set by :class:`~rtl_buddy.config.root.RootConfig` to the directory
+        holding ``root_config.yaml``, so a relative candidate is
+        existence-tested there rather than against the process cwd — `rb`
+        is routinely invoked from a suite directory (#439). A config built
+        outside RootConfig (tests) simply has no anchor.
+        """
+        self._base_dir = base_dir
 
     def get_simulator_family(self) -> str:
         """
@@ -79,7 +101,7 @@ class RtlBuilderConfig:
         if self.simulator_family is not None:
             return self.simulator_family
 
-        exe_base = self.exe.split()[0].split("/")[-1].lower()
+        exe_base = self.get_exe().split()[0].split("/")[-1].lower()
         if exe_base.startswith("verilator"):
             return "verilator"
         if exe_base.startswith("vcs"):
@@ -134,12 +156,23 @@ class RtlBuilderConfig:
 
     def get_exe(self) -> str:
         """
-        Retrieves the value of exe.
+        Retrieves the value of exe, with ``~`` / ``$VAR`` expanded.
+
+        ``builder:`` may be a single value or a list of candidates in
+        preference order; the first that expands cleanly and exists wins,
+        with a trailing bare name left for ``PATH``. See
+        :mod:`rtl_buddy.config.toolpath`.
 
         Returns:
-          exe (str): The value of exe.
+          exe (str): The effective compiler executable.
         """
-        return self.exe
+        return resolve_tool_path(
+            self.exe,
+            base_dir=self._base_dir,
+            block="cfg-rtl-builder",
+            name=self.name,
+            field="builder",
+        )
 
     def get_simv(self) -> str:
         """

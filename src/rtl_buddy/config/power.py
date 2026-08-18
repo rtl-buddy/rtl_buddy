@@ -11,6 +11,7 @@ from ..errors import FatalRtlBuddyError
 from ..logging_utils import log_event
 from .pnr import PnrSuiteConfig
 from .synth import SynthSuiteConfig
+from .toolpath import resolve_tool_path
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +19,33 @@ logger = logging.getLogger(__name__)
 @serde
 class PowerToolConfigFile:
     name: str
-    tool: str
+    tool: str | list[str]
 
 
 class PowerToolConfig:
-    def __init__(self, cfg: PowerToolConfigFile):
+    def __init__(self, cfg: PowerToolConfigFile, base_dir: str | None = None):
         self._cfg = cfg
+        # Directory relative `tool:` candidates are existence-tested
+        # against: the one holding root_config.yaml, never the process
+        # cwd (rb is routinely invoked from a suite directory).
+        self._base_dir = base_dir
 
     def get_name(self) -> str:
         return self._cfg.name
 
     def get_executable(self) -> str:
-        return self._cfg.tool
+        """Effective tool executable, with ``~`` / ``$VAR`` expanded.
+
+        ``tool:`` may be a single value or a list of candidates in
+        preference order; see :mod:`rtl_buddy.config.toolpath`.
+        """
+        return resolve_tool_path(
+            self._cfg.tool,
+            base_dir=self._base_dir,
+            block="cfg-power-tools",
+            name=self._cfg.name,
+            field="tool",
+        )
 
 
 @serde

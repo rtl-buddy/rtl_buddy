@@ -341,6 +341,7 @@ def test_simulator_family_recognizes_iverilog():
     from rtl_buddy.config.rtl import RtlBuilderConfig
 
     cfg = RtlBuilderConfig.__new__(RtlBuilderConfig)
+    cfg.name = "icarus-builder"
     cfg.exe = "iverilog"
     cfg.simulator_family = None
     assert cfg.get_simulator_family() == "icarus"

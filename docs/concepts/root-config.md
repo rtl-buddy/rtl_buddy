@@ -50,20 +50,54 @@ cfg-rtl-reg:
 
 **`cfg-platforms`**
 
-Maps the current OS (detected via `uname`) to a builder and Verible config. `rtl_buddy` picks the first platform entry whose `unames` list contains the output of `uname`.
+Maps the current OS (detected via `uname`) to a builder and Verible config. `rtl_buddy` picks the **last** platform entry whose `unames` list contains the output of `uname` — with the usual one-entry-per-uname layout there is only one match, but overlapping `unames` lists are resolved last-wins.
+
+A platform entry may also route `cfg-surfer` by naming one of its entries. It is optional; unrouted, `cfg-surfer` keeps its previous global behaviour (the `surfer-default` entry). Routing lets the viewer be pinned per platform — a shared Linux tool tree pinned absolutely (`PATH` cannot silently override it, and it survives a `--dispatch slurm` login shell re-prepending site paths) while macOS routes to an entry keeping a bare name off `PATH`:
+
+```yaml
+cfg-platforms:
+  - os: "linux"
+    unames: ["Linux"]
+    builder: "verilator-shared"
+    verible: "verible-x86_64"
+    surfer: "surfer-shared"      # absolute path into the shared tool tree
+  - os: "osx"
+    unames: ["Darwin"]
+    builder: "verilator"
+    verible: "verible-macos"
+    surfer: "surfer-brew"        # bare name off PATH
+```
+
+Routing supplies the *default* entry for a block; a CLI flag that names one explicitly — `--surfer`, `--builder` — still wins. Every platform entry's routing is validated at load, not only the one matching this host, so a typo in the Linux entry fails on a developer's laptop rather than waiting for CI.
+
+The `cfg-*-tools` blocks (`cfg-synth-tools`, `cfg-pnr-tools`, `cfg-power-tools`, `cfg-cdc-tools`, `cfg-fpv-tools`, `cfg-fpga-tools`) are **not** routable, and naming one on a platform entry is a fatal config error rather than a silent no-op. Their entry is chosen per run by the flow YAML's `tool:`, and that name simultaneously selects the *backend* — `openroad` picks the OpenROAD P&R backend, `yosys` the Yosys synthesis backend, `rb power` looks the name up in a backend registry — so a platform-level redirect could only be ignored (the flow already named an entry) or break dispatch (the routed name is not a backend). To pin one of those binaries per platform, pin it in the entry itself with the candidate list `tool:` accepts, described next: the first candidate that exists wins, so a Linux tool-tree path and a Homebrew path can share one committed entry and each host takes the one it has.
+
+**Tool paths: `~`, `$VAR`, and candidate lists**
+
+`cfg-rtl-builder[].builder`, `cfg-verible[].path`, `cfg-surfer[].path` and the `tool:` field of every `cfg-*-tools` block are expanded with `expanduser` + `expandvars` before use — the same treatment `cfg-systemc.home` has always had. An unset `${VAR}` makes that value not apply rather than producing a path containing a literal `${...}`.
+
+Each of those fields also accepts a *list* of candidates; the first that expands cleanly and exists wins, and a trailing bare name is the `PATH` fallback. "Exists" means an *executable file* for the binary-valued fields, so a candidate that is present but not runnable falls through to the next one instead of winning and then being reported unavailable; relative candidates are tested against the directory holding `root_config.yaml`, never the process cwd:
+
+```yaml
+cfg-surfer:
+  - name: "surfer-shared"
+    path: ["${RB_TOOLS}/bin/surfer", "/opt/rb-tools/current/bin/surfer", "surfer"]
+```
+
+That is the full chain a multi-platform project wants — **individual env override → committed canonical path → `PATH`** — expressed in one committed file. The individual half lives in the gitignored [`.rtl-buddy/.env`](#project-local-env-defaults-rtl-buddyenv) (`RB_TOOLS=/Users/me/tools/rb`), so a developer relocating their copy never dirties a tracked file, and everyone else gets the canonical path. CI wants the pin hard enough that a stray `PATH` cannot change it and laptops want it soft enough to relocate; expansion with a committed fallback satisfies both, because the value is still decided by a committed file and the only thing an individual supplies is *where their copy lives*.
 
 **`cfg-rtl-builder`**
 
 Defines simulation tool configurations. Each entry has:
 
-- `builder`: simulator executable name (`verilator`, `vcs`, etc.)
+- `builder`: simulator executable name (`verilator`, `vcs`, etc.), a path to it, or a candidate list
 - `builder-simv`: path to the compiled simulation binary
 - `sim-rand-seed` / `sim-rand-seed-prefix`: default seed value and the plusarg prefix used to pass it
 - `builder-opts`: named compile-time and run-time option sets, selected by builder mode
 
 **`cfg-verible`**
 
-Defines Verible tool configurations for lint and syntax checks. `path` is the directory containing Verible executables — absolute or relative to `root_config.yaml`.
+Defines Verible tool configurations for lint and syntax checks. `path` is the directory containing Verible executables — absolute or relative to `root_config.yaml`. If that directory is missing — or is present but does not contain the binary — Verible stays enabled off `PATH` and rtl_buddy warns, naming both the configured location and what `PATH` resolved: a deliberately pinned path silently resolving elsewhere is exactly what pinning is meant to rule out. Because `path` names a *directory*, a candidate without a path separator is a relative directory next to `root_config.yaml`, never a `PATH` lookup.
 
 **`cfg-surfer`** *(optional)*
 

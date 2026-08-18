@@ -891,8 +891,9 @@ def _reconcile_with_root_cfg(specs: list[ToolSpec], root_cfg) -> list[ToolSpec]:
     * ``cfg-verible`` — the active platform's verible directory is added
       to the verible spec's detector chain as the *preferred* lookup,
       with PATH retained as the fallback.
-    * ``cfg-surfer`` — the ``surfer-default`` entry's resolved path is
-      added to the surfer spec's detector chain in the same way.
+    * ``cfg-surfer`` — the active platform's routed entry (falling back
+      to ``surfer-default``) has its resolved path added to the surfer
+      spec's detector chain in the same way.
     * ``cfg-tools`` — overrides ``minimum_version`` for any matching
       tool. Project pins always win over manifest defaults.
     * ``cfg-fpv-tools[*].opts.solver-versions`` — pins a project-wide
@@ -929,8 +930,12 @@ def _reconcile_with_root_cfg(specs: list[ToolSpec], root_cfg) -> list[ToolSpec]:
             surfer_path = surfer_cfg.get_surfer_exe()
         except Exception:
             surfer_path = None
-        if surfer_path and surfer_path != surfer_cfg.path:
-            # An absolute path was resolved — prepend an AbsolutePathDetector
+        if surfer_path and os.sep in surfer_path:
+            # A real path was resolved — either `which` found the bare name,
+            # or the entry pinned a path outright (in which case
+            # `get_surfer_exe` returns it unchanged, so comparing against
+            # `surfer_cfg.path` would wrongly skip the pin). Prepend an
+            # AbsolutePathDetector; PATH stays behind it.
             spec = by_name["surfer"]
             by_name["surfer"] = _replace(
                 spec,

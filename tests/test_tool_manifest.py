@@ -972,3 +972,142 @@ def test_mcp_sdk_detects_via_python_package_with_floor():
     assert len(spec.detection) == 1
     assert isinstance(spec.detection[0], tm.PythonPackageDetector)
     assert "mcp" in spec.used_by
+
+
+# ---------------------------------------------------------------------------
+# Manifest reconciliation — cfg-platforms tool routing (#439)
+
+
+_SURFER_ROUTING_BLOCKS = """
+cfg-surfer:
+  - name: "surfer-default"
+    path: "surfer"
+  - name: "surfer-shared"
+    path: "{shared_surfer}"
+
+cfg-synth-tools:
+  - name: "yosys"
+    tool: "yosys"
+  - name: "yosys-shared"
+    tool: "{shared_yosys}"
+"""
+
+
+def _write_routed_root_config(target: Path, shared_dir: Path, routing: str) -> None:
+    """A root config whose platform routes surfer/synth-tools at ``shared_dir``."""
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    for binary in ("surfer", "yosys"):
+        exe = shared_dir / binary
+        exe.write_text("#!/bin/sh\nexit 0\n")
+        exe.chmod(0o755)
+    _write_minimal_root_config(
+        target,
+        extra=_SURFER_ROUTING_BLOCKS.format(
+            shared_surfer=shared_dir / "surfer", shared_yosys=shared_dir / "yosys"
+        ),
+    )
+    text = (target / "root_config.yaml").read_text()
+    text = text.replace(
+        '    verible: "stub-verible"\n', '    verible: "stub-verible"\n' + routing
+    )
+    (target / "root_config.yaml").write_text(text)
+
+
+def test_routed_surfer_entry_pins_the_detector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`_reconcile_with_root_cfg` follows the platform, not "surfer-default"."""
+    shared = tmp_path / "shared" / "bin"
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-shared"\n')
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    rc = RootConfig(name="routed")
+    by_name = {s.name: s for s in tm.get_manifest(rc)}
+    detectors = by_name["surfer"].detection
+    assert isinstance(detectors[0], tm.AbsolutePathDetector)
+    assert detectors[0].abs_path == str(shared / "surfer")
+
+
+def test_routing_a_tools_block_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`cfg-*-tools` is not routable, and saying so beats doing nothing.
+
+    tool-check must report the binary the run uses. A routed `*-tools`
+    entry could only ever change tool-check, because every flow yaml
+    names its own `tool:` — so routing one would make the report *dis*agree
+    with the run. The supported pin is a candidate list in the entry, which
+    both sides read (#439).
+    """
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    shared = tmp_path / "shared" / "bin"
+    _write_routed_root_config(tmp_path, shared, '    synth-tools: "yosys-shared"\n')
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    with pytest.raises(FatalRtlBuddyError, match="cannot be routed per platform"):
+        RootConfig(name="routed")
+
+
+def test_unrouted_surfer_keeps_the_default_entrys_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """No routing keys → the pre-#439 chain, unchanged.
+
+    Asserted against the routable block. `cfg-*-tools` never contributed
+    a detector in the first place, routed or not, so asserting on `yosys`
+    here would pass whatever routing did.
+    """
+    shared = tmp_path / "shared" / "bin"
+    _write_routed_root_config(tmp_path, shared, "")
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    rc = RootConfig(name="unrouted")
+    unrouted = {s.name: s for s in tm.get_manifest(rc)}["surfer"]
+
+    # Routing absent must be exactly routing to `surfer-default`, which is
+    # the entry the unrouted accessor falls back to. Compared against the
+    # explicit form rather than against a fixed shape, because what
+    # `surfer-default` (a bare name) resolves to depends on the host's PATH.
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-default"\n')
+    routed_to_default = {s.name: s for s in tm.get_manifest(RootConfig(name="routed"))}[
+        "surfer"
+    ]
+
+    assert unrouted.detection == routed_to_default.detection
+    # …and not the routed-elsewhere chain, or the comparison proves nothing.
+    _write_routed_root_config(tmp_path, shared, '    surfer: "surfer-shared"\n')
+    routed_elsewhere = {s.name: s for s in tm.get_manifest(RootConfig(name="shared"))}[
+        "surfer"
+    ]
+    assert routed_elsewhere.detection != unrouted.detection
+    assert routed_elsewhere.detection[0].abs_path == str(shared / "surfer")
+
+
+def test_root_cfg_tools_min_version_honours_active_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _write_minimal_root_config(
+        tmp_path,
+        extra=(
+            "\ncfg-tools:\n"
+            "  - name: verilator\n"
+            '    min-version: "5.049"\n'
+            "  - name: verilator\n"
+            '    min-version: "5.050"\n'
+            '    platform: "test-host"\n'
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    from rtl_buddy.config.root import RootConfig
+
+    rc = RootConfig(name="pins")
+    by_name = {s.name: s for s in tm.get_manifest(rc)}
+    assert by_name["verilator"].minimum_version == "5.050"
