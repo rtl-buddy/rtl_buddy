@@ -1486,6 +1486,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-broken-tool-pin-is-announced-once-per-process-so-a-daemon-never-repeats-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A broken tool pin is announced once per process, so a daemon never repeats it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#hook-scripts-run-at-the-invocation-directory-not-the-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1596,6 +1607,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cfg-dispatchbackend-does-not-apply-to-rb-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cfg-dispatch.backend does not apply to rb test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#-dispatch-local-parallel-ignores-resources-j-is-the-only-limit" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1677,6 +1699,39 @@
     <span class="md-ellipsis">
       
         A build job orders the fan-out; only the stamp keeps it from recompiling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-retry-truncates-the-sim-capture-that-justified-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A retry truncates the sim capture that justified it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#with-retry-enabled-max-wait-bounds-each-wait-not-their-sum" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        With retry enabled, max-wait bounds each wait, not their sum
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-begin-in-sbatch-args-silently-disables-the-retry-backoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A --begin in sbatch-args silently disables the retry backoff
       
     </span>
   </a>
@@ -1888,6 +1943,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-broken-tool-pin-is-announced-once-per-process-so-a-daemon-never-repeats-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A broken tool pin is announced once per process, so a daemon never repeats it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#hook-scripts-run-at-the-invocation-directory-not-the-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1998,6 +2064,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#cfg-dispatchbackend-does-not-apply-to-rb-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cfg-dispatch.backend does not apply to rb test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#-dispatch-local-parallel-ignores-resources-j-is-the-only-limit" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2079,6 +2156,39 @@
     <span class="md-ellipsis">
       
         A build job orders the fan-out; only the stamp keeps it from recompiling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-retry-truncates-the-sim-capture-that-justified-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A retry truncates the sim capture that justified it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#with-retry-enabled-max-wait-bounds-each-wait-not-their-sum" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        With retry enabled, max-wait bounds each wait, not their sum
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-begin-in-sbatch-args-silently-disables-the-retry-backoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A --begin in sbatch-args silently disables the retry backoff
       
     </span>
   </a>
@@ -2219,7 +2329,18 @@
 <p>If you require reproducible randomized testing on macOS (where VCS is not available), this is a known limitation.</p>
 <h2 id="verible-resolves-from-path-when-cfg-veriblepath-lacks-the-binaries">Verible resolves from PATH when <code>cfg-verible.path</code> lacks the binaries</h2>
 <p><code>rb verible</code> resolves each executable in a fixed precedence: the configured <code>cfg-verible.path</code> directory wins <strong>when it actually contains the binary</strong>, otherwise rtl_buddy falls back to whatever is on <code>PATH</code>, and only as a last resort returns the configured join (so a genuine "not found" still names the expected directory).</p>
-<p>This means a site can expose Verible through its environment (a <code>module load</code>, or a sourced setup script that puts <code>verible-verilog-*</code> on <code>PATH</code>) and leave <code>cfg-verible.path</code> at the committed default — no per-checkout edit to <code>root_config.yaml</code>. The flip side: if your configured directory does not contain the binaries but a <em>different</em> Verible is on <code>PATH</code>, that PATH copy is used silently. If <code>rb verible</code> seems to run a different build than the one you configured, check <code>PATH</code> — the configured directory only takes precedence when the binary is present there. This mirrors how <code>cfg-surfer</code> already resolves its executable.</p>
+<p>This means a site can expose Verible through its environment (a <code>module load</code>, or a sourced setup script that puts <code>verible-verilog-*</code> on <code>PATH</code>) and leave <code>cfg-verible.path</code> at the committed default — no per-checkout edit to <code>root_config.yaml</code>. The flip side: if your configured directory does not contain the binaries but a <em>different</em> Verible is on <code>PATH</code>, that PATH copy is used instead. rtl_buddy <strong>warns</strong> when that happens (<code>verible.exe_fallback</code>), naming both the configured path and what <code>PATH</code> resolved — but only for the entry the active platform routes to, so another platform's entry stays quiet. If <code>rb verible</code> seems to run a different build than the one you configured, check <code>PATH</code> — the configured directory only takes precedence when the binary is present there. This mirrors how <code>cfg-surfer</code> already resolves its executable.</p>
+<h2 id="a-broken-tool-pin-is-announced-once-per-process-so-a-daemon-never-repeats-it">A broken tool pin is announced once per process, so a daemon never repeats it</h2>
+<p>The <code>verible.exe_fallback</code> warning above and <code>tool_path.unresolved_var</code> (every
+candidate of a <code>builder:</code> / <code>path:</code> / <code>tool:</code> list referencing an unset
+variable) are deduped in a module-level set: resolution runs on every
+<code>get_exe()</code> call — several times per test — so an undeduped warning would emit
+thousands of identical lines across a regression. The condition is a static
+property of the config plus the environment, so saying it once is saying it —
+but <code>rb mcp</code> and <code>rb hub</code> are long-running processes, and a pin fixed (or
+broken) while one is up is never re-announced. Restart the daemon after
+editing <code>root_config.yaml</code> or <code>.rtl-buddy/.env</code> if you are relying on those
+warnings.</p>
 <h2 id="hook-scripts-run-at-the-invocation-directory-not-the-suite">Hook scripts run at the invocation directory, not the suite</h2>
 <p><code>sweep</code> and <code>preproc</code> hooks execute via <code>exec()</code> inside the <code>rb</code> process and share its working directory, which is <code>invocation_cwd</code> — your shell's cwd — not the suite directory. Resolve suite-local inputs and outputs from the injected <code>suite_dir</code> / <code>artifact_dir</code> variables, never from <code>os.getcwd()</code>.</p>
 <p>The footgun is a hook that delegates to a <strong>third-party generator</strong> which writes its outputs relative to <code>os.getcwd()</code> and offers no output-directory argument. Under v4, <code>regression</code> chdir'd into each suite so such a generator dropped files under the suite; under v5 it drops them under the invocation directory instead (e.g. polluting the repo root when running <code>regression</code> from there). The failure is silent: generation "succeeds", but the test fails much later at sim time with a generic <code>cannot open &lt;suite_dir&gt;/&lt;gen_dir&gt;/&lt;file&gt;</code>. It only reproduces when <code>invocation_cwd != suite_dir</code>, so it passes when run from inside the suite and fails under <code>regression</code> from the repo root.</p>
@@ -2324,8 +2445,8 @@ Three consequences that can surprise:</p>
   dispatch run in flight.</li>
 </ul>
 <h2 id="-dispatch-silently-implies-share-build"><code>--dispatch</code> silently implies <code>--share-build</code></h2>
-<p><code>regression --dispatch &lt;backend&gt;</code> (and <code>randtest --dispatch &lt;backend&gt;</code>, for
-<code>slurm</code> and <code>local-parallel</code> alike) turn on
+<p><code>regression --dispatch &lt;backend&gt;</code> (and <code>randtest --dispatch &lt;backend&gt;</code> and
+<code>test --dispatch &lt;backend&gt;</code>, for <code>slurm</code> and <code>local-parallel</code> alike) turn on
 <code>--share-build</code> even if you didn't pass it: a <strong>dispatched build job</strong>
 compiling one shared <code>simv</code> per unique compile key on a compute node is
 exactly what lets each sim job skip compilation and re-enter at simulation.
@@ -2345,6 +2466,18 @@ expressible per job (rtl_buddy rejects the combination loudly rather than
 ignoring the flag). And <code>randtest -r &lt;n&gt; --dispatch slurm</code> runs locally — a
 single-seed replay gains nothing from the queue — logging
 <code>randtest.dispatch_ignored_for_replay</code> so the ignored flag isn't silent.</p>
+<h2 id="cfg-dispatchbackend-does-not-apply-to-rb-test"><code>cfg-dispatch.backend</code> does not apply to <code>rb test</code></h2>
+<p><code>cfg-dispatch.backend</code> defaults the backend for <code>rb regression</code> and
+<code>rb randtest</code> only. <strong><code>rb test</code> dispatches only when <code>--dispatch</code> is passed
+on the command line</strong> — set <code>backend: slurm</code> in <code>root_config.yaml</code>, run
+<code>rb test basic</code>, and it still runs in-process. That is deliberate: <code>rb test</code>
+is the local iteration command, and a project that pointed its regressions
+at a cluster must not find single-test runs queueing behind it after an
+upgrade (it also keeps <code>--early-stop</code>, which dispatch rejects, usable by
+default). Nothing else in <code>cfg-dispatch</code> is ignored — <code>resources</code>, <code>retry</code>,
+<code>jobs</code>, <code>max-wait</code> and the rest all configure the run once <code>--dispatch</code>
+opts in. Pass <code>--dispatch slurm</code> (or <code>local-parallel</code>) explicitly. See
+<a href="../concepts/dispatch/">Parallel dispatch</a>.</p>
 <h2 id="-dispatch-local-parallel-ignores-resources-j-is-the-only-limit"><code>--dispatch local-parallel</code> ignores <code>resources:</code> — <code>-j</code> is the only limit</h2>
 <p>The native-process backend runs jobs as plain subprocesses on one host, and
 a host has no portable per-process cap (<code>ulimit</code>/<code>nice</code>/<code>taskset</code> are
@@ -2486,6 +2619,35 @@ Two ways out until a lock or a per-run compile dir exists: make the
 generator write to <code>run_artifact_dir</code> (per-run output does not belong in a
 filelist source anyway), or emit test-keyed files only when their content
 changes, so the mtime is stable across elements.</p>
+<h2 id="a-retry-truncates-the-sim-capture-that-justified-it">A retry truncates the sim capture that justified it</h2>
+<p><code>cfg-dispatch.retry</code> re-submits a job with the <strong>same</strong> result-envelope and
+artefact paths, so the second attempt overwrites <code>artefacts/&lt;test&gt;/test.log</code>
+and the per-job <code>rtl_buddy-&lt;tag&gt;.log</code> of the first. Only the <strong>scheduler</strong>
+log is kept per attempt (<code>slurm-&lt;tag&gt;-retry&lt;N&gt;.log</code>) — so if the license-queue
+banner that justified the retry landed only in the sim's own capture, the
+retry destroys the evidence for itself. When debugging a run that retried and
+still failed, read the <code>dispatch.result_missing</code> entry in <code>rtl_buddy.log</code> and
+the per-attempt scheduler logs, not <code>test.log</code>. See
+<a href="../concepts/dispatch/#retrying-a-license-queue-kill">Retrying a license-queue kill</a>.</p>
+<h2 id="with-retry-enabled-max-wait-bounds-each-wait-not-their-sum">With retry enabled, <code>max-wait</code> bounds each wait, not their sum</h2>
+<p><code>cfg-dispatch.max-wait</code> is a per-wait deadline, and every retry round waits
+again — so a run with <code>attempts: 2</code> can take up to roughly
+<code>attempts × (backoff + max-wait)</code>, not <code>max-wait</code>. Each round's deadline is
+additionally widened by the backoff the head asked for, because a job held on
+<code>--begin</code> is outstanding (PENDING) for the whole delay and a <code>max-wait</code>
+shorter than the backoff would otherwise trip before the job was allowed to
+start. If you set <code>max-wait</code> as a run-duration ceiling, divide it by
+<code>attempts + 1</code> or leave retry off. See
+<a href="../concepts/dispatch/#retrying-a-license-queue-kill">Retry and <code>max-wait</code></a>.</p>
+<h2 id="a-begin-in-sbatch-args-silently-disables-the-retry-backoff">A <code>--begin</code> in <code>sbatch-args</code> silently disables the retry backoff</h2>
+<p>The retry emits <code>--begin=now+&lt;delay&gt;</code> <strong>before</strong> <code>cfg-dispatch.sbatch-args</code>,
+and <code>sbatch</code> takes the last occurrence of a duplicated flag — so a site that
+passes its own <code>--begin</code> through <code>sbatch-args</code> wins and the backoff never
+happens. The retried jobs go straight back in front of the pool that killed
+them, which is the synchronised retry storm the jittered backoff exists to
+avoid. Consistent with every other <code>sbatch-args</code> override, but silent: drop
+<code>--begin</code> from <code>sbatch-args</code> if you want the backoff. See
+<a href="../concepts/dispatch/#retrying-a-license-queue-kill">Retrying a license-queue kill</a>.</p>
 <h2 id="a-dispatched-compile-failure-surfaces-as-compilefail-not-dispatchfail">A dispatched compile failure surfaces as CompileFail, not DispatchFail</h2>
 <p>When a test's compile fails, the build job records it and the head maps the
 row to a <strong>CompileFail</strong> — the same clean design-error result the
@@ -2604,7 +2766,7 @@ the
 <tr>
 <td><code>rb tool-check</code> key</td>
 <td><code>rtl-buddy-view</code></td>
-<td><code>rb tool-check --explain rtl-buddy-view</code>. <code>--explain rtl-buddy-sch</code> exits 1 with "unknown tool" and lists the known keys</td>
+<td><code>rb tool-check --explain rtl-buddy-view</code>. <code>--explain rtl-buddy-sch</code> is accepted as an alias for it and reports the same entry — under the canonical <code>rtl-buddy-view</code> name, which is also what stays in the JSON payload</td>
 </tr>
 <tr>
 <td>Import package</td>

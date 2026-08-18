@@ -1772,13 +1772,13 @@
 <td>Select the simulator per suite/test with <code>builder:</code> (or <code>--builder</code>); see <a href="../reference/yaml/#selecting-the-simulator-builder">tests.yaml</a>. Install the <code>lcov</code> package in your OS for LCOV / HTML coverage export from Verilator runs (coverage is Verilator-only — see <a href="../known-issues/#coverage-follows-the-platform-builder-not-a-per-testsuite-builder">Known Issues</a>).</td>
 </tr>
 <tr>
-<td><code>rb regression --dispatch slurm</code>, <code>rb randtest --dispatch slurm</code></td>
+<td><code>rb regression --dispatch slurm</code>, <code>rb randtest --dispatch slurm</code>, <code>rb test --dispatch slurm</code></td>
 <td>Optional external</td>
 <td>Slurm client (<code>sbatch</code>/<code>squeue</code>/<code>sacct</code>/<code>scancel</code>)</td>
 <td>Only for dispatching regression jobs to a Slurm cluster; the default <code>--dispatch local</code> needs nothing extra. Requires a shared filesystem between submit host and compute nodes; <code>sacct</code> (slurmdbd accounting) drives reservation right-sizing telemetry and degrades gracefully when absent. No native macOS build — use a Linux submit host, or <code>--dispatch local-parallel</code> for parallelism on one machine (below). See <a href="../concepts/dispatch/">Parallel dispatch</a>.</td>
 </tr>
 <tr>
-<td><code>rb regression --dispatch local-parallel</code>, <code>rb randtest --dispatch local-parallel</code></td>
+<td><code>rb regression --dispatch local-parallel</code>, <code>rb randtest --dispatch local-parallel</code>, <code>rb test --dispatch local-parallel</code></td>
 <td>Built-in</td>
 <td>—</td>
 <td>Parallel regression on one host with <strong>no external dependency</strong>: jobs are subprocesses, capped by <code>-j/--jobs</code>. Works on macOS. It cannot enforce <code>resources:</code> reservations and has no usage accounting, so no right-sizing advice. See <a href="../concepts/dispatch/#on-one-machine-dispatch-local-parallel">Parallel dispatch</a>.</td>

@@ -3711,8 +3711,18 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>│                                                 (Verilator builders only)            │
 <a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>│ --reg-level                            INTEGER  regression level to stop at          │
 <a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>│ --start-level                          INTEGER  regression level to start at         │
-<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>│ --help                                          Show this message and exit.          │
-<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>│ --dispatch                             TEXT     execution backend for the test run   │
+<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>│                                                 (local, local-parallel, slurm);      │
+<a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>│                                                 opt-in per run —                     │
+<a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>│                                                 cfg-dispatch.backend does not        │
+<a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a>│                                                 redirect rb test                     │
+<a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a>│                                                 [default: (local)]                   │
+<a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a>│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
+<a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a>│                                                 local-parallel                       │
+<a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a>│                                                 [default: (cfg-dispatch jobs, else   │
+<a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a>│                                                 min(4, cpu count))]                  │
+<a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a>│ --help                                          Show this message and exit.          │
+<a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="randtest">randtest</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]                                
@@ -3876,12 +3886,14 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>│ --test-config     -c      TEXT  tests.yaml to use [default: tests.yaml]              │
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>│ --surfer                  TEXT  cfg-surfer entry name [default: surfer-default]      │
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>│ --resim                         force re-run of debug sim even if FST exists         │
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>│ --focused-signal                annotate only the signal selected via Go to          │
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>│                                 declaration; default annotates all signals in scope  │
-<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>│ --help                          Show this message and exit.                          │
-<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>│ --surfer                  TEXT  cfg-surfer entry name (default: the active           │
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>│                                 platform&#39;s cfg-platforms surfer routing, else        │
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>│                                 surfer-default)                                      │
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>│ --resim                         force re-run of debug sim even if FST exists         │
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>│ --focused-signal                annotate only the signal selected via Go to          │
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>│                                 declaration; default annotates all signals in scope  │
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>│ --help                          Show this message and exit.                          │
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="wave-fpv">wave-fpv</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME                                         
@@ -3893,9 +3905,10 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>│ --fpv-config  -c      TEXT  fpv.yaml to use [default: fpv.yaml]                      │
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>│ --surfer              TEXT  cfg-surfer entry name [default: surfer-default]          │
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>│ --help                      Show this message and exit.                              │
-<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>│ --surfer              TEXT  cfg-surfer entry name (default: the active platform&#39;s    │
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>│                             cfg-platforms surfer routing, else surfer-default)       │
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>│ --help                      Show this message and exit.                              │
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="nvim-install">nvim-install</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>Usage: rtl-buddy nvim-install [OPTIONS]                                                
