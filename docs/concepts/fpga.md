@@ -167,6 +167,31 @@ runs:
 
 The platform owns the *default* constraint set (board-level clocks and pinout); `fpga.yaml` owns per-run selection — the same split as `pnr.yaml` owning the floorplan while `cfg-pnr-platforms` owns the technology. Per-run `xdc:` entries **extend** (never replace) the platform's list, and the read order is platform files first, run files after. Vivado applies XDC in read order with later commands winning, so a run-level constraint overrides a platform default for the same object.
 
+## CDC timing exceptions and XPM macros
+
+The CDC-relevant part of an XDC — `set_clock_groups -asynchronous`, per-crossing `set_max_delay -datapath_only`, `set_bus_skew` — can be generated from the verified crossing set rather than hand-written, and an existing XDC can be audited against it:
+
+```bash
+rb cdc <name> --emit-constraints --format xdc -o constraints/cdc.xdc
+rb cdc <name> --check-xdc constraints/board.xdc
+```
+
+`--emit-constraints` output is a per-run `xdc:` entry like any other, and lands after the platform defaults in read order. `--check-xdc` is deliberately **not** a general XDC validator — pin, placement and electrical correctness stay Vivado's job.
+
+**XPM CDC macros need rtl-buddy-cdc >= 0.4.0.** Vivado designs usually synchronise with the Xilinx XPM CDC family (`xpm_cdc_single`, `xpm_cdc_array_single`, `xpm_cdc_gray`, `xpm_cdc_handshake`, `xpm_cdc_pulse`, `xpm_cdc_sync_rst`, `xpm_cdc_async_rst`) rather than a hand-rolled 2FF chain. Those sources ship inside the Vivado install tree and are injected at synthesis, so a filelist built from project RTL carries only the instantiation — the analyzer sees a bodyless, dual-clock blackbox.
+
+From **0.4.0** the engine recognises the family by module name and classifies those crossings as synchronised, so an XPM design audits and emits correctly. On **0.3.x** every macro instance is instead declined as "not provably single-clock" and reported as a `CDC-BBX` error, which makes both flows unusable on an XPM design — see [Quirks & Known Issues](../known-issues.md). Register an in-house or other-vendor CDC macro for the same treatment with the engine's repeatable `--sync-primitive MODULE`, passed through `cfg-cdc-tools.<entry>.opts.extra-args`:
+
+```yaml
+cfg-cdc-tools:
+  - name: "rb-cdc"
+    tool: "rtl-buddy-cdc"
+    opts:
+      extra-args: "--sync-primitive acme_cdc_sync"
+```
+
+For a macro *outside* the XPM family that the engine still cannot recognise, `--check-xdc`'s `recognized-syncs` / `--recognize-sync` remains the escape hatch: it tells the **audit** that a flagged crossing is a real synchronizer, without claiming the **engine** understands it.
+
 ## Regression: `rb fpga-regression`
 
 Multiple `fpga.yaml` suites aggregate under one `fpga_regression.yaml`, exactly like `rb synth-regression` / `rb power-regression`:

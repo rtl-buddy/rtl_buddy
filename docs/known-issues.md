@@ -8,6 +8,14 @@ The home for rtl_buddy behavior that does not follow convention: quirks, surpris
 
 Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one `##` section per quirk, name it after the behavior, and say what to do about it.
 
+## XPM CDC macros flood `rb cdc` with CDC-BBX errors on rtl-buddy-cdc 0.3.x
+
+A design that synchronises with the Xilinx XPM CDC macros (`xpm_cdc_single`, `xpm_cdc_gray`, `xpm_cdc_handshake`, ...) reports one `CDC-BBX` error per macro instance on rtl-buddy-cdc **0.3.x** — "left opaque — not provably single-clock". Nothing is wrong with your design or your SDC. XPM sources ship inside the Vivado install tree and are injected at synthesis, so a filelist built from project RTL carries only the instantiation; the analyzer sees a bodyless, **dual-clock** blackbox, cannot prove it is single-clock, and declines it. The macro *is* the synchroniser, but the engine has no way to know that from a name it does not recognise.
+
+Worse than the noise, the run is also *less* informative than it looks: a declined instance is dropped from the boundary set entirely, so the crossing through the macro disappears from the report and from `--emit-domain-map`. A `dest_out` feeding a flop in some third clock domain is a real unsynchronised crossing that 0.3.x will not tell you about.
+
+Fixed in **rtl-buddy-cdc 0.4.0**, which recognises the `xpm_cdc_*` family by module name and classifies those crossings as synchronised (`uv tool install -U rtl-buddy-cdc`). `rb cdc` does not pin a floor for this — the tool manifest leaves `rtl-buddy-cdc` without a `minimum_version` so existing users are not broken — so upgrading is on you. On 0.3.x the workarounds are to waive the finding (`waive CDC-BBX u_.*_sync`) and, for `--check-xdc` specifically, to declare the macros with `recognized-syncs` / `--recognize-sync` so a correct XDC waiver of the crossing is not reported as a dangerous over-waive. Neither recovers the dropped third-domain crossing. See [FPGA: CDC timing exceptions and XPM macros](concepts/fpga.md#cdc-timing-exceptions-and-xpm-macros).
+
 ## v6.26.0's `rtl_buddy[graph-extract]` extra fails at pip/uv resolution
 
 The v6.26.0 wheel advertises a `graph-extract` extra whose dependency, `rtl-buddy-graph-extract`, has no PyPI release yet — so `pip install "rtl_buddy[graph-extract]"` (or `uv add "rtl_buddy[graph-extract]"`) fails with a resolution error on that version. Nothing is wrong with your environment.
