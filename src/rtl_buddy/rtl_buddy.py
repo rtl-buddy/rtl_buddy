@@ -9433,11 +9433,18 @@ class RtlBuddy:
             spec = tm.resolve_spec(specs, explain_tool)
             if spec is None:
                 if self.machine:
+                    # `known` stays bare canonical names — consumers are
+                    # keyed on it. `aliases` is an additive sibling so an
+                    # agent that guessed `rtl-buddy-sch` can discover the
+                    # mapping from the error it hit, the same
+                    # discoverability the console hint below gives
+                    # (rtl_buddy#445 review).
                     self._emit_machine_result(
                         "tool-check",
                         1,
                         error=f"unknown tool '{explain_tool}'",
                         known=[s.name for s in specs],
+                        aliases={s.name: list(s.aliases) for s in specs if s.aliases},
                     )
                     raise typer.Exit(1)
                 emit_console_text(

@@ -1001,9 +1001,16 @@ def _replace(spec: ToolSpec, **changes) -> ToolSpec:
 
 def get_manifest(root_cfg=None) -> list[ToolSpec]:
     """Return the full tool manifest, optionally reconciled with ``root_cfg``."""
-    specs = _reconcile_with_root_cfg(_builtin_manifest(), root_cfg)
-    _assert_unique_lookup_keys(specs)
-    return specs
+    # Checked on the built-in manifest, before reconciliation: the
+    # invariant is a property of the manifest, and reconcile rebuilds the
+    # list through a ``{s.name: s}`` dict — which would collapse a
+    # duplicate *name* out of existence before it could be caught, so with
+    # a root_config.yaml present only the alias shapes survived. Reconcile
+    # never adds a lookup key, so checking first enforces all three
+    # unconditionally (#445 review).
+    builtin = _builtin_manifest()
+    _assert_unique_lookup_keys(builtin)
+    return _reconcile_with_root_cfg(builtin, root_cfg)
 
 
 def _assert_unique_lookup_keys(specs: Iterable[ToolSpec]) -> None:

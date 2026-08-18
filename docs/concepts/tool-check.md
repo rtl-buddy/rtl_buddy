@@ -94,7 +94,7 @@ surfer — Web-native waveform viewer
 
 This is also what subcommand wrappers point you at when they refuse to run because a tool is missing — e.g. `rb wave` saying "surfer not found — run `rb tool-check --explain surfer`".
 
-A tool may also be looked up by an **alias**: `rb tool-check --explain rtl-buddy-sch` resolves to the `rtl-buddy-view` entry, because the viewer's PyPI distribution was renamed to `rtl-buddy-sch` at 0.7.0 while the executable kept its old name. An alias is an input courtesy only — the canonical `name` is what every line of output (status rows, `--format json` / `--machine` keys) reports, so consumers keyed on it never see it drift by spelling. Aliases are listed in the `Known:` hint you get for an unrecognised name.
+A tool may also be looked up by an **alias**: `rb tool-check --explain rtl-buddy-sch` resolves to the `rtl-buddy-view` entry, because the viewer's PyPI distribution was renamed to `rtl-buddy-sch` at 0.7.0 while the executable kept its old name. An alias is an input courtesy only — the canonical `name` is what every line of output (status rows, `--format json` / `--machine` keys) reports, so consumers keyed on it never see it drift by spelling. Aliases are listed in the `Known:` hint you get for an unrecognised name, and the `--machine` rejection carries them as an `aliases` map (`{canonical: [alias, ...]}`) beside the bare-name `known` list — so an agent that guessed the dist name can discover the mapping from the envelope it just got.
 
 ## JSON output
 

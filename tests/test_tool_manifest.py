@@ -684,6 +684,23 @@ def test_manifest_build_rejects_two_specs_sharing_an_alias(monkeypatch):
         tm.get_manifest()
 
 
+def test_manifest_build_rejects_a_duplicate_name_even_with_a_root_cfg(monkeypatch):
+    """Reconciliation must not dedupe the collision away before the check.
+
+    `_reconcile_with_root_cfg` rebuilds the list through ``{s.name: s}``,
+    which silently collapses a duplicate name — so with a
+    ``root_config.yaml`` present a post-reconcile assert could only ever
+    catch the alias shapes (#445 review).
+    """
+    monkeypatch.setattr(
+        tm,
+        "_builtin_manifest",
+        lambda: [_alias_spec("alpha"), _alias_spec("alpha")],
+    )
+    with pytest.raises(AssertionError, match="duplicate lookup key 'alpha'"):
+        tm.get_manifest(root_cfg=object())
+
+
 def test_builtin_manifest_lookup_keys_are_unique():
     """The shipped manifest itself satisfies the invariant."""
     specs = tm.get_manifest()
@@ -1012,6 +1029,29 @@ def test_cli_tool_check_explain_unknown_hint_surfaces_aliases(tmp_path: Path):
     # The console word-wraps the hint, so compare on collapsed whitespace.
     hint = " ".join(result.stderr.split())
     assert "rtl-buddy-view (alias: rtl-buddy-sch)" in hint
+
+
+def test_cli_tool_check_machine_explain_unknown_carries_aliases(tmp_path: Path):
+    """The --machine rejection is discoverable too, without moving `known`.
+
+    An agent that guessed `rtl-buddy-sch` hits this envelope, so the
+    mapping has to be in it — as an additive sibling, because `known`
+    stays bare canonical names that consumers are keyed on
+    (rtl_buddy#445 review).
+    """
+    result = _run_rb(
+        "--machine",
+        "tool-check",
+        "--explain",
+        "does-not-exist",
+        "--no-probe-versions",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)["payload"]
+    assert "rtl-buddy-view" in payload["known"]
+    assert "rtl-buddy-sch" not in payload["known"]
+    assert payload["aliases"]["rtl-buddy-view"] == ["rtl-buddy-sch"]
 
 
 def test_cli_tool_check_required_for_present(tmp_path: Path):
