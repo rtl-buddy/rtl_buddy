@@ -2078,6 +2078,22 @@ def test_dispatch_flags_are_validated_before_the_list_short_circuit(
     assert "basic" in result.output
 
 
+def test_an_unknown_backend_is_rejected_before_the_list_message(
+    minimal_project: Path,
+):
+    """A typo'd backend must not be quoted back as though it existed.
+
+    `--list cannot be combined with --dispatch slrum` vouches for `slrum`;
+    the name is checked first so the answer names the real choices
+    (#440 review).
+    """
+    result, _ = _invoke(["test", "--list", "--dispatch", "slrum"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    message = str(result.exception)
+    assert "unknown dispatch backend 'slrum'" in message
+    assert "--list cannot be combined" not in message
+
+
 def test_cfg_dispatch_backend_does_not_apply_to_test(
     minimal_project: Path,
     stub_build_runner: type[_StubBuildRunner],

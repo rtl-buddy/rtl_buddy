@@ -69,7 +69,11 @@ from .config.dispatch import (
     resolve_compile_resources,
     resolve_resources,
 )
-from .dispatch import LocalProcessBackend, create_dispatch_backend
+from .dispatch import (
+    LocalProcessBackend,
+    create_dispatch_backend,
+    validate_backend_name,
+)
 from .dispatch.argv import job_log_path
 from .dispatch.base import BuildJobSpec, TestJobSpec
 from .dispatch.plan import (
@@ -1236,6 +1240,13 @@ class RtlBuddy:
         # Validated before anything else runs — including the `--list` short
         # circuit below, which exits without running a test: a flag that
         # cannot mean anything is rejected, never silently dropped (#360).
+        # The name first, so no later message quotes an unknown backend
+        # back at the user as though it existed (#440 review).
+        validate_backend_name(dispatch)
+        # The raw --dispatch, not a resolved backend name: `rb test` is the
+        # one dispatch-capable command that ignores `cfg-dispatch.backend`
+        # (see the rationale at the `dispatch_backend =` site below), so
+        # what the flag says is what this run does.
         self._validate_jobs_flag(dispatch, jobs)
         if list_tests and dispatch not in (None, "local"):
             raise FatalRtlBuddyError(

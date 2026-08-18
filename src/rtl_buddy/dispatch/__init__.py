@@ -23,6 +23,7 @@ __all__ = [
     "LocalProcessBackend",
     "SlurmDispatchBackend",
     "create_dispatch_backend",
+    "validate_backend_name",
 ]
 
 _BACKENDS: dict[str, type[DispatchBackend]] = {
@@ -31,14 +32,24 @@ _BACKENDS: dict[str, type[DispatchBackend]] = {
 }
 
 
+def validate_backend_name(name) -> None:
+    """Reject a ``--dispatch`` value no backend answers to.
+
+    Split out of :func:`create_dispatch_backend` so a command can reject
+    a typo *before* another message quotes the name back and implies it
+    exists (``rb test --list --dispatch slrum``) (#440 review).
+    """
+    if name is None or name == "local" or name in _BACKENDS:
+        return
+    known = ", ".join(["local", *sorted(_BACKENDS)])
+    raise FatalRtlBuddyError(
+        f"unknown dispatch backend {name!r}; choose from [{known}]"
+    )
+
+
 def create_dispatch_backend(name, dispatch_cfg) -> DispatchBackend | None:
     """Instantiate the named backend; ``None``/``local`` → in-process."""
+    validate_backend_name(name)
     if name is None or name == "local":
         return None
-    backend_cls = _BACKENDS.get(name)
-    if backend_cls is None:
-        known = ", ".join(["local", *sorted(_BACKENDS)])
-        raise FatalRtlBuddyError(
-            f"unknown dispatch backend {name!r}; choose from [{known}]"
-        )
-    return backend_cls(dispatch_cfg)
+    return _BACKENDS[name](dispatch_cfg)

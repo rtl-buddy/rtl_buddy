@@ -192,10 +192,10 @@ def test_slurm_tool_in_manifest():
     slurm = next((s for s in get_manifest() if s.name == "slurm"), None)
     assert slurm is not None
     # sacct joins once right-sizing telemetry lands (P3); randtest dispatch
-    # (P2) adds it to used_by.
+    # (P2) and `rb test --dispatch` (#440) add themselves to used_by.
     assert set(slurm.binaries) == {"sbatch", "squeue", "sacct", "scancel"}
     assert slurm.optional is True
-    assert slurm.used_by == ("regression", "randtest")
+    assert slurm.used_by == ("regression", "randtest", "test")
 
 
 # ------------------------------------- #358: in-job compile reservations
