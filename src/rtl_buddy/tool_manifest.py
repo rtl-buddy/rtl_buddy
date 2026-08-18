@@ -252,6 +252,12 @@ class ToolSpec:
     Attributes:
       name: Canonical key (used for ``--explain``, JSON output, and
         ``require()``).
+      aliases: Extra spellings accepted by name lookups
+        (:func:`resolve_spec`, and therefore ``--explain`` and
+        :func:`require`). Input courtesy only — ``name`` stays the one
+        identity in every output, so ``--machine`` consumers keyed on it
+        never see it drift by spelling. Must not collide with any other
+        spec's name or alias; :func:`get_manifest` asserts that.
       binaries: Binary names to look for. The first one found wins. For
         Python packages this is typically a single human-readable name
         (e.g. ``("pyslang",)``) used only for display.
@@ -282,6 +288,7 @@ class ToolSpec:
     optional: bool = False
     description: str = ""
     notes: str = ""
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass
@@ -691,6 +698,12 @@ def _builtin_manifest() -> list[ToolSpec]:
             used_by=("hier", "hier-query", "graph", "hub"),
             optional=False,
             description="Hierarchy viewer + JSON exporter for rtl_buddy",
+            # The dist a user installs today is `rtl-buddy-sch` — it is
+            # what our own install hint above says, so it is the string
+            # they type at `rb tool-check --explain`. Accept it as input;
+            # the canonical name stays `rtl-buddy-view` in all output
+            # (rtl_buddy#445).
+            aliases=("rtl-buddy-sch",),
         ),
         ToolSpec(
             name="rtl-buddy-graph-extract",
@@ -988,7 +1001,31 @@ def _replace(spec: ToolSpec, **changes) -> ToolSpec:
 
 def get_manifest(root_cfg=None) -> list[ToolSpec]:
     """Return the full tool manifest, optionally reconciled with ``root_cfg``."""
-    return _reconcile_with_root_cfg(_builtin_manifest(), root_cfg)
+    specs = _reconcile_with_root_cfg(_builtin_manifest(), root_cfg)
+    _assert_unique_lookup_keys(specs)
+    return specs
+
+
+def _assert_unique_lookup_keys(specs: Iterable[ToolSpec]) -> None:
+    """Fail loudly if two specs answer to the same lookup key.
+
+    Names and aliases share one namespace: whichever spec
+    :func:`resolve_spec` happened to reach first would silently shadow
+    the other, so a collision is a manifest bug, not a user error.
+    Raised as :class:`AssertionError` (not the ``assert`` statement,
+    which ``python -O`` strips) — no user input can trigger it.
+    """
+    owner_of: dict[str, str] = {}
+    for spec in specs:
+        for key, kind in ((spec.name, "name"), *((a, "alias") for a in spec.aliases)):
+            previous = owner_of.get(key)
+            if previous is not None:
+                raise AssertionError(
+                    f"tool_manifest: duplicate lookup key '{key}' "
+                    f"({kind} of '{spec.name}', already claimed by "
+                    f"'{previous}')"
+                )
+            owner_of[key] = spec.name
 
 
 # ---------------------------------------------------------------------------
@@ -1256,25 +1293,63 @@ def subcommand_readiness(
 # Public helpers used by subcommand wrappers
 
 
+def resolve_spec(specs: Iterable[ToolSpec], name: str) -> ToolSpec | None:
+    """Look a spec up by canonical name, then by alias.
+
+    The single lookup used by every name-taking entry point (``rb
+    tool-check --explain`` and :func:`require`), so a third one added
+    later cannot regress to a name-only match. Canonical names win over
+    aliases; :func:`get_manifest` guarantees the two cannot collide
+    anyway.
+    """
+    specs = list(specs)
+    for spec in specs:
+        if spec.name == name:
+            return spec
+    for spec in specs:
+        if name in spec.aliases:
+            return spec
+    return None
+
+
+def known_tool_names(specs: Iterable[ToolSpec]) -> list[str]:
+    """Canonical names for a human "Known:" hint, annotated with aliases.
+
+    ``rtl-buddy-view (alias: rtl-buddy-sch)`` — so the mapping is
+    discoverable from the error the user just hit rather than magic.
+    Machine-readable output keeps the bare canonical names.
+    """
+    out: list[str] = []
+    for spec in specs:
+        if spec.aliases:
+            label = "alias" if len(spec.aliases) == 1 else "aliases"
+            out.append(f"{spec.name} ({label}: {', '.join(spec.aliases)})")
+        else:
+            out.append(spec.name)
+    return out
+
+
 def require(name: str, root_cfg=None) -> ToolStatus:
     """Assert that ``name`` is installed (and not outdated), else raise.
 
     Subcommand entry points may call this to surface a uniform
     "missing tool" error pointing the user at ``rb tool-check --explain``.
+    ``name`` may be an alias; the messages always name the canonical tool.
     """
-    spec = next((s for s in get_manifest(root_cfg) if s.name == name), None)
+    spec = resolve_spec(get_manifest(root_cfg), name)
     if spec is None:
         raise FatalRtlBuddyError(f"tool_manifest: unknown tool '{name}'")
+    canonical = spec.name
     status = check_tool(spec)
     if status.status == "missing":
         raise FatalRtlBuddyError(
-            f"{name} not found — run `rb tool-check --explain {name}` "
+            f"{canonical} not found — run `rb tool-check --explain {canonical}` "
             "for install instructions"
         )
     if status.status == "outdated":
         raise FatalRtlBuddyError(
-            f"{name} {status.version} is older than the required minimum "
-            f"{spec.minimum_version} — run `rb tool-check --explain {name}` "
+            f"{canonical} {status.version} is older than the required minimum "
+            f"{spec.minimum_version} — run `rb tool-check --explain {canonical}` "
             "for upgrade instructions"
         )
     return status

@@ -602,6 +602,122 @@ def test_rtl_buddy_view_spec_probes_both_distribution_names():
     assert "rtl-buddy-sch" in spec.install_hint["any"]
 
 
+def _alias_spec(name: str, aliases: tuple[str, ...] = ()) -> tm.ToolSpec:
+    """Minimal spec for exercising name/alias lookup and collisions."""
+    return tm.ToolSpec(
+        name=name,
+        binaries=(name,),
+        version_cmd=None,
+        version_regex=None,
+        minimum_version=None,
+        detection=(),
+        aliases=aliases,
+    )
+
+
+def test_viewer_spec_aliases_its_current_dist_name():
+    """`rtl-buddy-sch` is the string users type; the spec answers to it.
+
+    The dist renamed at 0.7.0 and our own install hint names it, so the
+    lookup has to accept it — while `name` stays `rtl-buddy-view`, the
+    frozen executable / probe-literal / wire-origin contract
+    (rtl_buddy#445).
+    """
+    by_name = {s.name: s for s in tm.get_manifest()}
+    assert by_name["rtl-buddy-view"].aliases == ("rtl-buddy-sch",)
+    assert "rtl-buddy-sch" not in by_name
+
+
+def test_resolve_spec_matches_name_then_alias():
+    specs = tm.get_manifest()
+    canonical = tm.resolve_spec(specs, "rtl-buddy-view")
+    aliased = tm.resolve_spec(specs, "rtl-buddy-sch")
+    assert canonical is not None
+    # Same spec object, and the identity it reports is the canonical one.
+    assert aliased is canonical
+    assert aliased.name == "rtl-buddy-view"
+    assert tm.resolve_spec(specs, "does-not-exist") is None
+
+
+def test_resolve_spec_prefers_a_canonical_name_over_an_alias():
+    """A name always outranks another spec's alias for the same string.
+
+    The manifest assert forbids that overlap, but resolve_spec is a
+    public helper — callers passing their own list get the deterministic
+    answer rather than list order.
+    """
+    specs = [_alias_spec("beta", aliases=("alpha",)), _alias_spec("alpha")]
+    assert tm.resolve_spec(specs, "alpha").name == "alpha"
+
+
+def test_known_tool_names_annotates_aliases():
+    rendered = tm.known_tool_names(tm.get_manifest())
+    assert "rtl-buddy-view (alias: rtl-buddy-sch)" in rendered
+    # Tools without aliases stay bare.
+    assert "verible" in rendered
+    assert tm.known_tool_names([_alias_spec("x", aliases=("y", "z"))]) == [
+        "x (aliases: y, z)"
+    ]
+
+
+def test_manifest_build_rejects_an_alias_colliding_with_a_name(monkeypatch):
+    """A shadowed lookup key is a manifest bug, caught at build time."""
+    monkeypatch.setattr(
+        tm,
+        "_builtin_manifest",
+        lambda: [_alias_spec("alpha"), _alias_spec("beta", aliases=("alpha",))],
+    )
+    with pytest.raises(AssertionError, match="duplicate lookup key 'alpha'"):
+        tm.get_manifest()
+
+
+def test_manifest_build_rejects_two_specs_sharing_an_alias(monkeypatch):
+    monkeypatch.setattr(
+        tm,
+        "_builtin_manifest",
+        lambda: [
+            _alias_spec("alpha", aliases=("shared",)),
+            _alias_spec("beta", aliases=("shared",)),
+        ],
+    )
+    with pytest.raises(AssertionError, match="duplicate lookup key 'shared'"):
+        tm.get_manifest()
+
+
+def test_builtin_manifest_lookup_keys_are_unique():
+    """The shipped manifest itself satisfies the invariant."""
+    specs = tm.get_manifest()
+    keys = [s.name for s in specs] + [a for s in specs for a in s.aliases]
+    assert len(keys) == len(set(keys))
+
+
+def test_require_resolves_the_alias_and_reports_the_canonical_name():
+    """`require("rtl-buddy-sch")` must never be the unknown-tool path.
+
+    Whether the viewer is installed here decides which branch runs; both
+    have to name `rtl-buddy-view`, since that is what the user must
+    `--explain` and what --machine consumers are keyed on.
+    """
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    try:
+        status = tm.require("rtl-buddy-sch")
+    except FatalRtlBuddyError as exc:
+        message = str(exc)
+        assert "unknown tool" not in message
+        assert "rtl-buddy-view" in message
+        assert "rtl-buddy-sch" not in message
+    else:
+        assert status.name == "rtl-buddy-view"
+
+
+def test_require_still_rejects_an_unknown_name():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    with pytest.raises(FatalRtlBuddyError, match="unknown tool 'does-not-exist'"):
+        tm.require("does-not-exist")
+
+
 def test_viewer_dist_version_probes_new_name_then_old(monkeypatch):
     """Probe order: rtl-buddy-sch, then rtl-buddy-view, then None."""
     installed: dict[str, str] = {}
@@ -859,6 +975,43 @@ def test_cli_tool_check_explain_vivado(tmp_path: Path):
 def test_cli_tool_check_explain_unknown_exits_1(tmp_path: Path):
     result = _run_rb("tool-check", "--explain", "does-not-exist", cwd=tmp_path)
     assert result.returncode == 1
+
+
+def test_cli_tool_check_explain_accepts_the_viewer_alias(tmp_path: Path):
+    """--explain rtl-buddy-sch resolves, and answers as rtl-buddy-view."""
+    result = _run_rb(
+        "tool-check", "--explain", "rtl-buddy-sch", "--no-probe-versions", cwd=tmp_path
+    )
+    assert result.returncode == 0
+    assert "unknown tool" not in result.stderr
+    assert result.stdout.startswith("rtl-buddy-view")
+
+
+def test_cli_tool_check_machine_explain_alias_keeps_canonical_name(tmp_path: Path):
+    """The alias is an input courtesy — the JSON key must not drift."""
+    result = _run_rb(
+        "--machine",
+        "tool-check",
+        "--explain",
+        "rtl-buddy-sch",
+        "--no-probe-versions",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)["payload"]
+    assert list(payload["tools"]) == ["rtl-buddy-view"]
+    assert "rtl-buddy-sch" not in payload["tools"]
+
+
+def test_cli_tool_check_explain_unknown_hint_surfaces_aliases(tmp_path: Path):
+    """The rejection tells the user which spellings exist."""
+    result = _run_rb(
+        "tool-check", "--explain", "does-not-exist", "--no-probe-versions", cwd=tmp_path
+    )
+    assert result.returncode == 1
+    # The console word-wraps the hint, so compare on collapsed whitespace.
+    hint = " ".join(result.stderr.split())
+    assert "rtl-buddy-view (alias: rtl-buddy-sch)" in hint
 
 
 def test_cli_tool_check_required_for_present(tmp_path: Path):
