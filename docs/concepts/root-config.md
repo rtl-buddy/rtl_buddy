@@ -50,7 +50,7 @@ cfg-rtl-reg:
 
 **`cfg-platforms`**
 
-Maps the current OS (detected via `uname`) to a builder and Verible config. `rtl_buddy` picks the first platform entry whose `unames` list contains the output of `uname`.
+Maps the current OS (detected via `uname`) to a builder and Verible config. `rtl_buddy` picks the **last** platform entry whose `unames` list contains the output of `uname` — with the usual one-entry-per-uname layout there is only one match, but overlapping `unames` lists are resolved last-wins.
 
 A platform entry may also route `cfg-surfer` by naming one of its entries. It is optional; unrouted, `cfg-surfer` keeps its previous global behaviour (the `surfer-default` entry). Routing lets the viewer be pinned per platform — a shared Linux tool tree pinned absolutely (`PATH` cannot silently override it, and it survives a `--dispatch slurm` login shell re-prepending site paths) while macOS routes to an entry keeping a bare name off `PATH`:
 

@@ -62,6 +62,14 @@ class RtlBuilderConfig:
     simulator_family: str | None = field(rename="simulator-family", default=None)
     wave_format: str | None = field(rename="wave-format", default=None)
     extra_sim_timeout: int | None = field(rename="extra-sim-timeout", default=None)
+    #: Directory relative ``builder:`` candidates are anchored at, set by
+    #: :meth:`set_base_dir`. Declared (``skip=True``: it is not a YAML key
+    #: and must never be serialised) rather than attached post hoc, so an
+    #: unanchored config reads its real default instead of a ``getattr``
+    #: fallback — a construction path that forgot the anchor would
+    #: otherwise existence-test relative candidates against the process
+    #: cwd and look exactly like "the tool is not installed" (#439 review).
+    _base_dir: str | None = field(default=None, skip=True)
 
     def get_name(self) -> str:
         """
@@ -160,7 +168,7 @@ class RtlBuilderConfig:
         """
         return resolve_tool_path(
             self.exe,
-            base_dir=getattr(self, "_base_dir", None),
+            base_dir=self._base_dir,
             block="cfg-rtl-builder",
             name=self.name,
             field="builder",

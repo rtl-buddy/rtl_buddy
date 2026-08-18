@@ -877,6 +877,15 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"almost certainly fail. Set the variable (e.g. in "
                 f".rtl-buddy/.env) or add a fallback candidate."
             )
+        case "tool_version.platform_unknown":
+            # The one cfg-tools error a typo produces, so rtl_buddy.log must
+            # carry the same text the console gets from FatalRtlBuddyError
+            # rather than the dotted-event fallback (#439 review).
+            return (
+                f"cfg-tools[{fields.get('name')}].platform: "
+                f'"{fields.get("entry_platform")}" is not a configured '
+                f"cfg-platforms os (available: {fields.get('available') or 'none'})"
+            )
         case "platform.match_missing":
             return f'{fields.get("name")}: no platform config matches uname "{fields.get("uname")}"'
         case "project_path.missing_directory":

@@ -37,6 +37,31 @@ def clean_environ():
         os.environ.update(snapshot)
 
 
+@pytest.fixture(autouse=True)
+def reset_tool_path_warning_dedupe():
+    """Forget the process-global "already warned" sets between tests.
+
+    ``config.toolpath._UNRESOLVED_WARNED`` and
+    ``config.verible._EXE_FALLBACK_WARNED`` dedupe a diagnostic that is a
+    static property of the config plus the environment, so they never
+    clear themselves in a real run. Under pytest that makes any test
+    asserting on one of those warnings order-dependent: an earlier test
+    resolving the same key (the fixture projects reuse names like
+    ``surfer-default``) swallows the warning the later one asserts on,
+    and it only fails under a particular ``-k`` / random ordering.
+    Autouse for the same reason as ``clean_environ``: the leak belongs to
+    the module, not to the tests that happen to know about it
+    (#439 review).
+    """
+    from rtl_buddy.config import toolpath, verible
+
+    toolpath.reset_unresolved_warnings()
+    verible.reset_exe_fallback_warnings()
+    yield
+    toolpath.reset_unresolved_warnings()
+    verible.reset_exe_fallback_warnings()
+
+
 @pytest.fixture
 def minimal_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Copy the minimal_project fixture to a tmp dir, chdir into it, and return its path.

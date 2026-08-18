@@ -1830,3 +1830,22 @@ def test_tool_min_version_unknown_platform_is_fatal(tmp_path, monkeypatch):
     # only one of the two leaves the reader guessing at the other.
     assert "osxx" in message
     assert "other-host" in message and "test-host" in message
+
+
+def test_unknown_platform_pin_has_a_dedicated_human_message():
+    """The ERROR event must not render through the dotted-event fallback.
+
+    A typo in `cfg-tools[].platform` is the config error a user is most
+    likely to hit here, and `rtl_buddy.log` reads the human message —
+    without a case it would say less than the console does (#439 review).
+    """
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "tool_version.platform_unknown",
+        {"name": "verilator", "entry_platform": "osxx", "available": "linux, macos"},
+    )
+    assert msg != "tool_version platform_unknown"
+    assert "verilator" in msg
+    assert "osxx" in msg
+    assert "linux, macos" in msg
