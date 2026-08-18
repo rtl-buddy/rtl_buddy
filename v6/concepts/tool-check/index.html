@@ -1831,6 +1831,7 @@
 <a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    build    cd ../surfer &amp;&amp; cargo build --release
 </code></pre></div>
 <p>This is also what subcommand wrappers point you at when they refuse to run because a tool is missing — e.g. <code>rb wave</code> saying "surfer not found — run <code>rb tool-check --explain surfer</code>".</p>
+<p>A tool may also be looked up by an <strong>alias</strong>: <code>rb tool-check --explain rtl-buddy-sch</code> resolves to the <code>rtl-buddy-view</code> entry, because the viewer's PyPI distribution was renamed to <code>rtl-buddy-sch</code> at 0.7.0 while the executable kept its old name. An alias is an input courtesy only — the canonical <code>name</code> is what every line of output (status rows, <code>--format json</code> / <code>--machine</code> keys) reports, so consumers keyed on it never see it drift by spelling. Aliases are listed in the <code>Known:</code> hint you get for an unrecognised name, and the <code>--machine</code> rejection carries them as an <code>aliases</code> map (<code>{canonical: [alias, ...]}</code>) beside the bare-name <code>known</code> list — so an agent that guessed the dist name can discover the mapping from the envelope it just got.</p>
 <h2 id="json-output">JSON output</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>rb<span class="w"> </span>tool-check<span class="w"> </span>--format<span class="w"> </span>json
 </code></pre></div>
@@ -1864,6 +1865,10 @@
 <td>Canonical key used by <code>--explain</code>, JSON output, and runtime <code>require()</code></td>
 </tr>
 <tr>
+<td><code>aliases</code></td>
+<td>Extra spellings accepted by <code>--explain</code> / <code>require()</code>; never reported back (see above). Must not collide with another spec's name or alias — the manifest asserts this when it is built</td>
+</tr>
+<tr>
 <td><code>binaries</code></td>
 <td>Binary names to look for; first one found wins</td>
 </tr>
@@ -1894,13 +1899,14 @@
 </tbody>
 </table>
 <p><code>PythonSiblingDetector</code> additionally takes <code>legacy_packages</code>: distribution names the same tool was published under before a rename, tried only when the current name yields no metadata. The viewer uses it for the <code>rtl-buddy-sch</code> / <code>rtl-buddy-view</code> pair, so either install reports a version. A version that came from a legacy name is dropped when the binary is also on <code>PATH</code>, letting the <code>version_cmd</code> probe answer instead — an abandoned distribution's frozen metadata should not outrank the executable it no longer owns. See <a href="../../known-issues/#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view">Quirks &amp; Known Issues</a>.</p>
-<p>The same <code>ToolSpec</code> is consulted at runtime when a wrapper invokes <code>tool_manifest.require("&lt;name&gt;")</code> — that's how subcommand wrappers produce a uniform "missing tool, see <code>rb tool-check --explain X</code>" message instead of an opaque <code>FileNotFoundError</code>.</p>
+<p>The same <code>ToolSpec</code> is consulted at runtime when a wrapper invokes <code>tool_manifest.require("&lt;name&gt;")</code> — which resolves aliases through the same <code>resolve_spec()</code> helper <code>--explain</code> uses, and reports the canonical name in its error — that's how subcommand wrappers produce a uniform "missing tool, see <code>rb tool-check --explain X</code>" message instead of an opaque <code>FileNotFoundError</code>.</p>
 <h2 id="reconciliation-with-root_configyaml">Reconciliation with <code>root_config.yaml</code></h2>
 <p>When a project's <code>root_config.yaml</code> is discoverable from the current directory, <code>rb tool-check</code> reconciles it with the manifest:</p>
 <ul>
 <li><strong><code>cfg-verible</code></strong> — the active platform's verible directory is added to verible's detector chain as the <em>preferred</em> lookup, with <code>PATH</code> retained as fallback.</li>
-<li><strong><code>cfg-surfer</code></strong> — the <code>surfer-default</code> entry's resolved path is added similarly.</li>
-<li><strong><code>cfg-tools</code></strong> — overrides <code>minimum_version</code> for any matching tool. Project pins always win over manifest defaults.</li>
+<li><strong><code>cfg-surfer</code></strong> — the entry the active platform routes via <code>cfg-platforms[].surfer</code> (falling back to <code>surfer-default</code> when nothing is routed) has its resolved path added similarly. An entry that pins an absolute path outright now gets a detector too; previously only a bare name resolved through <code>PATH</code> did.</li>
+<li>The <code>cfg-*-tools</code> blocks contribute <strong>no</strong> detector. Their entry is chosen per run by the flow YAML's <code>tool:</code>, so tool-check has no way to know which one a future run will pick — reporting one of them would make the report disagree with the run rather than agree with it. A <code>tool:</code> that pins a path is honoured by the run itself.</li>
+<li><strong><code>cfg-tools</code></strong> — overrides <code>minimum_version</code> for any matching tool. Project pins always win over manifest defaults. An entry carrying <code>platform:</code> applies only on the matching <code>cfg-platforms[].os</code> and beats an unqualified entry for the same tool, so a platform pinned to a newer shared tool tree can declare its real floor.</li>
 <li><strong><code>cfg-fpv-tools[*].opts.solver-versions</code></strong> — pins each FPV solver to an exact version. Runtime semantics is exact-equality (<code>rb fpv</code> hard-fails on mismatch); <code>rb tool-check</code> surfaces the pin as <code>minimum_version</code> so users see a single "outdated" indication for solvers that don't match.</li>
 </ul>
 <p>Outside a project (no <code>root_config.yaml</code> discoverable), the manifest defaults apply unchanged. The "outside a project" mode is important for first-run setup: <code>rb tool-check</code> after <code>pip install rtl_buddy</code> is a valid invocation and tells the user what to install before they create a project.</p>

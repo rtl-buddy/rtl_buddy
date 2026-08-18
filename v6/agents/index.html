@@ -1757,23 +1757,24 @@
 <tbody>
 <tr>
 <td>User (default)</td>
-<td><code>~/.claude/skills/rtl_buddy/SKILL.md</code></td>
-<td><code>~/.codex/skills/rtl_buddy/SKILL.md</code></td>
+<td><code>~/.claude/skills/rtl-buddy/SKILL.md</code></td>
+<td><code>~/.codex/skills/rtl-buddy/SKILL.md</code></td>
 </tr>
 <tr>
 <td>Project (<code>--project</code>)</td>
-<td><code>&lt;root&gt;/.claude/skills/rtl_buddy/SKILL.md</code></td>
-<td><code>&lt;root&gt;/.agents/skills/rtl_buddy/SKILL.md</code></td>
+<td><code>&lt;root&gt;/.claude/skills/rtl-buddy/SKILL.md</code></td>
+<td><code>&lt;root&gt;/.agents/skills/rtl-buddy/SKILL.md</code></td>
 </tr>
 <tr>
 <td>Explicit dir (<code>--dir PATH</code>)</td>
-<td><code>&lt;PATH&gt;/rtl_buddy/SKILL.md</code> (single flat target)</td>
+<td><code>&lt;PATH&gt;/rtl-buddy/SKILL.md</code> (single flat target)</td>
 <td>—</td>
 </tr>
 </tbody>
 </table>
 <p>User-level is the default because the skill is workflow-pattern guidance that changes rarely across <code>rtl_buddy</code> versions; a single copy per machine encourages keeping <code>rtl_buddy</code> aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent <code>rtl_buddy</code> major — Claude Code's resolution order puts the project copy first, so both scopes can coexist.</p>
-<p>Use <code>--dir PATH</code> when you need the skill written to an arbitrary directory without the <code>.claude</code>/<code>.agents</code> layout — it writes a single <code>PATH/rtl_buddy/SKILL.md</code> (mutually exclusive with <code>--project</code>/<code>--root</code>).</p>
+<p>Use <code>--dir PATH</code> when you need the skill written to an arbitrary directory without the <code>.claude</code>/<code>.agents</code> layout — it writes a single <code>PATH/rtl-buddy/SKILL.md</code> (mutually exclusive with <code>--project</code>/<code>--root</code>).</p>
+<p>The directory is named <code>rtl-buddy</code> (matching the <code>name:</code> in <code>SKILL.md</code>'s frontmatter, as the Agent Skills spec requires). Installs made before that rename landed in <code>rtl_buddy/</code>; re-running <code>rtl-buddy skill install</code> removes the old directory, <code>rtl-buddy skill status</code> flags it as a legacy-path install, <code>rtl-buddy skill uninstall</code> cleans both spellings, and a project-level install swaps the pre-rename patterns in <code>.gitignore</code> for the current ones (exact matches only, so a hand-edited line is left alone). Migration is per <strong>scope</strong>: an install run at one scope never touches the other's directories, so run it once at each scope you use — see <a href="../known-issues/#the-skill-directory-rename-migrates-only-the-scope-you-install-at">Quirks &amp; Known Issues</a>.</p>
 <p>For project-level installs, the install command prints the <code>.gitignore</code> lines to add. Pass <code>--no-gitignore</code> to skip that edit. Project root is discovered by walking up for <code>root_config.yaml</code> (falling back to <code>.git/</code>), so <code>rtl-buddy skill install --project</code> is safe to run from a <code>verif/</code> subdirectory.</p>
 <h2 id="local-docs-access">Local docs access</h2>
 <p>The wheel ships the full Markdown docs site alongside the CLI, exposed through:</p>
@@ -1789,6 +1790,7 @@
 <li><code>rtl_buddy.log</code> is written as <strong>JSON Lines</strong> instead of human-readable text.</li>
 <li>Console output drops Rich formatting, colors, and spinners.</li>
 <li>Commands that produce structured results print a single JSON envelope to <strong>stdout</strong> on exit.</li>
+<li>Anything a <code>sweep</code> / <code>preproc</code> hook script <strong>prints</strong> is captured and re-emitted as a <code>hook.stdout</code> log event (console on stderr, plus <code>rtl_buddy.log</code> with the hook <code>script</code> and <code>stage</code>), so a hook's own progress output can never precede the envelope. The capture rebinds <code>sys.stdout</code>, so it does not cover a hook that shells out to a tool inheriting fd 1 — see <a href="../concepts/plugins/#hooks">Hooks</a>.</li>
 </ul>
 <p>The intent is that an orchestrator can determine the outcome of a run by parsing the stdout envelope, and reconstruct timing or per-event detail from <code>rtl_buddy.log</code>, without screen-scraping human-formatted output.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rtl-buddy<span class="w"> </span>--machine<span class="w"> </span><span class="nb">test</span><span class="w"> </span>basic
@@ -1819,6 +1821,7 @@
 <li><code>meta</code> — version, argv, working directory, and git status at invocation.</li>
 <li><code>payload</code> — command-specific structured data.</li>
 </ul>
+<p><code>json.loads()</code> on the whole of stdout is the supported way to read it — no line-scanning for the object is needed, including for suites whose hooks print. The one way a suite can still break that is a hook that runs an external process without redirecting its stdout; <code>docs/concepts/plugins.md</code> says how to avoid it.</p>
 <p>The top-level envelope fields are reserved and versioned by <code>meta.rtl_buddy_version</code> under <code>rtl_buddy</code>'s normal semantic-versioning rules. Adding optional fields under <code>meta</code> or <code>payload</code> is non-breaking; removing fields, renaming fields, changing field types, or changing the meaning of an existing field is breaking.</p>
 <p>Conventions inside <code>payload</code>:</p>
 <ul>

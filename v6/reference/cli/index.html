@@ -3711,8 +3711,18 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>│                                                 (Verilator builders only)            │
 <a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>│ --reg-level                            INTEGER  regression level to stop at          │
 <a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>│ --start-level                          INTEGER  regression level to start at         │
-<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>│ --help                                          Show this message and exit.          │
-<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>│ --dispatch                             TEXT     execution backend for the test run   │
+<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>│                                                 (local, local-parallel, slurm);      │
+<a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>│                                                 opt-in per run —                     │
+<a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>│                                                 cfg-dispatch.backend does not        │
+<a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a>│                                                 redirect rb test                     │
+<a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a>│                                                 [default: (local)]                   │
+<a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a>│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
+<a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a>│                                                 local-parallel                       │
+<a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a>│                                                 [default: (cfg-dispatch jobs, else   │
+<a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a>│                                                 min(4, cpu count))]                  │
+<a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a>│ --help                                          Show this message and exit.          │
+<a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="randtest">randtest</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]                                
@@ -3876,12 +3886,14 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>│ --test-config     -c      TEXT  tests.yaml to use [default: tests.yaml]              │
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>│ --surfer                  TEXT  cfg-surfer entry name [default: surfer-default]      │
-<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>│ --resim                         force re-run of debug sim even if FST exists         │
-<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>│ --focused-signal                annotate only the signal selected via Go to          │
-<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>│                                 declaration; default annotates all signals in scope  │
-<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>│ --help                          Show this message and exit.                          │
-<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>│ --surfer                  TEXT  cfg-surfer entry name (default: the active           │
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>│                                 platform&#39;s cfg-platforms surfer routing, else        │
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>│                                 surfer-default)                                      │
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>│ --resim                         force re-run of debug sim even if FST exists         │
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>│ --focused-signal                annotate only the signal selected via Go to          │
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>│                                 declaration; default annotates all signals in scope  │
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>│ --help                          Show this message and exit.                          │
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="wave-fpv">wave-fpv</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>Usage: rtl-buddy wave-fpv [OPTIONS] VERIF_NAME                                         
@@ -3893,9 +3905,10 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>│ --fpv-config  -c      TEXT  fpv.yaml to use [default: fpv.yaml]                      │
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>│ --surfer              TEXT  cfg-surfer entry name [default: surfer-default]          │
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>│ --help                      Show this message and exit.                              │
-<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>│ --surfer              TEXT  cfg-surfer entry name (default: the active platform&#39;s    │
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>│                             cfg-platforms surfer routing, else surfer-default)       │
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>│ --help                      Show this message and exit.                              │
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="nvim-install">nvim-install</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>Usage: rtl-buddy nvim-install [OPTIONS]                                                
@@ -4587,107 +4600,114 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-45-4" name="__codelineno-45-4" href="#__codelineno-45-4"></a>
 <a id="__codelineno-45-5" name="__codelineno-45-5" href="#__codelineno-45-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-45-6" name="__codelineno-45-6" href="#__codelineno-45-6"></a>│ --foreground       --daemon                                    Run in the foreground │
-<a id="__codelineno-45-7" name="__codelineno-45-7" href="#__codelineno-45-7"></a>│                                                                (default).            │
-<a id="__codelineno-45-8" name="__codelineno-45-8" href="#__codelineno-45-8"></a>│                                                                [default: foreground] │
-<a id="__codelineno-45-9" name="__codelineno-45-9" href="#__codelineno-45-9"></a>│ --serve-viewer     --no-serve-viewer                           Also serve the viewer │
-<a id="__codelineno-45-10" name="__codelineno-45-10" href="#__codelineno-45-10"></a>│                                                                HTTP+WebSocket layer  │
-<a id="__codelineno-45-11" name="__codelineno-45-11" href="#__codelineno-45-11"></a>│                                                                at the http_port.     │
-<a id="__codelineno-45-12" name="__codelineno-45-12" href="#__codelineno-45-12"></a>│                                                                When no               │
-<a id="__codelineno-45-13" name="__codelineno-45-13" href="#__codelineno-45-13"></a>│                                                                --viewer-bundle is    │
-<a id="__codelineno-45-14" name="__codelineno-45-14" href="#__codelineno-45-14"></a>│                                                                given, the hub        │
-<a id="__codelineno-45-15" name="__codelineno-45-15" href="#__codelineno-45-15"></a>│                                                                auto-discovers the    │
-<a id="__codelineno-45-16" name="__codelineno-45-16" href="#__codelineno-45-16"></a>│                                                                SPA shipped by        │
-<a id="__codelineno-45-17" name="__codelineno-45-17" href="#__codelineno-45-17"></a>│                                                                rtl-buddy-view (if    │
-<a id="__codelineno-45-18" name="__codelineno-45-18" href="#__codelineno-45-18"></a>│                                                                installed) and falls  │
-<a id="__codelineno-45-19" name="__codelineno-45-19" href="#__codelineno-45-19"></a>│                                                                back to a placeholder │
-<a id="__codelineno-45-20" name="__codelineno-45-20" href="#__codelineno-45-20"></a>│                                                                page if neither is    │
-<a id="__codelineno-45-21" name="__codelineno-45-21" href="#__codelineno-45-21"></a>│                                                                available.            │
-<a id="__codelineno-45-22" name="__codelineno-45-22" href="#__codelineno-45-22"></a>│                                                                [default:             │
-<a id="__codelineno-45-23" name="__codelineno-45-23" href="#__codelineno-45-23"></a>│                                                                no-serve-viewer]      │
-<a id="__codelineno-45-24" name="__codelineno-45-24" href="#__codelineno-45-24"></a>│ --viewer-bundle                         PATH                   Override the          │
-<a id="__codelineno-45-25" name="__codelineno-45-25" href="#__codelineno-45-25"></a>│                                                                auto-discovered SPA   │
-<a id="__codelineno-45-26" name="__codelineno-45-26" href="#__codelineno-45-26"></a>│                                                                with this path        │
-<a id="__codelineno-45-27" name="__codelineno-45-27" href="#__codelineno-45-27"></a>│                                                                (directory containing │
-<a id="__codelineno-45-28" name="__codelineno-45-28" href="#__codelineno-45-28"></a>│                                                                index.html, or a path │
-<a id="__codelineno-45-29" name="__codelineno-45-29" href="#__codelineno-45-29"></a>│                                                                to a single           │
-<a id="__codelineno-45-30" name="__codelineno-45-30" href="#__codelineno-45-30"></a>│                                                                index.html). Use this │
-<a id="__codelineno-45-31" name="__codelineno-45-31" href="#__codelineno-45-31"></a>│                                                                when iterating on the │
-<a id="__codelineno-45-32" name="__codelineno-45-32" href="#__codelineno-45-32"></a>│                                                                SPA from a checkout — │
-<a id="__codelineno-45-33" name="__codelineno-45-33" href="#__codelineno-45-33"></a>│                                                                the auto-discovered   │
-<a id="__codelineno-45-34" name="__codelineno-45-34" href="#__codelineno-45-34"></a>│                                                                bundle ships with the │
-<a id="__codelineno-45-35" name="__codelineno-45-35" href="#__codelineno-45-35"></a>│                                                                installed wheel and   │
-<a id="__codelineno-45-36" name="__codelineno-45-36" href="#__codelineno-45-36"></a>│                                                                won&#39;t reflect         │
-<a id="__codelineno-45-37" name="__codelineno-45-37" href="#__codelineno-45-37"></a>│                                                                uncommitted viewer/   │
-<a id="__codelineno-45-38" name="__codelineno-45-38" href="#__codelineno-45-38"></a>│                                                                changes. Only used    │
-<a id="__codelineno-45-39" name="__codelineno-45-39" href="#__codelineno-45-39"></a>│                                                                with --serve-viewer.  │
-<a id="__codelineno-45-40" name="__codelineno-45-40" href="#__codelineno-45-40"></a>│ --listen-port                           INTEGER RANGE          TCP port for adapter  │
-<a id="__codelineno-45-41" name="__codelineno-45-41" href="#__codelineno-45-41"></a>│                                         [0&lt;=x&lt;=65535]          peers (nvim, rb       │
-<a id="__codelineno-45-42" name="__codelineno-45-42" href="#__codelineno-45-42"></a>│                                                                wave). Overrides      │
-<a id="__codelineno-45-43" name="__codelineno-45-43" href="#__codelineno-45-43"></a>│                                                                .listen_port from     │
-<a id="__codelineno-45-44" name="__codelineno-45-44" href="#__codelineno-45-44"></a>│                                                                hub.toml. 0 =         │
-<a id="__codelineno-45-45" name="__codelineno-45-45" href="#__codelineno-45-45"></a>│                                                                OS-assigned. Pin to a │
-<a id="__codelineno-45-46" name="__codelineno-45-46" href="#__codelineno-45-46"></a>│                                                                specific number so    │
-<a id="__codelineno-45-47" name="__codelineno-45-47" href="#__codelineno-45-47"></a>│                                                                peers&#39; discovery      │
-<a id="__codelineno-45-48" name="__codelineno-45-48" href="#__codelineno-45-48"></a>│                                                                records stay stable   │
-<a id="__codelineno-45-49" name="__codelineno-45-49" href="#__codelineno-45-49"></a>│                                                                across restarts.      │
-<a id="__codelineno-45-50" name="__codelineno-45-50" href="#__codelineno-45-50"></a>│ --http-port                             INTEGER RANGE          HTTP/WS port for the  │
-<a id="__codelineno-45-51" name="__codelineno-45-51" href="#__codelineno-45-51"></a>│                                         [0&lt;=x&lt;=65535]          browser-side SPA.     │
-<a id="__codelineno-45-52" name="__codelineno-45-52" href="#__codelineno-45-52"></a>│                                                                Overrides .http_port  │
-<a id="__codelineno-45-53" name="__codelineno-45-53" href="#__codelineno-45-53"></a>│                                                                from hub.toml. 0 =    │
-<a id="__codelineno-45-54" name="__codelineno-45-54" href="#__codelineno-45-54"></a>│                                                                OS-assigned. Pin to a │
-<a id="__codelineno-45-55" name="__codelineno-45-55" href="#__codelineno-45-55"></a>│                                                                specific number so    │
-<a id="__codelineno-45-56" name="__codelineno-45-56" href="#__codelineno-45-56"></a>│                                                                the SPA URL stays the │
-<a id="__codelineno-45-57" name="__codelineno-45-57" href="#__codelineno-45-57"></a>│                                                                same across restarts. │
-<a id="__codelineno-45-58" name="__codelineno-45-58" href="#__codelineno-45-58"></a>│                                                                Only used with        │
-<a id="__codelineno-45-59" name="__codelineno-45-59" href="#__codelineno-45-59"></a>│                                                                --serve-viewer.       │
-<a id="__codelineno-45-60" name="__codelineno-45-60" href="#__codelineno-45-60"></a>│ --model                                 TEXT                   Generate view.json on │
-<a id="__codelineno-45-61" name="__codelineno-45-61" href="#__codelineno-45-61"></a>│                                                                hub start for this    │
-<a id="__codelineno-45-62" name="__codelineno-45-62" href="#__codelineno-45-62"></a>│                                                                model name (looked up │
-<a id="__codelineno-45-63" name="__codelineno-45-63" href="#__codelineno-45-63"></a>│                                                                in models.yaml).      │
-<a id="__codelineno-45-64" name="__codelineno-45-64" href="#__codelineno-45-64"></a>│                                                                Replaces the legacy   │
-<a id="__codelineno-45-65" name="__codelineno-45-65" href="#__codelineno-45-65"></a>│                                                                workflow of running   │
-<a id="__codelineno-45-66" name="__codelineno-45-66" href="#__codelineno-45-66"></a>│                                                                `rb hier &lt;model&gt;      │
-<a id="__codelineno-45-67" name="__codelineno-45-67" href="#__codelineno-45-67"></a>│                                                                --format json -o      │
-<a id="__codelineno-45-68" name="__codelineno-45-68" href="#__codelineno-45-68"></a>│                                                                .rtl-buddy/view.json` │
-<a id="__codelineno-45-69" name="__codelineno-45-69" href="#__codelineno-45-69"></a>│                                                                manually before each  │
-<a id="__codelineno-45-70" name="__codelineno-45-70" href="#__codelineno-45-70"></a>│                                                                hub start. When unset │
-<a id="__codelineno-45-71" name="__codelineno-45-71" href="#__codelineno-45-71"></a>│                                                                the hub falls back to │
-<a id="__codelineno-45-72" name="__codelineno-45-72" href="#__codelineno-45-72"></a>│                                                                .view_json from       │
-<a id="__codelineno-45-73" name="__codelineno-45-73" href="#__codelineno-45-73"></a>│                                                                hub.toml. Requires    │
-<a id="__codelineno-45-74" name="__codelineno-45-74" href="#__codelineno-45-74"></a>│                                                                --serve-viewer.       │
-<a id="__codelineno-45-75" name="__codelineno-45-75" href="#__codelineno-45-75"></a>│ --models-file                           PATH                   Explicit models.yaml  │
-<a id="__codelineno-45-76" name="__codelineno-45-76" href="#__codelineno-45-76"></a>│                                                                that owns the --model │
-<a id="__codelineno-45-77" name="__codelineno-45-77" href="#__codelineno-45-77"></a>│                                                                entry. Skips the      │
-<a id="__codelineno-45-78" name="__codelineno-45-78" href="#__codelineno-45-78"></a>│                                                                project-tree          │
-<a id="__codelineno-45-79" name="__codelineno-45-79" href="#__codelineno-45-79"></a>│                                                                discovery walk. Use   │
-<a id="__codelineno-45-80" name="__codelineno-45-80" href="#__codelineno-45-80"></a>│                                                                this to disambiguate  │
-<a id="__codelineno-45-81" name="__codelineno-45-81" href="#__codelineno-45-81"></a>│                                                                when the same model   │
-<a id="__codelineno-45-82" name="__codelineno-45-82" href="#__codelineno-45-82"></a>│                                                                name exists in more   │
-<a id="__codelineno-45-83" name="__codelineno-45-83" href="#__codelineno-45-83"></a>│                                                                than one models.yaml. │
-<a id="__codelineno-45-84" name="__codelineno-45-84" href="#__codelineno-45-84"></a>│ --axi-perf-from                         PATH                   Path to an            │
-<a id="__codelineno-45-85" name="__codelineno-45-85" href="#__codelineno-45-85"></a>│                                                                axi-perf.json (output │
-<a id="__codelineno-45-86" name="__codelineno-45-86" href="#__codelineno-45-86"></a>│                                                                of `rb axi-profile    │
-<a id="__codelineno-45-87" name="__codelineno-45-87" href="#__codelineno-45-87"></a>│                                                                run`). The hub bakes  │
-<a id="__codelineno-45-88" name="__codelineno-45-88" href="#__codelineno-45-88"></a>│                                                                its                   │
-<a id="__codelineno-45-89" name="__codelineno-45-89" href="#__codelineno-45-89"></a>│                                                                per-bundle/interconn… │
-<a id="__codelineno-45-90" name="__codelineno-45-90" href="#__codelineno-45-90"></a>│                                                                throughput overlay    │
-<a id="__codelineno-45-91" name="__codelineno-45-91" href="#__codelineno-45-91"></a>│                                                                into every generated  │
-<a id="__codelineno-45-92" name="__codelineno-45-92" href="#__codelineno-45-92"></a>│                                                                view.json AND records │
-<a id="__codelineno-45-93" name="__codelineno-45-93" href="#__codelineno-45-93"></a>│                                                                the source&#39;s          │
-<a id="__codelineno-45-94" name="__codelineno-45-94" href="#__codelineno-45-94"></a>│                                                                test/suite_dir so the │
-<a id="__codelineno-45-95" name="__codelineno-45-95" href="#__codelineno-45-95"></a>│                                                                SPA&#39;s &#39;Open in        │
-<a id="__codelineno-45-96" name="__codelineno-45-96" href="#__codelineno-45-96"></a>│                                                                marimo&#39; button skips  │
-<a id="__codelineno-45-97" name="__codelineno-45-97" href="#__codelineno-45-97"></a>│                                                                its prompt. Use the   │
-<a id="__codelineno-45-98" name="__codelineno-45-98" href="#__codelineno-45-98"></a>│                                                                canonical             │
-<a id="__codelineno-45-99" name="__codelineno-45-99" href="#__codelineno-45-99"></a>│                                                                &lt;suite&gt;/artefacts/ax… │
-<a id="__codelineno-45-100" name="__codelineno-45-100" href="#__codelineno-45-100"></a>│                                                                layout so the         │
-<a id="__codelineno-45-101" name="__codelineno-45-101" href="#__codelineno-45-101"></a>│                                                                test/suite_dir        │
-<a id="__codelineno-45-102" name="__codelineno-45-102" href="#__codelineno-45-102"></a>│                                                                derivation lands.     │
-<a id="__codelineno-45-103" name="__codelineno-45-103" href="#__codelineno-45-103"></a>│                                                                Only used with        │
-<a id="__codelineno-45-104" name="__codelineno-45-104" href="#__codelineno-45-104"></a>│                                                                --serve-viewer.       │
-<a id="__codelineno-45-105" name="__codelineno-45-105" href="#__codelineno-45-105"></a>│ --help                                                         Show this message and │
-<a id="__codelineno-45-106" name="__codelineno-45-106" href="#__codelineno-45-106"></a>│                                                                exit.                 │
-<a id="__codelineno-45-107" name="__codelineno-45-107" href="#__codelineno-45-107"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-45-7" name="__codelineno-45-7" href="#__codelineno-45-7"></a>│                                                                (default). --daemon   │
+<a id="__codelineno-45-8" name="__codelineno-45-8" href="#__codelineno-45-8"></a>│                                                                detaches the hub into │
+<a id="__codelineno-45-9" name="__codelineno-45-9" href="#__codelineno-45-9"></a>│                                                                its own session,      │
+<a id="__codelineno-45-10" name="__codelineno-45-10" href="#__codelineno-45-10"></a>│                                                                redirects its output  │
+<a id="__codelineno-45-11" name="__codelineno-45-11" href="#__codelineno-45-11"></a>│                                                                to hub.log, and       │
+<a id="__codelineno-45-12" name="__codelineno-45-12" href="#__codelineno-45-12"></a>│                                                                returns as soon as    │
+<a id="__codelineno-45-13" name="__codelineno-45-13" href="#__codelineno-45-13"></a>│                                                                .rtl-buddy/hub.json   │
+<a id="__codelineno-45-14" name="__codelineno-45-14" href="#__codelineno-45-14"></a>│                                                                is published.         │
+<a id="__codelineno-45-15" name="__codelineno-45-15" href="#__codelineno-45-15"></a>│                                                                [default: foreground] │
+<a id="__codelineno-45-16" name="__codelineno-45-16" href="#__codelineno-45-16"></a>│ --serve-viewer     --no-serve-viewer                           Also serve the viewer │
+<a id="__codelineno-45-17" name="__codelineno-45-17" href="#__codelineno-45-17"></a>│                                                                HTTP+WebSocket layer  │
+<a id="__codelineno-45-18" name="__codelineno-45-18" href="#__codelineno-45-18"></a>│                                                                at the http_port.     │
+<a id="__codelineno-45-19" name="__codelineno-45-19" href="#__codelineno-45-19"></a>│                                                                When no               │
+<a id="__codelineno-45-20" name="__codelineno-45-20" href="#__codelineno-45-20"></a>│                                                                --viewer-bundle is    │
+<a id="__codelineno-45-21" name="__codelineno-45-21" href="#__codelineno-45-21"></a>│                                                                given, the hub        │
+<a id="__codelineno-45-22" name="__codelineno-45-22" href="#__codelineno-45-22"></a>│                                                                auto-discovers the    │
+<a id="__codelineno-45-23" name="__codelineno-45-23" href="#__codelineno-45-23"></a>│                                                                SPA shipped by        │
+<a id="__codelineno-45-24" name="__codelineno-45-24" href="#__codelineno-45-24"></a>│                                                                rtl-buddy-view (if    │
+<a id="__codelineno-45-25" name="__codelineno-45-25" href="#__codelineno-45-25"></a>│                                                                installed) and falls  │
+<a id="__codelineno-45-26" name="__codelineno-45-26" href="#__codelineno-45-26"></a>│                                                                back to a placeholder │
+<a id="__codelineno-45-27" name="__codelineno-45-27" href="#__codelineno-45-27"></a>│                                                                page if neither is    │
+<a id="__codelineno-45-28" name="__codelineno-45-28" href="#__codelineno-45-28"></a>│                                                                available.            │
+<a id="__codelineno-45-29" name="__codelineno-45-29" href="#__codelineno-45-29"></a>│                                                                [default:             │
+<a id="__codelineno-45-30" name="__codelineno-45-30" href="#__codelineno-45-30"></a>│                                                                no-serve-viewer]      │
+<a id="__codelineno-45-31" name="__codelineno-45-31" href="#__codelineno-45-31"></a>│ --viewer-bundle                         PATH                   Override the          │
+<a id="__codelineno-45-32" name="__codelineno-45-32" href="#__codelineno-45-32"></a>│                                                                auto-discovered SPA   │
+<a id="__codelineno-45-33" name="__codelineno-45-33" href="#__codelineno-45-33"></a>│                                                                with this path        │
+<a id="__codelineno-45-34" name="__codelineno-45-34" href="#__codelineno-45-34"></a>│                                                                (directory containing │
+<a id="__codelineno-45-35" name="__codelineno-45-35" href="#__codelineno-45-35"></a>│                                                                index.html, or a path │
+<a id="__codelineno-45-36" name="__codelineno-45-36" href="#__codelineno-45-36"></a>│                                                                to a single           │
+<a id="__codelineno-45-37" name="__codelineno-45-37" href="#__codelineno-45-37"></a>│                                                                index.html). Use this │
+<a id="__codelineno-45-38" name="__codelineno-45-38" href="#__codelineno-45-38"></a>│                                                                when iterating on the │
+<a id="__codelineno-45-39" name="__codelineno-45-39" href="#__codelineno-45-39"></a>│                                                                SPA from a checkout — │
+<a id="__codelineno-45-40" name="__codelineno-45-40" href="#__codelineno-45-40"></a>│                                                                the auto-discovered   │
+<a id="__codelineno-45-41" name="__codelineno-45-41" href="#__codelineno-45-41"></a>│                                                                bundle ships with the │
+<a id="__codelineno-45-42" name="__codelineno-45-42" href="#__codelineno-45-42"></a>│                                                                installed wheel and   │
+<a id="__codelineno-45-43" name="__codelineno-45-43" href="#__codelineno-45-43"></a>│                                                                won&#39;t reflect         │
+<a id="__codelineno-45-44" name="__codelineno-45-44" href="#__codelineno-45-44"></a>│                                                                uncommitted viewer/   │
+<a id="__codelineno-45-45" name="__codelineno-45-45" href="#__codelineno-45-45"></a>│                                                                changes. Only used    │
+<a id="__codelineno-45-46" name="__codelineno-45-46" href="#__codelineno-45-46"></a>│                                                                with --serve-viewer.  │
+<a id="__codelineno-45-47" name="__codelineno-45-47" href="#__codelineno-45-47"></a>│ --listen-port                           INTEGER RANGE          TCP port for adapter  │
+<a id="__codelineno-45-48" name="__codelineno-45-48" href="#__codelineno-45-48"></a>│                                         [0&lt;=x&lt;=65535]          peers (nvim, rb       │
+<a id="__codelineno-45-49" name="__codelineno-45-49" href="#__codelineno-45-49"></a>│                                                                wave). Overrides      │
+<a id="__codelineno-45-50" name="__codelineno-45-50" href="#__codelineno-45-50"></a>│                                                                .listen_port from     │
+<a id="__codelineno-45-51" name="__codelineno-45-51" href="#__codelineno-45-51"></a>│                                                                hub.toml. 0 =         │
+<a id="__codelineno-45-52" name="__codelineno-45-52" href="#__codelineno-45-52"></a>│                                                                OS-assigned. Pin to a │
+<a id="__codelineno-45-53" name="__codelineno-45-53" href="#__codelineno-45-53"></a>│                                                                specific number so    │
+<a id="__codelineno-45-54" name="__codelineno-45-54" href="#__codelineno-45-54"></a>│                                                                peers&#39; discovery      │
+<a id="__codelineno-45-55" name="__codelineno-45-55" href="#__codelineno-45-55"></a>│                                                                records stay stable   │
+<a id="__codelineno-45-56" name="__codelineno-45-56" href="#__codelineno-45-56"></a>│                                                                across restarts.      │
+<a id="__codelineno-45-57" name="__codelineno-45-57" href="#__codelineno-45-57"></a>│ --http-port                             INTEGER RANGE          HTTP/WS port for the  │
+<a id="__codelineno-45-58" name="__codelineno-45-58" href="#__codelineno-45-58"></a>│                                         [0&lt;=x&lt;=65535]          browser-side SPA.     │
+<a id="__codelineno-45-59" name="__codelineno-45-59" href="#__codelineno-45-59"></a>│                                                                Overrides .http_port  │
+<a id="__codelineno-45-60" name="__codelineno-45-60" href="#__codelineno-45-60"></a>│                                                                from hub.toml. 0 =    │
+<a id="__codelineno-45-61" name="__codelineno-45-61" href="#__codelineno-45-61"></a>│                                                                OS-assigned. Pin to a │
+<a id="__codelineno-45-62" name="__codelineno-45-62" href="#__codelineno-45-62"></a>│                                                                specific number so    │
+<a id="__codelineno-45-63" name="__codelineno-45-63" href="#__codelineno-45-63"></a>│                                                                the SPA URL stays the │
+<a id="__codelineno-45-64" name="__codelineno-45-64" href="#__codelineno-45-64"></a>│                                                                same across restarts. │
+<a id="__codelineno-45-65" name="__codelineno-45-65" href="#__codelineno-45-65"></a>│                                                                Only used with        │
+<a id="__codelineno-45-66" name="__codelineno-45-66" href="#__codelineno-45-66"></a>│                                                                --serve-viewer.       │
+<a id="__codelineno-45-67" name="__codelineno-45-67" href="#__codelineno-45-67"></a>│ --model                                 TEXT                   Generate view.json on │
+<a id="__codelineno-45-68" name="__codelineno-45-68" href="#__codelineno-45-68"></a>│                                                                hub start for this    │
+<a id="__codelineno-45-69" name="__codelineno-45-69" href="#__codelineno-45-69"></a>│                                                                model name (looked up │
+<a id="__codelineno-45-70" name="__codelineno-45-70" href="#__codelineno-45-70"></a>│                                                                in models.yaml).      │
+<a id="__codelineno-45-71" name="__codelineno-45-71" href="#__codelineno-45-71"></a>│                                                                Replaces the legacy   │
+<a id="__codelineno-45-72" name="__codelineno-45-72" href="#__codelineno-45-72"></a>│                                                                workflow of running   │
+<a id="__codelineno-45-73" name="__codelineno-45-73" href="#__codelineno-45-73"></a>│                                                                `rb hier &lt;model&gt;      │
+<a id="__codelineno-45-74" name="__codelineno-45-74" href="#__codelineno-45-74"></a>│                                                                --format json -o      │
+<a id="__codelineno-45-75" name="__codelineno-45-75" href="#__codelineno-45-75"></a>│                                                                .rtl-buddy/view.json` │
+<a id="__codelineno-45-76" name="__codelineno-45-76" href="#__codelineno-45-76"></a>│                                                                manually before each  │
+<a id="__codelineno-45-77" name="__codelineno-45-77" href="#__codelineno-45-77"></a>│                                                                hub start. When unset │
+<a id="__codelineno-45-78" name="__codelineno-45-78" href="#__codelineno-45-78"></a>│                                                                the hub falls back to │
+<a id="__codelineno-45-79" name="__codelineno-45-79" href="#__codelineno-45-79"></a>│                                                                .view_json from       │
+<a id="__codelineno-45-80" name="__codelineno-45-80" href="#__codelineno-45-80"></a>│                                                                hub.toml. Requires    │
+<a id="__codelineno-45-81" name="__codelineno-45-81" href="#__codelineno-45-81"></a>│                                                                --serve-viewer.       │
+<a id="__codelineno-45-82" name="__codelineno-45-82" href="#__codelineno-45-82"></a>│ --models-file                           PATH                   Explicit models.yaml  │
+<a id="__codelineno-45-83" name="__codelineno-45-83" href="#__codelineno-45-83"></a>│                                                                that owns the --model │
+<a id="__codelineno-45-84" name="__codelineno-45-84" href="#__codelineno-45-84"></a>│                                                                entry. Skips the      │
+<a id="__codelineno-45-85" name="__codelineno-45-85" href="#__codelineno-45-85"></a>│                                                                project-tree          │
+<a id="__codelineno-45-86" name="__codelineno-45-86" href="#__codelineno-45-86"></a>│                                                                discovery walk. Use   │
+<a id="__codelineno-45-87" name="__codelineno-45-87" href="#__codelineno-45-87"></a>│                                                                this to disambiguate  │
+<a id="__codelineno-45-88" name="__codelineno-45-88" href="#__codelineno-45-88"></a>│                                                                when the same model   │
+<a id="__codelineno-45-89" name="__codelineno-45-89" href="#__codelineno-45-89"></a>│                                                                name exists in more   │
+<a id="__codelineno-45-90" name="__codelineno-45-90" href="#__codelineno-45-90"></a>│                                                                than one models.yaml. │
+<a id="__codelineno-45-91" name="__codelineno-45-91" href="#__codelineno-45-91"></a>│ --axi-perf-from                         PATH                   Path to an            │
+<a id="__codelineno-45-92" name="__codelineno-45-92" href="#__codelineno-45-92"></a>│                                                                axi-perf.json (output │
+<a id="__codelineno-45-93" name="__codelineno-45-93" href="#__codelineno-45-93"></a>│                                                                of `rb axi-profile    │
+<a id="__codelineno-45-94" name="__codelineno-45-94" href="#__codelineno-45-94"></a>│                                                                run`). The hub bakes  │
+<a id="__codelineno-45-95" name="__codelineno-45-95" href="#__codelineno-45-95"></a>│                                                                its                   │
+<a id="__codelineno-45-96" name="__codelineno-45-96" href="#__codelineno-45-96"></a>│                                                                per-bundle/interconn… │
+<a id="__codelineno-45-97" name="__codelineno-45-97" href="#__codelineno-45-97"></a>│                                                                throughput overlay    │
+<a id="__codelineno-45-98" name="__codelineno-45-98" href="#__codelineno-45-98"></a>│                                                                into every generated  │
+<a id="__codelineno-45-99" name="__codelineno-45-99" href="#__codelineno-45-99"></a>│                                                                view.json AND records │
+<a id="__codelineno-45-100" name="__codelineno-45-100" href="#__codelineno-45-100"></a>│                                                                the source&#39;s          │
+<a id="__codelineno-45-101" name="__codelineno-45-101" href="#__codelineno-45-101"></a>│                                                                test/suite_dir so the │
+<a id="__codelineno-45-102" name="__codelineno-45-102" href="#__codelineno-45-102"></a>│                                                                SPA&#39;s &#39;Open in        │
+<a id="__codelineno-45-103" name="__codelineno-45-103" href="#__codelineno-45-103"></a>│                                                                marimo&#39; button skips  │
+<a id="__codelineno-45-104" name="__codelineno-45-104" href="#__codelineno-45-104"></a>│                                                                its prompt. Use the   │
+<a id="__codelineno-45-105" name="__codelineno-45-105" href="#__codelineno-45-105"></a>│                                                                canonical             │
+<a id="__codelineno-45-106" name="__codelineno-45-106" href="#__codelineno-45-106"></a>│                                                                &lt;suite&gt;/artefacts/ax… │
+<a id="__codelineno-45-107" name="__codelineno-45-107" href="#__codelineno-45-107"></a>│                                                                layout so the         │
+<a id="__codelineno-45-108" name="__codelineno-45-108" href="#__codelineno-45-108"></a>│                                                                test/suite_dir        │
+<a id="__codelineno-45-109" name="__codelineno-45-109" href="#__codelineno-45-109"></a>│                                                                derivation lands.     │
+<a id="__codelineno-45-110" name="__codelineno-45-110" href="#__codelineno-45-110"></a>│                                                                Only used with        │
+<a id="__codelineno-45-111" name="__codelineno-45-111" href="#__codelineno-45-111"></a>│                                                                --serve-viewer.       │
+<a id="__codelineno-45-112" name="__codelineno-45-112" href="#__codelineno-45-112"></a>│ --help                                                         Show this message and │
+<a id="__codelineno-45-113" name="__codelineno-45-113" href="#__codelineno-45-113"></a>│                                                                exit.                 │
+<a id="__codelineno-45-114" name="__codelineno-45-114" href="#__codelineno-45-114"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="hub-stop">hub stop</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a>Usage: rtl-buddy hub stop [OPTIONS]                                                    
@@ -5233,40 +5253,47 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-82-2" name="__codelineno-82-2" href="#__codelineno-82-2"></a>
 <a id="__codelineno-82-3" name="__codelineno-82-3" href="#__codelineno-82-3"></a> Install the bundled rtl_buddy skill.                                                   
 <a id="__codelineno-82-4" name="__codelineno-82-4" href="#__codelineno-82-4"></a>
-<a id="__codelineno-82-5" name="__codelineno-82-5" href="#__codelineno-82-5"></a> Default scope is user-level (`~/.claude/skills/rtl_buddy/` and                         
-<a id="__codelineno-82-6" name="__codelineno-82-6" href="#__codelineno-82-6"></a> `~/.codex/skills/rtl_buddy/`). Use `--project` to install into the                     
+<a id="__codelineno-82-5" name="__codelineno-82-5" href="#__codelineno-82-5"></a> Default scope is user-level (`~/.claude/skills/rtl-buddy/` and                         
+<a id="__codelineno-82-6" name="__codelineno-82-6" href="#__codelineno-82-6"></a> `~/.codex/skills/rtl-buddy/`). Use `--project` to install into the                     
 <a id="__codelineno-82-7" name="__codelineno-82-7" href="#__codelineno-82-7"></a> discovered project root instead; project-level copies take precedence                  
 <a id="__codelineno-82-8" name="__codelineno-82-8" href="#__codelineno-82-8"></a> over user-level when both exist. Use `--dir PATH` to write a single                    
-<a id="__codelineno-82-9" name="__codelineno-82-9" href="#__codelineno-82-9"></a> `PATH/rtl_buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
+<a id="__codelineno-82-9" name="__codelineno-82-9" href="#__codelineno-82-9"></a> `PATH/rtl-buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
 <a id="__codelineno-82-10" name="__codelineno-82-10" href="#__codelineno-82-10"></a> layout entirely.                                                                       
 <a id="__codelineno-82-11" name="__codelineno-82-11" href="#__codelineno-82-11"></a>
-<a id="__codelineno-82-12" name="__codelineno-82-12" href="#__codelineno-82-12"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-82-13" name="__codelineno-82-13" href="#__codelineno-82-13"></a>│ --project                   install into the discovered project root instead of the  │
-<a id="__codelineno-82-14" name="__codelineno-82-14" href="#__codelineno-82-14"></a>│                             user home                                                │
-<a id="__codelineno-82-15" name="__codelineno-82-15" href="#__codelineno-82-15"></a>│ --root                PATH  explicit target root (implies project-level layout)      │
-<a id="__codelineno-82-16" name="__codelineno-82-16" href="#__codelineno-82-16"></a>│ --dir                 PATH  write a single flat target at &lt;DIR&gt;/rtl_buddy/SKILL.md,  │
-<a id="__codelineno-82-17" name="__codelineno-82-17" href="#__codelineno-82-17"></a>│                             bypassing the .claude/.agents/.codex layout              │
-<a id="__codelineno-82-18" name="__codelineno-82-18" href="#__codelineno-82-18"></a>│ --no-claude                 skip writing the Claude Code target                      │
-<a id="__codelineno-82-19" name="__codelineno-82-19" href="#__codelineno-82-19"></a>│ --no-codex                  skip writing the Codex target                            │
-<a id="__codelineno-82-20" name="__codelineno-82-20" href="#__codelineno-82-20"></a>│ --no-gitignore              skip updating .gitignore on project-level installs       │
-<a id="__codelineno-82-21" name="__codelineno-82-21" href="#__codelineno-82-21"></a>│ --dry-run                   print what would be written and exit                     │
-<a id="__codelineno-82-22" name="__codelineno-82-22" href="#__codelineno-82-22"></a>│ --force                     overwrite even when content matches                      │
-<a id="__codelineno-82-23" name="__codelineno-82-23" href="#__codelineno-82-23"></a>│ --help                      Show this message and exit.                              │
-<a id="__codelineno-82-24" name="__codelineno-82-24" href="#__codelineno-82-24"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-82-12" name="__codelineno-82-12" href="#__codelineno-82-12"></a> Installs made before the directory was renamed to `rtl-buddy` are                      
+<a id="__codelineno-82-13" name="__codelineno-82-13" href="#__codelineno-82-13"></a> migrated: a sibling `rtl_buddy/` carrying our version marker is removed                
+<a id="__codelineno-82-14" name="__codelineno-82-14" href="#__codelineno-82-14"></a> so no stale second copy is left behind.                                                
+<a id="__codelineno-82-15" name="__codelineno-82-15" href="#__codelineno-82-15"></a>
+<a id="__codelineno-82-16" name="__codelineno-82-16" href="#__codelineno-82-16"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-82-17" name="__codelineno-82-17" href="#__codelineno-82-17"></a>│ --project                   install into the discovered project root instead of the  │
+<a id="__codelineno-82-18" name="__codelineno-82-18" href="#__codelineno-82-18"></a>│                             user home                                                │
+<a id="__codelineno-82-19" name="__codelineno-82-19" href="#__codelineno-82-19"></a>│ --root                PATH  explicit target root (implies project-level layout)      │
+<a id="__codelineno-82-20" name="__codelineno-82-20" href="#__codelineno-82-20"></a>│ --dir                 PATH  write a single flat target at &lt;DIR&gt;/rtl-buddy/SKILL.md,  │
+<a id="__codelineno-82-21" name="__codelineno-82-21" href="#__codelineno-82-21"></a>│                             bypassing the .claude/.agents/.codex layout              │
+<a id="__codelineno-82-22" name="__codelineno-82-22" href="#__codelineno-82-22"></a>│ --no-claude                 skip writing the Claude Code target                      │
+<a id="__codelineno-82-23" name="__codelineno-82-23" href="#__codelineno-82-23"></a>│ --no-codex                  skip writing the Codex target                            │
+<a id="__codelineno-82-24" name="__codelineno-82-24" href="#__codelineno-82-24"></a>│ --no-gitignore              skip updating .gitignore on project-level installs       │
+<a id="__codelineno-82-25" name="__codelineno-82-25" href="#__codelineno-82-25"></a>│ --dry-run                   print what would be written and exit                     │
+<a id="__codelineno-82-26" name="__codelineno-82-26" href="#__codelineno-82-26"></a>│ --force                     overwrite even when content matches                      │
+<a id="__codelineno-82-27" name="__codelineno-82-27" href="#__codelineno-82-27"></a>│ --help                      Show this message and exit.                              │
+<a id="__codelineno-82-28" name="__codelineno-82-28" href="#__codelineno-82-28"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="skill-uninstall">skill uninstall</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-83-1" name="__codelineno-83-1" href="#__codelineno-83-1"></a>Usage: rtl-buddy skill uninstall [OPTIONS]                                             
 <a id="__codelineno-83-2" name="__codelineno-83-2" href="#__codelineno-83-2"></a>
 <a id="__codelineno-83-3" name="__codelineno-83-3" href="#__codelineno-83-3"></a> Remove the installed rtl_buddy skill files from the selected scope.                    
 <a id="__codelineno-83-4" name="__codelineno-83-4" href="#__codelineno-83-4"></a>
-<a id="__codelineno-83-5" name="__codelineno-83-5" href="#__codelineno-83-5"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-83-6" name="__codelineno-83-6" href="#__codelineno-83-6"></a>│ --project                uninstall from the discovered project root instead of the   │
-<a id="__codelineno-83-7" name="__codelineno-83-7" href="#__codelineno-83-7"></a>│                          user home                                                   │
-<a id="__codelineno-83-8" name="__codelineno-83-8" href="#__codelineno-83-8"></a>│ --root             PATH  explicit target root (implies project-level layout)         │
-<a id="__codelineno-83-9" name="__codelineno-83-9" href="#__codelineno-83-9"></a>│ --no-claude              skip the Claude Code target                                 │
-<a id="__codelineno-83-10" name="__codelineno-83-10" href="#__codelineno-83-10"></a>│ --no-codex               skip the Codex target                                       │
-<a id="__codelineno-83-11" name="__codelineno-83-11" href="#__codelineno-83-11"></a>│ --help                   Show this message and exit.                                 │
-<a id="__codelineno-83-12" name="__codelineno-83-12" href="#__codelineno-83-12"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-83-5" name="__codelineno-83-5" href="#__codelineno-83-5"></a> Both the current `rtl-buddy` directory and the legacy `rtl_buddy` one are              
+<a id="__codelineno-83-6" name="__codelineno-83-6" href="#__codelineno-83-6"></a> cleaned, so an install predating the rename is fully removed.                          
+<a id="__codelineno-83-7" name="__codelineno-83-7" href="#__codelineno-83-7"></a>
+<a id="__codelineno-83-8" name="__codelineno-83-8" href="#__codelineno-83-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
+<a id="__codelineno-83-9" name="__codelineno-83-9" href="#__codelineno-83-9"></a>│ --project                uninstall from the discovered project root instead of the   │
+<a id="__codelineno-83-10" name="__codelineno-83-10" href="#__codelineno-83-10"></a>│                          user home                                                   │
+<a id="__codelineno-83-11" name="__codelineno-83-11" href="#__codelineno-83-11"></a>│ --root             PATH  explicit target root (implies project-level layout)         │
+<a id="__codelineno-83-12" name="__codelineno-83-12" href="#__codelineno-83-12"></a>│ --no-claude              skip the Claude Code target                                 │
+<a id="__codelineno-83-13" name="__codelineno-83-13" href="#__codelineno-83-13"></a>│ --no-codex               skip the Codex target                                       │
+<a id="__codelineno-83-14" name="__codelineno-83-14" href="#__codelineno-83-14"></a>│ --help                   Show this message and exit.                                 │
+<a id="__codelineno-83-15" name="__codelineno-83-15" href="#__codelineno-83-15"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="skill-status">skill status</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-84-1" name="__codelineno-84-1" href="#__codelineno-84-1"></a>Usage: rtl-buddy skill status [OPTIONS]                                                
