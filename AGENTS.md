@@ -167,17 +167,18 @@ The rtl_buddy agent skill ships inside this wheel at `src/rtl_buddy/skill/` and 
 
 ### Rules when editing skill content
 
-- `src/rtl_buddy/skill/SKILL.md` is the single source consumed by both Claude Code (at `.claude/skills/rtl_buddy/`) and Codex (at `.agents/skills/rtl_buddy/` for project scope, `~/.codex/skills/rtl_buddy/` for user scope).
+- `src/rtl_buddy/skill/SKILL.md` is the single source consumed by both Claude Code (at `.claude/skills/rtl-buddy/`) and Codex (at `.agents/skills/rtl-buddy/` for project scope, `~/.codex/skills/rtl-buddy/` for user scope).
 - Keep `SKILL.md` ≤60 lines and agent-specific. Anything covered by the docs site should cite <https://rtl-buddy.github.io/rtl_buddy/>, not restate it.
 - Agent-facing local docs access goes through `rtl-buddy docs ...`. The wheel ships `docs/**/*.md` directly (via a symlink at `src/rtl_buddy/docs`) so docs are always in sync with the installed version.
 - Any edit to `SKILL.md` takes effect for users only after they re-run `rtl-buddy skill install`. `rtl-buddy skill status` surfaces stale installs via the `.rtl_buddy_skill_version` marker.
+- The installed directory name (`SKILL_DIRNAME = "rtl-buddy"`) must stay equal to the `name:` in `SKILL.md`'s frontmatter — the Agent Skills spec requires it and spec-validating loaders warn on every load otherwise. `LEGACY_SKILL_DIRNAME` (`rtl_buddy`, pre-rename) is removed on install, reported by `status`, and cleaned by `uninstall`.
 - `src/rtl_buddy/skill/gitignore_snippet.txt` is printed by project-level installs and by `rtl-buddy skill print-gitignore`.
 - Files in `src/rtl_buddy/skill/` are included in the wheel automatically via hatchling's `packages = ["src/rtl_buddy"]`. Adding new files to the skill dir requires no extra config. The `docs/` directory ships via `force-include` in `pyproject.toml` and is excluded from package discovery to avoid double-inclusion.
 
 ### Install scope policy
 
-- **Default is user-level** (`~/.claude/skills/rtl_buddy/`, `~/.codex/skills/rtl_buddy/`). This is deliberate: the skill is workflow-pattern guidance that changes rarely across rtl_buddy versions, and a single copy per machine nudges users to keep rtl_buddy versions aligned across projects.
-- `--project` (or `--root PATH`) opts into project-level install at `<root>/.claude/skills/rtl_buddy/` and `<root>/.agents/skills/rtl_buddy/`. Claude Code's project-level precedence means a project-level copy overrides the user-level one when both exist — this is the escape hatch for projects that pin a divergent rtl_buddy major.
+- **Default is user-level** (`~/.claude/skills/rtl-buddy/`, `~/.codex/skills/rtl-buddy/`). This is deliberate: the skill is workflow-pattern guidance that changes rarely across rtl_buddy versions, and a single copy per machine nudges users to keep rtl_buddy versions aligned across projects.
+- `--project` (or `--root PATH`) opts into project-level install at `<root>/.claude/skills/rtl-buddy/` and `<root>/.agents/skills/rtl-buddy/`. Claude Code's project-level precedence means a project-level copy overrides the user-level one when both exist — this is the escape hatch for projects that pin a divergent rtl_buddy major.
 - Do not flip the default to project-level without rediscussion; the precedence model makes user-level-plus-project-override the clean path.
 
 ### Project root discovery

@@ -1906,18 +1906,22 @@ Usage: rtl-buddy skill install [OPTIONS]
                                                                                         
  Install the bundled rtl_buddy skill.                                                   
                                                                                         
- Default scope is user-level (`~/.claude/skills/rtl_buddy/` and                         
- `~/.codex/skills/rtl_buddy/`). Use `--project` to install into the                     
+ Default scope is user-level (`~/.claude/skills/rtl-buddy/` and                         
+ `~/.codex/skills/rtl-buddy/`). Use `--project` to install into the                     
  discovered project root instead; project-level copies take precedence                  
  over user-level when both exist. Use `--dir PATH` to write a single                    
- `PATH/rtl_buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
+ `PATH/rtl-buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`                  
  layout entirely.                                                                       
+                                                                                        
+ Installs made before the directory was renamed to `rtl-buddy` are                      
+ migrated: a sibling `rtl_buddy/` carrying our version marker is removed                
+ so no stale second copy is left behind.                                                
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --project                   install into the discovered project root instead of the  │
 │                             user home                                                │
 │ --root                PATH  explicit target root (implies project-level layout)      │
-│ --dir                 PATH  write a single flat target at <DIR>/rtl_buddy/SKILL.md,  │
+│ --dir                 PATH  write a single flat target at <DIR>/rtl-buddy/SKILL.md,  │
 │                             bypassing the .claude/.agents/.codex layout              │
 │ --no-claude                 skip writing the Claude Code target                      │
 │ --no-codex                  skip writing the Codex target                            │
@@ -1934,6 +1938,9 @@ Usage: rtl-buddy skill install [OPTIONS]
 Usage: rtl-buddy skill uninstall [OPTIONS]                                             
                                                                                         
  Remove the installed rtl_buddy skill files from the selected scope.                    
+                                                                                        
+ Both the current `rtl-buddy` directory and the legacy `rtl_buddy` one are              
+ cleaned, so an install predating the rename is fully removed.                          
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --project                uninstall from the discovered project root instead of the   │
