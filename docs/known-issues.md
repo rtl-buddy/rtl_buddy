@@ -540,7 +540,7 @@ The schematic viewer's PyPI **distribution** was renamed `rtl-buddy-view` → `r
 |------|------|-------|
 | PyPI distribution | `rtl-buddy-sch` | `uv tool install rtl-buddy-sch` / `pip install rtl-buddy-sch`. Releases up to 0.5.0 are on PyPI as `rtl-buddy-view` |
 | Executable | `rtl-buddy-view` | Unchanged — it is what `rb hier`, `rb graph build`, `rb hub` and `--tool` resolve. 0.7.0+ also installs an `rtl-buddy-sch` alias |
-| `rb tool-check` key | `rtl-buddy-view` | `rb tool-check --explain rtl-buddy-view`. `--explain rtl-buddy-sch` exits 1 with "unknown tool" and lists the known keys |
+| `rb tool-check` key | `rtl-buddy-view` | `rb tool-check --explain rtl-buddy-view`. `--explain rtl-buddy-sch` is accepted as an alias for it and reports the same entry — under the canonical `rtl-buddy-view` name, which is also what stays in the JSON payload |
 | Import package | `rtl_buddy_view` | What the hub imports for the in-env SPA bundle |
 
 rtl_buddy probes the **distribution** under both names, `rtl-buddy-sch` first, so either install satisfies every version floor and `rb tool-check` reports a version either way. What you have to know: **pip cannot upgrade one into the other.** There is no rename metadata, so `pip install -U rtl-buddy-sch` over an existing `rtl-buddy-view` leaves two distributions claiming the same console script and the same `rtl_buddy_view` import package, with each one's `RECORD` describing files the other may have overwritten. Uninstall first:

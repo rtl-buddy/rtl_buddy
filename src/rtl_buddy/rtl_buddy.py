@@ -9426,19 +9426,30 @@ class RtlBuddy:
         )
 
         if explain_tool is not None:
-            spec = next((s for s in specs if s.name == explain_tool), None)
+            # Alias-aware: the viewer's dist renamed to `rtl-buddy-sch`,
+            # so that is the name a user is most likely to type for a
+            # spec still canonically called `rtl-buddy-view`
+            # (rtl_buddy#445). Output below stays on the canonical name.
+            spec = tm.resolve_spec(specs, explain_tool)
             if spec is None:
                 if self.machine:
+                    # `known` stays bare canonical names — consumers are
+                    # keyed on it. `aliases` is an additive sibling so an
+                    # agent that guessed `rtl-buddy-sch` can discover the
+                    # mapping from the error it hit, the same
+                    # discoverability the console hint below gives
+                    # (rtl_buddy#445 review).
                     self._emit_machine_result(
                         "tool-check",
                         1,
                         error=f"unknown tool '{explain_tool}'",
                         known=[s.name for s in specs],
+                        aliases={s.name: list(s.aliases) for s in specs if s.aliases},
                     )
                     raise typer.Exit(1)
                 emit_console_text(
                     f"tool-check: unknown tool '{explain_tool}'. "
-                    f"Known: {', '.join(s.name for s in specs)}",
+                    f"Known: {', '.join(tm.known_tool_names(specs))}",
                     style="red",
                     stream="stderr",
                 )

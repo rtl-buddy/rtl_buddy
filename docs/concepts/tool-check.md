@@ -94,6 +94,8 @@ surfer — Web-native waveform viewer
 
 This is also what subcommand wrappers point you at when they refuse to run because a tool is missing — e.g. `rb wave` saying "surfer not found — run `rb tool-check --explain surfer`".
 
+A tool may also be looked up by an **alias**: `rb tool-check --explain rtl-buddy-sch` resolves to the `rtl-buddy-view` entry, because the viewer's PyPI distribution was renamed to `rtl-buddy-sch` at 0.7.0 while the executable kept its old name. An alias is an input courtesy only — the canonical `name` is what every line of output (status rows, `--format json` / `--machine` keys) reports, so consumers keyed on it never see it drift by spelling. Aliases are listed in the `Known:` hint you get for an unrecognised name, and the `--machine` rejection carries them as an `aliases` map (`{canonical: [alias, ...]}`) beside the bare-name `known` list — so an agent that guessed the dist name can discover the mapping from the envelope it just got.
+
 ## JSON output
 
 ```bash
@@ -127,6 +129,7 @@ The single source of truth lives in `src/rtl_buddy/tool_manifest.py`. Each `Tool
 | Field | Purpose |
 |-------|---------|
 | `name` | Canonical key used by `--explain`, JSON output, and runtime `require()` |
+| `aliases` | Extra spellings accepted by `--explain` / `require()`; never reported back (see above). Must not collide with another spec's name or alias — the manifest asserts this when it is built |
 | `binaries` | Binary names to look for; first one found wins |
 | `version_cmd` / `version_regex` | How to probe and parse the installed version |
 | `minimum_version` | Lower bound; if violated, status flips to `outdated` |
@@ -137,7 +140,7 @@ The single source of truth lives in `src/rtl_buddy/tool_manifest.py`. Each `Tool
 
 `PythonSiblingDetector` additionally takes `legacy_packages`: distribution names the same tool was published under before a rename, tried only when the current name yields no metadata. The viewer uses it for the `rtl-buddy-sch` / `rtl-buddy-view` pair, so either install reports a version. A version that came from a legacy name is dropped when the binary is also on `PATH`, letting the `version_cmd` probe answer instead — an abandoned distribution's frozen metadata should not outrank the executable it no longer owns. See [Quirks & Known Issues](../known-issues.md#the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view).
 
-The same `ToolSpec` is consulted at runtime when a wrapper invokes `tool_manifest.require("<name>")` — that's how subcommand wrappers produce a uniform "missing tool, see `rb tool-check --explain X`" message instead of an opaque `FileNotFoundError`.
+The same `ToolSpec` is consulted at runtime when a wrapper invokes `tool_manifest.require("<name>")` — which resolves aliases through the same `resolve_spec()` helper `--explain` uses, and reports the canonical name in its error — that's how subcommand wrappers produce a uniform "missing tool, see `rb tool-check --explain X`" message instead of an opaque `FileNotFoundError`.
 
 ## Reconciliation with `root_config.yaml`
 
