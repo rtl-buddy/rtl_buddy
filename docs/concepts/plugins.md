@@ -129,6 +129,17 @@ os.replace(tmp, out)
 
 Because hooks run via `exec()` rather than `import`, `__name__` is set to the sentinel `"__rtl_buddy_hook__"` — never `"__main__"`. Put hook logic at module top level. If you also want the script runnable standalone (e.g. for local testing outside `rb`), keep only the standalone entry point under `if __name__ == "__main__":` and put the `rb`-invoked logic at module level or in the accompanying `else:` branch; the `__main__` branch is always skipped when `rb` runs the hook.
 
+A hook may `print()` freely: hook stdout is captured and re-emitted through `rtl_buddy`'s log system as a `hook.stdout` event, so the text appears on the console (stderr) and in `rtl_buddy.log` but never on stdout, which under `--machine` is reserved for the JSON envelope. Prefer the injected `logger` for anything that deserves a level.
+
+The capture rebinds `sys.stdout`, so it covers what the hook itself prints — not what a **child process** writes. A hook that delegates to a third-party generator gives that child `rtl_buddy`'s own stdout, and under `--machine` the generator's chatter lands ahead of the envelope. Redirect the child, and route anything worth keeping back through `print()`:
+
+```python
+res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+print(res.stdout, end="")          # captured as hook.stdout
+```
+
+For the same reason `sys.stdout` here is a text sink rather than a real file: `sys.stdout.fileno()` and `sys.stdout.buffer` raise instead of reaching fd 1.
+
 ```python
 import os
 out = os.path.join(artifact_dir, "gen.sv")   # correct

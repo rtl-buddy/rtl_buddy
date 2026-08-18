@@ -528,6 +528,16 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{fields.get('test')}: preproc completed"
         case "preproc.failed":
             return f"{fields.get('test')}: preproc failed ({fields.get('error')})"
+        case "hook.stdout":
+            # A hook's own print(), re-framed rather than dropped: the
+            # prefix says which script the line came from, since it is now
+            # interleaved with rtl_buddy's own console output on stderr
+            # instead of arriving as a contiguous block on stdout (#371).
+            stage = fields.get("stage")
+            script = fields.get("script")
+            name = Path(str(script)).name if script else "hook"
+            label = f"{stage} {name}" if stage else name
+            return f"[{label}] {fields.get('line')}"
         case "preproc.import_collision":
             return (
                 f"{fields.get('test')}: preproc import collision "
@@ -1163,6 +1173,13 @@ def log_console_event(
     ids): they are not warnings, so logging them at WARNING would be a lie,
     and raising global verbosity to see them turns on DEBUG for everything
     else in the one place that cannot afford it (#435).
+
+    The second sanctioned case is output that was **already on stdout and is
+    being re-framed**, not newly added: hook ``print()`` capture (#371) moves
+    text the user could always see onto the log system, so a plain
+    ``log_event()`` would make it vanish at default verbosity — a regression
+    dressed up as a cleanup. Newly-invented chatter does not qualify; it goes
+    through ``log_event()`` and earns its console line with ``-v``.
 
     ``render_summary`` already establishes the pattern — print to the
     console AND keep the structured record — and this is its generalisation.

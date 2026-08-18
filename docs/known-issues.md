@@ -70,6 +70,13 @@ See [Migrations: v4 to v5](migrations.md#v4-to-v5) for the full behavior change.
 
 `sweep` and `preproc` hooks are `exec()`'d into a hand-built namespace rather than imported, so `__name__` is set explicitly to the sentinel `"__rtl_buddy_hook__"`. If your hook wraps its logic in `if __name__ == "__main__":` (a common habit for scripts meant to also run standalone), that block is **always skipped** under `rb` — the hook silently no-ops. Put hook logic at module top level; reserve the `__main__` branch for a standalone entry point only. See [Plugins](concepts/plugins.md#hook-working-directory).
 
+## A hook's captured stdout is Python-level: `sys.stdout.buffer`/`fileno()` raise, and a child process is not covered
+
+`sweep` and `preproc` hook stdout is captured and re-emitted as `hook.stdout` log events, so a hook's `print()` never reaches `rtl_buddy`'s own stdout (under `--machine`, the JSON envelope's stream). The capture rebinds `sys.stdout` to a text sink, which has two consequences that look like regressions:
+
+- `sys.stdout.fileno()` raises `io.UnsupportedOperation` and `sys.stdout.buffer` raises `AttributeError`. A hook doing `subprocess.run(cmd, stdout=sys.stdout)` or `sys.stdout.buffer.write(...)` used to work and now raises — which surfaces as a setup failure, not a wrong answer. Both were ways of writing straight to fd 1, i.e. exactly what corrupts the envelope; write text through `print()` instead.
+- A **child process** started by the hook inherits `rtl_buddy`'s real fd 1, so its output is *not* captured. This is the documented delegate-to-a-generator pattern, so it is worth being explicit: pass `stdout=subprocess.DEVNULL` or `capture_output=True` and re-`print()` what you want kept. See [Plugins](concepts/plugins.md#hooks).
+
 ## Compilation-unit `bind` under `frontend: verilog` elaborates zero formal cells
 
 A property file that binds its checker module at compilation-unit scope (`bind dut dut_props u_props (...);` at the top level of the file, outside any module) does **not** error under the default `frontend: verilog` — but yosys's native verilog frontend never resolves the bind. The checker is stored as `$abstract` and removed as unused before any assertion cell is generated, so the proof runs against **zero** formal cells. With no guard, sby would prove nothing and report a silent **PASS** — a false pass indistinguishable from a real one.

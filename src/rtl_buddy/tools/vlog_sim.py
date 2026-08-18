@@ -796,6 +796,7 @@ class VlogSim:
             ns = exec_hook_script(
                 script_path,
                 code,
+                stage="preproc",
                 logger=logger,
                 test_cfg=self.test_cfg,
                 root_cfg=self.root_cfg,
