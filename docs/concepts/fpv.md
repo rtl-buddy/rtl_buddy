@@ -438,15 +438,16 @@ against yosys 0.64 + the [rtl-buddy yosys-slang branch](#which-yosys-slang-build
 
 [Which yosys-slang build to use](#which-yosys-slang-build-to-use) tells you
 which build lowers `|->` / `|=>`. The subset question does not stop there:
-**system tasks are accepted per build too**, and the two axes are
-independent. On the rtl-buddy branch, `|->`, `|=>`, `$past`, `##N`,
-`disable iff`, and `assert` / `assume` / `cover property` all elaborate,
-while `$stable`, `$rose` and `$onehot0` are rejected with
+**sampled-value and bit-vector system functions are accepted per build
+too**, and the two axes are independent. On the rtl-buddy branch (yosys
+0.64, checked 2026-08-18), `|->`, `|=>`, `$past`, `##N`, `disable iff`, and
+`assert` / `assume` / `cover property` all elaborate, while `$stable`,
+`$rose` and `$onehot0` are rejected — the diagnostic calls them tasks:
 `error: unsupported system task '$stable'`. A site build reported in #306
 was the other way round on two of them — `$past` and `|=>` rejected,
-`$onehot0` fine. So do not infer the surface from a version number: probe
-the build you actually have, with a throwaway module, before writing forty
-properties against it.
+`$onehot0` fine. So do not infer the surface from a version number, or from
+this list once it has aged: probe the build you actually have, with a
+throwaway module, before writing forty properties against it.
 
 ```systemverilog
 // probe.sv — elaborate this with your build before authoring
@@ -475,27 +476,28 @@ assert property (@(posedge clk) a_q |-> b);   // stands in for $past(a) |-> b
 
 ### `(* anyconst *)` may not survive the frontend
 
-On the build above, `(* anyconst *)` produces **no `$anyconst` cell** —
-`stat` after `prep` shows only the `$check` cells. The wire then behaves as
-a *free* signal that may take a different value every cycle, so a
-symbolic-index data tracker ("whatever entry `idx` names, its data is
-preserved") reads as a *varying* index and produces counterexamples that
-say nothing about the design. Check for the cell before relying on it:
+On the build above, `(* anyconst *)` produces **no `$anyconst` cell**, and
+the attribute is dropped silently — the wire then behaves as a *free*
+signal that may change every cycle, so a symbolic-index proof reads as a
+*varying* index and its counterexamples say nothing about the design. A
+frontend quietly dropping something and leaving a proof that looks green
+is a quirk, not authoring advice, so it lives on the Quirks page with the
+`select -assert-min 1 t:$anyconst` check that detects it:
+[`(* anyconst *)` may be dropped by the frontend, with no
+cell](../known-issues.md#anyconst-may-be-dropped-by-the-frontend-with-no-cell).
 
-```
-yosys -p 'read_slang ...; prep -top dut; select -assert-min 1 t:$anyconst'
-```
-
-For data integrity, a concrete behavioural reference model (a scoreboard
-the checker compares against) is the more portable choice.
+For data integrity, prefer a concrete behavioural reference model (a
+scoreboard the checker compares against): it is the more portable choice
+regardless of whether your build supports `$anyconst`.
 
 ### No variable index into an unpacked array inside a property
 
 `mem[idx]` where `mem` is an *unpacked* array and `idx` is not a constant
 fails to elaborate with `error: unsupported operation on a memory
 variable` — the array became a `$mem`, which the property engine cannot
-address. Declare checker-side storage as a **packed** array so the index
-compiles to a mux instead:
+address. This one fails loud, so it is an authoring rule rather than a
+trap: declare checker-side storage as a **packed** array so the index
+compiles to a mux instead.
 
 ```systemverilog
 logic [3:0] bad  [0:3];        // unpacked — bad[sel] is rejected in a property
@@ -513,17 +515,27 @@ state the design can never be in. A saturating counter with
 the trace starts at `cnt == 9`. Constrain the first cycle to be a reset
 cycle:
 
+`constraints:` is the natural home for it — it is environment, not a
+property, and one file can serve every verification of the block. That
+field takes a **standalone `.sv` file** (see [Where inputs come
+from](#where-inputs-come-from)), so the three lines need an enclosing
+module and a `bind` to reach the DUT's `clk` / `rst_n` — which in turn
+means `frontend: slang`, per the `bind` gotcha below:
+
 ```systemverilog
-logic f_init = 1'b1;
-always_ff @(posedge clk) f_init <= 1'b0;
-assume property (@(posedge clk) f_init |-> !rst_n);   // active-low reset
+// reset_pin.sv — list as `constraints:` in fpv.yaml (needs `frontend: slang`)
+module fpv_reset_pin (input logic clk, input logic rst_n);
+  logic f_init = 1'b1;
+  always_ff @(posedge clk) f_init <= 1'b0;
+  assume property (@(posedge clk) f_init |-> !rst_n);   // active-low reset
+endmodule
+
+bind dut fpv_reset_pin u_reset_pin (.clk(clk), .rst_n(rst_n));
 ```
 
-With that assume, the same property proves. `constraints:` is the natural
-home for it — it is environment, not a property, and one file can serve
-every verification of the block. Purely combinational blocks (an arbiter
-whose grant decode does not depend on its own registers, say) do **not**
-need it, and adding it there only costs proof states.
+With that assume, the same property proves. Purely combinational blocks (an
+arbiter whose grant decode does not depend on its own registers, say) do
+**not** need it, and adding it there only costs proof states.
 
 ### Pipelined blocks also need their stage-consistency lemmas
 
@@ -541,11 +553,23 @@ they typically turn a `bmc`-only result into one that proves by induction.
 The reset pin above can make a **cover** unreachable: pinning reset at t=0
 empties the FIFO, so a "full-FIFO backpressure" cover that was only ever
 reached from a free initial state stops reaching within a shallow depth.
-Split them — assertions in the reset-pinned checker, reachability covers in
-a separate checker (and a separate verification) with no reset pin, so they
-keep the free initial states. Pairs with [Vacuity covers](#vacuity-covers):
-an unreached cover is a signal either way, and you want to know which of
-the two causes it.
+
+The split is between two **verifications**, not two checkers — the reset
+pin lives in `constraints:`, so the second entry simply omits that field.
+Two `name:`s over the same `model:` and `top:`:
+
+```yaml
+- name: fifo_assertions
+  top: fifo
+  constraints: reset_pin.sv          # pinned at t=0
+  properties: [fifo_asserts.sv]
+- name: fifo_covers
+  top: fifo
+  properties: [fifo_covers.sv]       # no constraints: — free initial states
+```
+
+Pairs with [Vacuity covers](#vacuity-covers): an unreached cover is a
+signal either way, and you want to know which of the two causes it.
 
 ### Match `disable iff` polarity to your reset
 

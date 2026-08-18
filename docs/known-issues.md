@@ -106,6 +106,20 @@ A property file that binds its checker module at compilation-unit scope (`bind d
 
 The fix is to set `frontend: slang` on that verification: yosys-slang reads all files in one `read_slang --top` invocation, so a compilation-unit-scope bind resolves and the asserts elaborate. Inline-assertion suites (`properties: []`, with assertions in the DUT) are not bind-based and are intentionally not guarded. See [Choosing a frontend](concepts/fpv.md#choosing-a-frontend).
 
+## `(* anyconst *)` may be dropped by the frontend, with no cell
+
+Structurally the same trap as the `bind` entry above: the frontend silently drops something and leaves a proof that looks green but proves nothing.
+
+On the rtl-buddy yosys-slang branch (yosys 0.64, checked 2026-08-18), `(* anyconst *)` produces **no `$anyconst` cell** — `stat` after `prep` shows only the `$check` cells, and nothing warns. The wire then behaves as a *free* signal that may take a different value every cycle. A symbolic-index data tracker ("whatever entry `idx` names, its data is preserved") therefore reads as a *varying* index, and the counterexamples it produces say nothing about the design: they are artefacts of an index that moves, not bugs.
+
+Check for the cell before relying on the attribute:
+
+```
+yosys -p 'read_slang ...; prep -top dut; select -assert-min 1 t:$anyconst'
+```
+
+`select -assert-min` exits non-zero when the count is not met, so this is usable as a one-off gate while bringing a property set up. For data integrity proofs, a concrete behavioural reference model (a scoreboard the checker compares against) does not depend on the attribute at all and is the more portable choice. See [Practical authoring gotchas](concepts/fpv.md#practical-authoring-gotchas).
+
 ## cocotb on VCS skips its VPI-access flags when you already configured any `-debug_access`/`+acc`
 
 cocotb drives the DUT over VPI, so on a `vcs` builder rtl_buddy injects `-debug_access+all` and `+acc+3` (plus `-load <libcocotbvpi_vcs.so>` and `-LDFLAGS -Wl,--no-as-needed`) at elaboration. To avoid fighting a builder that already enables access, the injection is suppressed per token: if **any** configured compile-time opt starts with `-debug_access` (e.g. `-debug_access+all+class`) the `-debug_access+all` is not added, and likewise for any `+acc*` opt.
