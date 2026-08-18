@@ -112,7 +112,7 @@ This works without any `--pre` flag because the exact version is specified.
 uv run rb skill install
 ```
 
-This writes `SKILL.md` to `~/.claude/skills/rtl_buddy/` and `~/.codex/skills/rtl_buddy/`. Agents pick it up automatically. Re-run after upgrading `rtl_buddy` to refresh the content.
+This writes `SKILL.md` to `~/.claude/skills/rtl-buddy/` and `~/.codex/skills/rtl-buddy/`. Agents pick it up automatically. Re-run after upgrading `rtl_buddy` to refresh the content.
 
 To install at project scope instead (overrides the user-level copy for that project):
 

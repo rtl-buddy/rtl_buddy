@@ -70,13 +70,15 @@ Install targets:
 
 | Scope | Claude Code | Codex |
 |-------|-------------|-------|
-| User (default) | `~/.claude/skills/rtl_buddy/SKILL.md` | `~/.codex/skills/rtl_buddy/SKILL.md` |
-| Project (`--project`) | `<root>/.claude/skills/rtl_buddy/SKILL.md` | `<root>/.agents/skills/rtl_buddy/SKILL.md` |
-| Explicit dir (`--dir PATH`) | `<PATH>/rtl_buddy/SKILL.md` (single flat target) | — |
+| User (default) | `~/.claude/skills/rtl-buddy/SKILL.md` | `~/.codex/skills/rtl-buddy/SKILL.md` |
+| Project (`--project`) | `<root>/.claude/skills/rtl-buddy/SKILL.md` | `<root>/.agents/skills/rtl-buddy/SKILL.md` |
+| Explicit dir (`--dir PATH`) | `<PATH>/rtl-buddy/SKILL.md` (single flat target) | — |
 
 User-level is the default because the skill is workflow-pattern guidance that changes rarely across `rtl_buddy` versions; a single copy per machine encourages keeping `rtl_buddy` aligned across projects. Project-level installs are an opt-in override for projects pinned to a divergent `rtl_buddy` major — Claude Code's resolution order puts the project copy first, so both scopes can coexist.
 
-Use `--dir PATH` when you need the skill written to an arbitrary directory without the `.claude`/`.agents` layout — it writes a single `PATH/rtl_buddy/SKILL.md` (mutually exclusive with `--project`/`--root`).
+Use `--dir PATH` when you need the skill written to an arbitrary directory without the `.claude`/`.agents` layout — it writes a single `PATH/rtl-buddy/SKILL.md` (mutually exclusive with `--project`/`--root`).
+
+The directory is named `rtl-buddy` (matching the `name:` in `SKILL.md`'s frontmatter, as the Agent Skills spec requires). Installs made before that rename landed in `rtl_buddy/`; re-running `rtl-buddy skill install` removes the old directory, `rtl-buddy skill status` flags it as a legacy-path install, `rtl-buddy skill uninstall` cleans both spellings, and a project-level install swaps the pre-rename patterns in `.gitignore` for the current ones (exact matches only, so a hand-edited line is left alone). Migration is per **scope**: an install run at one scope never touches the other's directories, so run it once at each scope you use — see [Quirks & Known Issues](known-issues.md#the-skill-directory-rename-migrates-only-the-scope-you-install-at).
 
 For project-level installs, the install command prints the `.gitignore` lines to add. Pass `--no-gitignore` to skip that edit. Project root is discovered by walking up for `root_config.yaml` (falling back to `.git/`), so `rtl-buddy skill install --project` is safe to run from a `verif/` subdirectory.
 

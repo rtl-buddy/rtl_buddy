@@ -2,9 +2,11 @@
 
 Skill content ships inside the wheel at `rtl_buddy.skill`. There is no
 PEP 517 post-install hook, so users run `rtl-buddy skill install` once to
-copy `SKILL.md` to the Claude Code / Codex skill directories. Default scope
-is user-level; `--project` (or `--root PATH`) opts into project-level, which
-Claude Code resolves with higher precedence than user-level.
+copy `SKILL.md` to the Claude Code / Codex skill directories. The directory
+is named `rtl-buddy` to match the `name:` in the bundled SKILL.md frontmatter,
+as the Agent Skills spec requires. Default scope is user-level; `--project`
+(or `--root PATH`) opts into project-level, which Claude Code resolves with
+higher precedence than user-level.
 """
 
 from __future__ import annotations
@@ -22,7 +24,13 @@ from .config.root import discover_project_root
 from .errors import FatalRtlBuddyError
 
 
-SKILL_DIRNAME = "rtl_buddy"
+# Must match the `name:` field in the bundled SKILL.md frontmatter: the Agent
+# Skills spec requires a skill's name to equal its containing directory name,
+# and spec-validating loaders warn on every load when they diverge.
+SKILL_DIRNAME = "rtl-buddy"
+# Installs predating the rename used the underscore spelling. `install`
+# migrates them away and `uninstall` cleans both.
+LEGACY_SKILL_DIRNAME = "rtl_buddy"
 SKILL_FILENAME = "SKILL.md"
 VERSION_MARKER = ".rtl_buddy_skill_version"
 PACKAGE_NAME = "rtl-buddy"
@@ -77,6 +85,38 @@ def _targets(
     return out
 
 
+def _legacy_dir(target_dir: Path) -> Path:
+    """Return the pre-rename, underscore-spelled sibling of a target dir."""
+    return target_dir.parent / LEGACY_SKILL_DIRNAME
+
+
+def _is_ours(target_dir: Path) -> bool:
+    """True when target_dir holds a skill this tool installed.
+
+    Keyed on the version marker so a directory a user created by hand (or
+    renamed something else into) is never touched.
+    """
+    return (target_dir / VERSION_MARKER).is_file()
+
+
+def _remove_skill_files(target_dir: Path) -> bool:
+    """Delete our files from target_dir; rmdir it when nothing else remains.
+
+    Returns True when a SKILL.md was removed.
+    """
+    removed = False
+    skill_path = target_dir / SKILL_FILENAME
+    marker_path = target_dir / VERSION_MARKER
+    if skill_path.is_file():
+        skill_path.unlink()
+        removed = True
+    if marker_path.is_file():
+        marker_path.unlink()
+    if target_dir.is_dir() and not any(target_dir.iterdir()):
+        target_dir.rmdir()
+    return removed
+
+
 def _same_content(path: Path, text: str) -> bool:
     if not path.is_file():
         return False
@@ -86,18 +126,40 @@ def _same_content(path: Path, text: str) -> bool:
     )
 
 
+def _legacy_pattern(pattern: str) -> str:
+    """The pre-rename spelling of one snippet pattern line.
+
+    Derived from the shipped snippet rather than hardcoded, so the two stay
+    in lockstep if the ignored paths ever change again.
+    """
+    return pattern.replace(f"/{SKILL_DIRNAME}/", f"/{LEGACY_SKILL_DIRNAME}/")
+
+
 def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> str:
+    """Add the snippet's patterns, and drop the pre-rename ones (#434).
+
+    `.gitignore` is the one *tracked* file the directory rename touches, so
+    appending alone would leave four lines under a single comment — two
+    live, two dead — and every future reader has to work out which pair is
+    real. A legacy line is removed only when it matches the pre-rename
+    snippet text exactly; anything a user hand-edited (a different path, a
+    trailing comment, a negation) does not match and is left alone.
+    """
     snippet_lines = snippet.strip().splitlines()
     comment_lines = [line for line in snippet_lines if line.startswith("#")]
     pattern_lines = [
         line for line in snippet_lines if line and not line.startswith("#")
     ]
+    legacy_patterns = {
+        _legacy_pattern(p) for p in pattern_lines if _legacy_pattern(p) != p
+    }
 
     existing_text = gitignore_path.read_text() if gitignore_path.is_file() else ""
     existing_lines = {line.strip() for line in existing_text.splitlines()}
 
     missing = [p for p in pattern_lines if p.strip() not in existing_lines]
-    if not missing:
+    stale = [line for line in existing_lines if line in legacy_patterns]
+    if not missing and not stale:
         return "already present"
 
     lines_to_add = []
@@ -107,17 +169,39 @@ def _update_gitignore(gitignore_path: Path, snippet: str, *, dry_run: bool) -> s
     lines_to_add.extend(missing)
 
     if dry_run:
-        return f"would add {len(missing)} pattern(s) (dry run)"
+        return _gitignore_summary(len(missing), len(stale), dry_run=True)
 
-    if not existing_text:
-        prefix = ""
-    elif existing_text.endswith("\n"):
-        prefix = "\n"
-    else:
-        prefix = "\n\n"
+    if stale:
+        kept = [
+            line
+            for line in existing_text.splitlines()
+            if line.strip() not in legacy_patterns
+        ]
+        existing_text = "\n".join(kept) + ("\n" if kept else "")
+        gitignore_path.write_text(existing_text)
 
-    gitignore_path.open("a").write(prefix + "\n".join(lines_to_add) + "\n")
-    return f"added {len(missing)} pattern(s)"
+    if lines_to_add:
+        if not existing_text:
+            prefix = ""
+        elif existing_text.endswith("\n"):
+            prefix = "\n"
+        else:
+            prefix = "\n\n"
+        gitignore_path.open("a").write(prefix + "\n".join(lines_to_add) + "\n")
+
+    return _gitignore_summary(len(missing), len(stale), dry_run=False)
+
+
+def _gitignore_summary(added: int, removed: int, *, dry_run: bool) -> str:
+    verbs = []
+    if added:
+        verbs.append(f"{'would add' if dry_run else 'added'} {added} pattern(s)")
+    if removed:
+        verbs.append(
+            f"{'would remove' if dry_run else 'removed'} {removed} legacy pattern(s)"
+        )
+    text = ", ".join(verbs)
+    return f"{text} (dry run)" if dry_run else text
 
 
 @app.command("install")
@@ -140,7 +224,7 @@ def cmd_install(
         typer.Option(
             "--dir",
             help=(
-                "write a single flat target at <DIR>/rtl_buddy/SKILL.md, "
+                "write a single flat target at <DIR>/rtl-buddy/SKILL.md, "
                 "bypassing the .claude/.agents/.codex layout"
             ),
         ),
@@ -166,12 +250,16 @@ def cmd_install(
 ):
     """Install the bundled rtl_buddy skill.
 
-    Default scope is user-level (`~/.claude/skills/rtl_buddy/` and
-    `~/.codex/skills/rtl_buddy/`). Use `--project` to install into the
+    Default scope is user-level (`~/.claude/skills/rtl-buddy/` and
+    `~/.codex/skills/rtl-buddy/`). Use `--project` to install into the
     discovered project root instead; project-level copies take precedence
     over user-level when both exist. Use `--dir PATH` to write a single
-    `PATH/rtl_buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`
+    `PATH/rtl-buddy/SKILL.md` directly, bypassing the `.claude`/`.agents`
     layout entirely.
+
+    Installs made before the directory was renamed to `rtl-buddy` are
+    migrated: a sibling `rtl_buddy/` carrying our version marker is removed
+    so no stale second copy is left behind.
     """
     if directory is not None:
         if project or root is not None:
@@ -201,6 +289,7 @@ def cmd_install(
 
     changed = 0
     unchanged = 0
+    migrated = 0
     for label, target_dir in targets:
         skill_path = target_dir / SKILL_FILENAME
         marker_path = target_dir / VERSION_MARKER
@@ -221,11 +310,25 @@ def cmd_install(
         elif not needs_write:
             unchanged += 1
 
+        legacy = _legacy_dir(target_dir)
+        if _is_ours(legacy):
+            if dry_run:
+                typer.echo(f"  [{label:>6}] {legacy}  — would remove (legacy name)")
+            else:
+                _remove_skill_files(legacy)
+                typer.echo(f"  [{label:>6}] {legacy}  — removed (legacy name)")
+                migrated += 1
+
     typer.echo("")
     if dry_run:
         typer.echo("Dry run — no files written.")
     else:
         typer.echo(f"Wrote {changed} file(s); {unchanged} already up to date.")
+        if migrated:
+            typer.echo(
+                f"Migrated {migrated} legacy `{LEGACY_SKILL_DIRNAME}` install(s) "
+                f"to `{SKILL_DIRNAME}`."
+            )
 
     if scope == "project" and not no_gitignore:
         gitignore_path = base / ".gitignore"
@@ -257,7 +360,11 @@ def cmd_uninstall(
         bool, typer.Option("--no-codex", help="skip the Codex target")
     ] = False,
 ):
-    """Remove the installed rtl_buddy skill files from the selected scope."""
+    """Remove the installed rtl_buddy skill files from the selected scope.
+
+    Both the current `rtl-buddy` directory and the legacy `rtl_buddy` one are
+    cleaned, so an install predating the rename is fully removed.
+    """
     scope, base = _resolve_root(project, root)
     targets = _targets(
         scope, base, include_claude=not no_claude, include_codex=not no_codex
@@ -265,16 +372,10 @@ def cmd_uninstall(
 
     removed = 0
     for label, target_dir in targets:
-        skill_path = target_dir / SKILL_FILENAME
-        marker_path = target_dir / VERSION_MARKER
-        if skill_path.is_file():
-            skill_path.unlink()
-            removed += 1
-            typer.echo(f"  [{label:>6}] removed {skill_path}")
-        if marker_path.is_file():
-            marker_path.unlink()
-        if target_dir.is_dir() and not any(target_dir.iterdir()):
-            target_dir.rmdir()
+        for candidate in (target_dir, _legacy_dir(target_dir)):
+            if _remove_skill_files(candidate):
+                removed += 1
+                typer.echo(f"  [{label:>6}] removed {candidate / SKILL_FILENAME}")
 
     if removed == 0:
         typer.echo("Nothing to remove.")
@@ -309,8 +410,21 @@ def cmd_status(
     for label, target_dir in targets:
         marker = target_dir / VERSION_MARKER
         skill_path = target_dir / SKILL_FILENAME
+        legacy = _legacy_dir(target_dir)
+        # Current install wins; the legacy path is only ever a FALLBACK
+        # report. A target carrying both spellings is unreachable through
+        # `install` (which migrates the sibling every time) but reachable by
+        # a partial invocation — `install --no-codex` on a machine an older
+        # release wrote both targets on — and there the current directory is
+        # the one in use, so reporting it alone is correct, not an oversight.
         if not skill_path.is_file():
-            state = "not installed"
+            if (legacy / SKILL_FILENAME).is_file() and _is_ours(legacy):
+                state = (
+                    f"installed at legacy path {legacy} "
+                    "(re-run `rtl-buddy skill install` to migrate)"
+                )
+            else:
+                state = "not installed"
         elif marker.is_file():
             on_disk = marker.read_text().strip()
             state = f"installed @ {on_disk}" + (
