@@ -1650,9 +1650,17 @@ def test_fpv_param_tokens_render_scalars_for_yosys(tmp_path):
         ("params: 8\n", "failed to load"),
         ("params:\n      - K\n", "failed to load"),
         # a value yosys could not tokenise: it splits script lines on
-        # whitespace and does not honour quotes
-        ('params:\n      K: "8 + 1"\n', "whitespace"),
+        # whitespace, and quotes inside a token are not grouping characters
+        ('params:\n      K: "8 + 1"\n', "may not contain"),
         ('params:\n      K: ""\n', "empty"),
+        # `#` starts a yosys comment for the rest of the LINE, mid-line
+        # included, so a value carrying one silently swallows the source
+        # files that follow it on the read line.
+        ('params:\n      K: "4#"\n', "may not contain"),
+        # `;` does not separate commands in a script file — it reaches the
+        # frontend and dies as a syntax error inside the design source,
+        # with nothing pointing back at fpv.yaml.
+        ('params:\n      K: "4;stat"\n', "may not contain"),
         # PyYAML is YAML 1.1: a bare `on:` key parses as the boolean True,
         # which is not an identifier — caught here rather than emitted as
         # `chparam -set True ...`
@@ -1824,3 +1832,17 @@ def test_params_reduce_elaboration_slang_frontend(tmp_path):
     work = tmp_path / "run_slang"
     work.mkdir()
     assert _yosys_port_bits(sby_path, work) == 6
+
+
+def test_fpv_get_params_hands_back_a_copy(tmp_path):
+    """The returned dict is stamped onto a graph node and serialized, so
+    config state must not share an object with the payload."""
+    cfg = FpvSuiteConfig(str(_write_params_suite(tmp_path)))
+    v = cfg.get_verifications("mod_a_k8")[0]
+    before = v.get_params()
+
+    mutated = v.get_params()
+    mutated["K"] = 999
+    mutated["INJECTED"] = 1
+
+    assert v.get_params() == before

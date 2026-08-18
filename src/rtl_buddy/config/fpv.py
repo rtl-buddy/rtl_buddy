@@ -116,6 +116,24 @@ _VALID_FRONTENDS = ("verilog", "slang")
 # emitted straight into a yosys script line.
 _PARAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
+# Characters a rendered value may not carry, because the token is spliced
+# verbatim into a yosys *script line*. Measured against yosys 0.64+193:
+#
+# * whitespace — yosys tokenises a script line on it, so the tail of the
+#   value becomes a bogus extra argument.
+# * `#` — starts a comment for the REST OF THE LINE, mid-line included. A
+#   value containing one silently swallows every argument after it,
+#   including the source files: `read_verilog -DW=4 #x w.v` fails with
+#   "Command syntax error: No filename given".
+# * `;` — does NOT separate commands in a script file (it reaches the
+#   frontend and dies as a syntax error *inside the design source*), which
+#   is if anything a worse diagnostic: nothing in it points back at
+#   fpv.yaml. Rejected for the same reason the whole validator exists.
+#
+# None of these is a security boundary — fpv.yaml is project-authored — and
+# none is meaningful in a SystemVerilog parameter value.
+_SCRIPT_UNSAFE_RE = re.compile(r"[\s;#]")
+
 
 def render_param_value(value: int | bool | str) -> str:
     """Render one `params:` value as the token a yosys script takes.
@@ -154,18 +172,25 @@ def validate_params(name: str, params: dict | None) -> dict[str, int | bool | st
                 f"{name}: fpv `params:` name {key!r} is not a valid "
                 f"SystemVerilog identifier"
             )
-        if not isinstance(value, (int, bool, str)):
+        # `bool` is a subclass of `int`, so it is already admitted here —
+        # `render_param_value` is where the two part company.
+        if not isinstance(value, (int, str)):
             raise FatalRtlBuddyError(
                 f"{name}: fpv `params:` value for '{key}' must be an integer, "
                 f"a boolean, or a string holding a SystemVerilog literal "
                 f"(got {type(value).__name__})"
             )
         rendered = render_param_value(value)
-        if not rendered or rendered.split() != [rendered]:
+        if not rendered:
             raise FatalRtlBuddyError(
-                f"{name}: fpv `params:` value for '{key}' may not be empty or "
-                f"contain whitespace (yosys splits a script line on "
-                f"whitespace): {value!r}"
+                f"{name}: fpv `params:` value for '{key}' may not be empty"
+            )
+        bad = _SCRIPT_UNSAFE_RE.search(rendered)
+        if bad:
+            raise FatalRtlBuddyError(
+                f"{name}: fpv `params:` value for '{key}' may not contain "
+                f"{bad.group(0)!r} — the token is spliced verbatim into a "
+                f"yosys script line: {value!r}"
             )
         out[key] = value
     return out
@@ -314,7 +339,10 @@ class FpvConfig:
         return self.frontend
 
     def get_params(self) -> dict[str, int | bool | str]:
-        return self.params
+        # A copy: the return value is stamped onto a graph node and
+        # serialized, and config state should not share an object with a
+        # payload someone downstream may mutate.
+        return dict(self.params)
 
     def get_param_tokens(self) -> list[tuple[str, str]]:
         """`(name, yosys-ready value token)` pairs, in declaration order."""

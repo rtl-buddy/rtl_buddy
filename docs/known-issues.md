@@ -528,6 +528,18 @@ the
 [per-tree artefact lock](#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)
 (with that quirk's NFS caveat applying here too).
 
+## Whitespace in a path or a define/parameter value does not survive a yosys script line
+
+yosys splits a script line on **whitespace**, and it is not a shell. Measured against yosys 0.64+193:
+
+- `read_verilog -DX="a b" t.v` fails with ``File `b"' not found`` — the double quotes grouped nothing and the closing one stayed attached to the stray token.
+- A token that *begins* with `"` is the one exception: it is grouped to the matching `"`, and those quotes are stripped.
+- Quotes anywhere else in a token pass through **verbatim**. `-DW="4"` reaches the frontend as the string literal `"4"`, so a `[`W-1:0]` port elaborates 52 bits wide rather than 4. This is what makes a string-typed `params:` override work — `-G MODE="small"` elaborates, while `-G MODE=small` is rejected by slang as "not a valid form of parameter override".
+- `#` starts a comment for the rest of the line, **mid-line included**: `read_verilog -DW=4 #x w.v` fails with "Command syntax error: No filename given", i.e. the source files were silently swallowed.
+- `;` does **not** separate commands inside a script file. It reaches the frontend and dies as a syntax error in the design source, with nothing pointing back at the config that produced it.
+
+Consequences for rtl_buddy: `rb fpv` and `rb synth` `shlex.quote` the paths they emit, which is a no-op on an ordinary path and does **not** rescue one containing a space — `shlex.quote` emits *single* quotes, which yosys does not honour, so `'a dir/x.v'` fails as ``File `'a' not found``. Keep design and artefact paths free of whitespace for the yosys-backed flows. `fpv.yaml`'s `params:` validator rejects whitespace, `;` and `#` in a value at config-load time for the same reason, so a bad override is named at load rather than surfacing as an unrelated `read_slang` error deep in `fpv.log`.
+
 ## A wrong FPV plugin path degrades COI coverage silently
 
 `rb fpv` / `rb fpv-regression` treat the cone-of-influence pass as best-effort: when the yosys COI script fails — most commonly because the yosys-slang plugin path is wrong (stale `plugin-path`, an unbuilt `slang.so`, or a sibling-checkout convention that doesn't hold on this machine) — the run only emits `fpv coi_yosys_failed` WARNINGs and drops the COI column. The verification verdict itself still PASSes, because the proof pipeline loads the plugin separately, so a broken plugin location can sit unnoticed while COI coverage quietly reports nothing.

@@ -130,16 +130,36 @@ def render_slang_read(
       ``prep`` with "Module `X' is used with parameters but is not
       parametric!". slang's own top-level override is the only route.
 
-    Filesystem paths are ``shlex.quote``d: yosys tokenises each script line
-    shell-style, so a single unquoted space (e.g. a path with a space) would
-    break the whole read_slang line (same convention as ``synth_yosys.py``).
+    Filesystem paths are ``shlex.quote``d, the same convention as
+    ``synth_yosys.py``. Measured against yosys 0.64+193, that convention is
+    weaker than it looks and the rule it protects against is worth stating
+    exactly, because two comments in this function used to disagree:
+
+    * yosys splits a script line on **whitespace**. It is not a shell:
+      ``read_verilog -DX="a b" t.v`` fails with ``File `b"' not found``,
+      i.e. the quotes did not group anything and the closing one stayed
+      attached.
+    * A token that *begins* with ``"`` is the one exception — it is grouped
+      to the matching ``"`` and those quotes are stripped.
+    * Quotes anywhere else in a token pass through **verbatim**:
+      ``-DW="4"`` reaches the frontend as the string literal ``"4"``
+      (``[`W-1:0]`` becomes 52 bits wide, not 4).
+
+    So ``shlex.quote`` is a no-op on an ordinary path and does not rescue
+    one containing a space: it emits *single* quotes, which yosys does not
+    honour, so ``'a dir/x.v'`` fails as ``File `'a' not found``. Whitespace
+    in a source path simply does not work on a yosys script line; see
+    ``docs/known-issues.md``. The call is kept for the escaping it does do
+    and for parity with ``synth_yosys.py``.
     """
     inc_args = "".join(f" -I {shlex.quote(inc)}" for inc in incdirs)
     def_args = "".join(f" -D{d}" for d in (defines or []))
-    # Not shlex.quote()d: yosys splits a script line on whitespace and does
-    # not strip quotes, so quoting here would hand slang the quote
+    # Not shlex.quote()d, per the third rule above: a quote inside a token
+    # survives verbatim, so quoting here would hand slang the quote
     # characters. Values are whitespace-free by config validation, and a
-    # string-typed parameter carries its own inner quotes.
+    # string-typed parameter carries its own inner quotes — which is exactly
+    # what makes it work: `-G MODE="small"` elaborates, `-G MODE=small` is
+    # rejected by slang as "not a valid form of parameter override".
     param_args = "".join(f" -G {name}={value}" for name, value in (params or []))
     src_args = " ".join(shlex.quote(s) for s in sources)
     return (
