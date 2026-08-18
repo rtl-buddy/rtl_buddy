@@ -1149,7 +1149,14 @@ Usage: rtl-buddy hub start [OPTIONS]
                                                                                         
 ╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 │ --foreground       --daemon                                    Run in the foreground │
-│                                                                (default).            │
+│                                                                (default). --daemon   │
+│                                                                detaches the hub into │
+│                                                                its own session,      │
+│                                                                redirects its output  │
+│                                                                to hub.log, and       │
+│                                                                returns as soon as    │
+│                                                                .rtl-buddy/hub.json   │
+│                                                                is published.         │
 │                                                                [default: foreground] │
 │ --serve-viewer     --no-serve-viewer                           Also serve the viewer │
 │                                                                HTTP+WebSocket layer  │

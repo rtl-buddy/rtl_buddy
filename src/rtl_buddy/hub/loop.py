@@ -142,7 +142,8 @@ def _print_startup_banner(
     ``.rtl-buddy/hub.json`` so they don't need this output — the
     browser-bound viewer URL is the main thing we're surfacing. The
     explicit "Press Ctrl-C" line documents that the foregrounded
-    process is by design (``--daemon`` warns and stays in foreground).
+    process is by design; ``rb hub start --daemon`` re-launches this
+    same code path detached and prints its own, shorter banner.
     """
     lines = ["rtl-buddy-hub running."]
     if http_port is not None:

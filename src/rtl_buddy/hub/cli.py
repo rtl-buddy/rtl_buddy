@@ -29,6 +29,7 @@ from ..config.root import discover_project_root
 from ..errors import FatalRtlBuddyError
 from ..logging_utils import emit_console_text, log_event
 from . import config as hub_config
+from . import daemonize
 from . import discovery
 from . import launchagent
 from . import landing_page
@@ -75,7 +76,15 @@ def _resolve_config(project_root: Path) -> hub_config.HubConfig:
 def cmd_start(
     foreground: Annotated[
         bool,
-        typer.Option("--foreground/--daemon", help="Run in the foreground (default)."),
+        typer.Option(
+            "--foreground/--daemon",
+            help=(
+                "Run in the foreground (default). --daemon detaches the "
+                "hub into its own session, redirects its output to "
+                "hub.log, and returns as soon as .rtl-buddy/hub.json is "
+                "published."
+            ),
+        ),
     ] = True,
     serve_viewer: Annotated[
         bool,
@@ -179,15 +188,11 @@ def cmd_start(
     asyncio loop starts so a misconfigured project fails immediately
     rather than hanging in an event loop. The loop exits cleanly on
     SIGINT / SIGTERM / ``rb hub stop`` and removes its discovery file.
-    """
 
-    if not foreground:
-        emit_console_text(
-            "rb hub start --daemon: background detach not implemented yet; "
-            "wrap with `nohup rb hub start &` or use a process manager. "
-            "Running in foreground.",
-            style="yellow",
-        )
+    With ``--daemon`` the preflight still runs here, then the real work
+    is re-launched detached (see :mod:`rtl_buddy.hub.daemonize`) and
+    this process returns once the child has published ``hub.json``.
+    """
 
     if viewer_bundle is not None and not serve_viewer:
         emit_console_text(
@@ -247,6 +252,37 @@ def cmd_start(
         )
         raise typer.Exit(code=2)
 
+    if not foreground:
+        # Detach *before* any of the expensive start-up work below.
+        # Everything from here down — view.json generation, viewer-bundle
+        # discovery, socket binds — then happens in the exec'd child on
+        # the ordinary --foreground path, which is both fork-safe (see
+        # daemonize's module docstring) and the code path already under
+        # test. The parent only waits for hub.json to appear.
+        #
+        # Path arguments are absolutised at the handoff. Typer hands them
+        # over unresolved, and the child runs with `cwd=project_root`, so a
+        # relative `--viewer-bundle ../../../viewer/dist` given from a
+        # `verif/` subdirectory would mean one thing in the foreground and a
+        # different (usually non-existent) thing in the daemon. Worse for
+        # `--axi-perf-from`, whose existence check above runs against the
+        # invocation cwd: without this, the preflight would no longer be
+        # guarding the file the child opens. Guidelines: explicit CLI paths
+        # stay relative to `invocation_cwd`, and a path handed to another
+        # process is made absolute.
+        _start_daemon(
+            project_root,
+            cfg,
+            serve_viewer=serve_viewer,
+            viewer_bundle=viewer_bundle.resolve() if viewer_bundle else None,
+            listen_port=listen_port,
+            http_port=http_port,
+            model=model,
+            models_file=models_file.resolve() if models_file else None,
+            axi_perf_from=axi_perf_from.resolve() if axi_perf_from else None,
+        )
+        return
+
     view_json_override: Path | None = None
     if model is not None:
         _models_yaml, loader = hub_model_discovery.resolve_model(
@@ -288,6 +324,76 @@ def cmd_start(
             axi_perf_source=axi_perf_from,
         )
     )
+
+
+def _start_daemon(
+    project_root: Path,
+    cfg: hub_config.HubConfig,
+    *,
+    serve_viewer: bool,
+    viewer_bundle: Path | None,
+    listen_port: int | None,
+    http_port: int | None,
+    model: str | None,
+    models_file: Path | None,
+    axi_perf_from: Path | None,
+) -> None:
+    """``rb hub start --daemon``: detach, wait for readiness, report.
+
+    Returning before the hub is actually listening would just move the
+    race into the user's next command (``rb hub status`` / an adapter
+    connecting), so the parent blocks on ``hub.json`` — usually well
+    under a second — and prints the same URLs the foreground banner
+    does. A child that dies first surfaces with its ``hub.log`` tail
+    rather than a bare exit code.
+    """
+
+    log_path = (project_root / cfg.hub.log_path).resolve()
+    try:
+        record = daemonize.start_detached(
+            project_root,
+            log_path=log_path,
+            serve_viewer=serve_viewer,
+            viewer_bundle=viewer_bundle,
+            listen_port=listen_port,
+            http_port=http_port,
+            model=model,
+            models_file=models_file,
+            axi_perf_from=axi_perf_from,
+        )
+    except daemonize.DaemonStartError as exc:
+        log_event(
+            logger,
+            logging.ERROR,
+            "hub.start.daemon_failed",
+            project_root=str(project_root),
+            error=str(exc),
+        )
+        emit_console_text(f"rb hub start --daemon: {exc}", style="red")
+        if exc.log_tail:
+            emit_console_text(f"--- tail of {log_path} ---", style="yellow")
+            emit_console_text(exc.log_tail, markup=False)
+        raise typer.Exit(code=1)
+
+    log_event(
+        logger,
+        logging.INFO,
+        "hub.start.daemonized",
+        pid=record.pid,
+        tcp=record.tcp,
+        http_port=record.http_port if record.http_port is not None else -1,
+        project_root=str(project_root),
+    )
+
+    lines = [f"rtl-buddy-hub started in the background (pid {record.pid})."]
+    if record.http_port is not None:
+        base = f"http://127.0.0.1:{record.http_port}"
+        lines.append(f"  Hub:      {base}/")
+        lines.append(f"  Viewer:   {base}{landing_page.VIEW_PAGE_ROUTE}")
+    lines.append(f"  TCP:      {record.tcp}")
+    lines.append(f"  Logs:     {log_path}")
+    lines.append("Use `rb hub stop` to shut it down.")
+    emit_console_text("\n".join(lines))
 
 
 @app.command("stop", help="ask the running hub to shut down")
