@@ -288,6 +288,12 @@ cfg-dispatch:
   poll-interval: 10         # seconds between queue polls (> 0)
   progress-interval: 60     # seconds between console progress lines (0 = quiet)
   max-wait: 7200            # seconds to wait for the fleet (unset = unbounded)
+  retry:                    # retry budget for license-queue kills (off by default)
+    attempts: 2             # EXTRA attempts after the first
+    backoff-sec: 60         # first delay, doubling per attempt
+    backoff-max-sec: 600    # cap
+    jitter: 0.5             # +/- fraction applied to each delay
+    classifiers: [license-queue]   # what may be retried
   rightsize:                # reservation right-sizing (see below)
     report: true
     over-threshold: 0.5
@@ -318,6 +324,148 @@ several suites submits several arrays, so peak concurrency is roughly
     Quote every one, in `cfg-dispatch.resources`, `cfg-dispatch.compile`,
     and per-testbench / per-test `resources:` alike. See
     [Known Issues](../known-issues.md#an-unquoted-time-in-cfg-dispatchresources-is-yaml-sexagesimal).
+
+## Retrying a license-queue kill
+
+A dispatched sim that waits for a VCS license seat waits **inside its
+allocation**: the seat and the reservation are two different clocks, and
+when the reservation runs out first the scheduler kills the job. It leaves
+no result envelope, so the head scores it a failure — `dispatch job 6553_2
+produced no result (scheduler state TIMEOUT)`. Nothing about the test was
+wrong; it never got to run.
+
+`retry:` gives those jobs another go. It is **off unless you set
+`attempts`**, and it is deliberately narrow — a job is retried only when
+*both* hold:
+
+- the scheduler state is a **resource condition**: `TIMEOUT`, `NODE_FAIL`
+  or `PREEMPTED` (a `FAILED` or `CANCELLED` job decided its own outcome
+  and is never retried), **and**
+- the job's own output ends **inside the license queue**: after the last
+  `-licqueue` marker, everything the job captured is queue-banner
+  vocabulary — the repeated banner, the polling dots, the `HIT CTRL-C to
+  exit` hint, a truncated last line. rtl-buddy looks in `test.log` /
+  `test.err`, then the job's `rtl_buddy-*.log` and the scheduler's log
+  beside it, and only accepts files written since this attempt was
+  submitted (`artefacts/<test>/test.log` is keyed on the test, not on the
+  run, so an older one is a previous run's).
+
+The banner's *presence* is deliberately not the rule. Most jobs that
+print it go on to get a seat and run perfectly well — 376 of 657 in the
+run that motivated this — so a sim that queued, was granted its seat, ran
+and *then* hung would be resubmitted by a rule that only looked for the
+marker. The discriminator is the same one that pauses the `sim_timeout`
+clock live: a complete line outside the banner's vocabulary means the seat
+was granted. A testbench that hung after its seat has such a line; a
+testbench that hung without ever queueing has no marker at all. Neither is
+retried — retrying either would re-run a genuine failure and burn the
+reservation twice.
+
+A job is also never retried when its suite's **build job did not report
+success**. Such a sim never started (`afterok` cancelled it), so it has no
+evidence of its own to classify, and resubmitting it would launch a job
+the head deliberately skipped — ungated, because a retry carries no
+`afterok` edge (the build job has left the queue and an `afterok` on a job
+the scheduler has forgotten never becomes satisfiable). Requiring the gate
+to have opened is what keeps the retry safe: the shared build's stamp is
+on disk, so the retried element short-circuits its own compile exactly as
+the first attempt did.
+
+And a job that vanishes still fails when the budget runs out: **no retry
+ever turns a missing result green.** The exhausted row says how many
+attempts it got.
+
+On `local-parallel` there is no scheduler and no accounting source, so
+there is no state to require: the **queue evidence alone** decides there.
+Nothing killed the job from outside, so a missing envelope from a sim that
+was demonstrably still waiting for a seat is the same shape without a
+scheduler to name it.
+
+Retry covers **sim jobs only**. A build job's elaboration honours
+`-licqueue` the same way and can lose the same race, but a build kill
+dooms a whole suite's fan-out at once and re-running it is a much larger
+bet than re-running one sim, so it stays out for now.
+
+```yaml
+cfg-dispatch:
+  retry:
+    attempts: 2            # at most three submissions of one job
+    backoff-sec: 60
+    backoff-max-sec: 600
+    jitter: 0.5
+    classifiers: [license-queue]   # the only classifier that exists today
+```
+
+(The key is `classifiers`, not `on`: PyYAML parses YAML 1.1, where an
+unquoted `on:` key is the boolean `true` — the pin would never reach the
+config and an unknown classifier could never be rejected.)
+
+The delay before attempt *n* is
+`min(backoff-max-sec, backoff-sec × 2^(n-1))`, multiplied by
+`uniform(1 - jitter, 1 + jitter)`.
+
+!!! note "Why the delay is both growing and random"
+    The jobs that lose a seat race lose it *together*: they queued behind
+    the same exhausted pool, so their reservations expire within seconds of
+    each other. Resubmitting them immediately puts the whole batch back in
+    front of a pool that is still full and they time out together again —
+    a synchronised retry storm. A *fixed* delay keeps the batch in
+    lockstep; the jitter decorrelates them so they trickle back as seats
+    free.
+
+The wait is served by the **backend**, never slept in the head: Slurm gets
+`--begin=now+<delay>` and holds the job `PENDING` (occupying no
+allocation — the point, since the pool that killed the first attempt is
+not made freer by a second allocation sitting on it), and `local-parallel`
+holds it in its own queue, taking no pool slot. Each attempt writes its
+own **scheduler** log (`slurm-<tag>-retry<N>.log`), so those are kept side
+by side; the result envelope path does not move, and neither does the
+sim's own capture — `artefacts/<test>/test.log` and the per-job
+`rtl_buddy-<tag>.log` are **truncated by the next attempt**, so if the
+banner landed only there, the retry overwrites the evidence for itself.
+The `dispatch.retry` console line and the `dispatch.result_missing` entry
+in `rtl_buddy.log` are the durable record of why the retry happened.
+
+Every retry logs `dispatch.retry` **on the console**, naming the attempt,
+the delay and the classifier, so a green run that needed three attempts is
+not indistinguishable from one that needed none:
+
+```text
+dispatch: retrying seqr_add_fp16_cpc8 (job 6553_2) in 1m04s — license-queue, attempt 1 of 2
+```
+
+A retry that cannot be launched — `sbatch` refusing the submission, or
+`max-wait` elapsing on the second round — is **not** fatal to the run: the
+rows for that pass are already written and already say the jobs produced
+no result, so rtl-buddy logs `dispatch.retry_abandoned` and keeps the
+regression it has scored rather than discarding the summary and the exit
+code.
+
+!!! note "Retry and `max-wait`"
+    `max-wait` bounds **each** wait, not their sum: a run with retry
+    enabled can take up to roughly `attempts × (backoff + max-wait)`. The
+    backoff itself is not charged against it — a held job is outstanding
+    for the whole delay (Slurm reports it `PENDING`/`BeginTime`, the pool
+    keeps it queued), so each retry round's deadline is widened by the
+    delay the head asked for. Without that, a `max-wait` shorter than the
+    backoff would trip on every retry before the job was allowed to start.
+
+!!! note "`--begin` and `sbatch-args`"
+    The retry's `--begin=now+<delay>` is emitted **before**
+    `cfg-dispatch.sbatch-args`, and `sbatch` takes the last occurrence of a
+    duplicated flag. A site that passes its own `--begin` through
+    `sbatch-args` therefore wins — consistent with how every other
+    `sbatch-args` override behaves, but it means the retry's hold does not
+    happen. Drop `--begin` from `sbatch-args` if you want the backoff.
+
+!!! warning "Retry is the portable half of the fix"
+    A retried job still occupies a full allocation per attempt and can
+    still lose the race. The complete fix is scheduler-side license
+    gating — `Licenses=` in `slurm.conf`, then `--licenses=<name>:1`
+    through `cfg-dispatch.sbatch-args` — where the job stays `PENDING`
+    with no allocation until a token frees. That needs a cluster admin, so
+    retry is what rtl-buddy can ship on its own
+    ([#405](https://github.com/rtl-buddy/rtl_buddy/issues/405)).
 
 ## Watching a run
 

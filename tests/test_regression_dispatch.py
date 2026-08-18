@@ -9,6 +9,8 @@ mapping, and result ordering — no scheduler or simulator involved.
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -19,7 +21,7 @@ from rtl_buddy.dispatch.base import DispatchBackend, JobHandle
 from rtl_buddy.dispatch.plan import read_plan_token
 from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
-from rtl_buddy.runner.result_io import write_result_json
+from rtl_buddy.runner.result_io import write_build_result_json, write_result_json
 from rtl_buddy.runner.test_results import (
     CompileFailResults,
     EarlyStopResults,
@@ -41,12 +43,17 @@ class _FakeBackend(DispatchBackend):
         self.dependencies = []
         self.waited = False
         self.cancelled = False
+        self.extra_waits = []
 
     def submit_build(self, spec):
         self.build_submitted.append(spec)
         return JobHandle(job_id="fake-build", spec=spec)
 
-    def submit(self, spec, *, dependency=None):
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        # `delay_sec` is accepted (and ignored) so the base fake matches the
+        # DispatchBackend ABC: a backend that does not take the retry
+        # backoff kwarg is exactly the out-of-tree breakage #405 introduced,
+        # and nothing would catch it if only the retry fake had it.
         self.submitted.append(spec)
         self.dependencies.append(dependency)
         if self.write_results:
@@ -68,8 +75,9 @@ class _FakeBackend(DispatchBackend):
             )
         return JobHandle(job_id=f"fake-{len(self.submitted)}", spec=spec)
 
-    def wait_all(self, handles):
+    def wait_all(self, handles, *, extra_wait=0.0):
         self.waited = True
+        self.extra_waits.append(extra_wait)
 
     def cancel_all(self, handles):
         self.cancelled = True
@@ -313,7 +321,7 @@ def test_dispatch_creates_log_parent_before_submit(
     seen_parent_exists = []
 
     class _CheckBackend(_FakeBackend):
-        def submit(self, spec, *, dependency=None):
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
             seen_parent_exists.append(spec.log_path.parent.is_dir())
             return super().submit(spec)
 
@@ -374,8 +382,6 @@ def test_build_compile_failure_surfaces_as_compile_fail(
     # recompile is then killed (writes no envelope). The head must map that
     # to a CompileFail — the clean design-error result the in-process path
     # produces — not an infrastructure DispatchFail.
-    from rtl_buddy.runner.result_io import write_build_result_json
-
     _mark_stub_builder_verilator(minimal_project)
 
     class _CompileFailBuild(_FakeBackend):
@@ -456,9 +462,9 @@ class _RecordingBackend(_FakeBackend):
         )
         return [self.submit(spec) for spec in specs]
 
-    def wait_all(self, handles):
+    def wait_all(self, handles, *, extra_wait=0.0):
         self.wait_calls += 1
-        super().wait_all(handles)
+        super().wait_all(handles, extra_wait=extra_wait)
 
     def collect_telemetry(self, handles):
         return self.telemetry
@@ -1362,3 +1368,525 @@ def test_randtest_announces_its_seed_fanout_before_waiting(
     assert len(recording_backend.submitted) == 3
     # ...plus the build job, so the announced count is the drained count.
     assert fields["jobs"] == 3 + (1 if fields.get("build_job") else 0)
+
+
+# ------------------------------------------------- #405: retry at collect
+
+
+LICENSE_BANNER = "Queuing for License... (Licensed number of users already reached)\n"
+
+
+class _RetryBackend(_FakeBackend):
+    """A fleet whose jobs die the way a license-queue kill dies.
+
+    Each submitted job writes the sim's own capture (with or without the
+    queue banner) and then either leaves no envelope — reported by
+    ``collect_telemetry`` as a scheduler ``TIMEOUT``, which is exactly the
+    #405 shape — or, from ``passes_on_attempt`` onward, writes a PASS.
+    """
+
+    def __init__(
+        self,
+        *,
+        banner=True,
+        passes_on_attempt=None,
+        state="TIMEOUT",
+        capture=True,
+        build_result=True,
+    ):
+        super().__init__(write_results=False)
+        self.banner = banner
+        self.passes_on_attempt = passes_on_attempt
+        self.state = state
+        # `capture` False: the job never ran, so it wrote no output at all
+        # — the shape of a sim whose build job failed underneath it.
+        self.capture = capture
+        # A real `rb _build-job` always writes its result file (that is how
+        # the head maps a compile failure to a CompileFail); `build_result`
+        # False is the build job that died before writing one.
+        self.build_result = build_result
+        self.attempts: dict[str, int] = {}
+        self.delays: list[float] = []
+        self.log_paths: list = []
+        self.states: dict[str, str] = {}
+        self.wait_calls = 0
+
+    def submit_build(self, spec):
+        # A real build job always writes its result file; the head now takes
+        # its absence as "the gate never opened" (#405 review).
+        if self.build_result:
+            write_build_result_json(spec.result_json, built=[], failed=[])
+        return super().submit_build(spec)
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        self.submitted.append(spec)
+        self.dependencies.append(dependency)
+        self.delays.append(delay_sec)
+        self.log_paths.append(spec.log_path)
+        attempt = self.attempts.get(spec.test_name, 0) + 1
+        self.attempts[spec.test_name] = attempt
+        job_id = f"fake-{len(self.submitted)}"
+
+        # Where the sim's own output lands — per run for a seed fan-out,
+        # which is also the granularity classification reads it back at.
+        if self.capture:
+            artefacts = Path(spec.suite_dir) / "artefacts" / spec.test_name
+            if spec.run_id is not None:
+                artefacts = artefacts / f"run-{spec.run_id:04d}"
+            artefacts.mkdir(parents=True, exist_ok=True)
+            (artefacts / "test.log").write_text(
+                LICENSE_BANNER if self.banner else "sim started\nrunning...\n"
+            )
+
+        if self.passes_on_attempt is not None and attempt >= self.passes_on_attempt:
+            write_result_json(
+                spec.result_json,
+                test_name=spec.test_name,
+                run_id=spec.run_id,
+                results=TestPassResults(name=spec.test_name + "/results"),
+                run_token=read_plan_token(spec.plan_path) if spec.plan_path else None,
+            )
+            self.states[job_id] = "COMPLETED"
+        else:
+            self.states[job_id] = self.state
+        return JobHandle(job_id=job_id, spec=spec)
+
+    def submit_array(self, specs, *, array_dir, max_parallel=None, dependency=None):
+        return [self.submit(spec, dependency=dependency) for spec in specs]
+
+    def wait_all(self, handles, *, extra_wait=0.0):
+        self.wait_calls += 1
+        super().wait_all(handles, extra_wait=extra_wait)
+
+    def collect_telemetry(self, handles):
+        return {h.job_id: {"state": self.states.get(h.job_id)} for h in handles}
+
+
+def _use_backend(monkeypatch: pytest.MonkeyPatch, backend):
+    monkeypatch.setattr(
+        rtl_buddy_module,
+        "create_dispatch_backend",
+        lambda name, cfg: backend if name not in (None, "local") else None,
+    )
+    return backend
+
+
+def _enable_retry(project: Path, *, attempts=2, backoff=5, cap=20, jitter=0.0):
+    """Write a deterministic retry budget (jitter off keeps delays exact)."""
+    root_cfg = project / "root_config.yaml"
+    root_cfg.write_text(
+        root_cfg.read_text()
+        + "\ncfg-dispatch:\n"
+        + "  retry:\n"
+        + f"    attempts: {attempts}\n"
+        + f"    backoff-sec: {backoff}\n"
+        + f"    backoff-max-sec: {cap}\n"
+        + f"    jitter: {jitter}\n"
+        + "    classifiers: [license-queue]\n"
+    )
+
+
+def _rows(result):
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    return {r["name"]: r for r in json.loads(payload_line)["payload"]["results"]}
+
+
+def test_license_queue_kill_is_retried_and_the_retry_can_pass(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _rows(result)["basic"]["result"] == "PASS"
+    # Two submissions of the same test, and the retry waited on its own.
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+    assert backend.wait_calls == 2
+    # First submission unheld; the retry held for the first backoff step.
+    assert backend.delays == [0.0, 5.0]
+
+
+def test_retry_emits_a_console_event_naming_attempt_delay_and_classifier(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    # A green run that needed two attempts must not read like one that
+    # needed none — and rb CLI events are only visible in the output.
+    assert "retrying basic" in result.output
+    assert "license-queue" in result.output
+    assert "attempt 1 of 2" in result.output
+
+
+def test_a_hung_test_is_not_retried(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Same TIMEOUT, no queue banner: the reservation was simply used up."""
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(banner=False))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+    assert "retrying basic" not in result.output
+
+
+def test_a_failed_job_is_not_retried_even_with_the_banner(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """FAILED is the job's own outcome, not the scheduler taking it away."""
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(state="FAILED"))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+
+
+def test_exhausted_budget_fails_and_says_how_many_attempts(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A vanished job never scores green, however many attempts it got."""
+    _enable_retry(minimal_project, attempts=2)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    row = _rows(result)["basic"]
+    assert row["result"] == "FAIL"
+    assert "after 3 attempts" in row["desc"]
+    # One initial submission plus the two the budget allows; the delays
+    # double, and the retries carry no build dependency (the build job has
+    # long since left the queue).
+    assert len(backend.submitted) == 3
+    assert backend.delays == [0.0, 5.0, 10.0]
+    assert backend.dependencies[1:] == [None, None]
+
+
+def test_backoff_is_capped(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project, attempts=3, backoff=5, cap=8)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    assert backend.delays == [0.0, 5.0, 8.0, 8.0]
+    # Each attempt's log names its own attempt, not every attempt before it.
+    assert [Path(p).name for p in backend.log_paths] == [
+        "fake-single.log",
+        "fake-single-retry1.log",
+        "fake-single-retry2.log",
+        "fake-single-retry3.log",
+    ]
+
+
+def test_each_attempt_keeps_its_own_scheduler_log(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The first attempt's banner is the evidence for the retry — keep it."""
+    _enable_retry(minimal_project, attempts=1)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    first, retried = backend.log_paths
+    assert Path(first).name == "fake-single.log"
+    assert Path(retried).name == "fake-single-retry1.log"
+    # The envelope path is the one contract the job and the head share, so
+    # it must NOT move between attempts.
+    assert backend.submitted[0].result_json == backend.submitted[1].result_json
+
+
+def test_without_a_retry_block_a_license_queue_kill_still_fails_once(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Default off: identical behaviour to before #405."""
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert len(backend.submitted) == 1
+    assert backend.wait_calls == 1
+    # No attempt count anywhere in the row: with retry off there is nothing
+    # to count, and "after N attempts" must not appear.
+    desc = _rows(result)["basic"]["desc"]
+    assert "attempt" not in desc, desc
+
+
+def test_randtest_seeds_retry_independently(
+    minimal_project: Path,
+    stub_build_runner: type[_StubBuildRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Retry is per (test, run_id), so one queued seed does not resubmit all."""
+    _enable_retry(minimal_project, attempts=1)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=None))
+
+    result, _ = _invoke(["--machine", "randtest", "basic", "2", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    # Two seeds, each retried once.
+    assert [spec.run_id for spec in backend.submitted] == [1, 2, 1, 2]
+    assert backend.delays == [0.0, 0.0, 5.0, 5.0]
+
+
+class _PoolRetryBackend(_RetryBackend):
+    """A backend shaped exactly like ``local-parallel``: no scheduler at all.
+
+    ``scheduled`` is False and ``collect_telemetry`` is empty by design, so
+    there is no scheduler state for the classifier to read. If retry
+    required one, it could never fire here (#405 review).
+    """
+
+    name = "fake-pool"
+    scheduled = False
+
+    def collect_telemetry(self, handles):
+        return {}
+
+
+def test_retry_fires_on_a_backend_with_no_scheduler_state(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _PoolRetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 0, result.output
+    assert _rows(result)["basic"]["result"] == "PASS"
+    assert [spec.test_name for spec in backend.submitted] == ["basic", "basic"]
+    assert backend.delays == [0.0, 5.0]
+
+
+def test_a_pool_backend_still_needs_the_banner_to_retry(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No scheduler state to require does not mean no evidence required."""
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _PoolRetryBackend(banner=False))
+
+    result, _ = _invoke(
+        ["regression", "-c", "regression.yaml", "--dispatch", "local-parallel"]
+    )
+    assert result.exit_code == 1, result.output
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+
+
+def test_the_retry_wait_allows_for_the_backoff_it_imposed(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """max-wait must not be spent on the hold the head itself asked for.
+
+    A held job is outstanding for the whole backoff, so the retry round's
+    deadline is widened by that delay; otherwise a max-wait shorter than
+    the backoff would trip on every retry before the job could start.
+    """
+    _enable_retry(minimal_project, attempts=1, backoff=5, cap=20)
+    backend = _use_backend(monkeypatch, _RetryBackend(passes_on_attempt=2))
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 0, result.output
+    # The first wait carries no allowance; the retry wait carries its delay.
+    assert backend.extra_waits == [0.0, 5.0]
+
+
+def test_a_job_whose_build_job_never_succeeded_is_not_retried(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """It never launched, so there is no attempt to retry (#405 review).
+
+    The build job dies without writing its result; every sim it gated is
+    cancelled (`afterok`) or skipped by the pool and writes nothing at all.
+    A banner left in `artefacts/basic/test.log` by an earlier run must not
+    make the head resubmit that sim — which it would do *ungated*, running
+    a job the head deliberately skipped.
+    """
+    _mark_stub_builder_verilator(minimal_project)  # so a build job is submitted
+    _enable_retry(minimal_project)
+    backend = _use_backend(
+        monkeypatch, _PoolRetryBackend(capture=False, build_result=False)
+    )
+    artefacts = minimal_project / "artefacts" / "basic"
+    artefacts.mkdir(parents=True, exist_ok=True)
+    (artefacts / "test.log").write_text(LICENSE_BANNER)
+
+    result, _ = _invoke(
+        [
+            "--machine",
+            "regression",
+            "-c",
+            "regression.yaml",
+            "--dispatch",
+            "local-parallel",
+        ]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+    # ...and the one submission there was kept its build gate.
+    assert backend.dependencies == ["fake-build"]
+
+
+def test_a_stale_capture_from_an_earlier_run_is_not_evidence(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """`artefacts/<test>/test.log` is never cleaned between runs.
+
+    This attempt wrote nothing; the banner on disk predates its
+    submission, so it is a previous run's and cannot justify a retry.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _RetryBackend(capture=False))
+    artefacts = minimal_project / "artefacts" / "basic"
+    artefacts.mkdir(parents=True, exist_ok=True)
+    stale = artefacts / "test.log"
+    stale.write_text(LICENSE_BANNER)
+    two_days_ago = time.time() - 2 * 86400
+    os.utime(stale, (two_days_ago, two_days_ago))
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+
+
+def test_a_sim_that_got_its_seat_and_then_hung_is_not_retried(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Banner, then real simulator output, then the reservation ran out.
+
+    The common case, not a corner: most sims that print the banner do get a
+    seat. Retrying this one would re-run a genuine hang.
+    """
+    _enable_retry(minimal_project)
+
+    class _SeatGrantedThenHung(_RetryBackend):
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            handle = super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+            artefacts = Path(spec.suite_dir) / "artefacts" / spec.test_name
+            (artefacts / "test.log").write_text(
+                LICENSE_BANNER + "....\nVCS Simulation Report\nrunning...\n"
+            )
+            return handle
+
+    backend = _use_backend(monkeypatch, _SeatGrantedThenHung())
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert [spec.test_name for spec in backend.submitted] == ["basic"]
+    assert "retrying basic" not in result.output
+
+
+class _UnsubmittableRetryBackend(_RetryBackend):
+    """Accepts the first fan-out, refuses every retry — a flaky ``sbatch``."""
+
+    def submit(self, spec, *, dependency=None, delay_sec=0.0):
+        if delay_sec:
+            raise FatalRtlBuddyError("sbatch: error: Batch job submission failed")
+        return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+
+def test_a_failed_resubmission_keeps_the_results_already_collected(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A retry is a second chance, never a way to lose a scored regression.
+
+    The rows for the pass are already written and already say the job
+    produced no result, so a refusing scheduler degrades to those rather
+    than aborting the command with no summary and no machine payload.
+    """
+    _enable_retry(minimal_project)
+    backend = _use_backend(monkeypatch, _UnsubmittableRetryBackend())
+
+    result, _ = _invoke(
+        ["--machine", "regression", "-c", "regression.yaml", "--dispatch", "slurm"]
+    )
+    assert result.exit_code == 1, result.output
+    # The payload still exists, and the row is the honest one.
+    assert _rows(result)["basic"]["result"] == "FAIL"
+    assert backend.cancelled  # this attempt's jobs were taken down
+
+
+def test_an_abandoned_retry_says_so_on_the_console(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _enable_retry(minimal_project)
+    _use_backend(monkeypatch, _UnsubmittableRetryBackend())
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert result.exit_code == 1, result.output
+    assert "giving up on retry attempt 1" in result.output
+    assert "keeping the results already collected" in result.output
+
+
+def test_a_head_side_bug_in_the_retry_path_is_not_swallowed(
+    minimal_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The degrade-to-collected contract covers cluster weather, not bugs.
+
+    A refusing scheduler is survivable; a TypeError from rtl-buddy's own
+    head-side code is a defect, and burying it in `dispatch.retry_abandoned`
+    would hide the whole feature failing to launch anything.
+    """
+    _enable_retry(minimal_project)
+
+    class _BuggyRetryBackend(_RetryBackend):
+        def submit(self, spec, *, dependency=None, delay_sec=0.0):
+            if delay_sec:
+                raise TypeError("submit() got an unexpected keyword argument")
+            return super().submit(spec, dependency=dependency, delay_sec=delay_sec)
+
+    _use_backend(monkeypatch, _BuggyRetryBackend())
+
+    result, _ = _invoke(["regression", "-c", "regression.yaml", "--dispatch", "slurm"])
+    assert isinstance(result.exception, TypeError), result.output
+    assert "giving up on retry attempt" not in result.output

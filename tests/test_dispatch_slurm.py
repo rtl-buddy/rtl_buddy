@@ -937,3 +937,135 @@ def test_cancelled_warning_carries_the_grouped_ids(monkeypatch, caplog):
     ]
     assert record.__dict__["rtl_fields"]["job_ids"] == ["500_[1-2]", "42"]
     assert "500_[1-2]" in record.message
+
+
+# ------------------------------------------- #405: retry backoff via --begin
+
+
+def test_retry_delay_becomes_a_begin_flag(monkeypatch):
+    """The scheduler serves the backoff, so the delayed job holds nothing.
+
+    Sleeping in the head would keep the reservation the license pool needs
+    to drain; ``--begin`` leaves the job PENDING instead.
+    """
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), delay_sec=90.0)
+
+    (argv,) = calls
+    assert "--begin=now+90" in argv
+
+
+def test_no_begin_flag_without_a_delay(monkeypatch):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec())
+
+    (argv,) = calls
+    assert not any(a.startswith("--begin") for a in argv)
+
+
+@pytest.mark.parametrize(
+    "delay, expected",
+    [
+        (0.0, None),
+        (0.4, None),  # rounds to 0 s: an inert `now+0` is not worth emitting
+        (1.6, "--begin=now+2"),
+        (63.2, "--begin=now+63"),
+        (600.0, "--begin=now+600"),
+    ],
+)
+def test_begin_flag_rounds_to_whole_seconds(monkeypatch, delay, expected):
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    backend.submit(_spec(), delay_sec=delay)
+
+    (argv,) = calls
+    begin = [a for a in argv if a.startswith("--begin")]
+    assert begin == ([expected] if expected else [])
+
+
+def test_delayed_submit_still_carries_reservation_and_dependency(monkeypatch):
+    """A retry is a normal submit plus a hold — nothing else changes."""
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(
+        DispatchConfigFile(sbatch_args=["--partition=verif"]).initialise()
+    )
+
+    backend.submit(_spec(), dependency="88", delay_sec=30.0)
+
+    (argv,) = calls
+    assert "--begin=now+30" in argv
+    assert "--dependency=afterok:88" in argv
+    assert "--time=01:00:00" in argv
+    assert "--partition=verif" in argv
+    # sbatch-args stay last, so a site value still wins any duplicate.
+    assert argv.index("--begin=now+30") < argv.index("--partition=verif")
+
+
+def test_submitted_event_records_the_backoff(monkeypatch, caplog):
+    import logging
+
+    calls, results = [], [SimpleNamespace(returncode=0, stdout="9\n", stderr="")]
+    monkeypatch.setattr(slurm_module.subprocess, "run", _fake_run(calls, results))
+    backend = SlurmDispatchBackend(DispatchConfigFile().initialise())
+
+    with caplog.at_level(logging.INFO):
+        backend.submit(_spec(), delay_sec=45.0)
+
+    (record,) = [
+        r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.submitted"
+    ]
+    assert record.__dict__["rtl_fields"]["begin_delay_sec"] == 45.0
+
+
+def test_max_wait_is_widened_by_a_backoff_the_head_asked_for(monkeypatch):
+    """A job held on ``--begin`` is PENDING for the whole backoff.
+
+    squeue reports it outstanding all that time, so charging the hold
+    against max-wait would fail every retry round whose backoff is longer
+    than max-wait, before the job had been allowed to start (#405 review).
+    """
+    pending = SimpleNamespace(
+        returncode=0, stdout="9|BeginTime|PENDING|0:00|rb:basic\n", stderr=""
+    )
+    drained = SimpleNamespace(returncode=0, stdout="", stderr="")
+    clock = {"now": 0.0}
+
+    def _install(monkeypatch):
+        """Fresh squeue transcript + fake clock: pending twice, then gone."""
+        clock["now"] = 0.0
+        polls = iter([pending, pending, drained])
+        monkeypatch.setattr(
+            slurm_module.subprocess,
+            "run",
+            lambda argv, capture_output=True, text=True, cwd=None, timeout=None: next(
+                polls
+            ),
+        )
+        monkeypatch.setattr(
+            slurm_module.time,
+            "sleep",
+            lambda s: clock.__setitem__("now", clock["now"] + 100),
+        )
+        monkeypatch.setattr(slurm_module.time, "monotonic", lambda: clock["now"])
+
+    cfg = DispatchConfigFile(max_wait=60.0).initialise()
+    handles = [JobHandle("9", _spec())]
+
+    # 100 s of held-and-pending is past a bare 60 s budget...
+    _install(monkeypatch)
+    with pytest.raises(FatalRtlBuddyError, match="max-wait"):
+        SlurmDispatchBackend(cfg).wait_all(handles)
+
+    # ...but not past 60 s plus the 600 s hold the head itself imposed.
+    _install(monkeypatch)
+    SlurmDispatchBackend(cfg).wait_all(handles, extra_wait=600.0)
+    assert clock["now"] == 200.0

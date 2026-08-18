@@ -21,6 +21,12 @@ execution backend for regression test runs:
       progress-interval: 60    # seconds between console progress lines (0 = quiet)
       max-wait: 7200           # seconds the head waits before failing loudly
       jobs: 4                  # local-parallel only: concurrent subprocesses
+      retry:                   # optional; entirely off unless attempts > 0
+        attempts: 2            # EXTRA attempts after the first
+        backoff-sec: 60        # first delay, doubling per attempt
+        backoff-max-sec: 600   # cap
+        jitter: 0.5            # +/- fraction, to decorrelate a batch
+        classifiers: [license-queue]   # which kills may be retried
 
 Per-test reservation overrides use the same ``resources`` shape in
 tests.yaml at testbench and test level; :func:`resolve_resources` layers
@@ -110,6 +116,97 @@ class RightsizeConfigFile:
     margin: float = field(rename="margin", default=1.5)
 
 
+# The classifiers ``retry.classifiers`` accepts. Only one exists today: a job the
+# scheduler killed while its simulation was still sitting in the VCS
+# license queue (#405). Retrying anything else — a hung testbench, an
+# undersized reservation — would re-run work that failed on its own merits
+# and burn the reservation twice, so the list is closed rather than free
+# text: an unknown entry is a config error, not a silently inert one.
+RETRY_CLASSIFIER_LICENSE_QUEUE = "license-queue"
+RETRY_CLASSIFIERS = (RETRY_CLASSIFIER_LICENSE_QUEUE,)
+
+
+@serde
+class RetryConfigFile:
+    """``retry:`` sub-block — a retry budget for resource-condition kills (#405).
+
+    Default-inert: ``attempts`` is 0, so a project that never writes the
+    block (or writes it without ``attempts``) keeps exactly today's
+    behaviour — a job that left no result envelope is a failure, first and
+    only try.
+
+    ``attempts`` counts EXTRA attempts after the first, so ``attempts: 2``
+    means at most three submissions of the same job. The delay before
+    attempt *n* is ``min(backoff-max-sec, backoff-sec * 2 ** (n - 1))``,
+    multiplied by ``uniform(1 - jitter, 1 + jitter)``. The jitter is not
+    decoration: the jobs that lose a license-seat race lose it together,
+    and a fixed delay would put the whole batch back in front of the same
+    exhausted pool in lockstep.
+    """
+
+    attempts: int = 0
+    backoff_sec: float = field(rename="backoff-sec", default=60.0)
+    backoff_max_sec: float = field(rename="backoff-max-sec", default=600.0)
+    jitter: float = 0.5
+    # Not spelled ``on:``: PyYAML is a YAML 1.1 parser, so an unquoted
+    # ``on`` key deserialises as the *boolean* ``True`` and never reaches
+    # this field — the pin would silently do nothing and the
+    # unknown-classifier check below could never fire (#405 review).
+    classifiers: list[str] = field(
+        default_factory=lambda: [RETRY_CLASSIFIER_LICENSE_QUEUE]
+    )
+
+    def validated(self) -> "RetryConfigFile":
+        """Reject a budget that cannot mean what it says."""
+        if self.attempts < 0:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch retry attempts must be >= 0 (got {self.attempts}); "
+                "0 (or omitting the block) disables retry."
+            )
+        if self.backoff_sec < 0 or self.backoff_max_sec < 0:
+            raise FatalRtlBuddyError(
+                "cfg-dispatch retry backoff-sec/backoff-max-sec must be >= 0 "
+                f"(got {self.backoff_sec}/{self.backoff_max_sec})."
+            )
+        if self.backoff_max_sec < self.backoff_sec:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch retry backoff-max-sec ({self.backoff_max_sec}) is "
+                f"below backoff-sec ({self.backoff_sec}); the cap would shorten "
+                "the very first delay."
+            )
+        if not 0 <= self.jitter < 1:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch retry jitter must be in [0, 1) (got {self.jitter}); "
+                "1 or more would allow a zero or negative delay."
+            )
+        unknown = [c for c in self.classifiers if c not in RETRY_CLASSIFIERS]
+        if unknown:
+            raise FatalRtlBuddyError(
+                f"cfg-dispatch retry classifiers: unknown classifier(s) "
+                f"{unknown} — known: {list(RETRY_CLASSIFIERS)}."
+            )
+        return RetryConfigFile(
+            attempts=self.attempts,
+            # float(), because the runtime object is arithmetic input: YAML
+            # coerces on the way in, but nothing else does, and an int here
+            # would trip the type-checked constructor.
+            backoff_sec=float(self.backoff_sec),
+            backoff_max_sec=float(self.backoff_max_sec),
+            jitter=float(self.jitter),
+            classifiers=list(self.classifiers),
+        )
+
+    @property
+    def enabled(self) -> bool:
+        """Would this budget ever retry anything?
+
+        An ``attempts`` with an empty ``classifiers:`` retries nothing:
+        there is no classifier left that could match, and treating that as
+        "on" would make the head re-submit jobs no rule selected.
+        """
+        return self.attempts > 0 and bool(self.classifiers)
+
+
 @serde
 class DispatchConfigFile:
     """``cfg-dispatch`` section of root_config.yaml (raw serde form)."""
@@ -148,6 +245,9 @@ class DispatchConfigFile:
     # overrides this per invocation.
     jobs: int | None = None
     rightsize: RightsizeConfigFile | None = None
+    # Retry budget for jobs the scheduler killed under a resource condition
+    # while they were queueing for a license seat (#405). Absent = off.
+    retry: RetryConfigFile | None = None
 
     def initialise(self) -> "DispatchConfig":
         """Validate and freeze into the runtime :class:`DispatchConfig`.
@@ -203,6 +303,7 @@ class DispatchConfigFile:
             max_jobs_per_array=self.max_jobs_per_array,
             jobs=self.jobs,
             rightsize=self.rightsize,
+            retry=self.retry.validated() if self.retry is not None else None,
         )
 
 
@@ -220,6 +321,7 @@ class DispatchConfig:
     max_jobs_per_array: int = 200
     jobs: int | None = None
     rightsize: RightsizeConfigFile | None = None
+    retry: RetryConfigFile | None = None
 
     def __post_init__(self):
         if self.sbatch_args is None:
@@ -227,6 +329,10 @@ class DispatchConfig:
 
     def effective_rightsize(self) -> RightsizeConfigFile:
         return self.rightsize if self.rightsize is not None else RightsizeConfigFile()
+
+    def effective_retry(self) -> RetryConfigFile:
+        """The retry budget, present or not — the absent one retries nothing."""
+        return self.retry if self.retry is not None else RetryConfigFile()
 
 
 @dataclass

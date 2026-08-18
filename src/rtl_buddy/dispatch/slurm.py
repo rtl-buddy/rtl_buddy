@@ -384,7 +384,24 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         return JobHandle(job_id=job_id, spec=spec)
 
-    def _sbatch_argv(self, spec: TestJobSpec, dependency: str | None) -> list[str]:
+    @staticmethod
+    def _begin_argv(delay_sec: float) -> list[str]:
+        """The retry backoff, served by Slurm rather than by the head (#405).
+
+        ``--begin=now+<n>`` (bare units are seconds) leaves the job
+        ``PENDING`` with reason ``BeginTime`` until then: it holds no
+        allocation while it waits, which is the whole point — the license
+        pool that killed the first attempt is not made freer by a second
+        allocation sitting on it. Sub-second delays round to whole seconds
+        because that is the only granularity Slurm takes; a delay that
+        rounds to 0 emits no flag at all rather than an inert ``now+0``.
+        """
+        seconds = int(round(delay_sec)) if delay_sec and delay_sec > 0 else 0
+        return [f"--begin=now+{seconds}"] if seconds > 0 else []
+
+    def _sbatch_argv(
+        self, spec: TestJobSpec, dependency: str | None, delay_sec: float = 0.0
+    ) -> list[str]:
         cmd = self._reservation_argv(
             spec.resources,
             job_name=f"rb:{spec.display_name()}",
@@ -393,12 +410,19 @@ class SlurmDispatchBackend(DispatchBackend):
         )
         # afterok: the sim only runs if the shared build succeeded.
         cmd += self._dependency_argv(dependency)
+        cmd += self._begin_argv(delay_sec)
         cmd += self.sbatch_args
         cmd += ["--wrap", shlex.join(test_job_argv(spec))]
         return cmd
 
-    def submit(self, spec: TestJobSpec, *, dependency: str | None = None) -> JobHandle:
-        argv = self._sbatch_argv(spec, dependency)
+    def submit(
+        self,
+        spec: TestJobSpec,
+        *,
+        dependency: str | None = None,
+        delay_sec: float = 0.0,
+    ) -> JobHandle:
+        argv = self._sbatch_argv(spec, dependency, delay_sec)
         proc = subprocess.run(argv, capture_output=True, text=True, cwd=spec.suite_dir)
         if proc.returncode != 0:
             raise FatalRtlBuddyError(
@@ -420,6 +444,7 @@ class SlurmDispatchBackend(DispatchBackend):
             test=spec.test_name,
             run_id=spec.run_id,
             dependency=dependency,
+            begin_delay_sec=delay_sec or None,
             time=spec.resources.time,
             cpus=spec.resources.cpus,
             mem=spec.resources.mem,
@@ -604,7 +629,7 @@ class SlurmDispatchBackend(DispatchBackend):
                     longest = (record["name"] or record["id"], elapsed)
         return outstanding, longest
 
-    def wait_all(self, handles: list[JobHandle]) -> None:
+    def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
         if not handles:
             return
         ids = ",".join(self._base_ids(handles))
@@ -614,7 +639,12 @@ class SlurmDispatchBackend(DispatchBackend):
             handles,
             backend=self.name,
             interval=self.progress_interval,
-            max_wait=self.max_wait,
+            # A job held on `--begin` is PENDING for the whole backoff and
+            # squeue reports it outstanding, so the deadline must allow for
+            # the hold the head itself asked for (#405).
+            max_wait=(
+                None if self.max_wait is None else self.max_wait + max(0.0, extra_wait)
+            ),
             # Resolved here rather than taken as a default, so the clock the
             # reporter reads is the same one this module sleeps against.
             clock=time.monotonic,

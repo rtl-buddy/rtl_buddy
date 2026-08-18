@@ -117,9 +117,22 @@ class DispatchBackend(ABC):
         """Submit one suite's build job; return its handle without waiting."""
 
     @abstractmethod
-    def submit(self, spec: TestJobSpec, *, dependency: str | None = None) -> JobHandle:
-        """Submit one sim job, optionally gated on ``dependency`` (a build
-        job id that must succeed first); return its handle without waiting."""
+    def submit(
+        self,
+        spec: TestJobSpec,
+        *,
+        dependency: str | None = None,
+        delay_sec: float = 0.0,
+    ) -> JobHandle:
+        """Submit one sim job; return its handle without waiting.
+
+        ``dependency`` gates it on a build job id that must succeed first.
+        ``delay_sec`` holds it out of contention for that long before it
+        may start — the retry backoff (#405). It is the *backend's* job to
+        serve that wait, never the head's: a scheduler-backed backend hands
+        it to the scheduler (``sbatch --begin``), so a delayed job occupies
+        no allocation while it waits and the head stays a planner/poller.
+        """
 
     def submit_array(
         self,
@@ -152,8 +165,19 @@ class DispatchBackend(ABC):
         """
 
     @abstractmethod
-    def wait_all(self, handles: list[JobHandle]) -> None:
-        """Block until every submitted job has left the queue."""
+    def wait_all(self, handles: list[JobHandle], *, extra_wait: float = 0.0) -> None:
+        """Block until every submitted job has left the queue.
+
+        ``extra_wait`` widens this call's ``cfg-dispatch.max-wait``
+        allowance by a delay the head *knowingly* asked the backend to
+        serve — the retry backoff (#405). A held job is outstanding for
+        the whole backoff (Slurm reports it PENDING/BeginTime, the pool
+        keeps it queued), so without this a ``max-wait`` shorter than the
+        backoff would trip the deadline every time on a wait that had not
+        yet let the job start. ``max-wait`` still bounds each wait; it has
+        never bounded their sum, and a run with retry enabled can take up
+        to ``attempts × (backoff + max-wait)``.
+        """
 
     @abstractmethod
     def cancel_all(self, handles: Sequence[JobHandle | None]) -> None:

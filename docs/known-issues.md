@@ -348,6 +348,41 @@ generator write to `run_artifact_dir` (per-run output does not belong in a
 filelist source anyway), or emit test-keyed files only when their content
 changes, so the mtime is stable across elements.
 
+## A retry truncates the sim capture that justified it
+
+`cfg-dispatch.retry` re-submits a job with the **same** result-envelope and
+artefact paths, so the second attempt overwrites `artefacts/<test>/test.log`
+and the per-job `rtl_buddy-<tag>.log` of the first. Only the **scheduler**
+log is kept per attempt (`slurm-<tag>-retry<N>.log`) — so if the license-queue
+banner that justified the retry landed only in the sim's own capture, the
+retry destroys the evidence for itself. When debugging a run that retried and
+still failed, read the `dispatch.result_missing` entry in `rtl_buddy.log` and
+the per-attempt scheduler logs, not `test.log`. See
+[Retrying a license-queue kill](concepts/dispatch.md#retrying-a-license-queue-kill).
+
+## With retry enabled, `max-wait` bounds each wait, not their sum
+
+`cfg-dispatch.max-wait` is a per-wait deadline, and every retry round waits
+again — so a run with `attempts: 2` can take up to roughly
+`attempts × (backoff + max-wait)`, not `max-wait`. Each round's deadline is
+additionally widened by the backoff the head asked for, because a job held on
+`--begin` is outstanding (PENDING) for the whole delay and a `max-wait`
+shorter than the backoff would otherwise trip before the job was allowed to
+start. If you set `max-wait` as a run-duration ceiling, divide it by
+`attempts + 1` or leave retry off. See
+[Retry and `max-wait`](concepts/dispatch.md#retrying-a-license-queue-kill).
+
+## A `--begin` in `sbatch-args` silently disables the retry backoff
+
+The retry emits `--begin=now+<delay>` **before** `cfg-dispatch.sbatch-args`,
+and `sbatch` takes the last occurrence of a duplicated flag — so a site that
+passes its own `--begin` through `sbatch-args` wins and the backoff never
+happens. The retried jobs go straight back in front of the pool that killed
+them, which is the synchronised retry storm the jittered backoff exists to
+avoid. Consistent with every other `sbatch-args` override, but silent: drop
+`--begin` from `sbatch-args` if you want the backoff. See
+[Retrying a license-queue kill](concepts/dispatch.md#retrying-a-license-queue-kill).
+
 ## A dispatched compile failure surfaces as CompileFail, not DispatchFail
 
 When a test's compile fails, the build job records it and the head maps the

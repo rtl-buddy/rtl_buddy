@@ -644,3 +644,116 @@ def test_cancelled_warning_names_the_jobs(monkeypatch, tmp_path, caplog):
         r for r in caplog.records if r.__dict__.get("rtl_event") == "dispatch.cancelled"
     ]
     assert record.__dict__["rtl_fields"]["job_ids"] == ["lp-1", "lp-2"]
+
+
+# ---- #405: the retry backoff, held by the pool --------------------------
+
+
+def test_a_delayed_job_waits_without_taking_a_slot(monkeypatch, tmp_path):
+    """The local stand-in for Slurm holding a job PENDING on ``--begin``.
+
+    There is no scheduler here to hold the job, so the pool holds it — but
+    holding it must not mean holding a slot, or one backed-off retry would
+    stall every job behind it in a small pool.
+    """
+    _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
+    backend = _backend(jobs=1)
+
+    delayed = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=30)
+    prompt = backend.submit(_sim_spec(tmp_path, "fresh"))
+    backend.advance()
+
+    assert not backend._jobs[delayed.job_id].running
+    assert backend._jobs[prompt.job_id].running  # the slot was never held
+
+    backend.cancel_all([delayed, prompt])
+
+
+def test_a_delayed_job_runs_once_its_backoff_elapses(monkeypatch, tmp_path):
+    _stub_argv(
+        monkeypatch,
+        sim=lambda spec: _python(
+            f"from pathlib import Path;"
+            f"Path({str(tmp_path / (spec.test_name + '.done'))!r}).write_text('x')"
+        ),
+    )
+    backend = _backend(jobs=2)
+    handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=0.2)
+
+    backend.advance()
+    assert not (tmp_path / "retried.done").exists()  # still inside the backoff
+
+    backend.wait_all([handle])
+    assert (tmp_path / "retried.done").is_file()
+    assert backend._jobs[handle.job_id].returncode == 0
+
+
+def test_a_delayed_job_stays_outstanding_for_the_wait(monkeypatch, tmp_path):
+    """wait_all must not declare the fleet drained while a retry is pending."""
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=2)
+    handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=0.2)
+
+    assert not backend._jobs[handle.job_id].finished
+    started = time.monotonic()
+    backend.wait_all([handle])
+    assert time.monotonic() - started >= 0.2
+
+
+def test_undelayed_submit_is_unchanged(monkeypatch, tmp_path):
+    _stub_argv(monkeypatch, sim=_python("import time; time.sleep(30)"))
+    backend = _backend(jobs=1)
+    handle = backend.submit(_sim_spec(tmp_path, "t0"))
+    assert backend._jobs[handle.job_id].not_before is None
+    assert backend._jobs[handle.job_id].running
+    backend.cancel_all([handle])
+
+
+def test_a_held_job_does_not_spin_the_sweep_loop(monkeypatch, tmp_path):
+    """A 600 s backoff must not cost 12,000 full sweeps of the pool.
+
+    While every outstanding job is inside its ``not_before``, there is
+    nothing to reap and nothing launchable, so the sweep sleeps until the
+    earliest one is due instead of polling 20 times a second.
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+    backend = _backend(jobs=2)
+    handle = backend.submit(_sim_spec(tmp_path, "retried"), delay_sec=30)
+
+    held = [backend._jobs[handle.job_id]]
+    # Capped at a second, so cancellation and progress heartbeats stay
+    # responsive even under a long hold.
+    assert backend._sweep_interval(held) == pytest.approx(1.0)
+
+    # A job that is actually running is polled at the normal cadence...
+    running = backend.submit(_sim_spec(tmp_path, "fresh"))
+    backend.advance()
+    outstanding = [backend._jobs[h.job_id] for h in (handle, running)]
+    assert backend._sweep_interval(outstanding) == lp_module._POLL_INTERVAL_SEC
+
+    backend.cancel_all([handle, running])
+
+
+def test_the_wait_deadline_allows_for_a_backoff_it_was_told_about(
+    monkeypatch, tmp_path
+):
+    """max-wait must not be spent on the hold the head asked the pool for.
+
+    A held job is outstanding for its whole backoff, so a max-wait shorter
+    than the delay would trip the deadline every retry round before the
+    job had been allowed to start (#405 review).
+    """
+    _stub_argv(monkeypatch, sim=_python("pass"))
+
+    # Unannounced, the hold is indistinguishable from a stuck fleet.
+    strict = _backend(jobs=1, max_wait=0.1)
+    held = strict.submit(_sim_spec(tmp_path, "unannounced"), delay_sec=0.5)
+    with pytest.raises(FatalRtlBuddyError, match="max-wait"):
+        strict.wait_all([held])
+    strict.cancel_all([held])
+
+    # Announced, the same delay is simply not charged against the budget.
+    forgiving = _backend(jobs=1, max_wait=0.1)
+    retried = forgiving.submit(_sim_spec(tmp_path, "announced"), delay_sec=0.5)
+    forgiving.wait_all([retried], extra_wait=0.5)
+    assert forgiving._jobs[retried.job_id].returncode == 0

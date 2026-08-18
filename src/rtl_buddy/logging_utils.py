@@ -469,13 +469,49 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('backend')} backend — cancelling the fleet: "
                 f"{' '.join(map(str, ids))}"
             )
+        case "dispatch.retry":
+            # Names the classifier, not just the delay: the whole point of
+            # the rule is that only a license-queue kill is retried, and a
+            # reader must be able to see which one fired (#405).
+            target_job = fields.get("test")
+            if fields.get("run_id") is not None:
+                target_job = f"{target_job}:{fields.get('run_id')}"
+            return (
+                f"dispatch: retrying {target_job} (job {fields.get('job_id')}) "
+                f"in {_format_elapsed(fields.get('delay_sec'))} — "
+                f"{fields.get('classifier')}, attempt {fields.get('attempt')} "
+                f"of {fields.get('attempts')}"
+            )
+        case "dispatch.retry_abandoned":
+            # The run is still scored — every row was written before the
+            # retry was attempted — so this is a warning about a lost
+            # second chance, not a lost regression (#405).
+            return (
+                f"dispatch: giving up on retry attempt {fields.get('attempt')} for "
+                f"{fields.get('jobs')} job(s) on the {fields.get('backend')} "
+                "backend — keeping the results already collected "
+                f"({fields.get('error')})"
+            )
         case "dispatch.result_missing":
             state = fields.get("scheduler_state")
             state_note = f" (scheduler state {state})" if state else ""
+            attempt = fields.get("attempt")
+            attempt_note = f" on attempt {attempt}" if attempt and attempt > 1 else ""
+            # A classified row is about to be resubmitted, so it is *not*
+            # counted as a failure yet — saying so would contradict the
+            # dispatch.retry line that follows it, and human mode is where
+            # a reader reconstructs the run (the fields are only legible
+            # under --machine otherwise) (#405 review).
+            classifier = fields.get("retry_classifier")
+            tail = (
+                f" — {classifier}, retrying"
+                if classifier
+                else " — counting it as a failure"
+            )
             return (
                 f"Dispatch job {fields.get('job_id')} for "
-                f"{fields.get('test')} produced no result{state_note} — "
-                "counting it as a failure"
+                f"{fields.get('test')} produced no result{state_note}"
+                f"{attempt_note}{tail}"
             )
         case "suite.skip":
             reason = "skip reason unavailable"
