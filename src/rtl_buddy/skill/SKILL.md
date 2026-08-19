@@ -1,60 +1,38 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, FPGA implementation, CDC lint, formal property verification, design-space exploration experiments, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, fpga.yaml, cdc.yaml, fpv.yaml, or mut.yaml.
+description: Use rtl_buddy to run and debug SystemVerilog design, verification, implementation, and analysis workflows. Trigger this skill for rtl_buddy commands, results, artefacts, or YAML configuration.
 ---
 
 # rtl_buddy
 
-Run `rtl-buddy --version` at the top of every run summary. Use this skill for agent-specific workflow rules only. For command syntax or schema details, start with `rb --help`, `rb <subcommand> --help`, `rtl-buddy docs list`, `rtl-buddy docs show agents`, and `rtl-buddy --machine docs show reference/yaml`. When behavior surprises you (silent failures, paths landing in the wrong place, hook cwd), check `rtl-buddy docs show known-issues` first.
+Run `rtl-buddy --version` at the start of every run and include it in the summary. For syntax and schemas, use `rb --help`, `rb <subcommand> --help`, `rtl-buddy docs list`, and `rtl-buddy docs show <page>`. Check `rtl-buddy docs show known-issues` when behavior is surprising.
 
 ## Always use `--machine`
 
-All agent invocations must use `--machine`: `rtl_buddy.log` becomes JSONL, and structured result commands (including `rb docs list`, excluding `rb docs show`) print a single JSON envelope to **stdout** — parse this for results. Envelope schema, JSONL log format, and exit codes (0 pass, 1 test failures, 2 fatal): `rtl-buddy docs show agents`.
-
-## Graph first, files last
-
-Do not grep the tree for anything relational or spread across files. **Locate** with `rb --machine graph query "<question>"` — one graph.json holds modules/instances/ports plus tests/testbenches/models/spec-blocks/coverage-items in one id namespace, matching is deterministic keyword scoring (no model call), and each match returns its neighbours with their last regression status joined on, so "which tests cover SAND-FUNC-FLAG-C-ADD and did they pass" is ONE command. Then **cite** with `rb hier-query <model> source-snippet <path>` — instance nodes carry a `cite` block with that exact command; every other node carries `file`/`line` directly on the summary. Measured over six tasks (`docs show concepts/graph#token-efficiency`), a graph hop is worth it only when the file it saves is bigger than the payload replacing it: ask the graph for relations grep cannot compute (every top containing a shared IP is ONE `rb graph explain module:<ip>` — grep needs an iterative fixpoint and hits comment false-positives) and for chains that cross tiers (coverage item down to golden model is two calls), but answer config-tier enumerations (which tests, which reglvl, which covers) by reading the `tests.yaml`, and single-file questions (a module's port list, one instance's connections) by letting the graph name the file and lines and then reading those lines. Edges and neighbours come back lean — peer id/label/type — and `--expand` restores a full summary per peer at roughly a peer summary each, so prefer a second lean call on the one peer you need. Also `rb graph explain <node>` (one node, every edge, its result) and `rb graph path <A> <B>` (undirected by default — edge direction encodes role, not reachability). Refresh with `rb graph build` after source/YAML changes and `rb graph results` after a regression; query exits 1 = no match, 2 = no graph yet (build it). `rb mcp` serves the same verbs as MCP tools over stdio (`{"command":"rb","args":["mcp"]}`) with identical payloads — a convenience surface, never a prerequisite. Details: `rtl-buddy docs show concepts/graph`.
+Use `rb --machine ...` for every agent invocation. Structured result commands print a JSON envelope to stdout, and `rtl_buddy.log` becomes JSONL. Parse the envelope for results; exit 0 means pass, 1 means test failures, and 2 means fatal. `docs show` prints the requested page rather than an envelope. See `rtl-buddy docs show agents`.
 
 ## YAML map
 
-Exact fields: `rtl-buddy --machine docs show reference/yaml`.
+Read exact fields with `rtl-buddy --machine docs show reference/yaml`.
 
-- `root_config.yaml` configures platforms, builders, coverage, waveform, synth, P&R, CDC, FPV, and default regression paths.
-- `tests.yaml` is suite-local and defines testbenches plus tests; invoke from anywhere with `-c <path>` (outputs anchor on the config dir — see Execution context below).
-- `models.yaml` defines design filelists referenced by tests, synth, CDC, and FPV.
-- `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows; `regression.yaml`, `synth_regression.yaml`, `fpga_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists; `mut.yaml` defines one `rb mut` campaign; `specs.yaml` feeds `rb spec` traceability.
-
-## Pass/fail detection
-
-- UVM uses configured warning/error thresholds; cocotb uses `cocotb_results.xml`, not `PASS`/`FAIL` stdout markers. Other sims should emit `PASS` or `FAIL` in `artefacts/<test>/test.log` (add an `ERR:` or `FAT:` line on failure); formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
-
-## Formal property authoring
-
-- `mode: prove` is k-induction up to `depth`: a true property can still report **`UNKNOWN`** if it is not an *inductive invariant*. In the induction step every `assert P` plays a dual role — proof obligation at step `k`, **and** constraint on the prior `k` states — so the two preferred fixes (per the YosysHQ SBY FAQ) are: strengthen the property's own hypothesis to exclude bad predecessors (`cnt <= 5`, not `cnt != 26`), or **add a companion assertion that marks an unreachable predecessor state bad** so other properties can use it as a constraint. Raising `depth` is sound but fragile; reach for it last. Keep a known-non-inductive case in regression with `xfail`/`xfail_strict`. Before authoring on `frontend: slang`, **probe that build's SVA surface** with a throwaway module (`|->`, `|=>`, `$past`, `$stable`, a `cover`) — it varies per build, not per version — then work the checklist in `rtl-buddy docs show concepts/fpv#practical-authoring-gotchas`: pin reset at t=0 on stateful blocks or a good property fails from an unreachable power-up state **even in `bmc`**; and never report a green proof without confirming each `cover` was reached and that one deliberate mutation fails the expected assertion. Full page: `rtl-buddy docs show concepts/fpv`.
-
-## Mutation testing
-
-- `rb mut list|run|score` drive a campaign from `mut.yaml` (needs `rtl-buddy-xeno`; a non-empty `scope` also needs `rtl-buddy-view` on `PATH`). Score is `killed / (killed + survived)`; errored mutants are dropped; survivors are verification holes. Details: `rtl-buddy docs show concepts/mut`.
-
-## rb xplr (design-space exploration)
-
-- `rb xplr` is the experiment ledger for DSE loops: it records what YOU changed, pins the source sha, curates the Pareto frontier — it never proposes the next experiment, you do. Loop: `rb --machine xplr frontier` -> reason -> apply the knob (outside rb) -> `xplr register --json manifest.json` -> run -> `xplr attach-outcome <id> --json outcome.json` -> repeat, always with `hypothesis` + per-knob `rationale` + `parent`. Declare `direction` in `metric_meta` for dominance metrics; an unroutable-but-complete point is `status=success` + `routed: false`. Dry-run `rb xplr mock run`. Contract + worked example: `rtl-buddy docs show concepts/xplr`.
-
-## rb fpga timing closure
-
-- Gate with `rb --machine tool-check --required-for fpga` (`payload.subcommands.fpga.status == "ok"`, else `rb tool-check --explain vivado`), then `rb --machine fpga <run>` (synth→place→route per `fpga.yaml`; Vivado default, `tool: openxc7` for 7-series). Missed timing is NOT a FAIL — the JSON carries `timing_met`, `wns_ns`, `failing_paths`. Closure loop: if `timing_met` is false, read `failing_paths[0]` → hypothesize (clock too fast → relax `create_clock` toward `requirement_ns - wns_ns`; cross-domain/quasi-static → false-path/multicycle exception; many `logic_levels` → pipeline in RTL) → edit → rerun → compare `wns_ns`. Worked example: `rtl-buddy docs show concepts/fpga`.
-
-## rb regression --dispatch
-
-- `rb --machine regression --dispatch slurm` fans tests out as parallel Slurm jobs after one shared build (implies `--share-build`; gate with `rb --machine tool-check --explain slurm`). Right-size from the loop: read `payload.reservation_advice`, apply each `edit_hint` **as given** (its `file`/`path` may name `cfg-dispatch.compile` in root_config.yaml, not the test — a `phase: compile+sim` job's allocation covers its own compile; `raise` first — under-reservations cost failed runs — then `reduce`), rerun to confirm it retires. rtl_buddy suggests; you edit. **No cluster** (macOS, laptop, CI runner): `--dispatch local-parallel -j N` runs the same fan-out as capped subprocesses on one host, no tool to check — but it cannot enforce `resources:` and emits no `reservation_advice`, so don't run the right-sizing loop against it, and size `-j` for the memory the heaviest tests need. `rb --machine test <name> --dispatch <backend>` is the same path narrowed to ONE test (one build job + one gated sim job) — that, not a throwaway reg_config, is how to run a single test on the cluster; it is the one command that ignores `cfg-dispatch.backend`, so always pass `--dispatch` explicitly. Details: `rtl-buddy docs show concepts/dispatch`.
+- `root_config.yaml` selects shared platforms, builders, tools, and default regression paths.
+- `tests.yaml` and `models.yaml` define simulation tests and design filelists.
+- Flow files such as `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs.
+- Regression YAML files collect suites or named runs; `mut.yaml` defines mutation campaigns and `specs.yaml` defines traceability items.
 
 ## Execution context
 
-Outputs anchor on the **config file**, not your shell's cwd. `rb test -c path/to/tests.yaml` puts `artefacts/<test>/...` and `rtl_buddy.log` under `dirname(tests.yaml)`; same rule for `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, `models.yaml`. For `regression`, each suite anchors on its own `tests.yaml`; orchestration log under `regression.yaml`. Explicit CLI input/output paths (`-o out.svg`, `rb filelist <model> out.f`) follow shell semantics — relative to your cwd. Discover multi-suite layouts with `rg --files -g '**/tests.yaml'`; summarize per suite. Reference: `rtl-buddy docs show concepts/execution-context`.
+Outputs anchor on the config file, not the shell cwd. For example, `rb test -c path/to/tests.yaml` writes `artefacts/` and `rtl_buddy.log` under `dirname(tests.yaml)`; regression suites anchor on each suite's `tests.yaml`. Explicit CLI paths follow shell-relative semantics. See `rtl-buddy docs show concepts/execution-context`.
 
-## Artefacts, coverage and waveforms
+## Pass/fail detection
 
-- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for one run (`artefacts/<test>/run-0001/...` per iteration for `randtest`). A run that produced coverage also writes `cov_dir/manifest.json` and a per-file/per-point model beside it with **no `--coverage-*` flag asked for** (the envelope's `payload.coverage.artefacts` names both), and `rb --machine cov summary` / `rb --machine cov module <name>` read those artefacts lock-free — so never re-run a regression to look at coverage again, and either verb answers while one is still in flight. Details: `rtl-buddy docs show concepts/coverage`.
-- `rb wave <test>` opens `artefacts/<test>/dump.fst` (FST from debug-mode builds, `-M debug`) in Surfer, running a debug sim first if no FST exists; needs `cfg-surfer` in `root_config.yaml` (`rtl-buddy docs show concepts/root-config`).
-- With a hub running, curate the open wave view from the CLI: `rb hub send wave-items` (list), then `wave-add` / `wave-remove` / `wave-move` / `wave-comment`; each reports success/error (non-zero exit on a surfer rejection). See `rtl-buddy docs show concepts/hub`.
-- Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
+- UVM uses configured warning/error thresholds.
+- cocotb uses `cocotb_results.xml`, not stdout markers.
+- Other simulations should emit `PASS` or `FAIL` in `artefacts/<test>/test.log`; failures should also emit `ERR:` or `FAT:`.
+- Formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
+
+## Artefacts and debugging
+
+Single simulations write `test.log`, `test.err`, `test.randseed`, and optional `coverage.dat` under `artefacts/<test>/`. Repeated runs use `run-0001/` subdirectories and keep latest-run symlinks at the suite root. Machine-readable coverage paths are returned in `payload.coverage.artefacts`.
+
+For graph, coverage, waveform, formal, mutation, dispatch, FPGA, or design-space exploration workflows, open the matching concept page with `rtl-buddy docs show concepts/<page>` rather than relying on copied command recipes.
