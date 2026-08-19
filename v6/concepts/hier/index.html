@@ -811,6 +811,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#block-diagrams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Block diagrams
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#running-rb-hier" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1637,6 +1648,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#block-diagrams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Block diagrams
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#running-rb-hier" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1791,45 +1813,60 @@
 </tbody>
 </table>
 <p>When <code>-o</code>/<code>--output</code> is not set, the renderer's stdout passes through to your terminal so <code>rb hier x --format dot | dot -Tsvg -o x.svg</code> works as a one-liner.</p>
+<h2 id="block-diagrams">Block diagrams</h2>
+<p><code>--format dot --block-diagram</code> switches the DOT renderer from the hierarchy dump to a <strong>block diagram</strong>: sibling-to-sibling dataflow, drawn as cluster-nested boxes joined by net-labeled directed edges. It answers "what talks to what" rather than "what instantiates what" — the figure you would draw by hand for a design document, where a CSR block whose traffic flows through top-scope nets is connected rather than floating.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># sibling dataflow instead of the instantiation tree</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--block-diagram<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>demo_top_block.svg
+</code></pre></div>
+<p>Like <code>--clock-legend</code>, the flag is only meaningful for <code>--format dot</code> — how the other renderers respond to it is the renderer's business, not rtl_buddy's, which forwards it verbatim.</p>
+<div class="admonition note">
+<p class="admonition-title">Requires a renderer that has not shipped yet</p>
+<p><code>--block-diagram</code> is implemented by <a href="https://github.com/rtl-buddy/rtl-buddy-sch/pull/160">rtl-buddy-sch#160</a> and needs <strong>rtl-buddy-sch ≥ 0.8.0</strong>, which is not released — the flag is forwarded ahead of it so the mode works the moment that release lands. Against every renderer available today the run fails with a message naming the version to upgrade to, rather than an unknown-option traceback (see <a href="../../known-issues/#rb-hier-block-diagram-needs-a-renderer-that-has-not-been-released-yet">Quirks &amp; Known Issues</a>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>hier: --block-diagram needs rtl-buddy-sch &gt;= 0.8.0 (rtl-buddy-sch#160),
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>but the installed viewer is 0.7.1. Upgrade the renderer, or drop
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>--block-diagram to render the hierarchy instead:
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    pip uninstall -y rtl-buddy-view &amp;&amp; pip install -U &quot;rtl-buddy-sch &gt;= 0.8.0&quot;
+</code></pre></div>
+</div>
 <h2 id="running-rb-hier">Running <code>rb hier</code></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># ASCII tree (default)</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># Save Mermaid source to a file</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>mermaid<span class="w"> </span>-o<span class="w"> </span>demo_top.mmd
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># DOT → SVG via Graphviz</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>demo_top.svg
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="c1"># JSON export for downstream tooling</span>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>json<span class="w"> </span>-o<span class="w"> </span>demo_top.hier.json
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="c1"># Point at a non-default models.yaml</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>-c<span class="w"> </span>design/demo_top/models.yaml
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="c1"># Pin a renderer build</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--tool<span class="w"> </span>/opt/rtl-buddy-view/bin/rtl-buddy-view
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="c1"># TB-rooted view — render the testbench for a test, DUT called out as subtree</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>rb<span class="w"> </span>hier<span class="w"> </span>basic_traffic<span class="w"> </span>--view<span class="w"> </span>tb
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># ASCII tree (default)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Save Mermaid source to a file</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>mermaid<span class="w"> </span>-o<span class="w"> </span>demo_top.mmd
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1"># DOT → SVG via Graphviz</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>demo_top.svg
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="c1"># JSON export for downstream tooling</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>json<span class="w"> </span>-o<span class="w"> </span>demo_top.hier.json
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="c1"># Point at a non-default models.yaml</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>-c<span class="w"> </span>design/demo_top/models.yaml
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="c1"># Pin a renderer build</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--tool<span class="w"> </span>/opt/rtl-buddy-view/bin/rtl-buddy-view
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="c1"># TB-rooted view — render the testbench for a test, DUT called out as subtree</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>rb<span class="w"> </span>hier<span class="w"> </span>basic_traffic<span class="w"> </span>--view<span class="w"> </span>tb
 </code></pre></div>
 <p>The model argument matches the <code>name:</code> of an entry in <code>models.yaml</code>. The runner uses that entry's filelist verbatim — same source of truth that <code>rb test</code> and <code>rb synth</code> consume. In <code>--view tb</code> mode the positional argument is a test name from <code>tests.yaml</code> instead; the test pins both the model (DUT side) and the testbench top, and the renderer merges the model + TB filelists before elaborating from <code>--tb-top</code>.</p>
 <h2 id="querying-with-rb-hier-query">Querying with <code>rb hier-query</code></h2>
 <p><code>rb hier-query &lt;model&gt; &lt;verb&gt; &lt;arg&gt;</code> is <code>rb hier</code>'s machine-readable sibling: instead of rendering a diagram, it answers a structural question about the model's hierarchy with JSON on stdout, ready for <code>jq</code>, shell pipelines, and agent tool use. It shells out to <code>rtl-buddy-view query</code> (requires rtl-buddy-view ≥ 0.3.0) and shares <code>rb hier</code>'s generated filelist artefact.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># the full definition of a module: ports, parameters, instances</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>find-module<span class="w"> </span>axi_arbiter
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># the hierarchy subtree below an instance path (add --format tree for ASCII)</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>subtree<span class="w"> </span>demo_top.u_fabric
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># every instance of a module, as instance paths</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>instances-of<span class="w"> </span>axi_arbiter<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.[].instance_path&#39;</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># the .port(net) connection list of one instance</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>port-connections<span class="w"> </span>demo_top.u_fabric.u_arb0
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="c1"># the module-definition source of an instance, line-number-prefixed for citation</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>source-snippet<span class="w"> </span>demo_top.u_fabric.u_arb0<span class="w"> </span>--context<span class="w"> </span><span class="m">4</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># the full definition of a module: ports, parameters, instances</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>find-module<span class="w"> </span>axi_arbiter
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># the hierarchy subtree below an instance path (add --format tree for ASCII)</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>subtree<span class="w"> </span>demo_top.u_fabric
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># every instance of a module, as instance paths</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>instances-of<span class="w"> </span>axi_arbiter<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.[].instance_path&#39;</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="c1"># the .port(net) connection list of one instance</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>port-connections<span class="w"> </span>demo_top.u_fabric.u_arb0
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="c1"># the module-definition source of an instance, line-number-prefixed for citation</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>rb<span class="w"> </span>hier-query<span class="w"> </span>demo_top<span class="w"> </span>source-snippet<span class="w"> </span>demo_top.u_fabric.u_arb0<span class="w"> </span>--context<span class="w"> </span><span class="m">4</span>
 </code></pre></div>
 <p>Verb arguments are a module name (<code>find-module</code>, <code>instances-of</code>) or a dot-separated instance path rooted at the model name (<code>subtree</code>, <code>port-connections</code>, <code>source-snippet</code>). <code>source-snippet</code> prints plain text rather than JSON — its output is the line-number-prefixed citation block itself (<code>--no-line-numbers</code> disables the prefixes, <code>--context N</code> widens the window).</p>
 <p>Exit codes follow the query semantics: <code>0</code> for an answer (an empty <code>instances-of</code> list is a valid answer), <code>1</code> for a lookup miss or parse failure — the viewer's diagnostic (e.g. <code>query: instance path '…' not found</code>) streams to stderr rather than being captured into a log. <code>artefacts/hier/&lt;model&gt;/query.log</code> records the underlying invocation.</p>
@@ -1837,11 +1874,11 @@
 <p><code>--frontend</code> is forwarded as-is to <code>rtl-buddy-view</code>. The default frontend ships with the renderer; <code>--frontend slang</code> uses pyslang for SystemVerilog constructs the default frontend doesn't parse. rtl_buddy does not validate the set of accepted frontends — that lets the renderer add frontends without an rtl_buddy release. Unknown values are rejected by the renderer's own argument parser.</p>
 <h2 id="domain-annotations">Domain annotations</h2>
 <p><code>rb hier</code> can overlay domain information when a compatible analyzer pass has emitted a JSON map:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># With a side legend mapping color → clock name (dot format only)</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--clock-legend<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Reset-domain overlay — colors each module by its primary reset</span>
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--rdc-annotations<span class="w"> </span>resets.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># With a side legend mapping color → clock name (dot format only)</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--clock-legend<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Reset-domain overlay — colors each module by its primary reset</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>rb<span class="w"> </span>hier<span class="w"> </span>demo_top<span class="w"> </span>--format<span class="w"> </span>dot<span class="w"> </span>--rdc-annotations<span class="w"> </span>resets.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>dot<span class="w"> </span>-Tsvg<span class="w"> </span>-o<span class="w"> </span>hier.svg
 </code></pre></div>
 <p>Both annotation files are JSON keyed by hierarchical instance path. <code>rb hier</code> validates that the files exist before invoking the renderer; the renderer's JSON contract (<code>schema_version</code>, <code>tool.*</code>, <code>design.top</code>, <code>nodes</code>, <code>edges</code>) is the integration boundary.</p>
 <p><code>--clock-legend</code> is honored only for <code>--format dot</code>; the tree and Mermaid renderers ignore it.</p>

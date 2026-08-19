@@ -3838,10 +3838,14 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>│ --rdc-annotations          TEXT  reset-domain map JSON from `analysis-tool           │
 <a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>│                                  --emit-reset-domain-map`                            │
 <a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>│ --clock-legend                   dot format only: emit a side legend of clock colors │
-<a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>│ --tool                     TEXT  path to the rtl-buddy-view binary                   │
-<a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>│                                  [default: rtl-buddy-view]                           │
-<a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>│ --help                           Show this message and exit.                         │
-<a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>│ --block-diagram                  dot format only: render sibling dataflow as a block │
+<a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>│                                  diagram (cluster nesting + net-labeled edges)       │
+<a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>│                                  instead of the hierarchy dump; requires             │
+<a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a>│                                  rtl-buddy-sch &gt;= 0.8.0                              │
+<a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a>│ --tool                     TEXT  path to the rtl-buddy-view binary                   │
+<a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a>│                                  [default: rtl-buddy-view]                           │
+<a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a>│ --help                           Show this message and exit.                         │
+<a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="hier-query">hier-query</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Usage: rtl-buddy hier-query [OPTIONS] NAME VERB ARG                                    
