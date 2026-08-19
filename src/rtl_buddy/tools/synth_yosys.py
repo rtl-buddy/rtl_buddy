@@ -82,7 +82,9 @@ def emit_frontend_read_cmds(
       ``read_slang``. Slang requires ``--top`` and accepts ``-D NAME=VAL``
       for macros and ``-G NAME=VAL`` for top-level parameter overrides
       (the latter folded in here since slang elaborates eagerly — a later
-      ``chparam`` would arrive too late).
+      ``chparam`` would arrive too late). ``opts.single_unit`` adds
+      ``--single-unit``, parsing every source as one compilation unit so
+      preprocessor definitions stay visible across file boundaries.
     """
     # Shell-quote everything that comes from filesystem paths or
     # user-supplied dict values — Yosys parses each script line with
@@ -99,6 +101,17 @@ def emit_frontend_read_cmds(
         )
 
     if opts.frontend == "verilog":
+        # Not fatal — the legacy frontend simply has no equivalent knob —
+        # but never silently accepted either: a project that asked for one
+        # compilation unit and did not get it fails later, inscrutably.
+        if opts.single_unit:
+            log_event(
+                logger,
+                logging.WARNING,
+                "synth.single_unit_ignored",
+                frontend=opts.frontend,
+                top=top,
+            )
         for src in source_files:
             cmds.append(f"read_verilog -sv -defer{define_flags_v} {shlex.quote(src)}")
         return cmds
@@ -118,9 +131,11 @@ def emit_frontend_read_cmds(
         if params:
             flags.extend(f"-G{k}={shlex.quote(str(v))}" for k, v in params.items())
         flags_str = (" " + " ".join(flags)) if flags else ""
+        single_unit_flag = " --single-unit" if opts.single_unit else ""
         sources_joined = " ".join(shlex.quote(s) for s in source_files)
         cmds.append(
-            f"read_slang --std 1800-2017 --top {top}{flags_str} {sources_joined}"
+            f"read_slang --std 1800-2017 --top {top}"
+            f"{single_unit_flag}{flags_str} {sources_joined}"
         )
         return cmds
 

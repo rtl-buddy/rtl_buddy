@@ -807,6 +807,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"abc constraint set to minimum {used} ns as a workaround; "
                 "consider separate synth entries per clock domain"
             )
+        case "synth.single_unit_ignored":
+            return (
+                f'single_unit: true has no effect with frontend "{fields.get("frontend")}" '
+                "— it only applies to the slang frontend; set frontend: slang to use it"
+            )
         case "synth.sdc_no_clock":
             return f'no create_clock found in SDC "{fields.get("sdc")}"; abc runs unconstrained'
         case "synth.openroad.no_lef":
@@ -820,6 +825,31 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f'OpenROAD synthesis "{fields.get("synth")}" requires a mapped library; '
                 "set platform: <name> in synth.yaml and define a cfg-synth-platforms "
                 "entry pointing at a cfg-pdks corner"
+            )
+        case "synth_tool_config.unknown_override":
+            unknown = fields.get("unknown") or []
+            accepted = fields.get("accepted") or []
+            hints = fields.get("hints") or []
+            msg = (
+                f"tool_overrides.{fields.get('tool')} in synth.yaml: unknown key(s) "
+                f"{', '.join(repr(str(k)) for k in unknown)} ignored; accepted keys "
+                f"are {', '.join(str(k) for k in accepted)}"
+            )
+            if hints:
+                msg += f" (did you mean {', '.join(str(h) for h in hints)}?)"
+            return msg + (
+                " — tool_overrides keys are snake_case attribute names, not the "
+                "kebab-case spelling used under cfg-synth-tools.opts"
+            )
+        case "synth_tool_config.override_type":
+            return (
+                f"tool_overrides.{fields.get('tool')}.{fields.get('key')} must be "
+                f"{fields.get('expected')}, got {fields.get('got')}"
+            )
+        case "synth_tool_config.override_not_mapping":
+            return (
+                f"tool_overrides.{fields.get('tool')} must be a mapping of option "
+                f"name to value, got {fields.get('got')}"
             )
         case "coverage.metric.failed":
             return (

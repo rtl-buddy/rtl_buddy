@@ -133,16 +133,18 @@ class OpenRoadSynth:
         if self.root_cfg is not None:
             try:
                 yosys_tool_cfg = self.root_cfg.get_synth_tool_cfg("yosys")
+            except FatalRtlBuddyError:
+                # No `yosys` entry under cfg-synth-tools — fall back to
+                # the active tool_cfg's opts. Only the *lookup* is guarded:
+                # a config error raised while resolving the opts themselves
+                # (a wrongly-typed tool_overrides value, say) must surface
+                # rather than being swallowed into a silent downgrade of
+                # the frontend selection to "verilog".
+                yosys_tool_cfg = None
+            if yosys_tool_cfg is not None:
                 opts = yosys_tool_cfg.get_opts(
                     self.synth_cfg.get_tool_overrides_for("yosys")
                 )
-            except FatalRtlBuddyError:
-                # No `yosys` entry under cfg-synth-tools — fall back to
-                # the active tool_cfg's opts. Any other config error
-                # (typo'd opts dict, malformed cfg-synth-tools entry,
-                # etc.) is surfaced rather than silently degrading the
-                # frontend selection to "verilog".
-                pass
 
         lines = []
         for lib in lib_paths:
