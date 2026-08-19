@@ -1827,6 +1827,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#an-unknown-synthyaml-tool_overrides-key-warns-but-does-not-stop-the-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        An unknown synth.yaml tool_overrides key warns but does not stop the run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#a-wrong-fpv-plugin-path-degrades-coi-coverage-silently" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2343,6 +2354,17 @@
     <span class="md-ellipsis">
       
         Whitespace in a path or a define/parameter value does not survive a yosys script line
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#an-unknown-synthyaml-tool_overrides-key-warns-but-does-not-stop-the-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        An unknown synth.yaml tool_overrides key warns but does not stop the run
       
     </span>
   </a>
@@ -2897,6 +2919,8 @@ the
 <li><code>;</code> does <strong>not</strong> separate commands inside a script file. It reaches the frontend and dies as a syntax error in the design source, with nothing pointing back at the config that produced it.</li>
 </ul>
 <p>Consequences for rtl_buddy: <code>rb fpv</code> and <code>rb synth</code> <code>shlex.quote</code> the paths they emit, which is a no-op on an ordinary path and does <strong>not</strong> rescue one containing a space — <code>shlex.quote</code> emits <em>single</em> quotes, which yosys does not honour, so <code>'a dir/x.v'</code> fails as <code>File `'a' not found</code>. Keep design and artefact paths free of whitespace for the yosys-backed flows. <code>fpv.yaml</code>'s <code>params:</code> validator rejects whitespace, <code>;</code> and <code>#</code> in a value at config-load time for the same reason, so a bad override is named at load rather than surfacing as an unrelated <code>read_slang</code> error deep in <code>fpv.log</code>.</p>
+<h2 id="an-unknown-synthyaml-tool_overrides-key-warns-but-does-not-stop-the-run">An unknown <code>synth.yaml</code> <code>tool_overrides</code> key warns but does not stop the run</h2>
+<p><code>synth.yaml</code> <code>tool_overrides.&lt;tool&gt;</code> keys are the <strong>snake_case</strong> attribute names (<code>synth_args</code>, <code>abc_args</code>, <code>strategy</code>, <code>frontend</code>, <code>plugin_path</code>, <code>single_unit</code>), not the kebab-case spelling used under <code>cfg-synth-tools.opts</code>. A key outside that set — a typo, or <code>single-unit</code> / <code>plugin-path</code> copied from root-config — is reported at config resolution as a <code>synth_tool_config.unknown_override</code> <strong>WARNING</strong> (with a <code>'single-unit' -&gt; 'single_unit'</code> hint) and then <strong>ignored</strong>: the run proceeds with the tool-level default for that field, so a synthesis that looks fine in the summary may not have used the option you set. Through v6.36.0 the key was dropped with no message at all. It warns rather than fails because breaking changes only land on major bumps (see <a href="../migrations/">Migrations</a>); making it fatal is a candidate for the next major. Two related shapes <em>are</em> fatal today, since no existing config could have carried them: a wrongly-typed <code>single_unit</code> (<code>"true"</code>, <code>1</code>, or an empty value — write an unquoted YAML <code>true</code>/<code>false</code>) and a <code>tool_overrides.&lt;tool&gt;</code> block that is not a mapping. See <a href="../concepts/synthesis/#per-tool-overrides">Per-tool overrides</a>.</p>
 <h2 id="a-wrong-fpv-plugin-path-degrades-coi-coverage-silently">A wrong FPV plugin path degrades COI coverage silently</h2>
 <p><code>rb fpv</code> / <code>rb fpv-regression</code> treat the cone-of-influence pass as best-effort: when the yosys COI script fails — most commonly because the yosys-slang plugin path is wrong (stale <code>plugin-path</code>, an unbuilt <code>slang.so</code>, or a sibling-checkout convention that doesn't hold on this machine) — the run only emits <code>fpv coi_yosys_failed</code> WARNINGs and drops the COI column. The verification verdict itself still PASSes, because the proof pipeline loads the plugin separately, so a broken plugin location can sit unnoticed while COI coverage quietly reports nothing.</p>
 <p>If COI numbers disappear or <code>coi_yosys_failed</code> shows up in the log, check the resolved plugin location first: <code>cfg-fpv-tools[].opts.plugin-path</code> in <code>root_config.yaml</code>, or — when that is unset — the <code>RTL_BUDDY_SLANG_PLUGIN</code> environment variable. The per-verification <code>coi.log</code> under <code>artefacts/&lt;name&gt;/</code> records the exact yosys error (e.g. <code>Can't load module ...slang.so</code>).</p>
