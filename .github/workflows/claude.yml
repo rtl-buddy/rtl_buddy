@@ -84,7 +84,7 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           claude_args: |
             --allowedTools Read,Write,Edit,Bash(git:*),mcp__github_inline_comment__create_inline_comment,mcp__github_comment__update_claude_comment
-            --model opus
+            --model sonnet
             --effort medium
           prompt: |
             REPO: ${{ github.repository }}
