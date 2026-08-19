@@ -118,6 +118,125 @@ def test_synth_tool_config_none_override_returns_base():
     assert cfg.get_opts({}).synth_args == "-flatten"
 
 
+def test_synth_tool_config_single_unit_defaults_to_false():
+    assert _tool_cfg().get_opts().single_unit is False
+    assert _tool_cfg().get_opts({}).single_unit is False
+
+
+def test_synth_tool_config_single_unit_from_opts_file():
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(frontend="slang", single_unit=True),
+        )
+    )
+    assert cfg.get_opts().single_unit is True
+
+
+def test_synth_tool_config_single_unit_override_sets_true():
+    cfg = _tool_cfg()
+    assert cfg.get_opts({"single_unit": True}).single_unit is True
+
+
+def test_synth_tool_config_single_unit_override_can_disable_base():
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys", tool="yosys", opts=SynthToolOptsFile(single_unit=True)
+        )
+    )
+    assert cfg.get_opts({"single_unit": False}).single_unit is False
+
+
+def test_synth_tool_config_kebab_override_key_warns(caplog):
+    """`single-unit` under tool_overrides is the kebab-vs-snake trap: it
+    used to be silently ignored. It is still ignored — rejecting it would
+    be a breaking change on a minor bump — but it now says so."""
+    cfg = _tool_cfg()
+    with caplog.at_level("WARNING"):
+        opts = cfg.get_opts({"single-unit": True})
+    assert "'single-unit'" in caplog.text
+    assert "'single-unit' -> 'single_unit'" in caplog.text
+    assert "tool_overrides.yosys" in caplog.text
+    # Warned about, not applied: the base value stands.
+    assert opts.single_unit is False
+
+
+def test_synth_tool_config_misspelled_override_key_warns(caplog):
+    cfg = _tool_cfg()
+    with caplog.at_level("WARNING"):
+        cfg.get_opts({"singel_unit": True})
+    assert "singel_unit" in caplog.text
+
+
+def test_synth_tool_config_unknown_override_keeps_known_keys(caplog):
+    """One bad key must not discard the good ones in the same block."""
+    cfg = _tool_cfg(synth_args="-flatten")
+    with caplog.at_level("WARNING"):
+        opts = cfg.get_opts({"synth_args": "-nordff", "nonsense": 1})
+    assert opts.synth_args == "-nordff"
+    assert "nonsense" in caplog.text
+
+
+def test_synth_tool_config_unknown_override_lists_accepted_keys(caplog):
+    from rtl_buddy.config.synth import SYNTH_TOOL_OVERRIDE_KEYS
+
+    cfg = _tool_cfg()
+    with caplog.at_level("WARNING"):
+        cfg.get_opts({"nonsense": 1})
+    for key in SYNTH_TOOL_OVERRIDE_KEYS:
+        assert key in caplog.text
+
+
+def test_synth_tool_config_known_override_is_quiet(caplog):
+    cfg = _tool_cfg()
+    with caplog.at_level("WARNING"):
+        cfg.get_opts({"single_unit": True, "frontend": "slang"})
+    assert "unknown key" not in caplog.text
+
+
+def test_synth_tool_config_openroad_strategy_override_still_accepted():
+    """SynthToolConfig is shared by the yosys and openroad entries, so the
+    accepted-key set must cover both tools' knobs."""
+    cfg = _tool_cfg(name="openroad", exe="openroad")
+    assert cfg.get_opts({"strategy": "TIMING"}).strategy == "TIMING"
+
+
+def test_synth_tool_config_single_unit_non_bool_raises():
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg = _tool_cfg()
+    with pytest.raises(FatalRtlBuddyError, match="must be a bool"):
+        cfg.get_opts({"single_unit": "true"})
+
+
+def test_synth_tool_config_single_unit_null_raises():
+    """`single_unit:` with an empty YAML value deserialises to None —
+    fatal rather than falling through to the base value, because the
+    author plainly meant to set something."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg = _tool_cfg()
+    with pytest.raises(FatalRtlBuddyError) as exc:
+        cfg.get_opts({"single_unit": None})
+    assert "must be a bool" in str(exc.value)
+    assert "NoneType" in str(exc.value)
+
+
+def test_synth_tool_config_non_mapping_override_block_raises():
+    """`tool_overrides: {yosys: "slang"}` used to die on an AttributeError
+    from `overrides.get`; name the file and the shape instead."""
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    cfg = _tool_cfg()
+    with pytest.raises(FatalRtlBuddyError, match="must be a mapping, got str"):
+        cfg.get_opts("slang")
+
+
 # ---------------------------------------------------------------------------
 # SynthConfig
 # ---------------------------------------------------------------------------
@@ -295,6 +414,57 @@ def test_synth_reg_config_loads_suite_paths(tmp_path):
     suites = reg_cfg.get_suite_configs()
     assert len(suites) == 1
     assert suites[0].get_synth_names() == ["synth_a", "synth_b"]
+
+
+_SINGLE_UNIT_SUITE_YAML = dedent("""\
+    rtl-buddy-filetype: synth_config
+
+    syntheses:
+      - name: "synth_su"
+        desc: "single-unit slang synth"
+        model: "mod_a"
+        model_path: "models.yaml"
+        tool: "yosys"
+        reglvl: 0
+        tool_overrides:
+          yosys:
+            single_unit: true
+""")
+
+
+def _write_single_unit_suite(tmp_path):
+    (tmp_path / "models.yaml").write_text(_MODELS_YAML)
+    suite_yaml = tmp_path / "synth.yaml"
+    suite_yaml.write_text(_SINGLE_UNIT_SUITE_YAML)
+    return suite_yaml
+
+
+def test_synth_suite_config_preserves_single_unit_override(tmp_path):
+    cfg = SynthSuiteConfig(str(_write_single_unit_suite(tmp_path)))
+    overrides = cfg.get_syntheses("synth_su")[0].get_tool_overrides_for("yosys")
+    assert overrides == {"single_unit": True}
+    # YAML `true` must survive as a bool, not the string "true".
+    assert overrides["single_unit"] is True
+
+
+def test_synth_suite_config_single_unit_reaches_tool_opts(tmp_path):
+    cfg = SynthSuiteConfig(str(_write_single_unit_suite(tmp_path)))
+    synth_cfg = cfg.get_syntheses("synth_su")[0]
+    tool_cfg = _tool_cfg()
+    opts = tool_cfg.get_opts(synth_cfg.get_tool_overrides_for("yosys"))
+    assert opts.single_unit is True
+
+
+def test_synth_reg_config_preserves_single_unit_override(tmp_path):
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    _write_single_unit_suite(sandbox)
+    reg_yaml = tmp_path / "synth_regression.yaml"
+    reg_yaml.write_text(_REG_YAML)
+
+    reg_cfg = SynthRegConfig(name="reg", path=str(reg_yaml))
+    synth_cfg = reg_cfg.get_suite_configs()[0].get_syntheses("synth_su")[0]
+    assert synth_cfg.get_tool_overrides_for("yosys")["single_unit"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +1039,131 @@ def test_tool_overrides_can_flip_frontend_to_slang(tmp_path):
     script = Path(ys._write_script(str(fl))).read_text()
     assert "read_slang" in script
     assert "read_verilog -sv -defer" not in script
+
+
+def _slang_single_unit_tool_cfg(plugin_path: str):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    return SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(
+                frontend="slang", plugin_path=plugin_path, single_unit=True
+            ),
+        )
+    )
+
+
+def test_write_script_slang_single_unit_from_tool_opts(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="my_top"),
+        tool_cfg=_slang_single_unit_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"read_slang --std 1800-2017 --top my_top --single-unit {sv}" in script
+
+
+def test_write_script_slang_single_unit_precedes_define_and_param_flags(tmp_path):
+    """Flag order is part of the emitted command's contract: --single-unit
+    sits between --top and the -D/-G flags."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="my_top", params={"WIDTH": 8}, defines={"TARGET_SYNTH": 1}
+        ),
+        tool_cfg=_slang_single_unit_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert (
+        "read_slang --std 1800-2017 --top my_top --single-unit "
+        f"-DTARGET_SYNTH=1 -GWIDTH=8 {sv}" in script
+    )
+
+
+def test_write_script_slang_single_unit_via_tool_overrides(tmp_path):
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="my_top",
+            tool_overrides={
+                "yosys": {
+                    "frontend": "slang",
+                    "plugin_path": str(plugin),
+                    "single_unit": True,
+                }
+            },
+        ),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert f"read_slang --std 1800-2017 --top my_top --single-unit {sv}" in script
+
+
+def test_write_script_slang_omits_single_unit_by_default(tmp_path):
+    """Default behaviour is byte-identical to before the option existed."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    ys = _make_yosys(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(model_name="my_top"),
+        tool_cfg=_slang_tool_cfg(str(plugin)),
+    )
+    script = Path(ys._write_script(str(fl))).read_text()
+    assert "--single-unit" not in script
+    assert f"read_slang --std 1800-2017 --top my_top {sv}" in script
+
+
+def test_write_script_single_unit_with_verilog_frontend_warns_and_is_ignored(
+    tmp_path, caplog
+):
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+
+    tool_cfg = SynthToolConfig(
+        SynthToolConfigFile(
+            name="yosys",
+            tool="yosys",
+            opts=SynthToolOptsFile(frontend="verilog", single_unit=True),
+        )
+    )
+    ys = _make_yosys(tmp_path, tool_cfg=tool_cfg)
+    with caplog.at_level("WARNING"):
+        script = Path(ys._write_script(str(fl))).read_text()
+
+    assert "--single-unit" not in script
+    assert "read_verilog -sv -defer" in script
+    assert "single_unit" in caplog.text and "slang" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -1647,6 +1942,106 @@ def test_openroad_falls_back_to_openroad_opts_when_no_yosys_tool_cfg(tmp_path):
     assert "read_slang" not in script
 
 
+def test_openroad_yosys_stage_forwards_single_unit(tmp_path):
+    """The OpenROAD backend's elaboration stage shares the Yosys emitter, so
+    a single_unit override on the yosys block must reach its read_slang too."""
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    root_cfg = _FakeRootCfgORWithYosys(
+        lib_map={"mylib": str(lib)},
+        yosys_opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool_overrides={"yosys": {"single_unit": True}},
+        ),
+        root_cfg=root_cfg,
+    )
+    script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+    assert f"read_slang --std 1800-2017 --top top --single-unit {sv}" in script
+
+
+def test_openroad_yosys_stage_surfaces_bad_single_unit_type(tmp_path):
+    """A config error raised while resolving the yosys opts must NOT be
+    swallowed by the `no yosys tool entry` fallback — that guard covers the
+    lookup only. Swallowing it would silently downgrade frontend: slang to
+    read_verilog and synthesise the wrong thing."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    root_cfg = _FakeRootCfgORWithYosys(
+        lib_map={"mylib": str(lib)},
+        yosys_opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool_overrides={"yosys": {"single_unit": "yes"}},
+        ),
+        root_cfg=root_cfg,
+    )
+    with pytest.raises(FatalRtlBuddyError, match="must be a bool"):
+        or_synth._write_yosys_script(str(fl))
+
+
+def test_openroad_yosys_stage_warns_on_unknown_yosys_override(tmp_path, caplog):
+    """The non-fatal half of the same path: an unknown key warns, and the
+    yosys opts still win over the openroad tool's opts."""
+    from rtl_buddy.config.synth import SynthToolOptsFile
+
+    sv = tmp_path / "top.sv"
+    sv.write_text("")
+    fl = tmp_path / "synth.f"
+    fl.write_text(f"-v {sv}\n")
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    plugin = tmp_path / "slang.so"
+    plugin.write_text("")
+
+    root_cfg = _FakeRootCfgORWithYosys(
+        lib_map={"mylib": str(lib)},
+        yosys_opts=SynthToolOptsFile(frontend="slang", plugin_path=str(plugin)),
+    )
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(
+            model_name="top",
+            platform="mylib",
+            tool_overrides={"yosys": {"single-unit": True}},
+        ),
+        root_cfg=root_cfg,
+    )
+    with caplog.at_level("WARNING"):
+        script = Path(or_synth._write_yosys_script(str(fl))).read_text()
+
+    assert "'single-unit' -> 'single_unit'" in caplog.text
+    assert "read_slang" in script
+    assert "--single-unit" not in script
+
+
 # ---------------------------------------------------------------------------
 # OpenRoadSynth — output parsing
 # ---------------------------------------------------------------------------
@@ -1775,3 +2170,57 @@ def test_synth_suite_config_loads_xfail_flags(tmp_path):
     assert cfg.get_syntheses("synth_xfail_strict")[0].is_xfail() is True
     assert cfg.get_syntheses("synth_xfail_strict")[0].get_xfail_strict() is True
     assert cfg.get_syntheses("synth_normal")[0].is_xfail() is False
+
+
+# ---------------------------------------------------------------------------
+# Log events — human messages
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "event,fields,expected_substrings",
+    [
+        (
+            "synth.single_unit_ignored",
+            {"frontend": "verilog", "top": "my_top"},
+            ["single_unit", "verilog", "slang"],
+        ),
+        (
+            "synth_tool_config.unknown_override",
+            {
+                "tool": "yosys",
+                "unknown": ["single-unit"],
+                "accepted": ["frontend", "single_unit"],
+                "hints": ["'single-unit' -> 'single_unit'"],
+            },
+            [
+                "tool_overrides.yosys",
+                "single-unit",
+                "ignored",
+                "single_unit",
+                "did you mean",
+                "snake_case",
+            ],
+        ),
+        (
+            "synth_tool_config.override_type",
+            {"tool": "yosys", "key": "single_unit", "expected": "bool", "got": "str"},
+            ["tool_overrides.yosys.single_unit", "bool", "str"],
+        ),
+        (
+            "synth_tool_config.override_not_mapping",
+            {"tool": "yosys", "got": "str"},
+            ["tool_overrides.yosys", "mapping", "str"],
+        ),
+    ],
+)
+def test_synth_override_human_messages_are_specific(event, fields, expected_substrings):
+    """Every new WARNING/ERROR event needs a case — `rtl_buddy.log` reads the
+    human message, and without one it renders through the lossy dotted-event
+    fallback and says less than the console does."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(event, fields)
+    assert msg != event.replace(".", " ")
+    for sub in expected_substrings:
+        assert sub in msg, f"{event}: {sub!r} not in {msg!r}"

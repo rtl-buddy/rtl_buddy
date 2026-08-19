@@ -133,7 +133,7 @@ syntheses:
 | `params` | Optional key-value pairs passed as top-level parameter overrides (`chparam` in Yosys) |
 | `defines` | Optional compile-time Verilog defines passed via `-D KEY=VALUE` |
 | `reglvl` | Regression level (int or per-tool dict); same semantics as simulation `reglvl` |
-| `tool_overrides` | Optional per-tool option overrides — keyed by tool name, merges over `cfg-synth-tools` defaults |
+| `tool_overrides` | Optional per-tool option overrides — keyed by tool name, merges over `cfg-synth-tools` defaults; keys are the snake_case attribute names and an unrecognised one warns and is ignored (see [Per-tool overrides](#per-tool-overrides)) |
 
 ### SDC constraints
 
@@ -163,7 +163,7 @@ reglvl:
 
 ### Per-tool overrides
 
-`tool_overrides` is an escape hatch for tool-specific options that don't have a tool-agnostic equivalent. Keys match the `opts` fields in `cfg-synth-tools`:
+`tool_overrides` is an escape hatch for tool-specific options that don't have a tool-agnostic equivalent. Keys match the `opts` fields in `cfg-synth-tools`, spelled as **snake_case attribute names** rather than the kebab-case YAML form (`plugin_path`, not `plugin-path` — see the [naming convention note](#systemverilog-frontend) below). A key that matches nothing is warned about and ignored; the accepted set is `synth_args`, `abc_args`, `strategy`, `frontend`, `plugin_path`, `single_unit`:
 
 ```yaml
 tool_overrides:
@@ -259,7 +259,21 @@ The OpenROAD backend inherits the same selection — it runs Yosys for elaborati
       plugin_path: "../yosys-slang/build/slang.so"
 ```
 
-> **Naming convention — `plugin-path` vs `plugin_path`:** under `cfg-synth-tools.opts` (above) the YAML field is **kebab-case** (`plugin-path`, `synth-args`, `abc-args`) — that's the schema's canonical form. Under `tool_overrides.yosys` keys are the **Python attribute names** (snake_case: `plugin_path`, `synth_args`), because the override dict is merged at the attribute level rather than re-deserialised through the YAML schema. Same field, two names, depending on where it lives.
+> **Naming convention — `plugin-path` vs `plugin_path`:** under `cfg-synth-tools.opts` (above) the YAML field is **kebab-case** (`plugin-path`, `synth-args`, `abc-args`, `single-unit`) — that's the schema's canonical form. Under `tool_overrides.yosys` keys are the **Python attribute names** (snake_case: `plugin_path`, `synth_args`, `single_unit`), because the override dict is merged at the attribute level rather than re-deserialised through the YAML schema. Same field, two names, depending on where it lives. Writing the kebab form inside `tool_overrides` (or misspelling a key) now **warns** and lists the accepted keys — it used to be dropped in silence, so the run proceeded with the tool-level default and nothing said so. The key is still ignored: making it fatal would break configs that load today, and [breaking changes only land on major bumps](../migrations.md), so the upgrade to an error is a candidate for the next major.
+
+#### Single compilation unit
+
+`opts.single-unit` (`tool_overrides.yosys.single_unit`, default `false`) adds `--single-unit` to the generated `read_slang`, so every source in the filelist is parsed as one SystemVerilog compilation unit:
+
+```
+read_slang --std 1800-2017 --top <top> --single-unit -DNAME=VAL -GPARAM=VAL <sources>
+```
+
+Use it for filelists that deliberately share preprocessor definitions across file boundaries — a `` `define `` in one file that a later file expects to still be visible. Without it, slang gives each file its own compilation unit (the LRM default) and those macros go undefined.
+
+`single_unit` is also the one override whose *type* is checked: `"true"`, `1`, or an empty YAML value is a fatal config error rather than a silently-truthy enable. The field is new, so no existing config can already hold a bad one.
+
+The option applies to `frontend: slang` only. Set alongside the default `verilog` frontend it warns and is ignored: `read_verilog -sv -defer` has no equivalent, and silently accepting the setting would hide the mismatch until elaboration failed. The OpenROAD backend inherits it through the same elaboration stage as `frontend` / `plugin-path`.
 
 #### Strategy
 
