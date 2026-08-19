@@ -122,6 +122,7 @@ from .tools.axi_profile_rtl_buddy import (
 from .tools.coverage import CoverageReporter
 from .tools.artifact_paths import test_artifact_dir
 from .tools.hier_rtl_buddy_view import (
+    VIEW_BLOCK_DIAGRAM_MIN_VERSION,
     RtlBuddyView,
     RtlBuddyViewQuery,
     probe_view_version,
@@ -3842,6 +3843,18 @@ class RtlBuddy:
                 help="dot format only: emit a side legend of clock colors",
             ),
         ] = False,
+        block_diagram: Annotated[
+            bool,
+            typer.Option(
+                "--block-diagram",
+                help=(
+                    "dot format only: render sibling dataflow as a block "
+                    "diagram (cluster nesting + net-labeled edges) instead "
+                    "of the hierarchy dump; requires rtl-buddy-sch >= "
+                    f"{VIEW_BLOCK_DIAGRAM_MIN_VERSION}"
+                ),
+            ),
+        ] = False,
         tool: Annotated[
             str,
             typer.Option("--tool", help="path to the rtl-buddy-view binary"),
@@ -3888,6 +3901,7 @@ class RtlBuddy:
                 cdc_annotations=cdc_annotations,
                 rdc_annotations=rdc_annotations,
                 clock_legend=clock_legend,
+                block_diagram=block_diagram,
                 executable=tool,
                 test_cfg=test_cfg,
             )
@@ -3916,6 +3930,7 @@ class RtlBuddy:
             cdc_annotations=cdc_annotations,
             rdc_annotations=rdc_annotations,
             clock_legend=clock_legend,
+            block_diagram=block_diagram,
             executable=tool,
         )
         raise typer.Exit(runner.run())
