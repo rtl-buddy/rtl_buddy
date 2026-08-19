@@ -41,9 +41,13 @@ def _make_fake_view(
 
 
 def _make_old_view(
-    tmp_path: Path, *, version: str | None = "0.7.1", name: str = "old-view"
+    tmp_path: Path,
+    *,
+    version: str | None = "0.7.1",
+    option: str = "--block-diagram",
+    name: str = "old-view",
 ) -> Path:
-    """A fake viewer that predates ``--block-diagram``.
+    """A fake viewer that predates ``option``.
 
     Rejects the unknown option the way the viewer's Click/Typer parser
     does — a message on stderr plus a non-zero exit — and, unless
@@ -62,7 +66,7 @@ def _make_old_view(
     script.write_text(
         "#!/usr/bin/env bash\n"
         + version_branch
-        + 'echo "Error: No such option: --block-diagram" >&2\n'
+        + f'echo "Error: No such option: {option}" >&2\n'
         "exit 2\n"
     )
     script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -256,6 +260,29 @@ def test_wrapper_block_diagram_does_not_hijack_unrelated_failures(tmp_path: Path
         executable=str(script),
     )
     assert view.run() == 1
+
+
+def test_wrapper_block_diagram_does_not_claim_another_flags_rejection(tmp_path: Path):
+    """An unknown-option failure naming a *different* flag is not a
+    --block-diagram version problem, and must not be reported as one.
+
+    The trap this guards: hier.log opens with the echoed command line,
+    which repeats every flag we passed — so a naive search for
+    ``--block-diagram`` in "what the viewer said" matches whenever the
+    flag was set, whatever the viewer actually complained about. The
+    echo is subtracted before matching."""
+    script = _make_old_view(tmp_path, option="--clock-legend")
+    view = RtlBuddyView(
+        name="t",
+        model_cfg=_example_model(tmp_path),
+        suite_dir=str(tmp_path),
+        format="dot",
+        clock_legend=True,
+        block_diagram=True,
+        executable=str(script),
+    )
+    # Propagates as an exit code; no misattributed version error.
+    assert view.run() == 2
 
 
 def test_wrapper_forwards_axi_perf_annotations_as_overlay(tmp_path: Path):

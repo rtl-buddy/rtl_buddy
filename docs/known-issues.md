@@ -592,6 +592,21 @@ In v6.30.x, `--coverage/--no-coverage` was a boolean pair and the join was on by
 
 The fix is whichever you meant: drop the flag entirely (the default is unchanged), or write `--coverage auto`. `--no-coverage` is untouched and still disables the join, as does `--coverage none`. Click can express an optional-value option (`is_flag=False, flag_value=...`), which would have kept the bare form working; Typer forwards neither kwarg and deprecates both, so that route is closed until Typer supports it.
 
+## `rb hier --block-diagram` needs a renderer that has not been released yet
+
+`--block-diagram` is listed in `rb hier --help` and documented on the [Hierarchy Rendering](concepts/hier.md#block-diagrams) page, but the renderer half of it — [rtl-buddy-sch#160](https://github.com/rtl-buddy/rtl-buddy-sch/pull/160) — is not in any published `rtl-buddy-sch` release. Every viewer you can install today rejects the option.
+
+rtl_buddy forwards the flag anyway, so that the mode works the moment the renderer release lands without an rtl_buddy release in between. The flag is inert until then, and the failure is made legible rather than raw:
+
+```text
+hier: --block-diagram needs rtl-buddy-sch >= 0.8.0 (rtl-buddy-sch#160),
+but the installed viewer is 0.7.1. Upgrade the renderer, or drop
+--block-diagram to render the hierarchy instead:
+    pip uninstall -y rtl-buddy-view && pip install -U "rtl-buddy-sch >= 0.8.0"
+```
+
+What to do: drop the flag (`rb hier <model> --format dot` renders the hierarchy as before), or install `rtl-buddy-sch >= 0.8.0` once it exists. Two details worth knowing. The floor is a **prediction** — 0.7.1 is the current release and #160 is a feature, so the next minor is the expected home; if it ships elsewhere the number in the message is wrong, but the diagnosis is driven by the renderer's own unknown-option reply, not by the version. And the version is probed only after a failure, never before, so a dev or editable viewer built from the feature branch is used rather than pre-emptively refused.
+
 ## The viewer answers to four different names: dist `rtl-buddy-sch`, executable `rtl-buddy-view`
 
 The schematic viewer's PyPI **distribution** was renamed `rtl-buddy-view` → `rtl-buddy-sch` at 0.7.0; `rtl-buddy-view` is frozen at 0.5.0 and gets no further releases. Nothing else moved, so one tool now wears four names at once:

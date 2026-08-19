@@ -346,24 +346,32 @@ class RtlBuddyView:
             cmd += ["--block-diagram"]
         return cmd
 
-    def _captured_stderr(self, log_path: str) -> str:
+    def _captured_stderr(self, log_path: str, cmd_echo: str) -> str:
         """The viewer's stderr for this run, as text.
 
         ``capture`` mode holds it in memory; otherwise it was written to
         the log file, which is closed by the time this is called. Empty
         when the subclass streams stderr straight to the terminal
         (nothing was captured to read back) or the log can't be read.
+
+        ``cmd_echo`` — the ``$ <cmd>`` line :meth:`run` writes as the
+        log's first line — is stripped back off. It repeats the whole
+        command line, *including* every flag we passed, so leaving it in
+        makes any search for a flag name in "what the viewer said" match
+        unconditionally: an old viewer rejecting some other new option
+        would be misdiagnosed as rejecting this one.
         """
         if self.capture:
             return self.stderr or ""
         if self._stream_stderr:
             return ""
         try:
-            return Path(log_path).read_text()
+            text = Path(log_path).read_text()
         except OSError:  # pragma: no cover - unreadable log is not the story
             return ""
+        return text.removeprefix(cmd_echo)
 
-    def _check_block_diagram_supported(self, log_path: str) -> None:
+    def _check_block_diagram_supported(self, log_path: str, cmd_echo: str) -> None:
         """Re-raise an unknown-``--block-diagram`` exit as a clear error.
 
         The flag is newer than every released viewer at the time it was
@@ -376,7 +384,7 @@ class RtlBuddyView:
         feature, which is the same reason ``check_view_supports_graph``
         treats the invocation's exit code as the real answer.
         """
-        text = " ".join(self._captured_stderr(log_path).split()).lower()
+        text = " ".join(self._captured_stderr(log_path, cmd_echo).split()).lower()
         if "--block-diagram" not in text:
             return
         if not any(marker in text for marker in _UNKNOWN_OPTION_MARKERS):
@@ -386,6 +394,15 @@ class RtlBuddyView:
             f"the installed viewer is {version}"
             if version
             else "the installed viewer predates it"
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            f"{self._event_name}.tool_too_old",
+            model=self.model_cfg.name,
+            option="--block-diagram",
+            required=VIEW_BLOCK_DIAGRAM_MIN_VERSION,
+            installed=version,
         )
         raise FatalRtlBuddyError(
             f"hier: --block-diagram needs rtl-buddy-sch >= "
@@ -445,6 +462,10 @@ class RtlBuddyView:
         fl_path = self._write_filelist()
         cmd = self._build_cmd(fl_path)
         log_path = self._log_path()
+        # The log's first line is the invocation, for reproducing a run
+        # by hand. Kept as a value so anything reading the log back can
+        # subtract it and be left with only what the viewer said.
+        cmd_echo = "$ " + " ".join(cmd) + "\n"
 
         with task_status(f"Running {self._status_label} {self.model_cfg.name}"):
             log_event(
@@ -456,7 +477,7 @@ class RtlBuddyView:
                 **self._event_fields(),
             )
             with open(log_path, "w") as logf:
-                logf.write("$ " + " ".join(cmd) + "\n")
+                logf.write(cmd_echo)
                 logf.flush()
                 # Let the renderer's stdout pass through to the user's
                 # terminal when --output is not used; capture stderr in
@@ -491,7 +512,7 @@ class RtlBuddyView:
         if self.block_diagram and proc.returncode != 0:
             # Only on the failure path, and only when we asked for the
             # new flag: a healthy render must not pay for a version probe.
-            self._check_block_diagram_supported(log_path)
+            self._check_block_diagram_supported(log_path, cmd_echo)
 
         log_event(
             logger,
