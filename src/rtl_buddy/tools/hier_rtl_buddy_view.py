@@ -44,6 +44,29 @@ _VIEW_VERSION_RE = re.compile(r"rtl-buddy-view\s+(\S+)")
 #: ``--version`` promptly is treated as unprobeable, not as a failure.
 _VERSION_PROBE_TIMEOUT = 30
 
+#: First ``rtl-buddy-sch`` release carrying ``--block-diagram``
+#: (rtl-buddy-sch#160, epic rtl-buddy-sch#163). The flag is *unreleased*
+#: at the time this wrapper learned to forward it, so this floor names
+#: the release it is expected to land in rather than one that exists —
+#: rtl_buddy declares no version pin on the viewer, and vendoring an
+#: unreleased peer is not an option. Until that release ships, passing
+#: ``--block-diagram`` reaches an older viewer and comes back as an
+#: unknown-option failure, which :meth:`RtlBuddyView.run` turns into the
+#: message naming this version.
+VIEW_BLOCK_DIAGRAM_MIN_VERSION = "0.8.0"
+
+#: What an argument parser says about a flag it has never heard of.
+#: Click/Typer (the viewer's parser) emits "No such option"; the other
+#: two cover argparse and a plain getopt, so a future parser swap on the
+#: viewer side doesn't silently turn the friendly error back into a raw
+#: exit code. Matched case-insensitively against whitespace-collapsed
+#: stderr, because Rich wraps its error panel.
+_UNKNOWN_OPTION_MARKERS = (
+    "no such option",
+    "unrecognized argument",
+    "unknown option",
+)
+
 
 def resolve_view_executable(executable: str = "rtl-buddy-view") -> str:
     """The path the viewer will actually be invoked as.
@@ -143,6 +166,7 @@ class RtlBuddyView:
         rdc_annotations: str | None = None,
         axi_perf_annotations: str | None = None,
         clock_legend: bool = False,
+        block_diagram: bool = False,
         executable: str = "rtl-buddy-view",
         test_cfg: TestConfig | None = None,
         test_suite_dir: str | None = None,
@@ -163,6 +187,12 @@ class RtlBuddyView:
         # ``--overlay axi-perf=PATH`` form.
         self.axi_perf_annotations = axi_perf_annotations
         self.clock_legend = clock_legend
+        # Dot-only alternate rendering (rtl-buddy-sch#160): sibling
+        # dataflow — cluster nesting plus net-labeled directed edges —
+        # in place of the hierarchy dump. Forwarded only when set, so an
+        # ``rb hier`` that doesn't ask for it keeps a byte-identical CLI
+        # against viewers that predate the flag.
+        self.block_diagram = block_diagram
         self.executable = executable
         # Optional test that pins the TB top + TB filelist for the
         # TB-rooted view (#99 / 6b). When set, the generated filelist
@@ -312,7 +342,78 @@ class RtlBuddyView:
             cmd += ["--overlay", f"axi-perf={self.axi_perf_annotations}"]
         if self.clock_legend:
             cmd += ["--clock-legend"]
+        if self.block_diagram:
+            cmd += ["--block-diagram"]
         return cmd
+
+    def _captured_stderr(self, log_path: str, cmd_echo: str) -> str:
+        """The viewer's stderr for this run, as text.
+
+        ``capture`` mode holds it in memory; otherwise it was written to
+        the log file, which is closed by the time this is called. Empty
+        when the subclass streams stderr straight to the terminal
+        (nothing was captured to read back) or the log can't be read.
+
+        ``cmd_echo`` — the ``$ <cmd>`` line :meth:`run` writes as the
+        log's first line — is stripped back off. It repeats the whole
+        command line, *including* every flag we passed, so leaving it in
+        makes any search for a flag name in "what the viewer said" match
+        unconditionally: an old viewer rejecting some other new option
+        would be misdiagnosed as rejecting this one.
+        """
+        if self.capture:
+            return self.stderr or ""
+        if self._stream_stderr:
+            return ""
+        try:
+            text = Path(log_path).read_text()
+        except OSError:  # pragma: no cover - unreadable log is not the story
+            return ""
+        return text.removeprefix(cmd_echo)
+
+    def _check_block_diagram_supported(self, log_path: str, cmd_echo: str) -> None:
+        """Re-raise an unknown-``--block-diagram`` exit as a clear error.
+
+        The flag is newer than every released viewer at the time it was
+        wired up here, so the common failure is a perfectly healthy
+        install that simply predates it. Left alone that surfaces as a
+        bare non-zero exit with the parser's complaint buried in
+        ``hier.log`` — the user sees ``rb hier`` fail and nothing about
+        why. Version is probed only on this path: a pre-emptive gate
+        would refuse to run on a dev/editable viewer that does carry the
+        feature, which is the same reason ``check_view_supports_graph``
+        treats the invocation's exit code as the real answer.
+        """
+        text = " ".join(self._captured_stderr(log_path, cmd_echo).split()).lower()
+        if "--block-diagram" not in text:
+            return
+        if not any(marker in text for marker in _UNKNOWN_OPTION_MARKERS):
+            return
+        version = probe_view_version(self.executable)
+        installed = (
+            f"the installed viewer is {version}"
+            if version
+            else "the installed viewer predates it"
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            f"{self._event_name}.tool_too_old",
+            model=self.model_cfg.name,
+            option="--block-diagram",
+            required=VIEW_BLOCK_DIAGRAM_MIN_VERSION,
+            installed=version,
+        )
+        raise FatalRtlBuddyError(
+            f"hier: --block-diagram needs rtl-buddy-sch >= "
+            f"{VIEW_BLOCK_DIAGRAM_MIN_VERSION} (rtl-buddy-sch#160), but "
+            f"{installed}. Upgrade the renderer, or drop --block-diagram "
+            f"to render the hierarchy instead:\n"
+            f"    pip uninstall -y rtl-buddy-view && "
+            f'pip install -U "rtl-buddy-sch >= '
+            f'{VIEW_BLOCK_DIAGRAM_MIN_VERSION}"\n'
+            f"The renderer's own message is in {log_path}."
+        )
 
     def run(self) -> int:
         # Resolve the viewer up-front. Bare names (no '/') go through
@@ -361,6 +462,10 @@ class RtlBuddyView:
         fl_path = self._write_filelist()
         cmd = self._build_cmd(fl_path)
         log_path = self._log_path()
+        # The log's first line is the invocation, for reproducing a run
+        # by hand. Kept as a value so anything reading the log back can
+        # subtract it and be left with only what the viewer said.
+        cmd_echo = "$ " + " ".join(cmd) + "\n"
 
         with task_status(f"Running {self._status_label} {self.model_cfg.name}"):
             log_event(
@@ -372,7 +477,7 @@ class RtlBuddyView:
                 **self._event_fields(),
             )
             with open(log_path, "w") as logf:
-                logf.write("$ " + " ".join(cmd) + "\n")
+                logf.write(cmd_echo)
                 logf.flush()
                 # Let the renderer's stdout pass through to the user's
                 # terminal when --output is not used; capture stderr in
@@ -403,6 +508,11 @@ class RtlBuddyView:
                         stderr=None if self._stream_stderr else logf,
                         cwd=self.artefact_dir,
                     )
+
+        if self.block_diagram and proc.returncode != 0:
+            # Only on the failure path, and only when we asked for the
+            # new flag: a healthy render must not pay for a version probe.
+            self._check_block_diagram_supported(log_path, cmd_echo)
 
         log_event(
             logger,

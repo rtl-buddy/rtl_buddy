@@ -1040,6 +1040,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 "translate to the Vivado backend — waivers ignored; findings still "
                 "carry full detail for downstream filtering"
             )
+        case "hier.tool_too_old":
+            installed = fields.get("installed") or "an older build"
+            return (
+                f"hier: the renderer rejected {fields.get('option')} — "
+                f"{installed} is installed, and that option needs "
+                f"rtl-buddy-sch >= {fields.get('required')}"
+            )
         case "graph_config.suite_load_failed":
             return (
                 f"graph: could not load {fields.get('path')} — its tests, "

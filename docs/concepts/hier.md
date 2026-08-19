@@ -45,6 +45,28 @@ For `--format dot` rendering to SVG/PNG, install Graphviz (`brew install graphvi
 
 When `-o`/`--output` is not set, the renderer's stdout passes through to your terminal so `rb hier x --format dot | dot -Tsvg -o x.svg` works as a one-liner.
 
+## Block diagrams
+
+`--format dot --block-diagram` switches the DOT renderer from the hierarchy dump to a **block diagram**: sibling-to-sibling dataflow, drawn as cluster-nested boxes joined by net-labeled directed edges. It answers "what talks to what" rather than "what instantiates what" — the figure you would draw by hand for a design document, where a CSR block whose traffic flows through top-scope nets is connected rather than floating.
+
+```bash
+# sibling dataflow instead of the instantiation tree
+rb hier demo_top --format dot --block-diagram | dot -Tsvg -o demo_top_block.svg
+```
+
+Like `--clock-legend`, the flag is only meaningful for `--format dot` — how the other renderers respond to it is the renderer's business, not rtl_buddy's, which forwards it verbatim.
+
+!!! note "Requires a renderer that has not shipped yet"
+
+    `--block-diagram` is implemented by [rtl-buddy-sch#160](https://github.com/rtl-buddy/rtl-buddy-sch/pull/160) and needs **rtl-buddy-sch ≥ 0.8.0**, which is not released — the flag is forwarded ahead of it so the mode works the moment that release lands. Against every renderer available today the run fails with a message naming the version to upgrade to, rather than an unknown-option traceback (see [Quirks & Known Issues](../known-issues.md#rb-hier-block-diagram-needs-a-renderer-that-has-not-been-released-yet)):
+
+    ```text
+    hier: --block-diagram needs rtl-buddy-sch >= 0.8.0 (rtl-buddy-sch#160),
+    but the installed viewer is 0.7.1. Upgrade the renderer, or drop
+    --block-diagram to render the hierarchy instead:
+        pip uninstall -y rtl-buddy-view && pip install -U "rtl-buddy-sch >= 0.8.0"
+    ```
+
 ## Running `rb hier`
 
 ```bash

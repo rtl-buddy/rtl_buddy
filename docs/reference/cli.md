@@ -267,6 +267,10 @@ Usage: rtl-buddy hier [OPTIONS] NAME
 │ --rdc-annotations          TEXT  reset-domain map JSON from `analysis-tool           │
 │                                  --emit-reset-domain-map`                            │
 │ --clock-legend                   dot format only: emit a side legend of clock colors │
+│ --block-diagram                  dot format only: render sibling dataflow as a block │
+│                                  diagram (cluster nesting + net-labeled edges)       │
+│                                  instead of the hierarchy dump; requires             │
+│                                  rtl-buddy-sch >= 0.8.0                              │
 │ --tool                     TEXT  path to the rtl-buddy-view binary                   │
 │                                  [default: rtl-buddy-view]                           │
 │ --help                           Show this message and exit.                         │
