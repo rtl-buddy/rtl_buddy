@@ -40,6 +40,7 @@ def _make_cdc_cfg(
     reglvl=None,
     tool_overrides=None,
     frontend=None,
+    single_unit=False,
 ):
     from rtl_buddy.config.model import ModelConfig
 
@@ -54,6 +55,7 @@ def _make_cdc_cfg(
         _reglvl=reglvl,
         tool_overrides=tool_overrides,
         frontend=frontend,
+        single_unit=single_unit,
     )
 
 
@@ -186,6 +188,16 @@ def test_cdc_config_frontend_explicit_yosys():
     assert cfg.frontend == "yosys"
 
 
+def test_cdc_config_single_unit_defaults_to_false():
+    cfg = _make_cdc_cfg()
+    assert cfg.single_unit is False
+
+
+def test_cdc_config_single_unit_explicit_true():
+    cfg = _make_cdc_cfg(single_unit=True)
+    assert cfg.single_unit is True
+
+
 # ---------------------------------------------------------------------------
 # CdcSuiteConfig — YAML loading + path resolution
 # ---------------------------------------------------------------------------
@@ -210,6 +222,7 @@ _SUITE_YAML = dedent("""\
         waivers: "mod_b.waivers"
         reglvl: 1000
         frontend: "slang"
+        single_unit: true
         blackbox: ["sram_macro", "pll_wrap"]
 """)
 
@@ -310,6 +323,15 @@ def test_cdc_suite_config_picks_up_frontend_field(tmp_path):
     assert cdc_b.frontend == "slang"  # explicit in YAML
 
 
+def test_cdc_suite_config_picks_up_single_unit_field(tmp_path):
+    suite_yaml = _write_suite(tmp_path)
+    cfg = CdcSuiteConfig(str(suite_yaml))
+    cdc_a = cfg.get_analyses("cdc_a")[0]
+    cdc_b = cfg.get_analyses("cdc_b")[0]
+    assert cdc_a.single_unit is False
+    assert cdc_b.single_unit is True
+
+
 def test_cdc_suite_config_picks_up_blackbox_field(tmp_path):
     """Per-analysis `blackbox:` round-trips through CdcConfigFile -> CdcConfig."""
     suite_yaml = _write_suite(tmp_path)
@@ -346,6 +368,7 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
     suites = reg_cfg.get_suite_configs()
     assert len(suites) == 1
     assert suites[0].get_analysis_names() == ["cdc_a", "cdc_b"]
+    assert suites[0].get_analyses("cdc_b")[0].single_unit is True
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +376,7 @@ def test_cdc_reg_config_loads_suite_paths(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _setup_lint_run(tmp_path, frontend=None, blackbox=None):
+def _setup_lint_run(tmp_path, frontend=None, single_unit=False, blackbox=None):
     """Materialise the minimum on-disk inputs RtlBuddyCdc.run() needs and
     build a ready-to-call wrapper. Returns (wrapper, cmd_calls_list).
 
@@ -385,6 +408,7 @@ def _setup_lint_run(tmp_path, frontend=None, blackbox=None):
         _reglvl=None,
         tool_overrides=None,
         frontend=frontend,
+        single_unit=single_unit,
         blackbox=blackbox if blackbox is not None else [],
     )
     tool_cfg = CdcToolConfig(
@@ -453,6 +477,49 @@ def test_lint_argv_adds_frontend_yosys_when_explicit(tmp_path, monkeypatch):
     assert len(calls) == 2
     for cmd in calls:
         assert cmd[cmd.index("--frontend") + 1] == "yosys"
+
+
+def test_lint_argv_omits_single_unit_when_unset(tmp_path, monkeypatch):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert "--single-unit" not in cmd
+
+
+def test_lint_argv_adds_single_unit_to_both_reports(tmp_path, monkeypatch):
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(
+        tmp_path, frontend="yosys", single_unit=True
+    )
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+    monkeypatch.setattr(mod, "_lint_supports_single_unit", lambda exe: True)
+
+    wrapper.run()
+
+    assert len(calls) == 2
+    for cmd in calls:
+        assert cmd.count("--single-unit") == 1
+
+
+def test_lint_single_unit_requires_analyzer_support(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, single_unit=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_single_unit", lambda exe: False)
+
+    with pytest.raises(FatalRtlBuddyError, match="single_unit: true.*#277"):
+        wrapper.run()
+
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

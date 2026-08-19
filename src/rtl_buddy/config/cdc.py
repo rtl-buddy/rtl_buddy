@@ -108,6 +108,10 @@ class CdcConfigFile:
     # can add frontends without an rtl_buddy release. Unknown values
     # are rejected by the analyzer's own arg parser.
     frontend: str | None = None
+    # Parse all model sources as one compilation unit. This supports filelists
+    # that deliberately share preprocessor macros across source files.
+    # Forwarded via ``--single-unit`` (rtl-buddy-cdc#277).
+    single_unit: bool = False
     # Modules to treat as black boxes: each is forwarded as-is via a
     # repeated ``--blackbox <module>`` to the analyzer (rtl-buddy-cdc#259),
     # stubbing out that module's internals during elaboration. Like
@@ -148,6 +152,7 @@ class CdcConfigFile:
             _reglvl=self.reglvl,
             tool_overrides=self.tool_overrides,
             frontend=self.frontend,
+            single_unit=self.single_unit,
             blackbox=self.blackbox,
             recognized_syncs=list(self.recognized_syncs),
             xfail=self.xfail,
@@ -166,6 +171,7 @@ class CdcConfig:
     _reglvl: int | dict | None
     tool_overrides: dict | None
     frontend: str | None = None
+    single_unit: bool = False
     blackbox: list[str] = dc_field(default_factory=list)
     recognized_syncs: list[str] = dc_field(default_factory=list)
     xfail: bool = False
