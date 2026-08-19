@@ -781,7 +781,7 @@ analyses:
 | `constraints` | string | SDC path, resolved relative to `cdc.yaml` |
 | `waivers` | string | Optional waiver path, resolved relative to `cdc.yaml` |
 | `frontend` | string | Optional analyzer frontend, forwarded with `--frontend` |
-| `single_unit` | bool | Optional, default `false`. Forward `--single-unit` so all model sources share one preprocessor compilation unit. Use for filelists that deliberately share macros across files. |
+| `single_unit` | bool | Optional, default `false`. Forward `--single-unit` so all model sources share one preprocessor compilation unit. Use for filelists that deliberately share macros across files. Requires an rtl-buddy-cdc build containing [rtl-buddy-cdc#277](https://github.com/rtl-buddy/rtl-buddy-cdc/pull/277); the flag landed after the `v0.4.0` tag and has no tagged release yet. |
 | `blackbox` | list of strings | Optional module names, each forwarded with `--blackbox` |
 | `recognized-syncs` | list of strings | Optional instance regexes treated as recognized synchronizers during XDC checks |
 | `reglvl` | int or dict | Regression level; int for all tools, or per-tool values with an optional `default` |

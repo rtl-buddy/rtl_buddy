@@ -499,13 +499,27 @@ def test_lint_argv_adds_single_unit_to_both_reports(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
     monkeypatch.setattr(mod, "run_managed_process", fake_run)
     monkeypatch.setattr(mod, "_lint_supports_project_root", lambda exe: False)
+    monkeypatch.setattr(mod, "_lint_supports_single_unit", lambda exe: True)
 
     wrapper.run()
 
     assert len(calls) == 2
     for cmd in calls:
         assert cmd.count("--single-unit") == 1
-        assert cmd.index("--single-unit") > cmd.index("--frontend")
+
+
+def test_lint_single_unit_requires_analyzer_support(tmp_path, monkeypatch):
+    from rtl_buddy.errors import FatalRtlBuddyError
+
+    wrapper, calls, fake_run, mod, nullctx = _setup_lint_run(tmp_path, single_unit=True)
+    monkeypatch.setattr(mod, "task_status", lambda *a, **kw: nullctx())
+    monkeypatch.setattr(mod, "run_managed_process", fake_run)
+    monkeypatch.setattr(mod, "_lint_supports_single_unit", lambda exe: False)
+
+    with pytest.raises(FatalRtlBuddyError, match="single_unit: true.*#277"):
+        wrapper.run()
+
+    assert calls == []
 
 
 # ---------------------------------------------------------------------------

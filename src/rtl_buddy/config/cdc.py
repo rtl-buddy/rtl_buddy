@@ -110,7 +110,8 @@ class CdcConfigFile:
     frontend: str | None = None
     # Parse all model sources as one compilation unit. This supports filelists
     # that deliberately share preprocessor macros across source files.
-    single_unit: bool = field(rename="single_unit", default=False)
+    # Forwarded via ``--single-unit`` (rtl-buddy-cdc#277).
+    single_unit: bool = False
     # Modules to treat as black boxes: each is forwarded as-is via a
     # repeated ``--blackbox <module>`` to the analyzer (rtl-buddy-cdc#259),
     # stubbing out that module's internals during elaboration. Like

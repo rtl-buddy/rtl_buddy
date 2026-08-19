@@ -55,6 +55,21 @@ def _lint_supports_project_root(executable: str) -> bool:
     return "--project-root" in (proc.stdout + proc.stderr)
 
 
+@functools.lru_cache(maxsize=None)
+def _lint_supports_single_unit(executable: str) -> bool:
+    """Whether ``<executable> lint`` accepts ``--single-unit`` (#277)."""
+    try:
+        proc = subprocess.run(
+            [executable, "lint", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "--single-unit" in (proc.stdout + proc.stderr)
+
+
 class RtlBuddyCdc:
     def __init__(
         self,
@@ -185,6 +200,14 @@ class RtlBuddyCdc:
         opts = self.tool_cfg.get_opts(
             self.cdc_cfg.get_tool_overrides_for(self.tool_cfg.get_name())
         )
+
+        if self.cdc_cfg.single_unit and not _lint_supports_single_unit(executable):
+            raise FatalRtlBuddyError(
+                "CDC analysis "
+                f"'{self.cdc_cfg.get_name()}' sets single_unit: true, but "
+                f"'{executable} lint --help' does not advertise --single-unit; "
+                "install an rtl-buddy-cdc build containing rtl-buddy-cdc#277"
+            )
 
         # Anchor the analyzer's relative path args (chiefly any in
         # ``extra_args`` — `--yosys-plugin` / `--emit-*`) to the cdc.yaml
