@@ -742,6 +742,61 @@ power-configs:
 - Paths in `power-configs` are resolved relative to the `power_regression.yaml` file.
 - Each listed suite is anchored on the directory containing its `power.yaml` (the command root); the process working directory is not changed (the v5 [execution context](../concepts/execution-context.md) model).
 
+---
+
+## cdc.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: cdc_config`
+- `analyses`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: cdc_config
+
+analyses:
+  - name: "demo_cdc"
+    desc: "CDC lint using a shared SystemVerilog compilation unit"
+    model: "demo_top"
+    model_path: "../../design/demo/models.yaml"
+    tool: "rtl-buddy-cdc"
+    constraints: "demo_top.sdc"
+    frontend: "slang"
+    single_unit: true
+    blackbox: ["memory_macro"]
+    reglvl: 0
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Analysis identifier; used on the CLI and in `artefacts/{name}/` |
+| `desc` | string | Human-readable analysis description |
+| `model` | string | Model name from `models.yaml`; also used as the elaboration top |
+| `model_path` | string | Path to `models.yaml`, resolved relative to `cdc.yaml` |
+| `tool` | string | CDC tool name from `root_config.yaml` `cfg-cdc-tools` |
+| `constraints` | string | SDC path, resolved relative to `cdc.yaml` |
+| `waivers` | string | Optional waiver path, resolved relative to `cdc.yaml` |
+| `frontend` | string | Optional analyzer frontend, forwarded with `--frontend` |
+| `single_unit` | bool | Optional, default `false`. Forward `--single-unit` so all model sources share one preprocessor compilation unit. Use for filelists that deliberately share macros across files. |
+| `blackbox` | list of strings | Optional module names, each forwarded with `--blackbox` |
+| `recognized-syncs` | list of strings | Optional instance regexes treated as recognized synchronizers during XDC checks |
+| `reglvl` | int or dict | Regression level; int for all tools, or per-tool values with an optional `default` |
+| `tool_overrides` | dict | Optional per-tool overrides keyed by CDC tool name |
+| `xfail` | bool | Optional non-strict expected-failure marker |
+| `xfail_strict` | bool | Optional strict expected-failure marker |
+
+**Runtime effects:**
+
+- `rb cdc` resolves the model sources and invokes the configured analyzer twice, once for text and once for JSON output.
+- When `single_unit: true`, both analyzer invocations receive exactly one `--single-unit` flag.
+- `rb --machine cdc <name> --list` lists configured analyses without running them.
+
+---
+
 ## fpv.yaml
 
 **Required keys:**

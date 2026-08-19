@@ -223,6 +223,8 @@ class RtlBuddyCdc:
                 cmd += ["--sync-depth", str(opts.sync_depth)]
             if self.cdc_cfg.frontend is not None:
                 cmd += ["--frontend", self.cdc_cfg.frontend]
+            if self.cdc_cfg.single_unit:
+                cmd.append("--single-unit")
             for module in self.cdc_cfg.blackbox:
                 # Repeated `--blackbox <module>` (rtl-buddy-cdc#259). An
                 # empty list adds nothing.
