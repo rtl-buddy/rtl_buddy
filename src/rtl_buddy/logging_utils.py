@@ -356,6 +356,13 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 f"{fields.get('test')}: compile failed in the dispatch build "
                 "job (its sim job will retry the compile and fail there)"
             )
+        case "build_job.machine_result_failed":
+            return (
+                "build job: could not emit the machine-result envelope "
+                f"({fields.get('error')}) — the compiles themselves are "
+                "unaffected and the job still exits 0 so its afterok "
+                "dependents run, but the head sees no envelope from it"
+            )
         case "compile.prebuilt_stamp_invalid":
             run = fields.get("run_id")
             run_note = "" if run is None else f" (run {run})"

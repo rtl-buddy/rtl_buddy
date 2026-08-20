@@ -415,6 +415,19 @@ def test_build_job_exits_0_when_the_envelope_cannot_be_emitted(
     assert result.exit_code == 0, result.output
 
 
+def test_envelope_failure_warning_has_a_dedicated_human_message():
+    """A WARNING must not fall through to the generic event-name fallback."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "build_job.machine_result_failed", {"error": "no envelope for you"}
+    )
+    assert "machine-result envelope" in msg
+    assert "no envelope for you" in msg
+    assert "exits 0" in msg
+    assert "build_job machine_result_failed" not in msg
+
+
 def test_build_job_plan_compiles_plan_configs_without_hook(
     minimal_project: Path,
     stub_runner: type[_StubTestRunner],
