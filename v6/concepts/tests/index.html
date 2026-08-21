@@ -2183,9 +2183,13 @@ compile inputs are identical:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
 <a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--share-build
 </code></pre></div>
-<p>The build directory is keyed on a hash of the compile inputs — builder
-executable, compile-time options, plusdefines, compile environment, and the
-resolved filelist — and lives at <code>artefacts/.shared-builds/obj_dir_&lt;hash&gt;/</code>.
+<p>The build directory is keyed on a hash of the compile inputs — the builder
+executable <em>as <code>PATH</code> resolves it</em>, compile-time options, plusdefines,
+compile environment, and the resolved filelist — and lives at
+<code>artefacts/.shared-builds/obj_dir_&lt;hash&gt;/</code>. Resolving the executable is what
+keeps two simulator installs to two build dirs, so pointing the project at a
+different one compiles rather than reusing what the other built, and an A/B
+between them keeps both builds runnable.
 The first test with a given key compiles; subsequent tests find a valid
 <code>simv</code> and skip verilation entirely. Runtime-only inputs (plusargs, seeds,
 <code>timeout</code>) never affect the key, so tests that differ only in those always
@@ -2195,6 +2199,18 @@ compile separately.</p>
 compile inputs (including each source file's size and modification time) is
 written next to the <code>simv</code>. Reuse only happens when the stamp matches, so
 editing any file listed in the filelist triggers a rebuild in place.</p>
+<p>The stamp also names the toolchain that produced the build: the resolved
+executable, its size and mtime, and — for Verilator and Icarus — the first
+line of its version banner, probed once per binary per process. Upgrading one
+install in place therefore rebuilds <em>in the same directory</em> (the path did not
+change, so the key did not either) and logs
+<code>compile.build_toolchain_changed</code> naming the old and new versions, while
+<code>compile.build_reused</code> names the toolchain whose output a skipped compile is
+about to simulate. The version is the entry that catches an upgrade a wrapper
+script hides: <code>bin/verilator</code> can keep its own size and mtime across a
+rebuild of the <code>verilator_bin</code> it dispatches to. VCS is stamped by path, size
+and mtime only — <code>vcs -ID</code> checks out a licence, and queueing for one before
+every compile would cost more than the check is worth.</p>
 <p>The filelist only names what the <em>project</em> declared, which is not the whole
 truth: an entry that resolves to a directory (<code>+incdir+</code>, <code>-y</code>) says nothing
 about the headers reached through it. So the stamp also records every input

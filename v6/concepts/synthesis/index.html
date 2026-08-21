@@ -1061,6 +1061,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#hard-macros" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hard macros
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2009,6 +2020,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#hard-macros" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hard macros
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2530,6 +2552,12 @@
 <li><strong>Yosys backend:</strong> uses the platform's Liberty for <code>read_liberty</code> → <code>dfflibmap</code> → <code>abc -liberty</code> → <code>write_verilog</code>. LEF is ignored.</li>
 <li><strong>OpenROAD backend:</strong> requires both Liberty and LEF. The <code>tech-lef</code> and <code>macro-lef</code> on the PDK are passed through automatically; per-block extras can be added via <code>lef-paths:</code> on the <code>synth.yaml</code> entry. A platform with no LEF assets fails immediately with an actionable error.</li>
 </ul>
+<h3 id="hard-macros">Hard macros</h3>
+<p>A design with hard macros gives each one a LEF (its physical extent) and a Liberty (its timing), listed on the <code>synth.yaml</code> entry under <code>lef-paths:</code> and <code>lib-paths:</code>. The RTL still needs a module for the frontend to bind against, which is normally a port-only <code>(* blackbox *)</code> declaration.</p>
+<p>Yosys drops blackbox definitions from <code>write_verilog</code>, so the OpenROAD stage generates a port-only stub for each one and reads it, otherwise <code>link_design</code> fails on an undefined module. That generation <strong>skips any blackbox whose name is already a <code>MACRO</code> in one of the LEFs or a <code>cell</code> in one of the Liberty files being read.</strong></p>
+<p>Reading a Verilog module of the same name as a master OpenROAD already has can displace it, and then <code>link_design</code> binds every instance to the zero-area Verilog module: the macros are absent from the OpenROAD database, <code>report_design_area</code> omits their area, and their timing arcs are missing from the graph. Both Area and WNS come back wrong and the run still exits 0. Worse, the WNS comes back <em>optimistic</em>, because the paths the macro's arcs dominate are not reported at all.</p>
+<p>Whether it displaces the master depends on the port shapes: a macro with only scalar ports survives, and one with a bus does not. Every real macro has a bus.</p>
+<p>Nothing to configure. If a blackbox has no LEF or Liberty master, it is stubbed exactly as before. <code>demo_synth_macro</code> in the project template is the worked example and the regression.</p>
 <p>PDK files are typically large and should be gitignored. Provide a download script:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="c1"># pdk/download_pdk.sh</span>
 <a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>curl<span class="w"> </span>-fL<span class="w"> </span>&lt;liberty-url&gt;<span class="w"> </span>-o<span class="w"> </span>pdk/sky130hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib

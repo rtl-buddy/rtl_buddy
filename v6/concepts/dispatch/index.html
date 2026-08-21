@@ -2020,9 +2020,12 @@ selects a backend.</p>
 up:</p>
 <ul>
 <li><strong>Share-build groups by <em>compile key</em></strong> — a fingerprint of the compile
-  inputs (filelist + compile flags + plusdefines). Tests whose inputs
-  hash identically reuse one <code>simv</code> under
-  <code>artefacts/.shared-builds/obj_dir_&lt;key&gt;/simv</code>.</li>
+  inputs (filelist + compile flags + plusdefines + the resolved builder
+  executable). Tests whose inputs hash identically reuse one <code>simv</code> under
+  <code>artefacts/.shared-builds/obj_dir_&lt;key&gt;/simv</code>. Because dispatch implies
+  <code>--share-build</code>, the toolchain has to be part of that key or a dispatched
+  run would reuse a build the current simulator never produced — see
+  <a href="../tests/#sharing-compiled-builds-across-tests">the stamp</a>.</li>
 <li><strong>Arrays group by <em>resolved resources</em></strong> — the <code>cpus</code>/<code>mem</code>/<code>time</code>
   reservation. Tests resolving to the same reservation share one <code>sbatch</code>
   array.</li>
