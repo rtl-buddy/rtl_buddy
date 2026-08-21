@@ -1797,6 +1797,125 @@ def test_openroad_or_script_no_sdc_omits_timing_reports(tmp_path):
     assert "report_design_area" in script
 
 
+def _bb_src(tmp_path, module="mymacro", extra_module=None):
+    """A source file with one (* blackbox *) module, and optionally a real one."""
+    body = (
+        "(* blackbox *)\n"
+        f"module {module} (\n"
+        "  input  wire        clk,\n"
+        "  input  wire [7:0]  addr,\n"
+        "  output wire [31:0] q\n"
+        ");\n"
+        "  reg [31:0] mem [0:255];\n"
+        "  always @(posedge clk) q <= mem[addr];\n"
+        "endmodule\n"
+    )
+    if extra_module:
+        body += f"module {extra_module} (input wire a, output wire z);\n"
+        body += "  assign z = ~a;\n"
+        body += "endmodule\n"
+    src = tmp_path / "macro_bb.v"
+    src.write_text(body)
+    return src
+
+
+def _write_filelist(or_synth, src):
+    """The stub writer reads the filelist the Yosys stage generated, which lives
+    in the artefact directory."""
+    fl = Path(or_synth._filelist_path())
+    fl.parent.mkdir(parents=True, exist_ok=True)
+    fl.write_text(f"-v {src}\n")
+    return fl
+
+
+def test_masters_from_lef_and_liberty_reads_both(tmp_path):
+    lef = tmp_path / "macro.lef"
+    lef.write_text(
+        "VERSION 5.7 ;\nMACRO mymacro\n  CLASS BLOCK ;\n  SIZE 10 BY 10 ;\nEND mymacro\n"
+    )
+    lib = tmp_path / "macro.lib"
+    lib.write_text('library (l) {\n  cell ("othermacro") {\n    area : 1 ;\n  }\n}\n')
+
+    or_synth = _make_openroad(tmp_path)
+    masters = or_synth._masters_from_lef_and_liberty([str(lef)], [str(lib)])
+
+    assert masters == {"mymacro", "othermacro"}
+
+
+def test_masters_from_lef_and_liberty_tolerates_missing_files(tmp_path):
+    or_synth = _make_openroad(tmp_path)
+    assert or_synth._masters_from_lef_and_liberty(["/nope.lef"], ["/nope.lib"]) == set()
+
+
+def test_blackbox_stub_written_when_no_lef_or_liberty_master(tmp_path):
+    """The original behaviour: without a master, link_design needs the stub."""
+    src = _bb_src(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
+    )
+    _write_filelist(or_synth, src)
+    stubs = or_synth._write_or_blackbox_stubs(set())
+
+    assert len(stubs) == 1
+    stub = Path(stubs[0]).read_text()
+    assert "module mymacro" in stub
+    # body stripped: OpenSTA's reader does not accept reg arrays or always blocks
+    assert "always" not in stub
+    assert "reg [31:0] mem" not in stub
+
+
+def test_blackbox_stub_dropped_when_lef_supplies_the_master(tmp_path):
+    """A macro whose LEF this script reads must not also be declared in Verilog:
+    the Verilog module shadows the LEF master and the instances vanish (#470)."""
+    src = _bb_src(tmp_path)
+    or_synth = _make_openroad(
+        tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
+    )
+    _write_filelist(or_synth, src)
+    stubs = or_synth._write_or_blackbox_stubs({"mymacro"})
+
+    assert stubs == []
+
+
+def test_blackbox_stub_keeps_unmastered_modules_in_a_mixed_file(tmp_path):
+    """One file, one mastered blackbox and one real module: drop the first,
+    keep the file for the second."""
+    src = _bb_src(tmp_path, extra_module="glue")
+    or_synth = _make_openroad(
+        tmp_path, synth_cfg=_make_synth_cfg(name="test_synth", model_name="top")
+    )
+    _write_filelist(or_synth, src)
+    stubs = or_synth._write_or_blackbox_stubs({"mymacro"})
+
+    assert len(stubs) == 1
+    stub = Path(stubs[0]).read_text()
+    assert "module mymacro" not in stub
+    assert "module glue" in stub
+
+
+def test_or_script_omits_stub_read_for_a_lef_backed_macro(tmp_path):
+    """End to end through the script writer: the read_verilog of the stub is
+    what dropped the macros, so it must not be emitted."""
+    src = _bb_src(tmp_path)
+    lib = tmp_path / "cells.lib"
+    lib.write_text("")
+    lef = tmp_path / "macro.lef"
+    lef.write_text("MACRO mymacro\n  CLASS BLOCK ;\nEND mymacro\n")
+
+    root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]})
+    or_synth = _make_openroad(
+        tmp_path,
+        synth_cfg=_make_synth_cfg(name="test_synth", model_name="top", platform="mylib"),
+        root_cfg=root_cfg,
+    )
+    _write_filelist(or_synth, src)
+    script = Path(or_synth._write_or_script([str(lef)], [str(lib)])).read_text()
+
+    assert f"read_lef {lef}" in script
+    assert "or_macro_bb.v" not in script
+    assert "link_design top" in script
+
+
 def test_openroad_or_script_timing_strategy_adds_resynth(tmp_path):
     lib = tmp_path / "cells.lib"
     lib.write_text("")
