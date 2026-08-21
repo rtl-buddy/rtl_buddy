@@ -1902,10 +1902,14 @@ def test_or_script_omits_stub_read_for_a_lef_backed_macro(tmp_path):
     lef = tmp_path / "macro.lef"
     lef.write_text("MACRO mymacro\n  CLASS BLOCK ;\nEND mymacro\n")
 
-    root_cfg = _FakeRootCfgOR(lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]})
+    root_cfg = _FakeRootCfgOR(
+        lib_map={"mylib": str(lib)}, lef_map={"mylib": [str(lef)]}
+    )
     or_synth = _make_openroad(
         tmp_path,
-        synth_cfg=_make_synth_cfg(name="test_synth", model_name="top", platform="mylib"),
+        synth_cfg=_make_synth_cfg(
+            name="test_synth", model_name="top", platform="mylib"
+        ),
         root_cfg=root_cfg,
     )
     _write_filelist(or_synth, src)
