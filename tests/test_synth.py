@@ -1842,6 +1842,32 @@ def test_masters_from_lef_and_liberty_reads_both(tmp_path):
     assert masters == {"mymacro", "othermacro"}
 
 
+def test_masters_from_lef_and_liberty_reads_a_split_cell_declaration(tmp_path):
+    """Some generated Liberty puts the cell name on the line after `cell`."""
+    lib = tmp_path / "split.lib"
+    lib.write_text(
+        'library (l) {\n  cell\n  ("splitmacro") {\n    area : 1 ;\n  }\n}\n'
+    )
+
+    or_synth = _make_openroad(tmp_path)
+    assert or_synth._masters_from_lef_and_liberty([], [str(lib)]) == {"splitmacro"}
+
+
+def test_masters_from_lef_and_liberty_ignores_lef_cells_in_liberty_position(tmp_path):
+    """A LEF is scanned for MACRO only, so a stray `cell (...)` line in one does
+    not add a name, and vice versa for MACRO lines in a Liberty."""
+    lef = tmp_path / "odd.lef"
+    lef.write_text("MACRO realmacro\n  CLASS BLOCK ;\nEND realmacro\n")
+    lib = tmp_path / "odd.lib"
+    lib.write_text("library (l) {\n  cell (realcell) { area : 1 ; }\n}\n")
+
+    or_synth = _make_openroad(tmp_path)
+    assert or_synth._masters_from_lef_and_liberty([str(lef)], [str(lib)]) == {
+        "realmacro",
+        "realcell",
+    }
+
+
 def test_masters_from_lef_and_liberty_tolerates_missing_files(tmp_path):
     or_synth = _make_openroad(tmp_path)
     assert or_synth._masters_from_lef_and_liberty(["/nope.lef"], ["/nope.lib"]) == set()

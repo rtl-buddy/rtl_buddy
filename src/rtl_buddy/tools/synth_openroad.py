@@ -267,19 +267,44 @@ class OpenRoadSynth:
         as link_design is concerned: physical extent from the former, timing
         from the latter. Modules in this set must not also be declared in
         Verilog — see _write_or_blackbox_stubs.
+
+        Scanned line by line rather than parsed: these files run to tens of MB
+        (a standard-cell Liberty is ~13 MB) and only the declaration lines
+        matter. A `cell` whose name is on the following line is handled, since
+        both spellings occur in generated Liberty. The LEF is the load-bearing
+        half in practice — the OpenROAD backend refuses a platform with no LEF,
+        so a macro always has a `MACRO` line even if its Liberty is spelled in a
+        way this misses.
         """
         names: set[str] = set()
         macro_re = re.compile(r"^\s*MACRO\s+(\S+)")
         cell_re = re.compile(r'^\s*cell\s*\(\s*"?([^"\s()]+)"?\s*\)')
-        for path, pattern in [(p, macro_re) for p in lef_paths] + [
-            (p, cell_re) for p in lib_paths
+        # `cell` and its parenthesised name split across two lines
+        cell_open_re = re.compile(r"^\s*cell\s*$")
+        name_only_re = re.compile(r'^\s*\(\s*"?([^"\s()]+)"?\s*\)')
+        for path, is_lef in [(p, True) for p in lef_paths] + [
+            (p, False) for p in lib_paths
         ]:
             try:
                 with open(path) as f:
+                    pending_cell = False
                     for line in f:
-                        m = pattern.match(line)
+                        if is_lef:
+                            m = macro_re.match(line)
+                            if m:
+                                names.add(m.group(1))
+                            continue
+                        if pending_cell:
+                            pending_cell = False
+                            m = name_only_re.match(line)
+                            if m:
+                                names.add(m.group(1))
+                                continue
+                        m = cell_re.match(line)
                         if m:
                             names.add(m.group(1))
+                        elif cell_open_re.match(line):
+                            pending_cell = True
             except OSError:
                 pass
         return names
