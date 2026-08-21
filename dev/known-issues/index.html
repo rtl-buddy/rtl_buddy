@@ -1442,6 +1442,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#rb-synth-reports-macro-free-area-and-optimistic-wns-through-v6370" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb synth reports macro-free area and optimistic WNS through v6.37.0
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#xpm-cdc-macros-flood-rb-cdc-with-cdc-bbx-errors-on-rtl-buddy-cdc-03x" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1976,6 +1987,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#rb-synth-reports-macro-free-area-and-optimistic-wns-through-v6370" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rb synth reports macro-free area and optimistic WNS through v6.37.0
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#xpm-cdc-macros-flood-rb-cdc-with-cdc-bbx-errors-on-rtl-buddy-cdc-03x" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2471,6 +2493,12 @@
 <h1 id="quirks-known-issues">Quirks &amp; Known Issues</h1>
 <p>The home for rtl_buddy behavior that does not follow convention: quirks, surprising defaults, simulator-specific workarounds, and known limitations. If something tripped you up because it works differently than you'd expect, add it here so the next person — or agent — finds it first.</p>
 <p>Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one <code>##</code> section per quirk, name it after the behavior, and say what to do about it.</p>
+<h2 id="rb-synth-reports-macro-free-area-and-optimistic-wns-through-v6370"><code>rb synth</code> reports macro-free area and optimistic WNS through v6.37.0</h2>
+<p>An <code>openroad</code> synthesis of a design with a hard macro — one whose LEF and Liberty come in on <code>lef-paths</code> / <code>lib-paths</code>, with a port-only <code>(* blackbox *)</code> module in RTL — can report an area that leaves the macros out and a WNS that is <em>better</em> than the truth. On the project template's <code>demo_synth_macro</code>, 54 um^2 against a real 8054, and +3.906 ns against a real +3.850. The run <strong>passes</strong>, with no error and no warning.</p>
+<p>Yosys drops blackbox definitions from <code>write_verilog</code>, so the OpenROAD stage generates a port-only Verilog stub for each blackbox and reads it; without one, <code>link_design</code> fails on the undefined module. For a macro that stub is not just unnecessary but harmful: <code>read_lef</code> and <code>read_liberty</code> in the same script have already supplied a master, and reading a Verilog module of the same name can displace it. Every instance then binds to the zero-area Verilog module. The macros are gone from the OpenROAD database — <code>get_cells -hierarchical</code> cannot see them — so their area is not counted and their timing arcs are not in the graph.</p>
+<p>The WNS is the dangerous half. It is optimistic rather than absent: the paths the macro's <code>clk</code>-to-output arc dominates are not reported at all, and the number you get describes the logic around the macro. A design whose critical path runs through a memory reports the timing of everything except the memory, and passes.</p>
+<p>Whether the master is displaced turns on the port shapes. A macro with only scalar ports survives; one with a bussed port does not, which in practice means every real macro — and it means a scalar-only test case will not show the problem.</p>
+<p>Fixed in the first release after <strong>v6.37.0</strong>: the stub generator skips any blackbox whose name is already a <code>MACRO</code> in one of the LEFs or a <code>cell</code> in one of the Liberty files the same script reads. On earlier releases, check <code>artefacts/&lt;synth&gt;/synth.tcl</code> for a <code>read_verilog</code> of a generated <code>or_*_bb.sv</code>; delete that line and re-run OpenROAD on the script by hand to get the real numbers. See <a href="../concepts/synthesis/#hard-macros">Hard macros</a>.</p>
 <h2 id="xpm-cdc-macros-flood-rb-cdc-with-cdc-bbx-errors-on-rtl-buddy-cdc-03x">XPM CDC macros flood <code>rb cdc</code> with CDC-BBX errors on rtl-buddy-cdc 0.3.x</h2>
 <p>A design that synchronises with the Xilinx XPM CDC macros (<code>xpm_cdc_single</code>, <code>xpm_cdc_gray</code>, <code>xpm_cdc_handshake</code>, ...) reports one <code>CDC-BBX</code> error per macro instance on rtl-buddy-cdc <strong>0.3.x</strong> — "left opaque — not provably single-clock". Nothing is wrong with your design or your SDC. XPM sources ship inside the Vivado install tree and are injected at synthesis, so a filelist built from project RTL carries only the instantiation; the analyzer sees a bodyless, <strong>dual-clock</strong> blackbox, cannot prove it is single-clock, and declines it. The macro <em>is</em> the synchroniser, but the engine has no way to know that from a name it does not recognise.</p>
 <p>Worse than the noise, the run is also <em>less</em> informative than it looks: a declined instance is dropped from the boundary set entirely, so the crossing through the macro disappears from the report and from <code>--emit-domain-map</code>. A <code>dest_out</code> feeding a flop in some third clock domain is a real unsynchronised crossing that 0.3.x will not tell you about.</p>
