@@ -1827,6 +1827,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#a-shared-build-predating-467-is-reused-across-a-simulator-swap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A shared build predating #467 is reused across a simulator swap
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#whitespace-in-a-path-or-a-defineparameter-value-does-not-survive-a-yosys-script-line" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2365,6 +2376,17 @@
     <span class="md-ellipsis">
       
         Shared-build reuse sees header edits only where the builder reports them
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#a-shared-build-predating-467-is-reused-across-a-simulator-swap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A shared build predating #467 is reused across a simulator swap
       
     </span>
   </a>
@@ -2911,10 +2933,13 @@ it emits. What that last part covers depends entirely on the builder:</p>
   simv built from the old header.</li>
 </ul>
 <p>Two things stay untracked for every builder: the <strong>ambient environment</strong> the
-compile subprocess inherits (only the <em>extra</em> compile env is recorded, so a
-<code>PATH</code> change that selects a different binary is invisible unless the
-dependency file names that binary), and anything a builder consumes without
-declaring.</p>
+compile subprocess inherits (only the <em>extra</em> compile env is recorded), and
+anything a builder consumes without declaring. The one ambient input that
+<em>is</em> tracked is the builder itself — see
+<a href="#a-shared-build-predating-467-is-reused-across-a-simulator-swap">the toolchain entry</a>
+— so a <code>PATH</code> change that selects a different simulator does invalidate the
+stamp, while a <code>PATH</code> change that reaches some other tool the builder shells
+out to does not.</p>
 <p>The escape hatch where tracking does not reach: delete the stamp, or run
 once without <code>--share-build</code>, to force a fresh compile. <strong>Which stamp
 depends on the builder</strong>, and the distinction matters most for exactly the
@@ -2937,6 +2962,43 @@ same-key tests share by construction, and cross-process races are excluded by
 the
 <a href="#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">per-tree artefact lock</a>
 (with that quirk's NFS caveat applying here too).</p>
+<h2 id="a-shared-build-predating-467-is-reused-across-a-simulator-swap">A shared build predating #467 is reused across a simulator swap</h2>
+<p>Before <a href="https://github.com/rtl-buddy/rtl_buddy/issues/467">#467</a>, the
+<code>rb-compile-stamp.json</code> recorded the builder as <strong>configured</strong> — the string
+<code>verilator</code> — which is the same string whichever install <code>PATH</code> resolves it
+to. Nothing in the stamp said <em>which</em> simulator produced the build, so
+pointing a project at a different one left the stamp validating: the compile
+short-circuited, and the run reported PASS on a binary the new toolchain had
+never produced.</p>
+<p>Nothing looks wrong while it happens. The log says
+<code>reused shared build … (compile skipped)</code>, which is what it says on a
+legitimate reuse, and there is no failure to read.</p>
+<p><code>--dispatch</code> <a href="#-dispatch-silently-implies-share-build">implies <code>--share-build</code></a>
+while a plain local <code>regression</code> compiles per test unless asked, so the same
+regression would <strong>fail correctly when run locally and pass when
+dispatched</strong> — which reads as a scheduler or environment problem and sends
+the investigation somewhere else entirely. It is not: both paths are the same
+stamp. The practical consequence is that <strong>a toolchain A/B run through a
+shared build reports green whichever side it is on</strong>.</p>
+<p>Both reuse paths were affected — the shared one, and the unshared per-test
+stamp a builder rtl_buddy cannot redirect writes into its own compile work
+dir.</p>
+<p>Fixed by <a href="https://github.com/rtl-buddy/rtl_buddy/pull/468">#468</a>: the
+resolved executable joins the compile key (so two installs get two build
+dirs, and an A/B keeps both builds runnable), while its size, mtime and
+version banner join the stamp (so upgrading one install in place rebuilds in
+place). <code>compile.build_toolchain_changed</code> names the old and new toolchain
+when that is what invalidated a stamp, and <code>compile.build_reused</code> now names
+the toolchain whose output a skipped compile is about to simulate.</p>
+<p><strong>On a release older than #468</strong>, treat a toolchain change as invalidating
+every shared build by hand:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>rm<span class="w"> </span>-rf<span class="w"> </span>&lt;suite&gt;/artefacts/.shared-builds/<span class="w">          </span><span class="c1"># and artefacts/&lt;test&gt;/rb-compile-stamp.json</span>
+</code></pre></div>
+<p>or run the comparison without <code>--share-build</code> — which means <strong>not through
+<code>--dispatch</code></strong>, since dispatch turns it on for you.</p>
+<p>The first run after upgrading <em>to</em> #468 recompiles once per compile key: the
+key changed, so previous <code>obj_dir_&lt;hash&gt;</code> directories no longer match and are
+left behind. They are safe to delete.</p>
 <h2 id="whitespace-in-a-path-or-a-defineparameter-value-does-not-survive-a-yosys-script-line">Whitespace in a path or a define/parameter value does not survive a yosys script line</h2>
 <p>yosys splits a script line on <strong>whitespace</strong>, and it is not a shell. Measured against yosys 0.64+193:</p>
 <ul>
@@ -2967,10 +3029,10 @@ the
 <h2 id="rb-hier-block-diagram-needs-a-renderer-that-has-not-been-released-yet"><code>rb hier --block-diagram</code> needs a renderer that has not been released yet</h2>
 <p><code>--block-diagram</code> is listed in <code>rb hier --help</code> and documented on the <a href="../concepts/hier/#block-diagrams">Hierarchy Rendering</a> page, but the renderer half of it — <a href="https://github.com/rtl-buddy/rtl-buddy-sch/pull/160">rtl-buddy-sch#160</a> — is not in any published <code>rtl-buddy-sch</code> release. Every viewer you can install today rejects the option.</p>
 <p>rtl_buddy forwards the flag anyway, so that the mode works the moment the renderer release lands without an rtl_buddy release in between. The flag is inert until then, and the failure is made legible rather than raw:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>hier: --block-diagram needs rtl-buddy-sch &gt;= 0.8.0 (rtl-buddy-sch#160),
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>but the installed viewer is 0.7.1. Upgrade the renderer, or drop
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>--block-diagram to render the hierarchy instead:
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    pip uninstall -y rtl-buddy-view &amp;&amp; pip install -U &quot;rtl-buddy-sch &gt;= 0.8.0&quot;
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>hier: --block-diagram needs rtl-buddy-sch &gt;= 0.8.0 (rtl-buddy-sch#160),
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>but the installed viewer is 0.7.1. Upgrade the renderer, or drop
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>--block-diagram to render the hierarchy instead:
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    pip uninstall -y rtl-buddy-view &amp;&amp; pip install -U &quot;rtl-buddy-sch &gt;= 0.8.0&quot;
 </code></pre></div>
 <p>What to do: drop the flag (<code>rb hier &lt;model&gt; --format dot</code> renders the hierarchy as before), or install <code>rtl-buddy-sch &gt;= 0.8.0</code> once it exists. Two details worth knowing. The floor is a <strong>prediction</strong> — 0.7.1 is the current release and #160 is a feature, so the next minor is the expected home; if it ships elsewhere the number in the message is wrong, but the diagnosis is driven by the renderer's own unknown-option reply, not by the version. And the version is probed only after a failure, never before, so a dev or editable viewer built from the feature branch is used rather than pre-emptively refused.</p>
 <h2 id="the-viewer-answers-to-four-different-names-dist-rtl-buddy-sch-executable-rtl-buddy-view">The viewer answers to four different names: dist <code>rtl-buddy-sch</code>, executable <code>rtl-buddy-view</code></h2>
@@ -3007,7 +3069,7 @@ the
 </tbody>
 </table>
 <p>rtl_buddy probes the <strong>distribution</strong> under both names, <code>rtl-buddy-sch</code> first, so either install satisfies every version floor and <code>rb tool-check</code> reports a version either way. What you have to know: <strong>pip cannot upgrade one into the other.</strong> There is no rename metadata, so <code>pip install -U rtl-buddy-sch</code> over an existing <code>rtl-buddy-view</code> leaves two distributions claiming the same console script and the same <code>rtl_buddy_view</code> import package, with each one's <code>RECORD</code> describing files the other may have overwritten. Uninstall first:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>pip<span class="w"> </span>uninstall<span class="w"> </span>-y<span class="w"> </span>rtl-buddy-view<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-U<span class="w"> </span>rtl-buddy-sch
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>pip<span class="w"> </span>uninstall<span class="w"> </span>-y<span class="w"> </span>rtl-buddy-view<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-U<span class="w"> </span>rtl-buddy-sch
 </code></pre></div>
 <p>One consequence worth expecting: after <code>uv tool install rtl-buddy-sch</code> (an isolated tool env) a project venv that still holds the old wheel has PATH at the new version and in-venv metadata at the old one. <code>rb tool-check</code> prefers the executable in exactly that case — a version read from the pre-rename dist name is dropped when the binary is on PATH, so the probe answers — but the stale wheel is still worth removing.</p>
 
