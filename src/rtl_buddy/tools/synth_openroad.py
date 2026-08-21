@@ -258,7 +258,58 @@ class OpenRoadSynth:
     # Stage 2: OpenROAD — timing analysis with native multi-clock SDC
     # ------------------------------------------------------------------
 
-    def _write_or_blackbox_stubs(self) -> list[str]:
+    def _masters_from_lef_and_liberty(
+        self, lef_paths: list[str], lib_paths: list[str]
+    ) -> set[str]:
+        """Names OpenROAD already has a master for, from the LEFs and Liberties.
+
+        A `MACRO` in a LEF or a `cell` in a Liberty is a complete master as far
+        as link_design is concerned: physical extent from the former, timing
+        from the latter. Modules in this set must not also be declared in
+        Verilog — see _write_or_blackbox_stubs.
+
+        Scanned line by line rather than parsed: these files run to tens of MB
+        (a standard-cell Liberty is ~13 MB) and only the declaration lines
+        matter. A `cell` whose name is on the following line is handled, since
+        both spellings occur in generated Liberty. The LEF is the load-bearing
+        half in practice — the OpenROAD backend refuses a platform with no LEF,
+        so a macro always has a `MACRO` line even if its Liberty is spelled in a
+        way this misses.
+        """
+        names: set[str] = set()
+        macro_re = re.compile(r"^\s*MACRO\s+(\S+)")
+        cell_re = re.compile(r'^\s*cell\s*\(\s*"?([^"\s()]+)"?\s*\)')
+        # `cell` and its parenthesised name split across two lines
+        cell_open_re = re.compile(r"^\s*cell\s*$")
+        name_only_re = re.compile(r'^\s*\(\s*"?([^"\s()]+)"?\s*\)')
+        for path, is_lef in [(p, True) for p in lef_paths] + [
+            (p, False) for p in lib_paths
+        ]:
+            try:
+                with open(path) as f:
+                    pending_cell = False
+                    for line in f:
+                        if is_lef:
+                            m = macro_re.match(line)
+                            if m:
+                                names.add(m.group(1))
+                            continue
+                        if pending_cell:
+                            pending_cell = False
+                            m = name_only_re.match(line)
+                            if m:
+                                names.add(m.group(1))
+                                continue
+                        m = cell_re.match(line)
+                        if m:
+                            names.add(m.group(1))
+                        elif cell_open_re.match(line):
+                            pending_cell = True
+            except OSError:
+                pass
+        return names
+
+    def _write_or_blackbox_stubs(self, known_masters: set[str]) -> list[str]:
         """Write OpenROAD-compatible copies of Yosys blackbox stub files.
 
         Yosys omits blackbox module definitions from write_verilog output.
@@ -271,6 +322,21 @@ class OpenRoadSynth:
         than `keep` etc. all break parsing, and the body has no semantic role
         for STA (cell timing comes from the Liberty). Returns the list of
         cleaned stub paths.
+
+        A blackbox named in `known_masters` is dropped rather than stubbed. That
+        is a macro whose LEF and Liberty this same script reads, which is what
+        `lef-paths` / `lib-paths` on a synth.yaml exist to supply. Declaring it
+        in Verilog as well can displace that master, and link_design then binds
+        every instance to the zero-area Verilog module: the macros are absent
+        from the OpenROAD database, `report_design_area` omits their area, their
+        arcs are missing from the timing graph, and the run still exits 0. The
+        WNS that comes back is optimistic rather than merely wrong, because the
+        paths those arcs dominate are not reported.
+
+        Whether the master is displaced turns on the port shapes -- an
+        all-scalar macro survives, one with a bus does not -- so in practice
+        every real macro is exposed. Measured on the project template's
+        demo_synth_macro: 54 um^2 against a real 8054, both runs PASS (#470).
         """
         try:
             candidates = self._source_files_from_filelist(self._filelist_path())
@@ -281,11 +347,21 @@ class OpenRoadSynth:
         # of the port list, then everything up to endmodule is dropped.
         bb_re = re.compile(
             r"\(\*\s*blackbox\s*\*\)\s*"
-            r"(module\s+\w+\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
+            r"(module\s+(\w+)\s*(?:#\([^)]*\)\s*)?\([^;]*\);)"
             r".*?"
             r"endmodule",
             re.DOTALL,
         )
+        module_re = re.compile(r"^\s*module\s+\w+", re.MULTILINE)
+        shadowed: list[str] = []
+
+        def _stub_or_drop(m: re.Match) -> str:
+            name = m.group(2)
+            if name in known_masters:
+                shadowed.append(name)
+                return ""
+            return f"{m.group(1)}\nendmodule"
+
         result = []
         for src in candidates:
             try:
@@ -293,7 +369,11 @@ class OpenRoadSynth:
                     content = f.read()
                 if "(* blackbox *)" not in content:
                     continue
-                cleaned = bb_re.sub(r"\1\nendmodule", content)
+                cleaned = bb_re.sub(_stub_or_drop, content)
+                if not module_re.search(cleaned):
+                    # Every blackbox in this file has a LEF/Liberty master, so
+                    # there is nothing left worth reading.
+                    continue
                 # OpenROAD's gate-level reader does not accept SV `logic`;
                 # replace with `wire` for port declarations.
                 cleaned = cleaned.replace("  input  logic ", "  input  wire  ")
@@ -305,6 +385,14 @@ class OpenRoadSynth:
                 result.append(stub_path)
             except OSError:
                 pass
+        if shadowed:
+            log_event(
+                logger,
+                logging.DEBUG,
+                "synth.openroad.blackbox_master_from_lib",
+                synth=self.synth_cfg.get_name(),
+                modules=" ".join(sorted(set(shadowed))),
+            )
         return result
 
     def _write_or_script(self, lef_paths: list[str], lib_paths: list[str]) -> str:
@@ -321,7 +409,8 @@ class OpenRoadSynth:
             lines.append(f"read_liberty {lib}")
         lines.append(f"read_verilog {self._yosys_netlist_path()}")
         # Read cleaned blackbox stubs so OpenROAD link_design can resolve them
-        for bb_stub in self._write_or_blackbox_stubs():
+        known_masters = self._masters_from_lef_and_liberty(lef_paths, lib_paths)
+        for bb_stub in self._write_or_blackbox_stubs(known_masters):
             lines.append(f"read_verilog {bb_stub}")
         lines.append(f"link_design {top}")
 

@@ -8,6 +8,18 @@ The home for rtl_buddy behavior that does not follow convention: quirks, surpris
 
 Keep this page alive. When you hit or introduce a quirk, write it down rather than leaving it in commit history or someone's memory. Use one `##` section per quirk, name it after the behavior, and say what to do about it.
 
+## `rb synth` reports macro-free area and optimistic WNS through v6.37.0
+
+An `openroad` synthesis of a design with a hard macro — one whose LEF and Liberty come in on `lef-paths` / `lib-paths`, with a port-only `(* blackbox *)` module in RTL — can report an area that leaves the macros out and a WNS that is *better* than the truth. On the project template's `demo_synth_macro`, 54 um^2 against a real 8054, and +3.906 ns against a real +3.850. The run **passes**, with no error and no warning.
+
+Yosys drops blackbox definitions from `write_verilog`, so the OpenROAD stage generates a port-only Verilog stub for each blackbox and reads it; without one, `link_design` fails on the undefined module. For a macro that stub is not just unnecessary but harmful: `read_lef` and `read_liberty` in the same script have already supplied a master, and reading a Verilog module of the same name can displace it. Every instance then binds to the zero-area Verilog module. The macros are gone from the OpenROAD database — `get_cells -hierarchical` cannot see them — so their area is not counted and their timing arcs are not in the graph.
+
+The WNS is the dangerous half. It is optimistic rather than absent: the paths the macro's `clk`-to-output arc dominates are not reported at all, and the number you get describes the logic around the macro. A design whose critical path runs through a memory reports the timing of everything except the memory, and passes.
+
+Whether the master is displaced turns on the port shapes. A macro with only scalar ports survives; one with a bussed port does not, which in practice means every real macro — and it means a scalar-only test case will not show the problem.
+
+Fixed in the first release after **v6.37.0**: the stub generator skips any blackbox whose name is already a `MACRO` in one of the LEFs or a `cell` in one of the Liberty files the same script reads. On earlier releases, check `artefacts/<synth>/synth.tcl` for a `read_verilog` of a generated `or_*_bb.sv`; delete that line and re-run OpenROAD on the script by hand to get the real numbers. See [Hard macros](concepts/synthesis.md#hard-macros).
+
 ## XPM CDC macros flood `rb cdc` with CDC-BBX errors on rtl-buddy-cdc 0.3.x
 
 A design that synchronises with the Xilinx XPM CDC macros (`xpm_cdc_single`, `xpm_cdc_gray`, `xpm_cdc_handshake`, ...) reports one `CDC-BBX` error per macro instance on rtl-buddy-cdc **0.3.x** — "left opaque — not provably single-clock". Nothing is wrong with your design or your SDC. XPM sources ship inside the Vivado install tree and are injected at synthesis, so a filelist built from project RTL carries only the instantiation; the analyzer sees a bodyless, **dual-clock** blackbox, cannot prove it is single-clock, and declines it. The macro *is* the synchroniser, but the engine has no way to know that from a name it does not recognise.

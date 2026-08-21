@@ -367,6 +367,18 @@ cfg-synth-platforms:
 - **Yosys backend:** uses the platform's Liberty for `read_liberty` → `dfflibmap` → `abc -liberty` → `write_verilog`. LEF is ignored.
 - **OpenROAD backend:** requires both Liberty and LEF. The `tech-lef` and `macro-lef` on the PDK are passed through automatically; per-block extras can be added via `lef-paths:` on the `synth.yaml` entry. A platform with no LEF assets fails immediately with an actionable error.
 
+### Hard macros
+
+A design with hard macros gives each one a LEF (its physical extent) and a Liberty (its timing), listed on the `synth.yaml` entry under `lef-paths:` and `lib-paths:`. The RTL still needs a module for the frontend to bind against, which is normally a port-only `(* blackbox *)` declaration.
+
+Yosys drops blackbox definitions from `write_verilog`, so the OpenROAD stage generates a port-only stub for each one and reads it, otherwise `link_design` fails on an undefined module. That generation **skips any blackbox whose name is already a `MACRO` in one of the LEFs or a `cell` in one of the Liberty files being read.**
+
+Reading a Verilog module of the same name as a master OpenROAD already has can displace it, and then `link_design` binds every instance to the zero-area Verilog module: the macros are absent from the OpenROAD database, `report_design_area` omits their area, and their timing arcs are missing from the graph. Both Area and WNS come back wrong and the run still exits 0. Worse, the WNS comes back *optimistic*, because the paths the macro's arcs dominate are not reported at all.
+
+Whether it displaces the master depends on the port shapes: a macro with only scalar ports survives, and one with a bus does not. Every real macro has a bus.
+
+Nothing to configure. If a blackbox has no LEF or Liberty master, it is stubbed exactly as before. `demo_synth_macro` in the project template is the worked example and the regression.
+
 PDK files are typically large and should be gitignored. Provide a download script:
 
 ```bash
