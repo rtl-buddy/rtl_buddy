@@ -965,3 +965,255 @@ def test_share_build_unsupported_reason_is_the_predicate_the_head_uses():
         reason(DummyBuilderCfg(simulator_family="verilator", simv="/pinned/simv"))
         is None
     )
+
+
+# --- toolchain identity (INF-22) -------------------------------------------
+#
+# The stamp used to record the *configured* builder name ("verilator"), which
+# is the same string whichever install PATH resolves it to. So pointing the
+# project at a different simulator left every stamp validating, the compile
+# short-circuited, and the run reported PASS on a binary the new toolchain
+# never produced. Dispatch implies --share-build, so a dispatched toolchain
+# A/B reported green on both sides while the same regression run locally
+# (compiling per test) failed correctly.
+
+
+def _fake_toolchain(tmp_path, name, version, binary="verilator"):
+    """An executable that answers `--version` / `-V` and nothing else."""
+    exe = tmp_path / name / binary
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text(f'#!/bin/sh\necho "{version}"\n')
+    exe.chmod(0o755)
+    return exe
+
+
+def test_share_build_keeps_a_separate_build_per_toolchain(tmp_path, monkeypatch):
+    """Two installs, two build dirs — which is what an A/B wants: neither
+    side overwrites the other's simv, so both stay runnable."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    old = _fake_toolchain(tmp_path, "tc-a", "Verilator 5.048 2024-01-01")
+    new = _fake_toolchain(tmp_path, "tc-b", "Verilator 5.049 devel rev vBBBB")
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(old))
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(new))
+    assert sim_b.compile() == 0
+    assert len(calls) == 2, "the second toolchain must not reuse the first's build"
+    assert sim_a._get_simv_path() != sim_b._get_simv_path()
+
+    # And a third test back on the first toolchain reuses that one's build.
+    sim_c = _make_sim(tmp_path, monkeypatch, test_name="test_c", exe=str(old))
+    assert sim_c.compile() == 0
+    assert len(calls) == 2
+    assert sim_c._get_simv_path() == sim_a._get_simv_path()
+
+
+def test_share_build_rebuilds_when_one_install_is_upgraded_in_place(
+    tmp_path, monkeypatch, caplog
+):
+    """Same path, new binary behind it: rebuild in the same dir (no
+    directory per version) and say why, because nothing else would."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.048 2024-01-01")
+
+    sim_a = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+
+    # Upgrade the install the project points at. The mtime bump is explicit
+    # so the version probe cannot answer from its (path, mtime) cache.
+    _touch(exe, '#!/bin/sh\necho "Verilator 5.049 devel rev vBBBB"\n')
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
+    with caplog.at_level(_logging.WARNING):
+        assert sim_b.compile() == 0
+    assert len(calls) == 2
+    assert sim_b._get_simv_path() == sim_a._get_simv_path()  # rebuilt in place
+    assert "5.048" in caplog.text and "5.049" in caplog.text
+    assert "rebuilding rather than reusing it" in caplog.text
+
+
+def test_a_wrapper_whose_size_and_mtime_survive_an_upgrade_still_rebuilds(
+    tmp_path, monkeypatch
+):
+    """`bin/verilator` is a script that execs `verilator_bin`; it can be
+    byte-identical and same-mtime across an upgrade of the binary behind it.
+    The version banner is the only entry that notices, so hold size and
+    mtime fixed and prove it does."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.048 aaaa")
+
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe)).compile()
+        == 0
+    )
+    assert len(calls) == 1
+    before = os.stat(exe)
+
+    # Same length, same mtime -- only the banner moves.
+    exe.write_text('#!/bin/sh\necho "Verilator 5.049 bbbb"\n')
+    exe.chmod(0o755)
+    os.utime(exe, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert os.stat(exe).st_size == before.st_size
+    assert os.stat(exe).st_mtime_ns == before.st_mtime_ns
+    # The probe memoises on (path, mtime), which is exactly what did not
+    # change, so the cache has to be stepped around for the banner to be
+    # re-read at all -- as a fresh process would.
+    vlog_sim_module._TOOLCHAIN_VERSION_CACHE.clear()
+
+    sim_b = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+
+
+def test_the_stamp_records_which_toolchain_built_it(tmp_path, monkeypatch):
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.049 devel rev vBBBB")
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))
+    assert sim.compile() == 0
+
+    toolchain = json.loads(_stamp_of(sim).read_text())["toolchain"]
+    assert toolchain["exe"] == str(exe)
+    assert toolchain["version"] == "Verilator 5.049 devel rev vBBBB"
+    assert toolchain["size"] == exe.stat().st_size
+    assert toolchain["mtime_ns"] == exe.stat().st_mtime_ns
+
+
+def test_reusing_a_build_names_the_toolchain_that_produced_it(
+    tmp_path, monkeypatch, caplog
+):
+    """`compile skipped` on its own does not say which compiler's output is
+    about to be simulated, which is the whole INF-22 complaint."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.049 devel rev vBBBB")
+
+    assert (
+        _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe)).compile()
+        == 0
+    )
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
+    with caplog.at_level(_logging.INFO):
+        assert reader.compile() == 0
+
+    assert len(calls) == 1
+    assert "built by Verilator 5.049 devel rev vBBBB" in caplog.text
+
+
+def test_an_unshareable_builder_also_rebuilds_when_the_toolchain_changes(
+    tmp_path, monkeypatch
+):
+    """The unshared stamp (a family rtl_buddy cannot redirect) reuses the
+    same fingerprint, so it was fooled the same way and is fixed with it."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls, simv="simv")
+    old = _fake_toolchain(tmp_path, "tc-a", "Some Simulator 1.0", binary="qrun")
+    new = _fake_toolchain(tmp_path, "tc-b", "Some Simulator 2.0", binary="qrun")
+
+    sim_a = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe=str(old),
+        family="questa",
+    )
+    assert sim_a.compile() == 0
+    assert len(calls) == 1
+    # Warm: the same toolchain short-circuits on its own stamp.
+    assert (
+        _make_sim(
+            tmp_path, monkeypatch, test_name="test_a", exe=str(old), family="questa"
+        ).compile()
+        == 0
+    )
+    assert len(calls) == 1
+
+    sim_b = _make_sim(
+        tmp_path,
+        monkeypatch,
+        test_name="test_a",
+        exe=str(new),
+        family="questa",
+    )
+    assert sim_b.compile() == 0
+    assert len(calls) == 2
+
+
+def test_a_version_probe_that_fails_never_fails_the_compile(tmp_path, monkeypatch):
+    """A simulator whose banner cannot be read still gets built; it only
+    costs the stamp the ability to notice an in-place upgrade."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = tmp_path / "tc" / "verilator"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text("#!/bin/sh\nexit 3\n")
+    exe.chmod(0o755)
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))
+    assert sim.compile() == 0
+    assert json.loads(_stamp_of(sim).read_text())["toolchain"]["version"] is None
+
+
+def test_a_builder_that_is_not_on_path_still_fingerprints(tmp_path, monkeypatch):
+    """`which` miss must not raise here — the compile below reports it far
+    better than this fingerprint could."""
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+
+    sim = _make_sim(
+        tmp_path, monkeypatch, test_name="test_a", exe="verilator-does-not-exist"
+    )
+    assert sim.compile() == 0
+    toolchain = json.loads(_stamp_of(sim).read_text())["toolchain"]
+    assert toolchain == {
+        "exe": "verilator-does-not-exist",
+        "size": None,
+        "mtime_ns": None,
+        "version": None,
+    }
+
+
+def test_a_stamp_predating_the_toolchain_entry_does_not_warn(
+    tmp_path, monkeypatch, caplog
+):
+    """An rtl_buddy upgrade is not a toolchain change. The rebuild is
+    unavoidable (the entry is new); crying 'toolchain changed' about it
+    would train people to ignore the message that matters."""
+    import logging as _logging
+
+    _write_source(tmp_path)
+    calls = []
+    _install_fake_builder(monkeypatch, calls)
+    exe = _fake_toolchain(tmp_path, "tc", "Verilator 5.049 devel rev vBBBB")
+
+    sim = _make_sim(tmp_path, monkeypatch, test_name="test_a", exe=str(exe))
+    assert sim.compile() == 0
+    stamp = _stamp_of(sim)
+    stored = json.loads(stamp.read_text())
+    del stored["toolchain"]
+    stamp.write_text(json.dumps(stored, sort_keys=True))
+
+    reader = _make_sim(tmp_path, monkeypatch, test_name="test_b", exe=str(exe))
+    with caplog.at_level(_logging.WARNING):
+        assert reader.compile() == 0
+    assert len(calls) == 2  # rebuilt, as it must be
+    assert "rebuilding rather than reusing it" not in caplog.text

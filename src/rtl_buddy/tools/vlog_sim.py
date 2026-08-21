@@ -15,7 +15,9 @@ import os
 import random
 import re
 import shlex
+import shutil
 import signal
+import subprocess
 import logging
 import types
 import uuid
@@ -78,6 +80,89 @@ SHARED_BUILD_STAMP_NAME = "rb-compile-stamp.json"
 # tests point at it. Everything else compiles inside each test's own
 # artefact dir (correct, just unshared).
 SHARE_BUILD_FAMILIES = frozenset({"verilator", "vcs", "icarus"})
+
+# The argv suffix that makes a simulator print its version cheaply, per
+# family, for the toolchain half of the shared-build stamp. A family absent
+# here keeps the path + size + mtime half and no version string. VCS is
+# deliberately absent: `vcs -ID` checks out a licence, and queueing for one
+# before every compile would cost far more than the check is worth — a VCS
+# install is versioned by its path, which the resolved executable already
+# carries.
+_TOOLCHAIN_VERSION_ARGS = {
+    "verilator": ("--version",),
+    "icarus": ("-V",),
+}
+
+# (resolved path, mtime_ns) -> version line. One fork per distinct binary per
+# process: a regression compiles many suites through the same toolchain, and
+# a dispatched fan-out re-probes once per job.
+_TOOLCHAIN_VERSION_CACHE: dict[tuple[str, int], str | None] = {}
+
+
+def _probe_toolchain_version(exe_path, simulator_family, mtime_ns):
+    """First line of the simulator's own version banner, or ``None``.
+
+    Plain ``subprocess.run`` rather than ``run_managed_process``: this is a
+    sub-second probe with no output to stream and nothing to clean up on a
+    signal, and it is memoised per (path, mtime) so a whole regression pays
+    for it once. The one thing that memo cannot see is an upgrade that
+    changes neither size nor mtime *while a run is in flight*; the next
+    process — the next ``rb``, or any dispatched job — probes afresh.
+
+    Every failure mode degrades to ``None``: a version we could not read
+    must never fail a compile, it only costs the stamp the ability to
+    notice an in-place upgrade.
+    """
+    args = _TOOLCHAIN_VERSION_ARGS.get(simulator_family)
+    if args is None:
+        return None
+    key = (exe_path, mtime_ns)
+    if key in _TOOLCHAIN_VERSION_CACHE:
+        return _TOOLCHAIN_VERSION_CACHE[key]
+    version = None
+    try:
+        proc = subprocess.run(
+            [exe_path, *args],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        proc = None
+    if proc is not None and proc.returncode == 0:
+        lines = ((proc.stdout or "") + (proc.stderr or "")).strip().splitlines()
+        version = lines[0].strip() if lines else None
+    _TOOLCHAIN_VERSION_CACHE[key] = version
+    return version
+
+
+def _log_stale_stamp_toolchain(stored_inputs, fingerprint, *, test_name=None):
+    """Say so when a rebuild is the toolchain's doing, not the RTL's.
+
+    A recompile after a source edit explains itself. A recompile because
+    the simulator moved underneath a build that was being reused does not,
+    and reading it off a diff of two JSON stamps is not a thing anyone
+    should have to do — this is the case that used to be missed entirely.
+    Silent on a stamp predating the toolchain entry: that is an rtl_buddy
+    upgrade, not a toolchain change, and it happens exactly once.
+    """
+    if "toolchain" not in stored_inputs:
+        return
+    was = stored_inputs.get("toolchain")
+    # A caller may hand in no fingerprint at all to assert a stamp is stale;
+    # that is not a toolchain change either.
+    now = (fingerprint or {}).get("toolchain") or {}
+    if not isinstance(was, dict) or was == now:
+        return
+    log_event(
+        logger,
+        logging.WARNING,
+        "compile.build_toolchain_changed",
+        test=test_name,
+        was=was.get("version") or was.get("exe"),
+        now=now.get("version") or now.get("exe"),
+    )
 
 
 def share_build_supported(simulator_family) -> bool:
@@ -519,6 +604,51 @@ class VlogSim:
                     stamps.append([line, None, None])
         return stamps
 
+    def _fingerprint_toolchain(self, exe):
+        """Which simulator install this build would come out of.
+
+        ``cmd`` records the *configured* executable — "verilator", the same
+        string whichever install ``PATH`` resolves it to. Without this
+        entry, pointing the project at a different simulator left every
+        shared build's stamp still validating, so the new toolchain was
+        never invoked: the compile short-circuited and the run reported PASS
+        on a binary the old one had produced. That is silent by
+        construction, and it makes a toolchain A/B report green regardless
+        of which side it is on (INF-22). It bit hardest under ``--dispatch``,
+        which implies ``--share-build``, so the same regression run locally
+        (compiling per test) failed correctly and the dispatched one passed.
+
+        ``exe`` goes in the *key* — two installs get two build dirs, which
+        is what an A/B wants — while size, mtime and version go in the
+        *stamp*, so upgrading one install in place rebuilds in place
+        instead of stranding a directory per version. Same split as
+        ``sources``, and for the same reason.
+        """
+        resolved = shutil.which(exe)
+        entry = {
+            "exe": resolved or exe,
+            "size": None,
+            "mtime_ns": None,
+            "version": None,
+        }
+        if resolved is None:
+            # Nothing to stat: the compile below is about to fail on this
+            # anyway, with a better message than we could give here.
+            return entry
+        try:
+            stat = os.stat(resolved)
+        except OSError:
+            return entry
+        entry["size"] = stat.st_size
+        entry["mtime_ns"] = stat.st_mtime_ns
+        # A wrapper script (verilator's `bin/verilator` is one) can keep its
+        # size and mtime across an upgrade of the binary it dispatches to, so
+        # the version banner is the entry that actually catches that case.
+        entry["version"] = _probe_toolchain_version(
+            resolved, self._get_simulator_family(), stat.st_mtime_ns
+        )
+        return entry
+
     def _compile_fingerprint(self, key_cmd, filelist_path):
         """Everything that determines the compiled binary.
 
@@ -534,13 +664,15 @@ class VlogSim:
             "cmd": list(key_cmd),
             "env": dict(sorted(self._get_extra_compile_env().items())),
             "sources": self._fingerprint_filelist_sources(filelist_path),
+            "toolchain": self._fingerprint_toolchain(key_cmd[0]),
         }
 
     @staticmethod
     def _compile_config_key(fingerprint):
         """Short stable hash naming the shared build dir.
 
-        Excludes source size/mtime so editing RTL rebuilds in place in the
+        Excludes source size/mtime — and the toolchain's size/mtime/version
+        — so editing RTL or upgrading a simulator in place rebuilds in the
         same dir (the stamp comparison catches the staleness) instead of
         accumulating a new obj_dir per edit.
         """
@@ -548,6 +680,11 @@ class VlogSim:
             "cmd": fingerprint["cmd"],
             "env": fingerprint["env"],
             "filelist": [entry[0] for entry in fingerprint["sources"]],
+            # The install, not its version: a rebuilt-in-place simulator
+            # should reuse this dir (the stamp catches the staleness), while
+            # a genuinely different install gets its own, so an A/B keeps
+            # both builds instead of overwriting one with the other.
+            "toolchain": fingerprint["toolchain"]["exe"],
         }
         digest = hashlib.sha256(
             json.dumps(config, sort_keys=True).encode("utf-8")
@@ -750,9 +887,11 @@ class VlogSim:
                 dependency=str(simv_path),
             )
             return False
-        if {
+        stored_inputs = {
             key: value for key, value in stored.items() if key not in ("deps", "simv")
-        } != fingerprint:
+        }
+        if stored_inputs != fingerprint:
+            _log_stale_stamp_toolchain(stored_inputs, fingerprint, test_name=test_name)
             return False
         deps = stored["deps"]
         if deps is None:
@@ -952,6 +1091,8 @@ class VlogSim:
                         "compile.build_reused",
                         test=self.test_name,
                         build_dir=build_dir,
+                        toolchain=fingerprint["toolchain"]["version"]
+                        or fingerprint["toolchain"]["exe"],
                     )
                     return 0
                 shared_dir.mkdir(parents=True, exist_ok=True)
@@ -1012,6 +1153,8 @@ class VlogSim:
                         test=self.test_name,
                         build_dir=compile_work_dir,
                         shared=False,
+                        toolchain=fingerprint["toolchain"]["version"]
+                        or fingerprint["toolchain"]["exe"],
                     )
                     return 0
                 (Path(compile_work_dir) / SHARED_BUILD_STAMP_NAME).unlink(

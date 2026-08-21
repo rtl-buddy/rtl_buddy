@@ -215,9 +215,13 @@ rtl-buddy test --share-build
 rtl-buddy regression --share-build
 ```
 
-The build directory is keyed on a hash of the compile inputs — builder
-executable, compile-time options, plusdefines, compile environment, and the
-resolved filelist — and lives at `artefacts/.shared-builds/obj_dir_<hash>/`.
+The build directory is keyed on a hash of the compile inputs — the builder
+executable *as `PATH` resolves it*, compile-time options, plusdefines,
+compile environment, and the resolved filelist — and lives at
+`artefacts/.shared-builds/obj_dir_<hash>/`. Resolving the executable is what
+keeps two simulator installs to two build dirs, so pointing the project at a
+different one compiles rather than reusing what the other built, and an A/B
+between them keeps both builds runnable.
 The first test with a given key compiles; subsequent tests find a valid
 `simv` and skip verilation entirely. Runtime-only inputs (plusargs, seeds,
 `timeout`) never affect the key, so tests that differ only in those always
@@ -228,6 +232,19 @@ After a successful compile, a `rb-compile-stamp.json` recording the exact
 compile inputs (including each source file's size and modification time) is
 written next to the `simv`. Reuse only happens when the stamp matches, so
 editing any file listed in the filelist triggers a rebuild in place.
+
+The stamp also names the toolchain that produced the build: the resolved
+executable, its size and mtime, and — for Verilator and Icarus — the first
+line of its version banner, probed once per binary per process. Upgrading one
+install in place therefore rebuilds *in the same directory* (the path did not
+change, so the key did not either) and logs
+`compile.build_toolchain_changed` naming the old and new versions, while
+`compile.build_reused` names the toolchain whose output a skipped compile is
+about to simulate. The version is the entry that catches an upgrade a wrapper
+script hides: `bin/verilator` can keep its own size and mtime across a
+rebuild of the `verilator_bin` it dispatches to. VCS is stamped by path, size
+and mtime only — `vcs -ID` checks out a licence, and queueing for one before
+every compile would cost more than the check is worth.
 
 The filelist only names what the *project* declared, which is not the whole
 truth: an entry that resolves to a directory (`+incdir+`, `-y`) says nothing

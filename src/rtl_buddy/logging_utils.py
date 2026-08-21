@@ -569,7 +569,18 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
         case "compile.builder_missing":
             return f"{fields.get('test')}: builder executable missing ({fields.get('executable')})"
         case "compile.build_reused":
-            return f"{target or 'compile'}: reused shared build {fields.get('build_dir')} (compile skipped)"
+            toolchain = fields.get("toolchain")
+            built_by = "" if toolchain is None else f", built by {toolchain}"
+            return (
+                f"{target or 'compile'}: reused shared build "
+                f"{fields.get('build_dir')}{built_by} (compile skipped)"
+            )
+        case "compile.build_toolchain_changed":
+            return (
+                f"{target or 'compile'}: the shared build was compiled by "
+                f"{fields.get('was')} but this run resolves "
+                f"{fields.get('now')} — rebuilding rather than reusing it"
+            )
         case "compile.share_build_unsupported":
             return (
                 f"{fields.get('test')}: --share-build cannot share this build "

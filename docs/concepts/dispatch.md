@@ -144,9 +144,12 @@ Dispatch buckets tests by **two independent keys**, and they need not line
 up:
 
 - **Share-build groups by *compile key*** — a fingerprint of the compile
-  inputs (filelist + compile flags + plusdefines). Tests whose inputs
-  hash identically reuse one `simv` under
-  `artefacts/.shared-builds/obj_dir_<key>/simv`.
+  inputs (filelist + compile flags + plusdefines + the resolved builder
+  executable). Tests whose inputs hash identically reuse one `simv` under
+  `artefacts/.shared-builds/obj_dir_<key>/simv`. Because dispatch implies
+  `--share-build`, the toolchain has to be part of that key or a dispatched
+  run would reuse a build the current simulator never produced — see
+  [the stamp](tests.md#sharing-compiled-builds-across-tests).
 - **Arrays group by *resolved resources*** — the `cpus`/`mem`/`time`
   reservation. Tests resolving to the same reservation share one `sbatch`
   array.

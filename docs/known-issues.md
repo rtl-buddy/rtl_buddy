@@ -532,10 +532,13 @@ it emits. What that last part covers depends entirely on the builder:
   simv built from the old header.
 
 Two things stay untracked for every builder: the **ambient environment** the
-compile subprocess inherits (only the *extra* compile env is recorded, so a
-`PATH` change that selects a different binary is invisible unless the
-dependency file names that binary), and anything a builder consumes without
-declaring.
+compile subprocess inherits (only the *extra* compile env is recorded), and
+anything a builder consumes without declaring. The one ambient input that
+*is* tracked is the builder itself — see
+[the toolchain entry](#a-shared-build-predating-467-is-reused-across-a-simulator-swap)
+— so a `PATH` change that selects a different simulator does invalidate the
+stamp, while a `PATH` change that reaches some other tool the builder shells
+out to does not.
 
 The escape hatch where tracking does not reach: delete the stamp, or run
 once without `--share-build`, to force a fresh compile. **Which stamp
@@ -561,6 +564,54 @@ same-key tests share by construction, and cross-process races are excluded by
 the
 [per-tree artefact lock](#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind)
 (with that quirk's NFS caveat applying here too).
+
+## A shared build predating #467 is reused across a simulator swap
+
+Before [#467](https://github.com/rtl-buddy/rtl_buddy/issues/467), the
+`rb-compile-stamp.json` recorded the builder as **configured** — the string
+`verilator` — which is the same string whichever install `PATH` resolves it
+to. Nothing in the stamp said *which* simulator produced the build, so
+pointing a project at a different one left the stamp validating: the compile
+short-circuited, and the run reported PASS on a binary the new toolchain had
+never produced.
+
+Nothing looks wrong while it happens. The log says
+`reused shared build … (compile skipped)`, which is what it says on a
+legitimate reuse, and there is no failure to read.
+
+`--dispatch` [implies `--share-build`](#-dispatch-silently-implies-share-build)
+while a plain local `regression` compiles per test unless asked, so the same
+regression would **fail correctly when run locally and pass when
+dispatched** — which reads as a scheduler or environment problem and sends
+the investigation somewhere else entirely. It is not: both paths are the same
+stamp. The practical consequence is that **a toolchain A/B run through a
+shared build reports green whichever side it is on**.
+
+Both reuse paths were affected — the shared one, and the unshared per-test
+stamp a builder rtl_buddy cannot redirect writes into its own compile work
+dir.
+
+Fixed by [#468](https://github.com/rtl-buddy/rtl_buddy/pull/468): the
+resolved executable joins the compile key (so two installs get two build
+dirs, and an A/B keeps both builds runnable), while its size, mtime and
+version banner join the stamp (so upgrading one install in place rebuilds in
+place). `compile.build_toolchain_changed` names the old and new toolchain
+when that is what invalidated a stamp, and `compile.build_reused` now names
+the toolchain whose output a skipped compile is about to simulate.
+
+**On a release older than #468**, treat a toolchain change as invalidating
+every shared build by hand:
+
+```bash
+rm -rf <suite>/artefacts/.shared-builds/          # and artefacts/<test>/rb-compile-stamp.json
+```
+
+or run the comparison without `--share-build` — which means **not through
+`--dispatch`**, since dispatch turns it on for you.
+
+The first run after upgrading *to* #468 recompiles once per compile key: the
+key changed, so previous `obj_dir_<hash>` directories no longer match and are
+left behind. They are safe to delete.
 
 ## Whitespace in a path or a define/parameter value does not survive a yosys script line
 
