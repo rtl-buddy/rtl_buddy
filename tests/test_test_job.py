@@ -9,6 +9,7 @@ needed; the ``minimal_project`` fixture provides the config surface.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -349,6 +350,82 @@ def test_build_job_compile_failure_is_best_effort_exit_0(
     envelope = json.loads(payload_line)
     assert "basic" in envelope["payload"]["failed"]
     assert envelope["payload"]["built"] == []
+
+
+def test_build_job_exits_0_when_git_is_missing(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A node without a ``git`` binary must not cost a regression its fan-out.
+
+    ECP CI, 2026-08-19: the compiles all succeeded, then the machine-result
+    envelope shelled out to git, which the compute node did not have. The
+    FileNotFoundError propagated, the build job exited non-zero, and Slurm
+    cancelled every afterok sim job behind it — ~150 per build, on every branch.
+    """
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+
+    real_run = subprocess.run
+
+    def git_is_not_installed(argv, *args, **kwargs):
+        if argv and argv[0] == "git":
+            raise FileNotFoundError(2, "No such file or directory", "git")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(rtl_buddy_module.subprocess, "run", git_is_not_installed)
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+
+    payload_line = [
+        line for line in result.output.splitlines() if line.startswith("{")
+    ][-1]
+    envelope = json.loads(payload_line)
+    # The envelope still parses; the git block degrades to null rather than
+    # taking the job down with it.
+    assert envelope["meta"]["git"] is None
+    assert set(envelope["payload"]["built"]) == {"basic", "extra"}
+
+
+def test_build_job_exits_0_when_the_envelope_cannot_be_emitted(
+    minimal_project: Path,
+    stub_runner: type[_StubTestRunner],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Reporting is never allowed to decide the build job's exit status."""
+    from rtl_buddy.runner.test_results import EarlyStopResults
+
+    stub_runner.canned = EarlyStopResults(name="b/results", desc="Stopped at compile")
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("no envelope for you")
+
+    monkeypatch.setattr(RtlBuddy, "_emit_machine_result", boom)
+
+    runner, rb = _runner()
+    result = runner.invoke(
+        rb.app, ["--machine", "_build-job", "-c", "tests.yaml", "-l", "5"]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_envelope_failure_warning_has_a_dedicated_human_message():
+    """A WARNING must not fall through to the generic event-name fallback."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "build_job.machine_result_failed", {"error": "no envelope for you"}
+    )
+    assert "machine-result envelope" in msg
+    assert "no envelope for you" in msg
+    assert "exits 0" in msg
+    assert "build_job machine_result_failed" not in msg
 
 
 def test_build_job_plan_compiles_plan_configs_without_hook(

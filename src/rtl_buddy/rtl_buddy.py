@@ -1993,7 +1993,20 @@ class RtlBuddy:
             # CompileFail row (parity with the in-process path).
             write_build_result_json(result_json_path, built=built, failed=failed)
         if self.machine:
-            self._emit_machine_result("_build-job", 0, built=built, failed=failed)
+            # Reporting only, so it is not allowed to change the exit status
+            # below. A build job that exits non-zero makes the scheduler cancel
+            # every afterok dependent, which would throw away a whole regression
+            # fan-out *after* the compiles had already succeeded -- exactly what
+            # an unreadable machine-result envelope did to ECP CI on 2026-08-19.
+            try:
+                self._emit_machine_result("_build-job", 0, built=built, failed=failed)
+            except Exception as exc:  # noqa: BLE001 - telemetry is never fatal
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "build_job.machine_result_failed",
+                    error=str(exc),
+                )
         # Always exit 0: a per-test compile failure is not a build-job
         # failure (afterok dependents must still run). Only a fatal setup
         # error (raised above) fails the job and cancels the fan-out.
@@ -9559,20 +9572,30 @@ class RtlBuddy:
         raise typer.Exit(0)
 
     def _collect_git_status(self) -> dict | None:
-        status_result = subprocess.run(
-            ["git", "status", "-sb"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
-        commit_result = subprocess.run(
-            ["git", "log", "-1", "--pretty=%h"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
+        # Optional metadata: every caller already treats None as "no git info".
+        # `check=False` covers a git that runs and refuses (no repo, no commits);
+        # it does not cover a git that is not there at all, because subprocess
+        # raises before there is a returncode to inspect. That case is real on a
+        # dispatch cluster -- jobs inherit the submitter's PATH and can land on a
+        # node without the binary -- so catch OSError (FileNotFoundError is a
+        # subclass) and degrade to None rather than taking the caller down.
+        try:
+            status_result = subprocess.run(
+                ["git", "status", "-sb"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            commit_result = subprocess.run(
+                ["git", "log", "-1", "--pretty=%h"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return None
         if status_result.returncode != 0 or commit_result.returncode != 0:
             return None
         status_lines = status_result.stdout.splitlines()
