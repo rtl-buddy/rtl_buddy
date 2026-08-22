@@ -77,10 +77,14 @@ class VlogPost:
 
         results = {"result": "NA", "desc": "test result unknown"}
         if match_fail is not None:
-            results = {
-                "result": "FAIL",
-                "desc": f"{match_fail.group(1)} {match_err.group(2).strip()}",
-            }
+            # An ERR:/FAT: line is conventional alongside FAIL but not
+            # guaranteed: a testbench may print its verdict and nothing else.
+            # Reading match_err unconditionally turned that into an
+            # AttributeError that took the whole run down instead of reporting
+            # the failure, losing the results table for every other test too.
+            detail = match_err.group(2).strip() if match_err is not None else ""
+            desc = f"{match_fail.group(1)} {detail}".strip()
+            results = {"result": "FAIL", "desc": desc}
         if match_pass is not None:
             results = {"result": "PASS", "desc": match_pass.group(1)}
         if match_pass is None and match_fail is None:
