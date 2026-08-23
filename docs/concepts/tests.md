@@ -110,7 +110,7 @@ When `uvm` is **not** set, `rtl_buddy` determines the result by parsing `artefac
 - `PASS <optional detail>`
 - `FAIL <optional detail>`
 
-When emitting `FAIL`, also print an `ERR:` or `FAT:` line. The default failure parser expects one:
+When emitting `FAIL`, also print an `ERR:` or `FAT:` line. It is optional, but its text is appended to the failing test's description in the results table, so it is what makes a red row explain itself:
 
 ```systemverilog
 if (test_passed) begin
@@ -126,8 +126,9 @@ Rules to follow:
 - Emit exactly one terminal result marker.
 - Start the line with `PASS` or `FAIL`; other wording will not be detected.
 - Write the marker to stdout, not stderr.
-- When using `FAIL`, follow it with an `ERR:` or `FAT:` line.
-- If no `PASS` or `FAIL` marker is found, `rtl_buddy` records the test as `NA` with description `test result unknown`.
+- When using `FAIL`, follow it with an `ERR:` or `FAT:` line so the results table can say why the test failed.
+- If a log carries **both** markers, `FAIL` wins, whichever came first, and a `postproc.conflicting_markers` warning is logged. A failure signal is never erased by a `PASS` line elsewhere in the transcript.
+- If no `PASS` or `FAIL` marker is found, `rtl_buddy` records the test as `NA` with description `test result unknown`. `NA` does **not** pass, so such a test fails its regression.
 - Do not rely on the simulator exit code alone to communicate pass/fail in non-UVM tests.
 
 ### UVM report parsing

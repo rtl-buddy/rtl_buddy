@@ -716,6 +716,11 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return f"{target or 'postproc'}: post-processing completed with result {fields.get('result')} ({fields.get('desc')})"
         case "postproc.no_markers":
             return f"{fields.get('test')}: no PASS/FAIL markers found in {fields.get('log')}; result is NA"
+        case "postproc.conflicting_markers":
+            return (
+                f"{fields.get('test')}: both PASS and FAIL markers found in "
+                f"{fields.get('log')}; result is {fields.get('chosen')}"
+            )
         case "filelist.malformed_line":
             return (
                 f'{fields.get("file")}: malformed filelist line "{fields.get("line")}"'

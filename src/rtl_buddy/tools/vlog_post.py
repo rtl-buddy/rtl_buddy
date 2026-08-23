@@ -76,6 +76,15 @@ class VlogPost:
                     match_err = re.search(r"^(ERR|FAT):\s*(.*)", line)
 
         results = {"result": "NA", "desc": "test result unknown"}
+        if match_pass is not None:
+            results = {"result": "PASS", "desc": match_pass.group(1)}
+        # FAIL is applied last so it wins: a failure signal must not be
+        # erasable by a PASS line elsewhere in the log. A transcript can carry
+        # both -- a per-phase PASS ahead of a final FAIL, a wrapper printing
+        # its own PASS after a failing sub-check, or output from two phases
+        # concatenated -- and scoring that PASS is a silent false green.
+        # Mirrors count_assertion_failures, which already overrides a PASS
+        # when an assertion fired.
         if match_fail is not None:
             # An ERR:/FAT: line is conventional alongside FAIL but not
             # guaranteed: a testbench may print its verdict and nothing else.
@@ -85,8 +94,19 @@ class VlogPost:
             detail = match_err.group(2).strip() if match_err is not None else ""
             desc = f"{match_fail.group(1)} {detail}".strip()
             results = {"result": "FAIL", "desc": desc}
-        if match_pass is not None:
-            results = {"result": "PASS", "desc": match_pass.group(1)}
+            if match_pass is not None:
+                # The log contradicts itself. FAIL is the safe reading, but
+                # the testbench is not obeying "emit exactly one terminal
+                # marker" and that is worth saying rather than silently
+                # picking a winner.
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "postproc.conflicting_markers",
+                    test=self.name,
+                    log=str(self.path),
+                    chosen="FAIL",
+                )
         if match_pass is None and match_fail is None:
             log_event(
                 logger,

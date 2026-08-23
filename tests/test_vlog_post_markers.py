@@ -1,5 +1,7 @@
 """Tests for the PASS/FAIL/ERR marker contract in `VlogPost.get_results`."""
 
+import logging
+
 from rtl_buddy.tools import vlog_post
 
 
@@ -50,3 +52,55 @@ def test_pass_marker_reports_pass(tmp_path):
 def test_no_markers_reports_na(tmp_path):
     results = _results(tmp_path, "simulation finished\n")
     assert results["result"] == "NA"
+
+
+def test_fail_wins_when_pass_appears_after_it(tmp_path):
+    # A failure signal must not be erasable by a PASS line elsewhere in the
+    # log: a per-phase PASS, a wrapper printing PASS after a failing
+    # sub-check, or two phases' output concatenated would otherwise score a
+    # failing run green.
+    results = _results(tmp_path, "FAIL tb: 3 mismatches\nPASS tb: done\n")
+    assert results["result"] == "FAIL"
+
+
+def test_fail_wins_when_pass_appears_before_it(tmp_path):
+    results = _results(tmp_path, "PASS tb: done\nFAIL tb: 3 mismatches\n")
+    assert results["result"] == "FAIL"
+
+
+def test_conflicting_markers_keep_the_fail_description(tmp_path):
+    results = _results(
+        tmp_path,
+        "PASS tb: phase 1\nERR: dout mismatch\nFAIL tb: 1 mismatch\n",
+    )
+    assert results["result"] == "FAIL"
+    assert results["desc"] == "tb: 1 mismatch dout mismatch"
+
+
+def test_conflicting_markers_warn(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.tools.vlog_post"):
+        results = _results(tmp_path, "PASS tb: done\nFAIL tb: 1 mismatch\n")
+    assert results["result"] == "FAIL"
+    assert "conflicting_markers" in caplog.text
+
+
+def test_pass_alone_does_not_warn_about_conflict(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="rtl_buddy.tools.vlog_post"):
+        results = _results(tmp_path, "PASS tb: done\n")
+    assert results["result"] == "PASS"
+    assert "conflicting_markers" not in caplog.text
+
+
+def test_conflicting_markers_has_dedicated_human_message():
+    """Guidelines -> Logging: every WARNING/ERROR event gets a dedicated case,
+    otherwise the fallback renders `postproc conflicting_markers` with none of
+    `test`, `log` or `chosen` -- the fields that say which log contradicted
+    itself and which way it was resolved."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "postproc.conflicting_markers",
+        {"test": "smoke", "log": "/p/artefacts/smoke/test.log", "chosen": "FAIL"},
+    )
+    for token in ("smoke", "/p/artefacts/smoke/test.log", "FAIL"):
+        assert token in msg, msg
