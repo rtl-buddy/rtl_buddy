@@ -89,3 +89,18 @@ def test_pass_alone_does_not_warn_about_conflict(tmp_path, caplog):
         results = _results(tmp_path, "PASS tb: done\n")
     assert results["result"] == "PASS"
     assert "conflicting_markers" not in caplog.text
+
+
+def test_conflicting_markers_has_dedicated_human_message():
+    """Guidelines -> Logging: every WARNING/ERROR event gets a dedicated case,
+    otherwise the fallback renders `postproc conflicting_markers` with none of
+    `test`, `log` or `chosen` -- the fields that say which log contradicted
+    itself and which way it was resolved."""
+    from rtl_buddy.logging_utils import _human_message
+
+    msg = _human_message(
+        "postproc.conflicting_markers",
+        {"test": "smoke", "log": "/p/artefacts/smoke/test.log", "chosen": "FAIL"},
+    )
+    for token in ("smoke", "/p/artefacts/smoke/test.log", "FAIL"):
+        assert token in msg, msg
