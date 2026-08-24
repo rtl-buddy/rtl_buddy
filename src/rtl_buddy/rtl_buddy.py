@@ -9267,11 +9267,17 @@ class RtlBuddy:
     def do_gen_vlog_run_script(self):
         assert False, "not yet impl"
 
-    def _select_model_configs(self, models: list[str], project_root: str):
+    def _select_model_configs(
+        self, models: list[str], project_root: str, command: str = "filelist"
+    ):
         """Resolve ``--model`` names against every models.yaml under the root.
 
         An empty ``models`` selects every discovered model (the
         ``rb verible filelist`` default). Unknown names are fatal.
+        ``command`` stamps the error events with the verible subcommand
+        that asked, so a lint/format failure is distinguishable from a
+        filelist one without renaming the events existing machine-mode
+        consumers may already filter on.
         """
         all_entries = discover_model_configs(project_root)
         if not all_entries:
@@ -9280,6 +9286,7 @@ class RtlBuddy:
                 logging.ERROR,
                 "verible_filelist.no_models_discovered",
                 project_root=project_root,
+                command=command,
             )
             raise FatalRtlBuddyError(f"no models.yaml files found under {project_root}")
 
@@ -9296,6 +9303,7 @@ class RtlBuddy:
                 "verible_filelist.unknown_models",
                 models=missing,
                 available=sorted(by_name),
+                command=command,
             )
             raise FatalRtlBuddyError(f"unknown model(s): {', '.join(missing)}")
         if models:
@@ -9303,7 +9311,11 @@ class RtlBuddy:
         return [model for _, model in all_entries]
 
     def _verible_model_files(
-        self, model_names: list[str], excludes: list[str], project_root: str
+        self,
+        model_names: list[str],
+        excludes: list[str],
+        project_root: str,
+        command: str,
     ) -> list[str]:
         """Expand ``--model`` names into the source files verible should visit.
 
@@ -9315,7 +9327,9 @@ class RtlBuddy:
         left. Returned relative to the process cwd, so verible's
         diagnostics stay short and clickable from where the user ran rb.
         """
-        selected = self._select_model_configs(model_names, project_root)
+        selected = self._select_model_configs(
+            model_names, project_root, command=command
+        )
         vlog_fl = VlogFilelist(
             name=self.name + "/verible_model_files",
             model_cfg=None,
@@ -9382,7 +9396,7 @@ class RtlBuddy:
         if models:
             patterns = list(verible_cfg.exclude) + list(excludes or [])
             verible_args += self._verible_model_files(
-                list(models), patterns, self.root_cfg.get_project_rootdir()
+                list(models), patterns, self.root_cfg.get_project_rootdir(), cmd
             )
         elif excludes:
             log_event(
