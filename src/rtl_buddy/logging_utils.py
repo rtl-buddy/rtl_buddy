@@ -798,6 +798,20 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
             return "verible binaries unavailable"
         case "verible.command_invalid":
             return f'verible: invalid command "{fields.get("command")}"'
+        case "verible.model_files":
+            return (
+                f"--model {', '.join(fields.get('models', []))}: "
+                f"{fields.get('files')} source file(s)"
+                f" ({fields.get('excluded')} excluded)"
+            )
+        case "verible.model_files_empty":
+            return (
+                f"--model {', '.join(fields.get('models', []))} expanded to no"
+                " source files — every entry was a -v/-y library file, a"
+                " +directive, or matched an exclude glob"
+            )
+        case "verible.exclude_without_model":
+            return "--exclude only filters --model expansion; no --model given, so it has no effect"
         case "wave.nvim_plugin_missing":
             return (
                 'nvim plugin not installed — run "rb nvim-install" to enable the hub'

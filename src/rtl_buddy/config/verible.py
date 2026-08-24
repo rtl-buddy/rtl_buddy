@@ -6,7 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from serde import serde
 from ..logging_utils import log_event
 from .toolpath import resolve_tool_path
@@ -36,12 +36,19 @@ class VeribleConfig:
       name (str): Unique verible identifier.
       path (str): Path to the directory containing Verible executables.
       extra_args (dict[str, list[str]]): List of arguments to be supplied to verible, grouped by command.
+      exclude (list[str]): Glob patterns of files dropped from ``--model``
+        expansion (generated sources, third-party IP, ...).
     """
 
     name: str
     path: str
     extra_args: dict[str, list[str]]
     available: bool
+    #: Glob patterns (fnmatch, matched against the project-root-relative
+    #: path with ``/`` separators; ``*`` crosses directory boundaries) of
+    #: files dropped from ``--model`` file expansion. Explicitly listed
+    #: files are never filtered.
+    exclude: list[str] = field(default_factory=list)
 
     def get_name(self):
         """
@@ -112,6 +119,7 @@ class VeribleConfigFile:
     name: str
     path: str | list[str]
     extra_args: dict[str, list[str]]
+    exclude: list[str] = field(default_factory=list)
 
     def initialise(
         self, root_cfg_path: str, *, diagnostics: bool = True
@@ -143,7 +151,9 @@ class VeribleConfigFile:
             directory=True,
         )
         resolved = str(Path(base_dir) / chosen)
-        res = VeribleConfig(self.name, resolved, self.extra_args, False)
+        res = VeribleConfig(
+            self.name, resolved, self.extra_args, False, list(self.exclude)
+        )
         if os.path.exists(resolved):
             res.available = True
             if not os.path.exists(os.path.join(resolved, _PROBE_BINARY)):

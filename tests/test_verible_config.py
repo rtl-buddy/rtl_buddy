@@ -88,3 +88,17 @@ def test_initialise_unavailable_when_missing_everywhere(tmp_path, monkeypatch):
         str(root_cfg)
     )
     assert cfg.available is False
+
+
+def test_initialise_carries_exclude(tmp_path):
+    """The ``exclude`` globs survive initialise; default is empty."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    root_cfg = tmp_path / "root_config.yaml"
+    root_cfg.write_text("")
+    cfg = VeribleConfigFile("v", str(bindir), {}, exclude=["*_csr_pkg.sv"]).initialise(
+        str(root_cfg)
+    )
+    assert cfg.exclude == ["*_csr_pkg.sv"]
+    cfg_default = VeribleConfigFile("v", str(bindir), {}).initialise(str(root_cfg))
+    assert cfg_default.exclude == []

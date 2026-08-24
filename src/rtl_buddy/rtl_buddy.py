@@ -3,6 +3,7 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
+import fnmatch
 import logging
 import os
 import re
@@ -401,17 +402,32 @@ class RtlBuddy:
         self.verible_app = typer.Typer(
             help="verible tooling and filelist generation", no_args_is_help=True
         )
-        self.verible_app.command("lint", help="run verible-verilog-lint")(
-            self.do_verible_lint
-        )
-        self.verible_app.command("syntax", help="run verible-verilog-syntax")(
-            self.do_verible_syntax
-        )
-        self.verible_app.command("format", help="run verible-verilog-format")(
-            self.do_verible_format
-        )
+        # The passthrough subcommands hand every argument they do not
+        # recognise straight to the verible binary, so `rb verible lint
+        # --rules_config=x f.sv` works without a `--` separator.
+        _verible_passthrough_ctx = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        }
         self.verible_app.command(
-            "preprocessor", help="run verible-verilog-preprocessor"
+            "lint",
+            help="run verible-verilog-lint",
+            context_settings=_verible_passthrough_ctx,
+        )(self.do_verible_lint)
+        self.verible_app.command(
+            "syntax",
+            help="run verible-verilog-syntax",
+            context_settings=_verible_passthrough_ctx,
+        )(self.do_verible_syntax)
+        self.verible_app.command(
+            "format",
+            help="run verible-verilog-format",
+            context_settings=_verible_passthrough_ctx,
+        )(self.do_verible_format)
+        self.verible_app.command(
+            "preprocessor",
+            help="run verible-verilog-preprocessor",
+            context_settings=_verible_passthrough_ctx,
         )(self.do_verible_preprocessor)
         self.verible_app.command(
             "filelist",
@@ -9251,18 +9267,144 @@ class RtlBuddy:
     def do_gen_vlog_run_script(self):
         assert False, "not yet impl"
 
-    def _run_verible_passthrough(self, cmd: str, verible_args: list[str]):
+    def _select_model_configs(
+        self, models: list[str], project_root: str, command: str = "filelist"
+    ):
+        """Resolve ``--model`` names against every models.yaml under the root.
+
+        An empty ``models`` selects every discovered model (the
+        ``rb verible filelist`` default). Unknown names are fatal.
+        ``command`` stamps the error events with the verible subcommand
+        that asked, so a lint/format failure is distinguishable from a
+        filelist one without renaming the events existing machine-mode
+        consumers may already filter on.
+        """
+        all_entries = discover_model_configs(project_root)
+        if not all_entries:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible_filelist.no_models_discovered",
+                project_root=project_root,
+                command=command,
+            )
+            raise FatalRtlBuddyError(f"no models.yaml files found under {project_root}")
+
+        by_name: dict[str, ModelConfig] = {}
+        for _, model in all_entries:
+            # First-found wins on duplicate names across files. Within a
+            # single models.yaml, ModelConfigLoader already rejects dupes.
+            by_name.setdefault(model.name, model)
+        missing = [name for name in models if name not in by_name]
+        if missing:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible_filelist.unknown_models",
+                models=missing,
+                available=sorted(by_name),
+                command=command,
+            )
+            raise FatalRtlBuddyError(f"unknown model(s): {', '.join(missing)}")
+        if models:
+            return [by_name[name] for name in models]
+        return [model for _, model in all_entries]
+
+    def _verible_model_files(
+        self,
+        model_names: list[str],
+        excludes: list[str],
+        project_root: str,
+        command: str,
+    ) -> list[str]:
+        """Expand ``--model`` names into the source files verible should visit.
+
+        Bare source entries only (``VlogFilelist.extract_source_files``):
+        ``-v``/``-y`` library files and ``+incdir+``/``+define+``/
+        ``+libext+`` directives are dropped, then ``excludes`` (fnmatch
+        globs against the project-root-relative path with ``/``
+        separators; ``*`` crosses directory boundaries) filter what is
+        left. Returned relative to the process cwd, so verible's
+        diagnostics stay short and clickable from where the user ran rb.
+        """
+        selected = self._select_model_configs(
+            model_names, project_root, command=command
+        )
+        vlog_fl = VlogFilelist(
+            name=self.name + "/verible_model_files",
+            model_cfg=None,
+            output_path=None,
+        )
+        cwd = os.getcwd()
+        files: list[str] = []
+        seen: set[str] = set()
+        excluded = 0
+        for model_cfg in selected:
+            for path in vlog_fl.extract_source_files(model_cfg):
+                if path in seen:
+                    continue
+                seen.add(path)
+                rel = os.path.relpath(path, project_root).replace(os.sep, "/")
+                if any(fnmatch.fnmatch(rel, pat) for pat in excludes):
+                    excluded += 1
+                    continue
+                files.append(os.path.relpath(path, cwd))
+        log_event(
+            logger,
+            logging.INFO,
+            "verible.model_files",
+            models=model_names,
+            files=len(files),
+            excluded=excluded,
+        )
+        if not files:
+            log_event(
+                logger,
+                logging.ERROR,
+                "verible.model_files_empty",
+                models=model_names,
+                excluded=excluded,
+            )
+            raise FatalRtlBuddyError(
+                "--model expansion left no source files (every entry was a "
+                "-v/-y library file, a +directive, or matched an exclude glob)"
+            )
+        return files
+
+    def _run_verible_passthrough(
+        self,
+        cmd: str,
+        verible_args: list[str],
+        models: list[str] | None = None,
+        excludes: list[str] | None = None,
+    ):
         """Shared dispatch for the verible passthrough subcommands.
 
         Resolves the configured verible executable via root_config and
-        invokes it with the trailing ``verible_args``. Always exits via
-        ``typer.Exit`` so the binary's return code propagates.
+        invokes it with the trailing ``verible_args``. ``models`` appends
+        the ``--model`` expansion (filtered by the cfg-verible ``exclude``
+        globs plus ``excludes``) after the user's own arguments. Always
+        exits via ``typer.Exit`` so the binary's return code propagates.
         """
         self._enter_command_context(command_root=self.invocation_cwd)
         verible_cfg = self.root_cfg.platform_cfg.get_verible()
         if not verible_cfg.available:
             log_event(logger, logging.ERROR, "verible.unavailable")
             raise typer.Exit(2)
+
+        verible_args = list(verible_args)
+        if models:
+            patterns = list(verible_cfg.exclude) + list(excludes or [])
+            verible_args += self._verible_model_files(
+                list(models), patterns, self.root_cfg.get_project_rootdir(), cmd
+            )
+        elif excludes:
+            log_event(
+                logger,
+                logging.WARNING,
+                "verible.exclude_without_model",
+                patterns=list(excludes),
+            )
 
         ver = Verible(self.name + "/verible", cfg=verible_cfg)
         log_event(
@@ -9274,12 +9416,34 @@ class RtlBuddy:
         )
         raise typer.Exit(ver.do_cmd(cmd=cmd, verible_args=verible_args))
 
+    _VERIBLE_MODEL_HELP = (
+        "Model name from models.yaml whose filelist supplies the files to "
+        "visit (repeatable). Bare source entries only: -v/-y library files "
+        "and +incdir+/+define+/+libext+ directives are dropped, then the "
+        "cfg-verible `exclude` globs and --exclude filter the rest."
+    )
+    _VERIBLE_EXCLUDE_HELP = (
+        "Glob of project-root-relative paths dropped from --model expansion "
+        "(repeatable, fnmatch semantics: * also crosses directory "
+        "separators). Adds to the cfg-verible `exclude` list."
+    )
+
     def do_verible_lint(
         self,
         verible_args: Annotated[list[str], typer.Argument(...)] = [],
+        models: Annotated[
+            list[str],
+            typer.Option("--model", help=_VERIBLE_MODEL_HELP),
+        ] = [],
+        excludes: Annotated[
+            list[str],
+            typer.Option("--exclude", help=_VERIBLE_EXCLUDE_HELP),
+        ] = [],
     ):
         """run verible-verilog-lint"""
-        self._run_verible_passthrough("lint", verible_args)
+        self._run_verible_passthrough(
+            "lint", verible_args, models=models, excludes=excludes
+        )
 
     def do_verible_syntax(
         self,
@@ -9291,9 +9455,19 @@ class RtlBuddy:
     def do_verible_format(
         self,
         verible_args: Annotated[list[str], typer.Argument(...)] = [],
+        models: Annotated[
+            list[str],
+            typer.Option("--model", help=_VERIBLE_MODEL_HELP),
+        ] = [],
+        excludes: Annotated[
+            list[str],
+            typer.Option("--exclude", help=_VERIBLE_EXCLUDE_HELP),
+        ] = [],
     ):
         """run verible-verilog-format"""
-        self._run_verible_passthrough("format", verible_args)
+        self._run_verible_passthrough(
+            "format", verible_args, models=models, excludes=excludes
+        )
 
     def do_verible_preprocessor(
         self,
@@ -9336,35 +9510,7 @@ class RtlBuddy:
         if output is None:
             output = os.path.join(project_root, "verible.filelist")
 
-        all_entries = discover_model_configs(project_root)
-        if not all_entries:
-            log_event(
-                logger,
-                logging.ERROR,
-                "verible_filelist.no_models_discovered",
-                project_root=project_root,
-            )
-            raise FatalRtlBuddyError(f"no models.yaml files found under {project_root}")
-
-        if models:
-            by_name: dict[str, ModelConfig] = {}
-            for _, model in all_entries:
-                # First-found wins on duplicate names across files. Within a
-                # single models.yaml, ModelConfigLoader already rejects dupes.
-                by_name.setdefault(model.name, model)
-            missing = [name for name in models if name not in by_name]
-            if missing:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "verible_filelist.unknown_models",
-                    models=missing,
-                    available=sorted(by_name),
-                )
-                raise FatalRtlBuddyError(f"unknown model(s): {', '.join(missing)}")
-            selected = [by_name[name] for name in models]
-        else:
-            selected = [model for _, model in all_entries]
+        selected = self._select_model_configs(models, project_root)
 
         log_event(
             logger,

@@ -390,6 +390,33 @@ class VlogFilelist:
         log_event(logger, logging.INFO, "filelist.write_done", output=output_filepath)
         return
 
+    def extract_source_files(self, model_cfg):
+        """Bare source entries of a model's filelist, ``-F`` chains unrolled.
+
+        The set of files the model *owns*: library entries (``-v`` /
+        ``-y``) and directives (``+incdir+`` / ``+define+`` /
+        ``+libext+``) are dropped -- they name files the model merely
+        uses, and search/preprocessor state that means nothing to a
+        per-file tool. This is the expansion behind
+        ``rb verible lint/format --model``. Paths come back absolute and
+        normalized, in filelist order, deduplicated.
+        """
+        entries = self._extract(
+            model_cfg.get_filelist(),
+            unroll=True,
+            fpath=os.path.abspath(model_cfg.get_model_path()),
+        )
+        out: list[str] = []
+        seen: set[str] = set()
+        for path, option in entries:
+            if option is not None:
+                continue
+            norm = os.path.normpath(path)
+            if norm not in seen:
+                seen.add(norm)
+                out.append(norm)
+        return out
+
     def write_verible_filelist(self, model_cfgs, output_filepath=None):
         """Generate a verible.filelist from one or more ModelConfigs.
 
