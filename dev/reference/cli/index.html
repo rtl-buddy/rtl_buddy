@@ -4477,8 +4477,17 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-35-6" name="__codelineno-35-6" href="#__codelineno-35-6"></a>│   verible_args      [VERIBLE_ARGS]...                                                │
 <a id="__codelineno-35-7" name="__codelineno-35-7" href="#__codelineno-35-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-35-8" name="__codelineno-35-8" href="#__codelineno-35-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-35-9" name="__codelineno-35-9" href="#__codelineno-35-9"></a>│ --help          Show this message and exit.                                          │
-<a id="__codelineno-35-10" name="__codelineno-35-10" href="#__codelineno-35-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-35-9" name="__codelineno-35-9" href="#__codelineno-35-9"></a>│ --model          TEXT  Model name from models.yaml whose filelist supplies the files │
+<a id="__codelineno-35-10" name="__codelineno-35-10" href="#__codelineno-35-10"></a>│                        to visit (repeatable). Bare source entries only: -v/-y        │
+<a id="__codelineno-35-11" name="__codelineno-35-11" href="#__codelineno-35-11"></a>│                        library files and +incdir+/+define+/+libext+ directives are   │
+<a id="__codelineno-35-12" name="__codelineno-35-12" href="#__codelineno-35-12"></a>│                        dropped, then the cfg-verible `exclude` globs and --exclude   │
+<a id="__codelineno-35-13" name="__codelineno-35-13" href="#__codelineno-35-13"></a>│                        filter the rest.                                              │
+<a id="__codelineno-35-14" name="__codelineno-35-14" href="#__codelineno-35-14"></a>│ --exclude        TEXT  Glob of project-root-relative paths dropped from --model      │
+<a id="__codelineno-35-15" name="__codelineno-35-15" href="#__codelineno-35-15"></a>│                        expansion (repeatable, fnmatch semantics: * also crosses      │
+<a id="__codelineno-35-16" name="__codelineno-35-16" href="#__codelineno-35-16"></a>│                        directory separators). Adds to the cfg-verible `exclude`      │
+<a id="__codelineno-35-17" name="__codelineno-35-17" href="#__codelineno-35-17"></a>│                        list.                                                         │
+<a id="__codelineno-35-18" name="__codelineno-35-18" href="#__codelineno-35-18"></a>│ --help                 Show this message and exit.                                   │
+<a id="__codelineno-35-19" name="__codelineno-35-19" href="#__codelineno-35-19"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="verible-syntax">verible syntax</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-36-1" name="__codelineno-36-1" href="#__codelineno-36-1"></a>Usage: rtl-buddy verible syntax [OPTIONS] [VERIBLE_ARGS]...                            
@@ -4501,8 +4510,17 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-37-6" name="__codelineno-37-6" href="#__codelineno-37-6"></a>│   verible_args      [VERIBLE_ARGS]...                                                │
 <a id="__codelineno-37-7" name="__codelineno-37-7" href="#__codelineno-37-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-37-8" name="__codelineno-37-8" href="#__codelineno-37-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-37-9" name="__codelineno-37-9" href="#__codelineno-37-9"></a>│ --help          Show this message and exit.                                          │
-<a id="__codelineno-37-10" name="__codelineno-37-10" href="#__codelineno-37-10"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-37-9" name="__codelineno-37-9" href="#__codelineno-37-9"></a>│ --model          TEXT  Model name from models.yaml whose filelist supplies the files │
+<a id="__codelineno-37-10" name="__codelineno-37-10" href="#__codelineno-37-10"></a>│                        to visit (repeatable). Bare source entries only: -v/-y        │
+<a id="__codelineno-37-11" name="__codelineno-37-11" href="#__codelineno-37-11"></a>│                        library files and +incdir+/+define+/+libext+ directives are   │
+<a id="__codelineno-37-12" name="__codelineno-37-12" href="#__codelineno-37-12"></a>│                        dropped, then the cfg-verible `exclude` globs and --exclude   │
+<a id="__codelineno-37-13" name="__codelineno-37-13" href="#__codelineno-37-13"></a>│                        filter the rest.                                              │
+<a id="__codelineno-37-14" name="__codelineno-37-14" href="#__codelineno-37-14"></a>│ --exclude        TEXT  Glob of project-root-relative paths dropped from --model      │
+<a id="__codelineno-37-15" name="__codelineno-37-15" href="#__codelineno-37-15"></a>│                        expansion (repeatable, fnmatch semantics: * also crosses      │
+<a id="__codelineno-37-16" name="__codelineno-37-16" href="#__codelineno-37-16"></a>│                        directory separators). Adds to the cfg-verible `exclude`      │
+<a id="__codelineno-37-17" name="__codelineno-37-17" href="#__codelineno-37-17"></a>│                        list.                                                         │
+<a id="__codelineno-37-18" name="__codelineno-37-18" href="#__codelineno-37-18"></a>│ --help                 Show this message and exit.                                   │
+<a id="__codelineno-37-19" name="__codelineno-37-19" href="#__codelineno-37-19"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="verible-preprocessor">verible preprocessor</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a>Usage: rtl-buddy verible preprocessor [OPTIONS] [VERIBLE_ARGS]...                      
