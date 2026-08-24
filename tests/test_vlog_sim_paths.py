@@ -1,6 +1,12 @@
+import os
+import shutil
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 
+import pytest
+
+from rtl_buddy.config.model import ModelConfig
 from rtl_buddy.process_utils import ManagedProcessResult
 from rtl_buddy.seed_mode import SeedMode
 from rtl_buddy.tools.artifact_paths import (
@@ -9,6 +15,7 @@ from rtl_buddy.tools.artifact_paths import (
     test_build_dir_name,
 )
 from rtl_buddy.tools.vlog_cov import VlogCov
+from rtl_buddy.tools.vlog_filelist import VlogFilelist
 from rtl_buddy.tools import vlog_sim as vlog_sim_module
 
 
@@ -262,6 +269,120 @@ def test_compile_fingerprint_stats_quoted_absolute_source(tmp_path, monkeypatch)
 
     stat = source.stat()
     assert stamps == [[raw_line, stat.st_size, stat.st_mtime_ns]]
+
+
+def test_compile_fingerprint_degrades_on_unbalanced_quote(tmp_path, monkeypatch):
+    """A malformed quoted line stamps [line, None, None] instead of aborting."""
+    sim = _make_sim(tmp_path, monkeypatch)
+    sim._ensure_artifact_dir()
+    run_f = Path(sim._get_filelist_path())
+    raw_line = '"a"b"'
+    run_f.write_text(f"{raw_line}\n")
+
+    stamps = sim._fingerprint_filelist_sources(str(run_f))
+
+    assert stamps == [[raw_line, None, None]]
+
+
+def _nested_worktree_repro(tmp_path: Path):
+    """Build the path geometry from #457, including an ancestor with spaces."""
+    primary = tmp_path / "project with spaces"
+    primary_source = primary / "design" / "dut.sv"
+    primary_source.parent.mkdir(parents=True)
+    primary_source.write_text("module primary_dut; endmodule\n")
+
+    worktree = primary / ".claude" / "worktrees" / "feature"
+    (worktree / ".git").mkdir(parents=True)
+    (worktree / "root_config.yaml").write_text("{}\n")
+    worktree_source = worktree / "design" / "dut.sv"
+    worktree_source.parent.mkdir()
+    worktree_source.write_text("module dut; endmodule\n")
+    (worktree / "common").mkdir()
+    (worktree / "lib").mkdir()
+
+    suite = worktree / "verif" / "block"
+    suite.mkdir(parents=True)
+    testbench = suite / "tb_top.sv"
+    testbench.write_text("module tb_top; dut u_dut(); endmodule\n")
+    output_dir = suite / "artefacts" / "basic"
+    output_dir.mkdir(parents=True)
+
+    model = ModelConfig(
+        name="dut",
+        filelist=["-v dut.sv", "+libext+.sv"],
+        path=str(worktree / "design" / "models.yaml"),
+    )
+    run_f = output_dir / "run.f"
+    filelist = VlogFilelist(name="t", model_cfg=model, output_path=str(run_f))
+    filelist.write_output(
+        unroll=True,
+        absolute_sources=True,
+        test_filelist=[
+            "+incdir+../../common",
+            "-y ../../lib",
+            "+define+WIDTH=8",
+            "tb_top.sv",
+        ],
+        suite_dir=str(suite),
+    )
+    return primary_source, worktree_source, testbench, run_f
+
+
+def test_write_output_absolute_sources_blocks_nested_worktree_composition(
+    tmp_path: Path,
+):
+    """Explicit sources are pinned while search options retain their spelling."""
+    primary_source, worktree_source, testbench, run_f = _nested_worktree_repro(tmp_path)
+    output_dir = run_f.parent
+    lines = run_f.read_text().splitlines()
+
+    assert f'-v "{worktree_source}"' in lines
+    assert f'"{testbench}"' in lines
+    assert "+incdir+../../../../common" in lines
+    assert "-y ../../../../lib" in lines
+    assert "+define+WIDTH=8" in lines
+    assert "+libext+.sv" in lines
+
+    # Before #457, Verilator tried this composed candidate before its cwd
+    # fallback. It exists in the primary checkout, so the wrong source won.
+    old_source_entry = os.path.relpath(worktree_source, output_dir)
+    incdir_entry = next(
+        line.removeprefix("+incdir+") for line in lines if line.startswith("+incdir+")
+    )
+    composed = Path(os.path.normpath(output_dir / incdir_entry / old_source_entry))
+    assert composed == primary_source
+
+
+@pytest.mark.skipif(shutil.which("verilator") is None, reason="verilator not installed")
+def test_verilator_compiles_nested_worktree_source_from_absolute_run_f(tmp_path: Path):
+    """The real builder consumes the worktree source, including a spaced path."""
+    primary_source, worktree_source, _testbench, run_f = _nested_worktree_repro(
+        tmp_path
+    )
+    obj_dir = run_f.parent / "obj_dir"
+    result = subprocess.run(
+        [
+            "verilator",
+            "--cc",
+            "--top-module",
+            "tb_top",
+            "--Mdir",
+            str(obj_dir),
+            "-f",
+            str(run_f),
+        ],
+        cwd=run_f.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    ver_files_path = next(iter(sorted(obj_dir.glob("*__verFiles.dat"))), None)
+    assert ver_files_path is not None, f"no *__verFiles.dat under {obj_dir}"
+    ver_files = ver_files_path.read_text()
+    assert str(worktree_source) in ver_files
+    assert str(primary_source) not in ver_files
 
 
 def test_vlog_sim_execute_runs_in_artifact_dir_and_updates_symlinks(

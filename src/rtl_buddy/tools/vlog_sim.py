@@ -587,6 +587,14 @@ class VlogSim:
         Entries that don't resolve to a plain file (+incdir+/-y directories,
         +libext+ suffixes) keep only their raw line; changes inside include
         directories are not tracked.
+
+        Quoted entries (emitted for paths containing whitespace) are unquoted
+        here with ``shlex`` before stat'ing. This unquoting is independent of
+        the builder's own ``-f`` parser: Verilator's quote handling was
+        validated, other builders' were not — but a bare path with whitespace
+        was already broken for every builder, so quoting only appears where
+        nothing worked before. The raw (quoted) line is what goes into the
+        stamp, matching what ``run.f`` actually contains.
         """
         base = os.path.dirname(os.path.abspath(filelist_path))
         stamps = []
@@ -598,7 +606,13 @@ class VlogSim:
                 option_match = _FILELIST_OPTION_RE.match(line)
                 entry_path = option_match.group(1) if option_match else line
                 if entry_path.startswith('"') and entry_path.endswith('"'):
-                    parsed = shlex.split(entry_path)
+                    try:
+                        parsed = shlex.split(entry_path)
+                    except ValueError:
+                        # An unbalanced quote must degrade to [line, None,
+                        # None] like every other malformed entry, not abort
+                        # the compile from the stamping path.
+                        parsed = []
                     if len(parsed) == 1:
                         entry_path = parsed[0]
                 resolved = os.path.normpath(os.path.join(base, entry_path))

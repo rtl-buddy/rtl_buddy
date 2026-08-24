@@ -182,7 +182,14 @@ class VlogFilelist:
         deduplicate=False,
         absolute_sources=False,
     ):
-        """Do flatten, strip, and deduplicate after all lines are collected at the top level."""
+        """Do flatten, strip, and deduplicate after all lines are collected at the top level.
+
+        ``absolute_sources`` pins explicit sources (bare and ``-v``) to their
+        resolved absolute path, quoted when they contain whitespace; search
+        options (``+incdir+``/``-y``/``+libext+``/``-F``) keep their relative
+        spelling and precedence. ``flatten`` wins over it (a basename cannot
+        be pinned).
+        """
         output_dir = os.path.abspath(output_dir)
         project_root = self._project_root(output_dir)
         escaped: list[str] = []
@@ -315,6 +322,14 @@ class VlogFilelist:
         suite_dir=None,
         absolute_sources=False,
     ):
+        """Write the processed filelist.
+
+        This is the seam every consumer flow calls (``rb test``, ``rb hier``,
+        ``rb graph build``, synth, FPV, ``rb axi-profile``, ``rb verible
+        filelist``). ``absolute_sources`` (default off; only the simulation
+        flow opts in) pins explicit bare/``-v`` sources to absolute paths —
+        see :meth:`_process` for the exact contract.
+        """
         if output_filepath is None:
             output_filepath = self.output_path
         log_event(logger, logging.DEBUG, "filelist.write_start", output=output_filepath)
