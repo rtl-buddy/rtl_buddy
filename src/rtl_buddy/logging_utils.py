@@ -810,6 +810,26 @@ def _human_message(event: str, fields: Mapping[str, Any]) -> str:
                 " source files — every entry was a -v/-y library file, a"
                 " +directive, or matched an exclude glob"
             )
+        case "lint_suite_config.load_failed":
+            return f"failed to load lint.yaml at {fields.get('path')}: {fields.get('error')}"
+        case "lint_suite_config.duplicate_check":
+            return (
+                f"{fields.get('path')}: duplicate lint check name "
+                f'"{fields.get("name")}"'
+            )
+        case "lint_suite_config.checks_malformed":
+            return (
+                f"{fields.get('path')}: checks section malformed: {fields.get('error')}"
+            )
+        case "lint_suite_config.check_missing":
+            return (
+                f'lint check "{fields.get("check")}" not found in {fields.get("path")}'
+            )
+        case "lint_reg_config.load_failed":
+            return (
+                f"failed to load lint regression config at {fields.get('path')}: "
+                f"{fields.get('error')}"
+            )
         case "verible.exclude_without_model":
             return "--exclude only filters --model expansion; no --model given, so it has no effect"
         case "wave.nvim_plugin_missing":

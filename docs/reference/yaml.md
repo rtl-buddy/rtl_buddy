@@ -234,7 +234,7 @@ cfg-dispatch:                 # optional; parallel execution for regression/rand
 - `cfg-pnr-tools` defines P&R tool entries selected by `pnr.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. When `pnr.yaml` `tool` does not match a `cfg-pnr-tools` entry, the value is used as the executable name directly (bare-name on `PATH` semantics).
 - `cfg-power-tools` defines power-analysis tool entries selected by `power.yaml` `tool` fields. Each entry has `name` (referenced by `tool:` in `power.yaml`) and `tool` (path to the executable, or a bare name if it is available on `PATH`). When `power.yaml` `tool` does not match a `cfg-power-tools` entry, the value is used as the executable name directly (bare-name on `PATH` semantics).
 - `cfg-fpv-tools` defines FPV tool entries selected by `fpv.yaml` `tool` fields. `tool` is the path to the executable, or a bare name if it is available on `PATH`. `opts.timeout` is written to the generated `.sby` `[options]` block as a per-task timeout in seconds. `opts.extra-args` is appended verbatim to every sby invocation. `opts.solver-versions` is an optional map of solver short name → exact version string (e.g. `yices: "2.6.4"`); known solvers are `yices`, `z3`, `boolector`, `bitwuzla`, `btormc`, `abc`. Each pinned solver is probed before every run and the run hard-fails with a single multi-line summary if any version does not match — protects CI reproducibility against drift in locally-installed solvers. `opts.plugin-path` is the path to the yosys-slang shared library; required when any `fpv.yaml` verification picks `frontend: slang`, ignored for the default verilog frontend. Absolute paths pass through; relative paths resolve against the project root (the directory containing `root_config.yaml`).
-- `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd. The optional `synth-reg-cfg-path` / `power-reg-cfg-path` / `fpga-reg-cfg-path` / `cdc-reg-cfg-path` / `fpv-reg-cfg-path` keys do the same for the matching `rb <flow>-regression` command when no `./<flow>_regression.yaml` exists — and they are how a manifest kept away from the project root stays visible to `rb graph build`'s [flow discovery](../concepts/graph.md#flow-provenance). Relative paths anchor to the directory containing `root_config.yaml`.
+- `cfg-rtl-reg.reg-cfg-path` is the fallback regression file for `rtl-buddy regression` when no `./regression.yaml` exists in the cwd. The optional `synth-reg-cfg-path` / `power-reg-cfg-path` / `fpga-reg-cfg-path` / `cdc-reg-cfg-path` / `fpv-reg-cfg-path` / `lint-reg-cfg-path` keys do the same for the matching `rb <flow>-regression` command when no `./<flow>_regression.yaml` exists — and they are how a manifest kept away from the project root stays visible to `rb graph build`'s [flow discovery](../concepts/graph.md#flow-provenance). Relative paths anchor to the directory containing `root_config.yaml`.
 - `cfg-dispatch` (optional) configures parallel test execution for `rb regression --dispatch <backend>`, `rb randtest --dispatch <backend>` and `rb test --dispatch <backend>`. `backend` is `local` (default, in-process), `local-parallel` (capped subprocesses on this host) or `slurm`; it defaults the backend for `rb regression` and `rb randtest` only — **`rb test` dispatches only when `--dispatch` is passed on the command line**, so a project-wide cluster backend never redirects single-test iteration (every other key here still applies to a `rb test --dispatch` run). `jobs` sizes the `local-parallel` pool — one global cap across all suites, default `min(4, cpu count)`, overridden per run by `-j/--jobs`; it is the *only* knob that backend honours, which ignores `resources`/`compile`/`max-jobs-per-array` and produces no right-sizing advice (no accounting source). The rest of the block is Slurm's: `resources` are the per-sim-job reservation defaults (`cpus`/`mem`/`time`), and `compile` is the reservation for the compile — the dispatched build job normally, or folded into each sim job's reservation when the builder cannot share a build (defaults to `resources` — a large Verilation or VCS elaboration is often heavier than the sims); **quote `time`** — an unquoted `4:00:00` is YAML-1.1 sexagesimal (the integer 14400). `sbatch-args` pass to `sbatch` verbatim (partition/account/qos). `max-jobs-per-array` caps concurrent elements per submitted array (peak concurrency ≈ that × number of arrays); `poll-interval` (>0) is the queue-poll cadence. `progress-interval` (≥0, default 60) is how often the *console* gets a progress/heartbeat line while the fleet drains — a different question from how often the queue is polled; `0` keeps the terminal quiet and leaves the trail in `rtl_buddy.log` only. `max-wait` (>0, unset by default = unbounded, today's behaviour) bounds each collect wait: past it the run fails loudly, naming the outstanding job ids, and cancels the fleet instead of blocking forever. It bounds each wait, not their sum — with `retry` enabled a run can take up to roughly `attempts × (backoff + max-wait)`, and each retry round's deadline is widened by the backoff the head asked the backend to serve, so a `max-wait` shorter than the backoff does not trip on the hold itself. Both apply to `local-parallel` as well as `slurm`. See [Watching a run](../concepts/dispatch.md#watching-a-run). `retry` (optional, **off unless `attempts` > 0**) gives a retry budget to jobs the scheduler killed under a resource condition (`TIMEOUT`/`NODE_FAIL`/`PREEMPTED`) while their simulation was still queueing for a license seat — and only those: retry needs the job's own output, written since this attempt was submitted, to *end* inside the queue (nothing after the last `-licqueue` marker but banner vocabulary), so a testbench that hung — whether it never queued, or queued, got its seat and then hung — is never retried; nor is a job whose suite's build job did not report success, which never started at all. An exhausted budget still fails, so a missing result never scores green. `attempts` counts *extra* attempts after the first; the delay before attempt *n* is `min(backoff-max-sec, backoff-sec × 2^(n-1))` scaled by `uniform(1 - jitter, 1 + jitter)` (jitter matters: the jobs that lose a seat race lose it together, and an unjittered retry puts the whole batch back in front of the same full pool in lockstep); `classifiers` lists the classifiers allowed to retry, and `license-queue` is the only one that exists today (the key is spelled `classifiers`, not `on`: PyYAML is a YAML 1.1 parser, so an unquoted `on:` key would deserialise as the boolean `true` and the pin would silently do nothing). On `local-parallel` there is no scheduler state to require, so the queue evidence alone decides. Only sim jobs are retried, never the build job. Slurm serves the delay with `sbatch --begin` (the job waits `PENDING`, holding no allocation; a `--begin` of your own in `sbatch-args` wins over it, since `sbatch-args` is emitted last), `local-parallel` holds it in its pool, and each retry logs `dispatch.retry` on the console. A retry that cannot be launched logs `dispatch.retry_abandoned` and keeps the results already collected rather than failing the run. See [Retrying a license-queue kill](../concepts/dispatch.md#retrying-a-license-queue-kill). `rightsize` tunes reservation right-sizing advice (`report` on by default; `over-threshold`/`near-limit` utilization bounds; `margin` for the suggested value). Per-test overrides use the same `resources:` shape in `tests.yaml`. Full guide: [Parallel dispatch](../concepts/dispatch.md).
 - `cfg-verible[].path` is the directory containing Verible executables. Absolute paths are used as-is; relative paths are resolved from the directory containing `root_config.yaml`. When the configured directory does not exist but `verible-verilog-syntax` is on `PATH`, Verible stays enabled and rtl_buddy **warns**, naming both the configured directory and what `PATH` resolved — a pin that quietly resolves to something else is the failure the pin exists to prevent. The same warning covers a configured directory that exists but does not hold `verible-verilog-syntax`. Both are raised **only for the entry the active platform routes to**: every `cfg-verible` entry is loaded, and a project with one entry per platform must not warn about the other platform's directory (a pin nobody on this host uses, or can fix) on every invocation.
 - `cfg-verible[].extra_args` maps a verible subcommand name (`lint`, `format`, `syntax`, `preprocessor`) to arguments always passed to that binary, **before** any CLI arguments — so a CLI flag overrides a configured one (for repeated gflags, the later occurrence wins). A committed lint policy usually lives in a [`.rules.verible_lint`](https://chipsalliance.github.io/verible/verilog_lint.html) file at the project root with `extra_args: {lint: ["--rules_config_search"]}` pointing verible at it, rather than an inline `--rules=` list — the file also serves plain `verible-verilog-lint` and editor integrations.
@@ -800,6 +800,71 @@ analyses:
 - `rb cdc` resolves the model sources and invokes the configured analyzer twice, once for text and once for JSON output.
 - When `single_unit: true`, both analyzer invocations receive exactly one `--single-unit` flag.
 - `rb --machine cdc <name> --list` lists configured analyses without running them.
+
+---
+
+## lint.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: lint_config`
+- `checks`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: lint_config
+
+checks:
+  - name: "demo_style"
+    desc: "demo block vs the project style policy"
+    model: "demo_top"
+    model_path: "../../design/demo/models.yaml"
+    exclude: ["*_csr_pkg.sv"]
+    extra_args: ["--rules=+no-tabs"]
+    reglvl: 0
+```
+
+**Field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Check identifier; used on the CLI and in `artefacts/{name}/` |
+| `desc` | string | Human-readable check description |
+| `model` | string | Model name from `models.yaml`; its filelist supplies the files to lint |
+| `model_path` | string | Path to `models.yaml`, resolved relative to `lint.yaml` |
+| `exclude` | list of strings | Optional glob patterns dropped from the expansion, in addition to `cfg-verible`'s `exclude`; same fnmatch semantics (`*` crosses `/`) |
+| `extra_args` | list of strings | Optional verible-verilog-lint arguments, appended after `cfg-verible`'s `extra_args.lint` (later gflags occurrences win) |
+| `reglvl` | int | Regression level; the check runs when `--reg-level` >= it |
+| `xfail` | bool | Optional non-strict expected-failure marker — a block whose style debt is tracked but not yet paid stays green as `XFAIL` while the debt stays visible |
+| `xfail_strict` | bool | Optional strict expected-failure marker (an unexpected pass fails) |
+
+**Runtime effects:**
+
+- The linter is the routed `cfg-verible` entry — there is no per-check `tool:` field. The lint policy itself lives wherever `cfg-verible`'s `extra_args.lint` points (typically a committed `.rules.verible_lint` found via `--rules_config_search`).
+- A check's file set is the same expansion `rb verible lint --model` applies: the model's bare source entries (`-v`/`-y` library files and `+` directives dropped), filtered by `cfg-verible`'s `exclude` globs plus the check's own.
+- `rb lint` writes the expanded file set to `artefacts/<name>/lint.f` and the linter output to `artefacts/<name>/lint.log`, then reports PASS (exit 0 from the linter), FAIL with the finding count, or — for a non-zero exit with no findings — the tool error.
+- `rb --machine lint -c <file> --list` lists configured checks without running them.
+
+---
+
+## lint_regression.yaml
+
+**Required keys:**
+
+- `rtl-buddy-filetype: lint_reg_config`
+- `lint-configs`
+
+**Example:**
+
+```yaml
+rtl-buddy-filetype: lint_reg_config
+
+lint-configs:
+  - "lint/style/lint.yaml"
+```
+
+`rb lint-regression` runs every check of every listed `lint.yaml` (paths resolve relative to this file) whose `reglvl` is <= `--reg-level`, and renders one summary across all suites. The manifest is discovered like every flow's: `./lint_regression.yaml` in the cwd first, then `cfg-rtl-reg`'s `lint-reg-cfg-path`. Listing a suite here also stamps its checks with `flow: lint` in the [design knowledge graph](../concepts/graph.md#flow-provenance).
 
 ---
 

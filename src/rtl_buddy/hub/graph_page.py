@@ -42,6 +42,7 @@ from pathlib import Path
 from ..graph.config_tier import (
     ELABORATES_AS,
     FLOW_CDC,
+    FLOW_LINT,
     FLOW_FPGA,
     FLOW_FPV,
     FLOW_SIM,
@@ -115,6 +116,10 @@ FLOW_COLUMNS = {
     FLOW_SYNTH: "syn-config",
     FLOW_FPV: "formal-config",
     FLOW_CDC: "cdc-config",
+    # Style lint shares the CDC column for the FPGA-and-synthesis reason:
+    # both are static lint flows with no testbench, and a column that is
+    # empty in almost every project costs more than it says.
+    FLOW_LINT: "cdc-config",
     FLOW_FPGA: "syn-config",
 }
 

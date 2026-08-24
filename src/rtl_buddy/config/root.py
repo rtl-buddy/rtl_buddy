@@ -120,6 +120,7 @@ class RootRtlField:
     fpga_path: str | None = field(rename="fpga-reg-cfg-path", default=None)
     cdc_path: str | None = field(rename="cdc-reg-cfg-path", default=None)
     fpv_path: str | None = field(rename="fpv-reg-cfg-path", default=None)
+    lint_path: str | None = field(rename="lint-reg-cfg-path", default=None)
 
 
 #: ``cfg-rtl-reg`` YAML key and :class:`RootRtlField` attribute per flow.
@@ -133,6 +134,7 @@ REG_CFG_PATH_KEYS: dict[str, tuple[str, str]] = {
     "fpga": ("fpga-reg-cfg-path", "fpga_path"),
     "cdc": ("cdc-reg-cfg-path", "cdc_path"),
     "fpv": ("fpv-reg-cfg-path", "fpv_path"),
+    "lint": ("lint-reg-cfg-path", "lint_path"),
 }
 
 

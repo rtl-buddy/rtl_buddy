@@ -3,7 +3,6 @@
 #
 # Copyright 2024 rtl_buddy contributors
 #
-import fnmatch
 import logging
 import os
 import re
@@ -29,6 +28,7 @@ from .config.root import (
     resolve_reg_cfg_path,
 )
 from .config.cdc import CdcRegConfig, CdcSuiteConfig
+from .config.lint import LintRegConfig, LintSuiteConfig
 from .config.fpga import FpgaRegConfig, FpgaSuiteConfig
 from .config.fpv import FpvRegConfig, FpvSuiteConfig
 from .config.mut import MutSuiteConfig
@@ -60,7 +60,9 @@ from .logging_utils import (
     setup_logging,
 )
 from .runner.cdc_runner import CdcRunner
+from .runner.lint_runner import LintRunner
 from .runner.cdc_results import CdcSkipResults
+from .runner.lint_results import LintSkipResults
 from .runner.fpv_runner import FpvRunner
 from .runner.fpv_results import FpvSkipResults
 from .runner.mut_runner import MutRunner
@@ -138,7 +140,7 @@ from .tools.spec_trace import (
     discover_suite_tests,
 )
 from .tools.verible import Verible
-from .tools.vlog_filelist import VlogFilelist
+from .tools.vlog_filelist import VlogFilelist, apply_exclude_globs
 from .tools.vlog_sim import share_build_unsupported_reason
 from .config.xplr import load_xplr_config
 from .xplr import analysis as xplr_analysis
@@ -472,6 +474,10 @@ class RtlBuddy:
         self.app.command("cdc", help="run CDC lint")(self.do_cmd_cdc)
         self.app.command("cdc-regression", help="run CDC lint regression")(
             self.do_cdc_regression
+        )
+        self.app.command("lint", help="run style lint (verible)")(self.do_cmd_lint)
+        self.app.command("lint-regression", help="run style lint regression")(
+            self.do_lint_regression
         )
         self.app.command("fpv", help="run formal property verification")(
             self.do_cmd_fpv
@@ -7233,6 +7239,218 @@ class RtlBuddy:
             results.append({"cdc_name": a.get_name(), "results": res})
         return results
 
+    # --- style-lint subcommands ---------------------------------------------
+
+    def _render_lint_summary(self, title, lint_results, *, metadata=None):
+        rows = []
+        for r in lint_results:
+            res = r["results"].results
+            row = {
+                "lint_name": r["lint_name"],
+                "result": res["result"],
+                "desc": res["desc"],
+                "violations": str(res.get("violations", "-")),
+                "files": str(res.get("files", "-")),
+                "excluded": str(res.get("excluded", "-")),
+            }
+            rows.append(row)
+
+        columns = [
+            ("lint_name", "Lint Check"),
+            ("result", "Result"),
+            ("desc", "Description"),
+            ("violations", "Violations"),
+            ("files", "Files"),
+            ("excluded", "Excluded"),
+        ]
+        render_summary(
+            title=title,
+            columns=columns,
+            rows=rows,
+            logger=logger,
+            metadata=metadata,
+        )
+
+    def _exit_code_from_lint_results(self, lint_results):
+        return 0 if all(r["results"].is_pass() for r in lint_results) else 1
+
+    def _lint_result_row(self, r, *, suite: str | None = None) -> dict:
+        res = r["results"].results
+        row = {"name": r["lint_name"], "result": res["result"], "desc": res["desc"]}
+        if suite is not None:
+            row["suite"] = suite
+        for k in ("violations", "files", "excluded"):
+            if k in res and res[k] is not None:
+                row[k] = res[k]
+        return row
+
+    def _do_lint_suite(self, suite_cfg, lint_name=None, reg_level=None):
+        checks = suite_cfg.get_checks(lint_name)
+        suite_dir = str(Path(suite_cfg.get_path()).resolve().parent)
+        results = []
+        for c in checks:
+            c_lvl = c.get_reglvl()
+            if reg_level is not None and c_lvl > reg_level:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "lint_suite.skip",
+                    check=c.get_name(),
+                    reason="above_regression_level",
+                    check_level=c_lvl,
+                    reg_level=reg_level,
+                )
+                results.append(
+                    {
+                        "lint_name": c.get_name(),
+                        "results": LintSkipResults(
+                            name=c.get_name() + "/results",
+                            desc=f"lvl {c_lvl} > cmd reg_level {reg_level}",
+                        ),
+                    }
+                )
+                continue
+            runner = LintRunner(
+                name=self.name + "/lint_runner",
+                root_cfg=self.root_cfg,
+                lint_cfg=c,
+                suite_dir=suite_dir,
+            )
+            res = runner.run()
+            if c.is_xfail():
+                self._apply_xfail_logged(res, c, "lint_suite.xfail")
+            results.append({"lint_name": c.get_name(), "results": res})
+        return results
+
+    def do_cmd_lint(
+        self,
+        lint_config: Annotated[
+            str,
+            typer.Option("-c", "--lint-config", help="lint.yaml to use"),
+        ] = "lint.yaml",
+        lint_name: Annotated[
+            str,
+            typer.Argument(
+                help="name of lint check to run", show_default="run all checks"
+            ),
+        ] = None,
+        list_lints: Annotated[
+            bool,
+            typer.Option("--list", help="list checks in the selected config and exit"),
+        ] = False,
+    ):
+        """
+        run style lint (verible)
+        """
+        ctx = self._enter_command_context(
+            primary_config=lint_config, list_only=list_lints
+        )
+        suite_cfg = LintSuiteConfig(path=str(ctx.primary_config))
+        log_event(
+            logger,
+            logging.INFO,
+            "command.lint",
+            command="lint",
+            lint=lint_name or "all",
+            lint_config=lint_config,
+        )
+
+        if list_lints:
+            if self.machine:
+                self._emit_machine_result(
+                    "lint --list", 0, names=list(suite_cfg.get_check_names())
+                )
+            else:
+                emit_console_text(
+                    "  ".join(suite_cfg.get_check_names()), stream="stdout"
+                )
+            raise typer.Exit(0)
+
+        lint_results = self._do_lint_suite(suite_cfg, lint_name=lint_name)
+        exit_code = self._exit_code_from_lint_results(lint_results)
+        if self.machine:
+            self._emit_machine_result(
+                "lint",
+                exit_code,
+                results=[self._lint_result_row(r) for r in lint_results],
+            )
+        else:
+            self._render_lint_summary("Style Lint Results Summary", lint_results)
+        raise typer.Exit(exit_code)
+
+    def do_lint_regression(
+        self,
+        reg_config: Annotated[
+            str,
+            typer.Option(
+                "-c",
+                "--reg-config",
+                help="path to lint_regression.yaml",
+                show_default="Use ./lint_regression.yaml if present, "
+                "otherwise root_config.yaml lint-reg-cfg-path",
+            ),
+        ] = None,
+        reg_level: Annotated[
+            int,
+            typer.Option("-l", "--reg-level", help="lint regression level to stop at"),
+        ] = 0,
+    ):
+        """
+        run style lint regression
+        """
+        log_event(
+            logger,
+            logging.INFO,
+            "command.lint_regression",
+            reg_config=reg_config,
+            reg_level=reg_level,
+        )
+
+        reg_cfg_path = self._resolve_flow_reg_cfg_path(
+            reg_config, "lint_regression.yaml", "lint"
+        )
+
+        orchestration_ctx = self._enter_command_context(primary_config=reg_cfg_path)
+        lint_reg = LintRegConfig(name=self.name + "/lint_reg_config", path=reg_cfg_path)
+        emit_console_text(
+            f"Running style lint regression from {orchestration_ctx.command_root}",
+            style="cyan",
+        )
+
+        all_results = []
+        machine_rows = []
+        for suite_cfg in lint_reg.get_suite_configs():
+            log_event(
+                logger,
+                logging.INFO,
+                "lint_regression.suite_start",
+                suite=suite_cfg.get_path(),
+            )
+            self._enter_command_context(primary_config=suite_cfg.get_path())
+            suite_results = self._do_lint_suite(
+                suite_cfg, lint_name=None, reg_level=reg_level
+            )
+            all_results.extend(suite_results)
+            if self.machine:
+                machine_rows.extend(
+                    self._lint_result_row(r, suite=suite_cfg.get_path())
+                    for r in suite_results
+                )
+        self._enter_command_context(command_root=orchestration_ctx.command_root)
+
+        exit_code = self._exit_code_from_lint_results(all_results)
+        if self.machine:
+            self._emit_machine_result(
+                "lint-regression", exit_code, results=machine_rows
+            )
+        else:
+            self._render_lint_summary(
+                "Style Lint Regression Summary",
+                all_results,
+                metadata=[f"Reg Level: {reg_level}"],
+            )
+        raise typer.Exit(exit_code)
+
     def do_cmd_saif(
         self,
         trace: Annotated[
@@ -9258,9 +9476,6 @@ class RtlBuddy:
 
         install(force=force, update=update, ref=ref, source=source, lsp=not no_lsp)
 
-    def do_lint(self):
-        assert False, "not yet impl"
-
     def do_export(self):
         assert False, "not yet impl"
 
@@ -9336,19 +9551,15 @@ class RtlBuddy:
             output_path=None,
         )
         cwd = os.getcwd()
-        files: list[str] = []
+        expanded: list[str] = []
         seen: set[str] = set()
-        excluded = 0
         for model_cfg in selected:
             for path in vlog_fl.extract_source_files(model_cfg):
-                if path in seen:
-                    continue
-                seen.add(path)
-                rel = os.path.relpath(path, project_root).replace(os.sep, "/")
-                if any(fnmatch.fnmatch(rel, pat) for pat in excludes):
-                    excluded += 1
-                    continue
-                files.append(os.path.relpath(path, cwd))
+                if path not in seen:
+                    seen.add(path)
+                    expanded.append(path)
+        kept, excluded = apply_exclude_globs(expanded, excludes, project_root)
+        files = [os.path.relpath(path, cwd) for path in kept]
         log_event(
             logger,
             logging.INFO,
