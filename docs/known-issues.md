@@ -510,6 +510,47 @@ to the pin and `test_pin_tracks_hub_protocol_version` asserts it equals the hub
 (1) tag a compatible `rtl-buddy-nvim` release, (2) bump `RTL_BUDDY_NVIM_REF` to
 it, and (3) bump `_PIN_PROTOCOL_VERSION`. Keep the three in lockstep.
 
+## Verilator searches a relative source name through `+incdir+`/`-y` before the cwd, so `run.f` pins sources absolute
+
+Verilator resolves a *relative* top-level source name from a filelist by
+searching the user `+incdir+`/`-y` directories **before** falling back to the
+directory the path is spelled against. A climbing source entry
+(`../../../../design/dut.sv`) can therefore compose with a climbing incdir
+(`+incdir+../../../../common`) into a path that walks further up the tree than
+either alone. In a git worktree nested inside the primary checkout (e.g.
+`.claude/worktrees/<name>`, four levels down), the composed candidate lands on
+the *same-named file in the primary checkout* — the build silently compiles
+sources that were never edited and reports PASS
+([#457](https://github.com/rtl-buddy/rtl_buddy/issues/457)).
+
+Since [#458](https://github.com/rtl-buddy/rtl_buddy/pull/458), `rb test` pins
+every explicit source entry (bare and `-v`) in the generated `run.f` to its
+resolved absolute path, quoted if it contains whitespace. Search options
+(`+incdir+`, `-y`, `+libext+`, `-F`) keep their relative spelling and
+precedence — a `-y` *directory* is resolved against the cwd and is not
+composed through the incdir list the way a source *name* is, so the search
+path itself cannot re-open the escape; the `filelist.path_escapes_root`
+warning remains the guard on out-of-tree search directories.
+
+Consequences:
+
+- **`run.f` is a generated, non-portable artifact.** It names one checkout at
+  one mount spelling. It is regenerated on every compile, so this costs
+  nothing in the normal flow — but do not copy it between checkouts or check
+  it in.
+- **The pin uses `abspath`, not `realpath`**, consistent with the
+  project-root escape check: symlinks are preserved, so running the same test
+  through two symlinked spellings of the same project root produces two
+  different `run.f` contents — and, because compile keys hash the raw lines,
+  two shared-build keys and two `obj_dir`s. Pick one spelling and stay with
+  it.
+- **Under `--dispatch`, the process that compiles is the process that writes
+  `run.f`** (the build job, on a compute node), so the pinned paths are
+  always that node's own view of the project. On a cluster whose nodes mount
+  the project at *different* paths, a stamp written by one node fails to
+  validate on another and the build re-runs there — a spurious recompile,
+  never a wrong source.
+
 ## Shared-build reuse sees header edits only where the builder reports them
 
 With [`--share-build`](concepts/tests.md#sharing-compiled-builds-across-tests)
@@ -558,6 +599,15 @@ When a warm run rebuilds and you want to know why, `compile.build_dep_changed`
 A stamp written by an rtl_buddy older than #303 has no dependency record at
 all, and its silence cannot be told from "there were none" — such a stamp is
 rejected, so the first run after upgrading recompiles once per compile key.
+
+The same one-time cost applies across
+[#458](https://github.com/rtl-buddy/rtl_buddy/pull/458): the compile key
+hashes the raw `run.f` lines, and #458 changed every explicit source line
+from relative to absolute (see
+[the `run.f` pinning entry](#verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute)),
+so the first run after upgrading recompiles once per compile key. An
+unexplained full rebuild right after that upgrade is this, not a dependency
+change.
 
 Within-run and concurrent safety are separate concerns and *are* handled —
 same-key tests share by construction, and cross-process races are excluded by

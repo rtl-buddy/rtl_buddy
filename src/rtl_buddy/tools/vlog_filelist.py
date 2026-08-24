@@ -27,6 +27,13 @@ import uuid
 _DEFINE_PREFIX = "+define+"
 
 
+def _quote_filelist_path(path: str) -> str:
+    """Quote a generated path when a filelist parser would split it."""
+    if not any(char.isspace() for char in path) and '"' not in path:
+        return path
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 class VlogFilelist:
     """
     Verilog Filelist Parser and Builder
@@ -167,9 +174,22 @@ class VlogFilelist:
         return entries
 
     def _process(
-        self, entries, output_dir, flatten=False, strip=False, deduplicate=False
+        self,
+        entries,
+        output_dir,
+        flatten=False,
+        strip=False,
+        deduplicate=False,
+        absolute_sources=False,
     ):
-        """Do flatten, strip, and deduplicate after all lines are collected at the top level."""
+        """Do flatten, strip, and deduplicate after all lines are collected at the top level.
+
+        ``absolute_sources`` pins explicit sources (bare and ``-v``) to their
+        resolved absolute path, quoted when they contain whitespace; search
+        options (``+incdir+``/``-y``/``+libext+``/``-F``) keep their relative
+        spelling and precedence. ``flatten`` wins over it (a basename cannot
+        be pinned).
+        """
         output_dir = os.path.abspath(output_dir)
         project_root = self._project_root(output_dir)
         escaped: list[str] = []
@@ -197,7 +217,7 @@ class VlogFilelist:
                     out_lines.append(line)
                 continue
             resolved_line_path = os.path.normpath(os.path.join(output_dir, line_path))
-            line_path = os.path.relpath(
+            relative_line_path = os.path.relpath(
                 resolved_line_path, start=output_dir
             )  # simplifies path relative to the filelist location
             # File or dir exists check
@@ -205,15 +225,15 @@ class VlogFilelist:
                 if not os.path.isdir(resolved_line_path):
                     self._fail(
                         "filelist.directory_missing",
-                        f"{line_path} is not a directory",
-                        path=line_path,
+                        f"{relative_line_path} is not a directory",
+                        path=relative_line_path,
                     )
             elif line_option != "+libext+":
                 if not os.path.isfile(resolved_line_path):
                     self._fail(
                         "filelist.source_missing",
-                        f"{line_path} file does not exist",
-                        path=line_path,
+                        f"{relative_line_path} file does not exist",
+                        path=relative_line_path,
                     )
 
             # Escape check: a resolved path outside the project root that
@@ -231,7 +251,17 @@ class VlogFilelist:
                 escaped.append(resolved_line_path)
 
             if flatten:
-                line_path = os.path.basename(line_path)
+                line_path = os.path.basename(relative_line_path)
+            elif absolute_sources and line_option in (None, "-v "):
+                # Verilator searches explicit relative source names through
+                # user +incdir+/-y directories before its cwd fallback. A
+                # climbing source path can therefore compose with an incdir
+                # and select a same-named file outside a nested worktree
+                # (#457). Pin only explicit sources; search directories keep
+                # their relative spelling and precedence.
+                line_path = _quote_filelist_path(resolved_line_path)
+            else:
+                line_path = relative_line_path
 
             if strip:
                 line_option = ""
@@ -290,7 +320,16 @@ class VlogFilelist:
         deduplicate=False,
         test_filelist=None,
         suite_dir=None,
+        absolute_sources=False,
     ):
+        """Write the processed filelist.
+
+        This is the seam every consumer flow calls (``rb test``, ``rb hier``,
+        ``rb graph build``, synth, FPV, ``rb axi-profile``, ``rb verible
+        filelist``). ``absolute_sources`` (default off; only the simulation
+        flow opts in) pins explicit bare/``-v`` sources to absolute paths —
+        see :meth:`_process` for the exact contract.
+        """
         if output_filepath is None:
             output_filepath = self.output_path
         log_event(logger, logging.DEBUG, "filelist.write_start", output=output_filepath)
@@ -323,6 +362,7 @@ class VlogFilelist:
             flatten=flatten,
             strip=strip,
             deduplicate=deduplicate,
+            absolute_sources=absolute_sources,
         )
 
         # Atomic replace, not truncate-in-place: `run.f` lives at

@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -185,8 +186,8 @@ def test_write_output_anchors_test_filelist_on_explicit_suite_dir(
         ln for ln in text.splitlines() if ln and "tb.sv" in ln and "+incdir+" not in ln
     ]
     assert tb_lines, f"tb.sv not found in {text!r}"
-    import os
 
+    assert not os.path.isabs(tb_lines[0])
     resolved = os.path.normpath(os.path.join(str(artefact_dir), tb_lines[0]))
     assert resolved == str((suite_dir / "tb.sv").resolve())
 
