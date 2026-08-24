@@ -742,3 +742,13 @@ pip uninstall -y rtl-buddy-view && pip install -U rtl-buddy-sch
 ```
 
 One consequence worth expecting: after `uv tool install rtl-buddy-sch` (an isolated tool env) a project venv that still holds the old wheel has PATH at the new version and in-venv metadata at the old one. `rb tool-check` prefers the executable in exactly that case — a version read from the pre-rename dist name is dropped when the binary is on PATH, so the probe answers — but the stale wheel is still worth removing.
+
+## verible-verilog-lint writes findings to stderr, not stdout
+
+On a plain lint run the tool's stdout is empty: every finding line
+(`path:line:col: message [rule]`) goes to **stderr**, with the exit code
+(1 = findings, 0 = clean) as the only stdout-independent signal. Anything
+that counts or filters findings must read stderr — a
+`rb verible lint ... | grep` pipeline silently sees nothing, and the
+`rb lint` flow's runner scans both streams for exactly this reason
+(`runner/lint_runner.py`). Verified against v0.0-3960 and v0.0-4148.

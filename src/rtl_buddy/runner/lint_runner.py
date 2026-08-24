@@ -111,6 +111,11 @@ class LintRunner:
             files=len(files),
             excluded=excluded,
         )
+        # Plain subprocess.run, not run_managed_process: this matches the
+        # existing Verible.do_exe convention, and verible-verilog-lint is
+        # a per-file parser with no elaboration — runtime scales with file
+        # count and stays in seconds, unlike a CDC analysis. Revisit if a
+        # check ever needs a timeout.
         with task_status(f"Linting {self.lint_cfg.get_name()}"):
             proc = subprocess.run(
                 cmd,
