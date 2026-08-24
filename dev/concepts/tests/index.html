@@ -2269,7 +2269,8 @@ instead declines sharing altogether — see the caveats below.</p>
 <li><code>test.randseed</code> — the seed used</li>
 <li><code>coverage.dat</code> — coverage database (if coverage is enabled)</li>
 <li><code>compile.log</code> — compile transcript</li>
-<li><code>run.f</code> — generated filelist</li>
+<li><code>run.f</code> — generated, non-portable filelist; explicit source entries are pinned
+  to the resolved checkout with absolute paths</li>
 </ul>
 <p>For repeated runs (<code>randtest</code>), each iteration writes into a numbered subdirectory — <code>artefacts/{test_name}/run-0001/</code>, <code>run-0002/</code>, etc. — while compile outputs remain at the top of <code>artefacts/{test_name}/</code>.</p>
 <p>The symlinks <code>test.log</code>, <code>test.err</code>, and <code>test.randseed</code> at the suite root always point to the most recent run.</p>

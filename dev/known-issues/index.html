@@ -1816,6 +1816,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verilator searches a relative source name through +incdir+/-y before the cwd, so run.f pins sources absolute
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2372,6 +2383,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verilator searches a relative source name through +incdir+/-y before the cwd, so run.f pins sources absolute
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2912,6 +2934,44 @@ to the pin and <code>test_pin_tracks_hub_protocol_version</code> asserts it equa
 <code>PROTOCOL_VERSION</code>. When you bump <code>PROTOCOL_VERSION</code>, the test fails until you
 (1) tag a compatible <code>rtl-buddy-nvim</code> release, (2) bump <code>RTL_BUDDY_NVIM_REF</code> to
 it, and (3) bump <code>_PIN_PROTOCOL_VERSION</code>. Keep the three in lockstep.</p>
+<h2 id="verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute">Verilator searches a relative source name through <code>+incdir+</code>/<code>-y</code> before the cwd, so <code>run.f</code> pins sources absolute</h2>
+<p>Verilator resolves a <em>relative</em> top-level source name from a filelist by
+searching the user <code>+incdir+</code>/<code>-y</code> directories <strong>before</strong> falling back to the
+directory the path is spelled against. A climbing source entry
+(<code>../../../../design/dut.sv</code>) can therefore compose with a climbing incdir
+(<code>+incdir+../../../../common</code>) into a path that walks further up the tree than
+either alone. In a git worktree nested inside the primary checkout (e.g.
+<code>.claude/worktrees/&lt;name&gt;</code>, four levels down), the composed candidate lands on
+the <em>same-named file in the primary checkout</em> — the build silently compiles
+sources that were never edited and reports PASS
+(<a href="https://github.com/rtl-buddy/rtl_buddy/issues/457">#457</a>).</p>
+<p>Since <a href="https://github.com/rtl-buddy/rtl_buddy/pull/458">#458</a>, <code>rb test</code> pins
+every explicit source entry (bare and <code>-v</code>) in the generated <code>run.f</code> to its
+resolved absolute path, quoted if it contains whitespace. Search options
+(<code>+incdir+</code>, <code>-y</code>, <code>+libext+</code>, <code>-F</code>) keep their relative spelling and
+precedence — a <code>-y</code> <em>directory</em> is resolved against the cwd and is not
+composed through the incdir list the way a source <em>name</em> is, so the search
+path itself cannot re-open the escape; the <code>filelist.path_escapes_root</code>
+warning remains the guard on out-of-tree search directories.</p>
+<p>Consequences:</p>
+<ul>
+<li><strong><code>run.f</code> is a generated, non-portable artifact.</strong> It names one checkout at
+  one mount spelling. It is regenerated on every compile, so this costs
+  nothing in the normal flow — but do not copy it between checkouts or check
+  it in.</li>
+<li><strong>The pin uses <code>abspath</code>, not <code>realpath</code></strong>, consistent with the
+  project-root escape check: symlinks are preserved, so running the same test
+  through two symlinked spellings of the same project root produces two
+  different <code>run.f</code> contents — and, because compile keys hash the raw lines,
+  two shared-build keys and two <code>obj_dir</code>s. Pick one spelling and stay with
+  it.</li>
+<li><strong>Under <code>--dispatch</code>, the process that compiles is the process that writes
+  <code>run.f</code></strong> (the build job, on a compute node), so the pinned paths are
+  always that node's own view of the project. On a cluster whose nodes mount
+  the project at <em>different</em> paths, a stamp written by one node fails to
+  validate on another and the build re-runs there — a spurious recompile,
+  never a wrong source.</li>
+</ul>
 <h2 id="shared-build-reuse-sees-header-edits-only-where-the-builder-reports-them">Shared-build reuse sees header edits only where the builder reports them</h2>
 <p>With <a href="../concepts/tests/#sharing-compiled-builds-across-tests"><code>--share-build</code></a>
 (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/293">#293</a>), a compile is
@@ -2957,6 +3017,14 @@ builders with no dependency tracking:</p>
 <p>A stamp written by an rtl_buddy older than #303 has no dependency record at
 all, and its silence cannot be told from "there were none" — such a stamp is
 rejected, so the first run after upgrading recompiles once per compile key.</p>
+<p>The same one-time cost applies across
+<a href="https://github.com/rtl-buddy/rtl_buddy/pull/458">#458</a>: the compile key
+hashes the raw <code>run.f</code> lines, and #458 changed every explicit source line
+from relative to absolute (see
+<a href="#verilator-searches-a-relative-source-name-through-incdir-y-before-the-cwd-so-runf-pins-sources-absolute">the <code>run.f</code> pinning entry</a>),
+so the first run after upgrading recompiles once per compile key. An
+unexplained full rebuild right after that upgrade is this, not a dependency
+change.</p>
 <p>Within-run and concurrent safety are separate concerns and <em>are</em> handled —
 same-key tests share by construction, and cross-process races are excluded by
 the
