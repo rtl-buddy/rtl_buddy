@@ -4016,7 +4016,7 @@
 <p>A testbench's <code>toplevel:</code>, when declared, also becomes an <code>elaborates_as</code> edge to <code>module:&lt;toplevel&gt;</code>.</p>
 <p>Testbenches declared but used by no test still become nodes — a dead testbench should be visible in the graph, not silently absent. Suites that fail to load are reported rather than fatal; the failure list lands in <code>graph-meta.json</code>.</p>
 <h3 id="flow-provenance">Flow provenance</h3>
-<p>A <code>tests.yaml</code> does not know that it is a <em>simulation</em> suite, and nothing under <code>verif/</code> mentions the <code>fpv.yaml</code> next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all five — each through its own <code>RegConfig</code>, the same class <code>rb &lt;flow&gt;-regression</code> constructs — and stamps <code>flow</code> on every <code>suite</code>, <code>test</code> and <code>testbench</code> node:</p>
+<p>A <code>tests.yaml</code> does not know that it is a <em>simulation</em> suite, and nothing under <code>verif/</code> mentions the <code>fpv.yaml</code> next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all six — each through its own <code>RegConfig</code>, the same class <code>rb &lt;flow&gt;-regression</code> constructs — and stamps <code>flow</code> on every <code>suite</code>, <code>test</code> and <code>testbench</code> node:</p>
 <table>
 <thead>
 <tr>
@@ -4050,6 +4050,11 @@
 <td><code>fpga_regression.yaml</code></td>
 <td><code>fpga</code></td>
 <td><code>fpga.yaml</code></td>
+</tr>
+<tr>
+<td><code>lint_regression.yaml</code></td>
+<td><code>lint</code></td>
+<td><code>lint.yaml</code></td>
 </tr>
 </tbody>
 </table>

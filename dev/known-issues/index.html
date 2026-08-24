@@ -1947,6 +1947,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#verible-verilog-lint-writes-findings-to-stderr-not-stdout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        verible-verilog-lint writes findings to stderr, not stdout
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2508,6 +2519,17 @@
     <span class="md-ellipsis">
       
         The viewer answers to four different names: dist rtl-buddy-sch, executable rtl-buddy-view
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verible-verilog-lint-writes-findings-to-stderr-not-stdout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        verible-verilog-lint writes findings to stderr, not stdout
       
     </span>
   </a>
@@ -3140,6 +3162,14 @@ left behind. They are safe to delete.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>pip<span class="w"> </span>uninstall<span class="w"> </span>-y<span class="w"> </span>rtl-buddy-view<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-U<span class="w"> </span>rtl-buddy-sch
 </code></pre></div>
 <p>One consequence worth expecting: after <code>uv tool install rtl-buddy-sch</code> (an isolated tool env) a project venv that still holds the old wheel has PATH at the new version and in-venv metadata at the old one. <code>rb tool-check</code> prefers the executable in exactly that case — a version read from the pre-rename dist name is dropped when the binary is on PATH, so the probe answers — but the stale wheel is still worth removing.</p>
+<h2 id="verible-verilog-lint-writes-findings-to-stderr-not-stdout">verible-verilog-lint writes findings to stderr, not stdout</h2>
+<p>On a plain lint run the tool's stdout is empty: every finding line
+(<code>path:line:col: message [rule]</code>) goes to <strong>stderr</strong>, with the exit code
+(1 = findings, 0 = clean) as the only stdout-independent signal. Anything
+that counts or filters findings must read stderr — a
+<code>rb verible lint ... | grep</code> pipeline silently sees nothing, and the
+<code>rb lint</code> flow's runner scans both streams for exactly this reason
+(<code>runner/lint_runner.py</code>). Verified against v0.0-3960 and v0.0-4148.</p>
 
 
 
