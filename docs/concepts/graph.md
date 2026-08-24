@@ -873,7 +873,7 @@ Testbenches declared but used by no test still become nodes — a dead testbench
 
 ### Flow provenance
 
-A `tests.yaml` does not know that it is a *simulation* suite, and nothing under `verif/` mentions the `fpv.yaml` next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all five — each through its own `RegConfig`, the same class `rb <flow>-regression` constructs — and stamps `flow` on every `suite`, `test` and `testbench` node:
+A `tests.yaml` does not know that it is a *simulation* suite, and nothing under `verif/` mentions the `fpv.yaml` next door. The repo-level regression files are the only place a project says which flow owns which suite, so the config tier reads all six — each through its own `RegConfig`, the same class `rb <flow>-regression` constructs — and stamps `flow` on every `suite`, `test` and `testbench` node:
 
 | Manifest | `flow` | Suites it lists |
 | --- | --- | --- |
@@ -882,6 +882,7 @@ A `tests.yaml` does not know that it is a *simulation* suite, and nothing under 
 | `fpv_regression.yaml` | `fpv` | `fpv.yaml` |
 | `cdc_regression.yaml` | `cdc` | `cdc.yaml` |
 | `fpga_regression.yaml` | `fpga` | `fpga.yaml` |
+| `lint_regression.yaml` | `lint` | `lint.yaml` |
 
 Each manifest is looked for at the project root first, then at the flow's `cfg-rtl-reg` path from `root_config.yaml` (`reg-cfg-path` for `sim`, `<flow>-reg-cfg-path` for the rest) — the same precedence `rb <flow>-regression` applies when no `-c` is passed, so a manifest kept away from the root (the template's `cdc_regression.yaml` lives under `lint/cdc/`) is visible to the graph exactly when it is runnable by the command. See [`cfg-rtl-reg`](../reference/yaml.md#root_configyaml).
 

@@ -71,6 +71,8 @@ Usage: rtl-buddy [OPTIONS] COMMAND [ARGS]...
 │ fpga               run FPGA implementation (synth + place + route)                   │
 │ fpga-regression    run FPGA implementation regression                                │
 │ saif               convert FST/VCD trace to SAIF v2.0                                │
+│ lint               run style lint (verible)                                          │
+│ lint-regression    run style lint regression                                         │
 │ fpv                run formal property verification                                  │
 │ fpv-regression     run FPV regression                                                │
 │ tool-check         check installed tool dependencies and subcommand readiness        │

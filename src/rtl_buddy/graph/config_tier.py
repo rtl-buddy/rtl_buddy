@@ -49,6 +49,7 @@ from serde.yaml import from_yaml
 
 from ..config.cdc import CdcRegConfig
 from ..config.fpga import FpgaRegConfig
+from ..config.lint import LintRegConfig
 from ..config.fpv import FpvRegConfig
 from ..config.reg import RegConfig
 from ..config.root import load_reg_cfg_paths, resolve_reg_cfg_path
@@ -124,6 +125,8 @@ FLOW_FPV = "fpv"
 FLOW_CDC = "cdc"
 #: FPGA implementation. `fpga.yaml` / `fpga_regression.yaml`.
 FLOW_FPGA = "fpga"
+#: Style lint (verible). `lint.yaml` / `lint_regression.yaml`.
+FLOW_LINT = "lint"
 
 #: Flow assumed for a suite no repo-level regression file claims. A
 #: `tests.yaml` that simply is not wired into `regression.yaml` yet is still
@@ -148,7 +151,7 @@ class _FlowSource:
     entries: str = ""
 
 
-#: The five flows, in the order they are read. Discovery is by filename at
+#: The flow sources, in the order they are read. Discovery is by filename at
 #: the project root, then by the flow's `cfg-rtl-reg` path from
 #: `root_config.yaml` — the same precedence `rb <flow>-regression` applies
 #: when no `-c` is passed, so a manifest kept away from the root (e.g.
@@ -160,6 +163,7 @@ FLOW_SOURCES: tuple[_FlowSource, ...] = (
     _FlowSource(FLOW_FPV, "fpv_regression.yaml", FpvRegConfig, "get_verifications"),
     _FlowSource(FLOW_CDC, "cdc_regression.yaml", CdcRegConfig, "get_analyses"),
     _FlowSource(FLOW_FPGA, "fpga_regression.yaml", FpgaRegConfig, "get_runs"),
+    _FlowSource(FLOW_LINT, "lint_regression.yaml", LintRegConfig, "get_checks"),
 )
 
 

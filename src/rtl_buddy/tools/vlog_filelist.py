@@ -13,6 +13,7 @@ import logging
 logger = logging.getLogger(__name__)
 from ..errors import FilelistError
 from ..logging_utils import log_event
+import fnmatch
 import os
 import os.path
 import re
@@ -32,6 +33,30 @@ def _quote_filelist_path(path: str) -> str:
     if not any(char.isspace() for char in path) and '"' not in path:
         return path
     return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def apply_exclude_globs(
+    files: list[str], patterns: list[str], project_root: str
+) -> tuple[list[str], int]:
+    """Filter absolute source paths through exclude globs.
+
+    The one exclusion semantics every verible flow shares (``rb verible
+    lint/format --model`` and the lint flow's checks): fnmatch against
+    the project-root-relative path with ``/`` separators, where ``*``
+    also crosses directory boundaries. Returns ``(kept, excluded_count)``
+    with order preserved.
+    """
+    if not patterns:
+        return list(files), 0
+    kept: list[str] = []
+    excluded = 0
+    for path in files:
+        rel = os.path.relpath(path, project_root).replace(os.sep, "/")
+        if any(fnmatch.fnmatch(rel, pat) for pat in patterns):
+            excluded += 1
+            continue
+        kept.append(path)
+    return kept, excluded
 
 
 class VlogFilelist:
