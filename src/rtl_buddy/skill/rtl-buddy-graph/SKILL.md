@@ -22,6 +22,10 @@ rb --machine graph path NODE_A NODE_B
 ```
 
 - Rebuild after source/YAML changes; refresh results after a regression.
+- `graph build` exits 1 for a failed required tier (or any degraded tier under
+  `--strict`); `graph results` exits 1 for incomplete results under `--strict`.
+  Otherwise they exit 0, and fatal errors exit 2. `hier`/`hier-query` propagate
+  the renderer's exit code.
 - Query matching is deterministic. A no-match exit 1 is a valid empty answer;
   exit 2 usually means the graph has not been built.
 - Prefer lean neighbours; use `--expand` only when full peer summaries are needed.

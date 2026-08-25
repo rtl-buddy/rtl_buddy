@@ -28,6 +28,9 @@ syntax and schemas, use `rb test --help`, `rb randtest --help`, and
   Follow `FAIL` with `ERR:` or `FAT:` so `desc` contains the reason.
 - Treat `payload.results[*].result` and `desc` as authoritative. `NA` means no
   real verdict was produced and needs review; it is not proof of a pass.
+- `test`, `randtest`, and `regression` exit 0 with no real `FAIL` (including an
+  intentional `NA` or `XFAIL`), 1 for a real `FAIL` or strict `XPASS`, and 2 for
+  a fatal configuration or environment error.
 
 ## `Sim hit timeout`
 

@@ -29,9 +29,11 @@ without an rtl_buddy envelope. `rb mcp` owns stdout as a long-running JSON-RPC
 server. Machine mode makes `rtl_buddy.log` JSONL for commands that initialize a
 log; it does not make every command create one.
 
-For `test`, `randtest`, and `regression`, exit 0 means no real FAIL, including `NA`/`XFAIL`;
-1 means a real FAIL or strict `XPASS`, and 2 means fatal
-configuration or environment failure.
+Run and regression commands normally exit 0 when every result counts as
+successful, 1 for any `FAIL` or strict `XPASS`, and 2 for fatal configuration or
+environment errors. Simulation exits 0 with no real failure, including `NA`/`XFAIL`.
+Reporting, audit, and pass-through commands define their own codes; use the
+relevant specialist or bundled docs page.
 
 ## Tests, random tests, and regressions
 
