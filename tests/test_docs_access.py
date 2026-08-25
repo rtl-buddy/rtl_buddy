@@ -68,7 +68,7 @@ def test_get_page_returns_expected_sections():
 
     assert page is not None
     assert page.title == "Agent use of rtl-buddy"
-    assert any(section.title == "Bundled agent skill" for section in page.sections)
+    assert any(section.title == "Bundled agent skills" for section in page.sections)
 
 
 def test_get_section_returns_section_payload():
@@ -125,7 +125,7 @@ def test_docs_show_machine_output():
     assert payload["title"] == "Agent use of rtl-buddy"
     assert payload["summary"]
     assert any(
-        section["title"] == "Bundled agent skill" for section in payload["sections"]
+        section["title"] == "Bundled agent skills" for section in payload["sections"]
     )
     assert "# Agent use of rtl-buddy" in payload["content"]
 

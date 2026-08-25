@@ -178,12 +178,14 @@ After meaningful `rtl_buddy` changes:
 7. If you discovered or introduced a quirk or non-conventional behavior, add an entry to `docs/known-issues.md`. Treat this as a default step, not an afterthought.
 8. **If the PR carries the `version/major` label, add a `## vN to vM` section to `docs/migrations.md` covering every breaking behavior change — this is mandatory and blocks merge.** See [Releases](#releases).
 
-## Bundled Skill
+## Bundled Skills
 
-The `rtl_buddy` agent skill ships inside the wheel at `src/rtl_buddy/skill/` and is installed by `rtl-buddy skill install`.
+The `rtl_buddy` agent skill family ships inside the wheel at `src/rtl_buddy/skill/` and is installed by `rtl-buddy skill install`.
 There is no separate source-of-truth skill repo.
 
-Keep `src/rtl_buddy/skill/SKILL.md` short and agent-specific.
+Keep the primary `src/rtl_buddy/skill/SKILL.md` focused on a basic feature overview and routing.
+Keep every bundled skill under 8 KiB.
+Specialists should contain only non-obvious, topic-specific agent guidance.
 Prefer links to local docs commands over duplicating reference content.
 Project-level installs are an override mechanism; the default install scope should remain user-level unless the policy is deliberately revisited.
 

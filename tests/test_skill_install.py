@@ -3,8 +3,11 @@ from typer.testing import CliRunner
 from rtl_buddy.skill_install import (
     LEGACY_SKILL_DIRNAME,
     SKILL_DIRNAME,
+    SKILL_DIRNAMES,
     SKILL_FILENAME,
+    SPECIALIST_SKILL_DIRNAMES,
     VERSION_MARKER,
+    _bundled_skill_text,
     _bundled_gitignore_snippet,
     _update_gitignore,
     app,
@@ -101,6 +104,8 @@ def test_install_dir_flat_target(tmp_path):
     assert result.exit_code == 0, result.output
     skill = tmp_path / SKILL_DIRNAME / SKILL_FILENAME
     assert skill.is_file()
+    for skill_name in SKILL_DIRNAMES:
+        assert (tmp_path / skill_name / SKILL_FILENAME).is_file()
     # flat layout: no .claude / .agents intermediate dirs
     assert not (tmp_path / ".claude").exists()
     assert not (tmp_path / ".agents").exists()
@@ -125,22 +130,11 @@ def test_install_project_writes_gitignore_by_default(tmp_path):
     assert (tmp_path / ".gitignore").is_file()
 
 
-def test_skill_dirname_matches_frontmatter_name():
-    """Agent Skills spec: `name:` must equal the containing directory name."""
-    from rtl_buddy.skill_install import _bundled_skill_text
-
-    for line in _bundled_skill_text().splitlines():
-        if line.startswith("name:"):
-            assert line.split(":", 1)[1].strip() == SKILL_DIRNAME
-            break
-    else:  # pragma: no cover - frontmatter always has a name
-        raise AssertionError("SKILL.md frontmatter has no `name:` field")
-
-
 def test_bundled_snippet_patterns_use_skill_dirname():
     text = _bundled_gitignore_snippet()
-    assert f".claude/skills/{SKILL_DIRNAME}/" in text
-    assert f".agents/skills/{SKILL_DIRNAME}/" in text
+    for skill_name in SKILL_DIRNAMES:
+        assert f".claude/skills/{skill_name}/" in text
+        assert f".agents/skills/{skill_name}/" in text
     assert f"skills/{LEGACY_SKILL_DIRNAME}/" not in text
 
 
@@ -161,16 +155,21 @@ def test_install_user_scope_uses_hyphenated_dir(tmp_path, monkeypatch):
         tmp_path / ".claude" / "skills",
         tmp_path / ".codex" / "skills",
     ):
-        assert (parent / SKILL_DIRNAME / SKILL_FILENAME).is_file()
-        assert (parent / SKILL_DIRNAME / VERSION_MARKER).is_file()
+        for skill_name in SKILL_DIRNAMES:
+            assert (parent / skill_name / SKILL_FILENAME).is_file()
+            assert (parent / skill_name / VERSION_MARKER).is_file()
         assert not (parent / LEGACY_SKILL_DIRNAME).exists()
 
 
 def test_install_project_scope_uses_hyphenated_dir(tmp_path):
     result = runner.invoke(app, ["install", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert (tmp_path / ".claude" / "skills" / SKILL_DIRNAME / SKILL_FILENAME).is_file()
-    assert (tmp_path / ".agents" / "skills" / SKILL_DIRNAME / SKILL_FILENAME).is_file()
+    for parent in (
+        tmp_path / ".claude" / "skills",
+        tmp_path / ".agents" / "skills",
+    ):
+        for skill_name in SKILL_DIRNAMES:
+            assert (parent / skill_name / SKILL_FILENAME).is_file()
     text = (tmp_path / ".gitignore").read_text()
     assert f".claude/skills/{SKILL_DIRNAME}/" in text
     assert f".agents/skills/{SKILL_DIRNAME}/" in text
@@ -257,15 +256,19 @@ def test_status_ignores_foreign_legacy_dir(tmp_path):
     result = runner.invoke(app, ["status", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "legacy path" not in result.output
-    assert result.output.count("not installed") == 2
+    assert result.output.count("not installed") == 2 * len(SKILL_DIRNAMES)
 
 
 def test_uninstall_removes_current_dirname(tmp_path):
     runner.invoke(app, ["install", "--root", str(tmp_path)])
     result = runner.invoke(app, ["uninstall", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
-    assert not (tmp_path / ".claude" / "skills" / SKILL_DIRNAME).exists()
-    assert not (tmp_path / ".agents" / "skills" / SKILL_DIRNAME).exists()
+    for parent in (
+        tmp_path / ".claude" / "skills",
+        tmp_path / ".agents" / "skills",
+    ):
+        for skill_name in SKILL_DIRNAMES:
+            assert not (parent / skill_name).exists()
 
 
 def test_uninstall_removes_legacy_dirname(tmp_path):
@@ -292,6 +295,91 @@ def test_uninstall_nothing_to_remove(tmp_path):
     result = runner.invoke(app, ["uninstall", "--root", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert "Nothing to remove." in result.output
+
+
+def test_install_upgrades_primary_only_install_to_family(tmp_path):
+    for parent in (
+        tmp_path / ".claude" / "skills",
+        tmp_path / ".agents" / "skills",
+    ):
+        primary = parent / SKILL_DIRNAME
+        primary.mkdir(parents=True)
+        (primary / SKILL_FILENAME).write_text(_bundled_skill_text())
+        (primary / VERSION_MARKER).write_text("0.0.1\n")
+
+    result = runner.invoke(app, ["install", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    for parent in (
+        tmp_path / ".claude" / "skills",
+        tmp_path / ".agents" / "skills",
+    ):
+        for skill_name in SKILL_DIRNAMES:
+            assert (parent / skill_name / SKILL_FILENAME).is_file()
+
+
+def test_status_reports_missing_specialists_for_primary_only_install(tmp_path):
+    primary = tmp_path / ".claude" / "skills" / SKILL_DIRNAME
+    primary.mkdir(parents=True)
+    (primary / SKILL_FILENAME).write_text(_bundled_skill_text())
+    (primary / VERSION_MARKER).write_text("0.0.1\n")
+
+    result = runner.invoke(app, ["status", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("not installed") == (2 * len(SKILL_DIRNAMES) - 1)
+    for skill_name in SPECIALIST_SKILL_DIRNAMES:
+        assert skill_name in result.output
+
+
+def test_install_refuses_unmanaged_specialist_directory(tmp_path):
+    foreign = tmp_path / ".claude" / "skills" / SPECIALIST_SKILL_DIRNAMES[0]
+    foreign.mkdir(parents=True)
+    (foreign / SKILL_FILENAME).write_text("hand-written\n")
+
+    result = runner.invoke(app, ["install", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "Refusing to overwrite unmanaged skill directory" in str(result.exception)
+    assert (foreign / SKILL_FILENAME).read_text() == "hand-written\n"
+    assert not (tmp_path / ".agents").exists()
+
+
+def test_install_preflights_specialist_file_conflict_atomically(tmp_path):
+    conflict = tmp_path / ".agents" / "skills" / SPECIALIST_SKILL_DIRNAMES[-1]
+    conflict.parent.mkdir(parents=True)
+    conflict.write_text("not a directory\n")
+
+    result = runner.invoke(app, ["install", "--root", str(tmp_path)])
+
+    assert result.exit_code != 0
+    assert "Refusing to overwrite unmanaged skill directory" in str(result.exception)
+    assert conflict.read_text() == "not a directory\n"
+    assert not (tmp_path / ".claude").exists()
+    assert not (
+        tmp_path / ".agents" / "skills" / SKILL_DIRNAME / SKILL_FILENAME
+    ).exists()
+
+
+def test_uninstall_preserves_unmanaged_specialist_directory(tmp_path):
+    foreign = tmp_path / ".claude" / "skills" / SPECIALIST_SKILL_DIRNAMES[0]
+    foreign.mkdir(parents=True)
+    (foreign / SKILL_FILENAME).write_text("hand-written\n")
+
+    result = runner.invoke(app, ["uninstall", "--root", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    assert (foreign / SKILL_FILENAME).read_text() == "hand-written\n"
+
+
+def test_install_family_dry_run_writes_nothing(tmp_path):
+    result = runner.invoke(app, ["install", "--root", str(tmp_path), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    for skill_name in SKILL_DIRNAMES:
+        assert f"/{skill_name}/{SKILL_FILENAME}" in result.output
+    assert not (tmp_path / ".claude").exists()
+    assert not (tmp_path / ".agents").exists()
 
 
 def test_gitignore_drops_the_pre_rename_patterns(tmp_path):

@@ -1,60 +1,191 @@
 ---
 name: rtl-buddy
-description: Use rtl_buddy to orchestrate SystemVerilog compile/sim workflows, randomized tests, regressions, synthesis, place-and-route, FPGA implementation, CDC lint, formal property verification, design-space exploration experiments, filelist generation, and verible checks. Trigger this skill when asked to run or debug rtl_buddy commands or interpret root_config.yaml, tests.yaml, models.yaml, regression.yaml, synth.yaml, synth_regression.yaml, pnr.yaml, fpga.yaml, cdc.yaml, fpv.yaml, or mut.yaml.
+description: Use rtl_buddy for basic RTL testing, analysis, and implementation workflows, with routing to focused skills and bundled docs.
 ---
 
 # rtl_buddy
 
-Run `rtl-buddy --version` at the top of every run summary. Use this skill for agent-specific workflow rules only. For command syntax or schema details, start with `rb --help`, `rb <subcommand> --help`, `rtl-buddy docs list`, `rtl-buddy docs show agents`, and `rtl-buddy --machine docs show reference/yaml`. When behavior surprises you (silent failures, paths landing in the wrong place, hook cwd), check `rtl-buddy docs show known-issues` first.
+Run `rb --version` at the top of every run summary.
 
-## Always use `--machine`
+Use this skill for basic work and feature discovery. Start with `rb --help`,
+`rb <command> --help`, `rb --machine docs list`, or
+`rb --machine docs show quickstart`.
+Use `rb --machine docs show reference/yaml` for schemas and
+`rb --machine docs show known-issues` before working around surprising behavior.
+All documentation slugs below mean `rb --machine docs show <slug>`.
+Before running a named flow, discover the real config and entry names with
+`--list` where supported. Names and paths below show command shape; do not copy
+placeholders into a project without checking them.
 
-All agent invocations must use `--machine`: `rtl_buddy.log` becomes JSONL, and structured result commands (including `rb docs list`, excluding `rb docs show`) print a single JSON envelope to **stdout** — parse this for results. Envelope schema, JSONL log format, and exit codes (0 pass, 1 test failures, 2 fatal): `rtl-buddy docs show agents`.
+## Use `--machine` for automation
 
-## Graph first, files last
+Commands with structured results return one JSON envelope; `rb docs show` is the
+exception and returns the requested page as bare JSON. For row-producing tests
+and flows, parse `payload.results[*].result` and `desc`; inspect the
+command-specific payload otherwise. Never scrape the human table.
 
-Do not grep the tree for anything relational or spread across files. **Locate** with `rb --machine graph query "<question>"` — one graph.json holds modules/instances/ports plus tests/testbenches/models/spec-blocks/coverage-items in one id namespace, matching is deterministic keyword scoring (no model call), and each match returns its neighbours with their last regression status joined on, so "which tests cover SAND-FUNC-FLAG-C-ADD and did they pass" is ONE command. Then **cite** with `rb hier-query <model> source-snippet <path>` — instance nodes carry a `cite` block with that exact command; every other node carries `file`/`line` directly on the summary. Measured over six tasks (`docs show concepts/graph#token-efficiency`), a graph hop is worth it only when the file it saves is bigger than the payload replacing it: ask the graph for relations grep cannot compute (every top containing a shared IP is ONE `rb graph explain module:<ip>` — grep needs an iterative fixpoint and hits comment false-positives) and for chains that cross tiers (coverage item down to golden model is two calls), but answer config-tier enumerations (which tests, which reglvl, which covers) by reading the `tests.yaml`, and single-file questions (a module's port list, one instance's connections) by letting the graph name the file and lines and then reading those lines. Edges and neighbours come back lean — peer id/label/type — and `--expand` restores a full summary per peer at roughly a peer summary each, so prefer a second lean call on the one peer you need. Also `rb graph explain <node>` (one node, every edge, its result) and `rb graph path <A> <B>` (undirected by default — edge direction encodes role, not reachability). Refresh with `rb graph build` after source/YAML changes and `rb graph results` after a regression; query exits 1 = no match, 2 = no graph yet (build it). `rb mcp` serves the same verbs as MCP tools over stdio (`{"command":"rb","args":["mcp"]}`) with identical payloads — a convenience surface, never a prerequisite. Details: `rtl-buddy docs show concepts/graph`.
+`filelist`, `hier`, `wave`, and `axi-profile` are output/pass-through commands
+without an rtl_buddy envelope. `rb mcp` owns stdout as a long-running JSON-RPC
+server. Machine mode makes `rtl_buddy.log` JSONL for commands that initialize a
+log; it does not make every command create one.
 
-## YAML map
+For `test`, `randtest`, and `regression`, exit 0 means no real FAIL, including `NA`/`XFAIL`;
+1 means a real FAIL or strict `XPASS`, and 2 means fatal
+configuration or environment failure.
 
-Exact fields: `rtl-buddy --machine docs show reference/yaml`.
+## Tests, random tests, and regressions
 
-- `root_config.yaml` configures platforms, builders, coverage, waveform, synth, P&R, CDC, FPV, and default regression paths.
-- `tests.yaml` is suite-local and defines testbenches plus tests; invoke from anywhere with `-c <path>` (outputs anchor on the config dir — see Execution context below).
-- `models.yaml` defines design filelists referenced by tests, synth, CDC, and FPV.
-- `synth.yaml`, `pnr.yaml`, `power.yaml`, `fpga.yaml`, `cdc.yaml`, and `fpv.yaml` define named runs for those flows; `regression.yaml`, `synth_regression.yaml`, `fpga_regression.yaml`, `cdc_regression.yaml`, and `fpv_regression.yaml` are repo-level suite lists; `mut.yaml` defines one `rb mut` campaign; `specs.yaml` feeds `rb spec` traceability.
+Use `test` for a named simulation or all tests in one suite, `randtest` to repeat
+one test across seeds, and `regression` to run suites from a manifest.
 
-## Pass/fail detection
+```bash
+rb --machine test smoke -c path/to/tests.yaml
+rb --machine randtest smoke 20 -c path/to/tests.yaml
+rb --machine regression -c path/to/regression.yaml
+```
 
-- UVM uses configured warning/error thresholds; cocotb uses `cocotb_results.xml`, not `PASS`/`FAIL` stdout markers. Other sims should emit `PASS` or `FAIL` in `artefacts/<test>/test.log` (add an `ERR:` or `FAT:` line on failure); formal runs use `artefacts/<run>/sby_workdir/status` as the authoritative verdict when present.
+UVM uses report thresholds and cocotb uses `cocotb_results.xml`. Other sims must
+emit a line beginning `PASS` or `FAIL` in `artefacts/<test>/test.log`; add an
+`ERR:` or `FAT:` line after `FAIL` so the result explains itself. Use the
+`rtl-buddy-test` skill for selectors, timeouts, artefacts, verdict triage, and
+shared-build behavior. Docs: `concepts/tests` and `concepts/regressions`.
 
-## Formal property authoring
+## Project configuration and filelists
 
-- `mode: prove` is k-induction up to `depth`: a true property can still report **`UNKNOWN`** if it is not an *inductive invariant*. In the induction step every `assert P` plays a dual role — proof obligation at step `k`, **and** constraint on the prior `k` states — so the two preferred fixes (per the YosysHQ SBY FAQ) are: strengthen the property's own hypothesis to exclude bad predecessors (`cnt <= 5`, not `cnt != 26`), or **add a companion assertion that marks an unreachable predecessor state bad** so other properties can use it as a constraint. Raising `depth` is sound but fragile; reach for it last. Keep a known-non-inductive case in regression with `xfail`/`xfail_strict`. Before authoring on `frontend: slang`, **probe that build's SVA surface** with a throwaway module (`|->`, `|=>`, `$past`, `$stable`, a `cover`) — it varies per build, not per version — then work the checklist in `rtl-buddy docs show concepts/fpv#practical-authoring-gotchas`: pin reset at t=0 on stateful blocks or a good property fails from an unreachable power-up state **even in `bmc`**; and never report a green proof without confirming each `cover` was reached and that one deliberate mutation fails the expected assertion. Full page: `rtl-buddy docs show concepts/fpv`.
+`root_config.yaml` selects project-wide builders, tools, and flow defaults.
+`tests.yaml` and `models.yaml` define suites, testbenches, and design sources;
+flow YAML files define named runs, while `*_regression.yaml` files group them.
+Generate a tool filelist from a model when another command needs the same source
+closure:
 
-## Mutation testing
+```bash
+rb --machine filelist my_model run.f -c path/to/models.yaml
+```
 
-- `rb mut list|run|score` drive a campaign from `mut.yaml` (needs `rtl-buddy-xeno`; a non-empty `scope` also needs `rtl-buddy-view` on `PATH`). Score is `killed / (killed + survived)`; errored mutants are dropped; survivors are verification holes. Details: `rtl-buddy docs show concepts/mut`.
+Config-relative inputs and default outputs anchor on the config file's directory,
+not necessarily the shell cwd. Regression suite outputs anchor on each suite
+config; orchestration output anchors on the regression manifest. Explicit CLI
+output paths follow shell semantics. Docs: `concepts/execution-context`,
+`concepts/root-config`, and `reference/yaml`.
 
-## rb xplr (design-space exploration)
+## Lint and CDC
 
-- `rb xplr` is the experiment ledger for DSE loops: it records what YOU changed, pins the source sha, curates the Pareto frontier — it never proposes the next experiment, you do. Loop: `rb --machine xplr frontier` -> reason -> apply the knob (outside rb) -> `xplr register --json manifest.json` -> run -> `xplr attach-outcome <id> --json outcome.json` -> repeat, always with `hypothesis` + per-knob `rationale` + `parent`. Declare `direction` in `metric_meta` for dominance metrics; an unroutable-but-complete point is `status=success` + `routed: false`. Dry-run `rb xplr mock run`. Contract + worked example: `rtl-buddy docs show concepts/xplr`.
+Use `lint` for Verible style/static checks and `cdc` for structural clock-domain
+crossing analysis. Run them before expensive simulation or implementation; use
+their regression commands for project-wide gates.
 
-## rb fpga timing closure
+```bash
+rb --machine lint -c path/to/lint.yaml
+rb --machine cdc -c path/to/cdc.yaml
+```
 
-- Gate with `rb --machine tool-check --required-for fpga` (`payload.subcommands.fpga.status == "ok"`, else `rb tool-check --explain vivado`), then `rb --machine fpga <run>` (synth→place→route per `fpga.yaml`; Vivado default, `tool: openxc7` for 7-series). Missed timing is NOT a FAIL — the JSON carries `timing_met`, `wns_ns`, `failing_paths`. Closure loop: if `timing_met` is false, read `failing_paths[0]` → hypothesize (clock too fast → relax `create_clock` toward `requirement_ns - wns_ns`; cross-domain/quasi-static → false-path/multicycle exception; many `logic_levels` → pipeline in RTL) → edit → rerun → compare `wns_ns`. Worked example: `rtl-buddy docs show concepts/fpga`.
+Use `--list` before choosing a named check. CDC can also emit or audit timing
+constraints; read the command help instead of guessing the constraint mode. Use
+the `rb verible` group when direct Verible lint/format operations are needed.
+Docs: `reference/cli` and `reference/yaml`.
 
-## rb regression --dispatch
+## Formal verification and mutation testing
 
-- `rb --machine regression --dispatch slurm` fans tests out as parallel Slurm jobs after one shared build (implies `--share-build`; gate with `rb --machine tool-check --explain slurm`). Right-size from the loop: read `payload.reservation_advice`, apply each `edit_hint` **as given** (its `file`/`path` may name `cfg-dispatch.compile` in root_config.yaml, not the test — a `phase: compile+sim` job's allocation covers its own compile; `raise` first — under-reservations cost failed runs — then `reduce`), rerun to confirm it retires. rtl_buddy suggests; you edit. **No cluster** (macOS, laptop, CI runner): `--dispatch local-parallel -j N` runs the same fan-out as capped subprocesses on one host, no tool to check — but it cannot enforce `resources:` and emits no `reservation_advice`, so don't run the right-sizing loop against it, and size `-j` for the memory the heaviest tests need. `rb --machine test <name> --dispatch <backend>` is the same path narrowed to ONE test (one build job + one gated sim job) — that, not a throwaway reg_config, is how to run a single test on the cluster; it is the one command that ignores `cfg-dispatch.backend`, so always pass `--dispatch` explicitly. Details: `rtl-buddy docs show concepts/dispatch`.
+Use `fpv` to prove or cover assertions with SymbiYosys, and `fpv-regression` to
+run a formal suite. Use mutation testing after the harness works to measure
+whether deliberate RTL changes are detected.
 
-## Execution context
+```bash
+rb --machine fpv smoke -c path/to/fpv.yaml
+rb --machine fpv-regression -c path/to/fpv_regression.yaml
+rb --machine mut list -c path/to/mut.yaml
+```
 
-Outputs anchor on the **config file**, not your shell's cwd. `rb test -c path/to/tests.yaml` puts `artefacts/<test>/...` and `rtl_buddy.log` under `dirname(tests.yaml)`; same rule for `synth.yaml`, `cdc.yaml`, `fpv.yaml`, `pnr.yaml`, `power.yaml`, `models.yaml`. For `regression`, each suite anchors on its own `tests.yaml`; orchestration log under `regression.yaml`. Explicit CLI input/output paths (`-o out.svg`, `rb filelist <model> out.f`) follow shell semantics — relative to your cwd. Discover multi-suite layouts with `rg --files -g '**/tests.yaml'`; summarize per suite. Reference: `rtl-buddy docs show concepts/execution-context`.
+Use the `rtl-buddy-fpv` skill for UNKNOWN, vacuity, cone-of-influence, frontend,
+and mutation guardrails. Docs: `concepts/fpv` and `concepts/mut`.
 
-## Artefacts, coverage and waveforms
+## Synthesis, place-and-route, power, and FPGA
 
-- `artefacts/<test>/test.log`, `test.err`, `test.randseed`, `coverage.dat` — sim outputs for one run (`artefacts/<test>/run-0001/...` per iteration for `randtest`). A run that produced coverage also writes `cov_dir/manifest.json` and a per-file/per-point model beside it with **no `--coverage-*` flag asked for** (the envelope's `payload.coverage.artefacts` names both), and `rb --machine cov summary` / `rb --machine cov module <name>` read those artefacts lock-free — so never re-run a regression to look at coverage again, and either verb answers while one is still in flight. Details: `rtl-buddy docs show concepts/coverage`.
-- `rb wave <test>` opens `artefacts/<test>/dump.fst` (FST from debug-mode builds, `-M debug`) in Surfer, running a debug sim first if no FST exists; needs `cfg-surfer` in `root_config.yaml` (`rtl-buddy docs show concepts/root-config`).
-- With a hub running, curate the open wave view from the CLI: `rb hub send wave-items` (list), then `wave-add` / `wave-remove` / `wave-move` / `wave-comment`; each reports success/error (non-zero exit on a surfer rejection). See `rtl-buddy docs show concepts/hub`.
-- Next docs: `rtl-buddy docs show reference/cli`, `rtl-buddy docs show reference/yaml`, `rtl-buddy docs show known-issues`
+Use `synth` to turn RTL into a netlist and, where supported, area/timing metrics;
+`pnr` handles physical implementation, `power` handles activity-based analysis,
+and `fpga` runs a vendor or open-source FPGA flow. Run a named entry first; use
+the corresponding regression command where available after understanding it.
+`saif` converts simulation activity for power flows that need that interchange.
+
+```bash
+rb --machine synth --list
+rb --machine pnr --list
+rb --machine power --list
+rb --machine fpga --list
+```
+
+A completed tool run is not the same as meeting timing, area, power, or routing
+targets. Use the `rtl-buddy-implementation` skill for result interpretation,
+timing closure, and XPLR loops. Docs: `concepts/synthesis`, `concepts/pnr`,
+`concepts/power`, and `concepts/fpga`.
+
+## Coverage, waveforms, and AXI profiling
+
+Use `cov` to inspect existing coverage artefacts. `wave` opens an existing test
+waveform or may run a debug simulation to create one; `wave-fpv` opens a failed
+proof's counterexample. `axi-profile` discovers buses, generates a monitor, or
+turns a simulation trace into performance data.
+
+```bash
+rb --machine cov summary
+rb --machine wave smoke -c path/to/tests.yaml
+rb --machine axi-profile run smoke -c path/to/tests.yaml
+```
+
+`cov summary` and `axi-profile run` consume existing simulation artefacts.
+`wave` runs or reruns the named test in debug mode when needed;
+`axi-profile discover` and `gen-monitor` are setup steps before simulation.
+Docs: `concepts/coverage`, `concepts/wave`, and `concepts/axi-profile`.
+
+## Design graph, hierarchy, hub, and MCP
+
+Use `hier` to render a model or testbench tree and `hier-query` for exact module,
+instance, connection, or source lookups. Build the graph when a question crosses
+RTL, tests, models, specs, results, or source locations; query it instead of
+manually joining those relationships.
+
+```bash
+rb --machine hier my_model
+rb --machine graph build
+rb --machine graph query "which tests cover ITEM"
+```
+
+Use the `rtl-buddy-graph` skill for choosing direct reads versus graph queries,
+source citations, result overlays, and graph refreshes. `rb mcp` exposes the same
+query surface over stdio; `rb hub` coordinates the browser view, editor, coverage,
+and waveform tools. Docs: `concepts/graph`, `concepts/hier`, and `concepts/hub`.
+
+## Spec traceability and design-space exploration
+
+Use `spec` to find requirements missing a design link or verification coverage.
+Use `xplr` as an agent-facing ledger for repeatable implementation experiments,
+comparisons, and Pareto-frontier tracking.
+
+```bash
+rb --machine spec check-design
+rb --machine spec check-coverage
+rb --machine xplr list
+rb --machine xplr frontier
+```
+
+XPLR records experiments; it does not choose the next experiment. Use the
+`rtl-buddy-implementation` skill before running an optimization loop. Docs:
+`concepts/spec-traceability` and `concepts/xplr`.
+
+## Dispatch and tool readiness
+
+Use `tool-check` before a flow that shells out to external tools. Use local
+parallel dispatch for independent local workers and Slurm dispatch for queued,
+resource-governed regression work.
+
+```bash
+rb --machine tool-check --required-for regression
+rb --machine regression --dispatch local-parallel -j 8
+rb --machine regression --dispatch slurm
+```
+
+Tool readiness is manifest-level; also inspect the selected run and root config
+because project-specific tool paths and backends are not reconciled by the check.
+Use the `rtl-buddy-dispatch` skill for resource sizing, shared-build dependencies,
+OOMs, scheduler timeouts, retries, and missing job envelopes. Docs:
+`concepts/tool-check` and `concepts/dispatch`.

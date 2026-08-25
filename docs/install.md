@@ -104,15 +104,15 @@ dependencies = ["rtl_buddy==2.3.0rc1"]
 
 This works without any `--pre` flag because the exact version is specified.
 
-## Set Up The Agent Skill
+## Set Up The Agent Skills
 
-`rtl_buddy` ships an agent skill for Claude Code and Codex. After installing `rtl_buddy`, run once per machine:
+`rtl_buddy` ships a small agent skill family for Claude Code and Codex. After installing `rtl_buddy`, run once per machine:
 
 ```bash
 uv run rb skill install
 ```
 
-This writes `SKILL.md` to `~/.claude/skills/rtl-buddy/` and `~/.codex/skills/rtl-buddy/`. Agents pick it up automatically. Re-run after upgrading `rtl_buddy` to refresh the content.
+This writes the primary `rtl-buddy` skill and its focused siblings under `~/.claude/skills/` and `~/.codex/skills/`. Agents pick them up automatically. Re-run after upgrading `rtl_buddy` to refresh the family.
 
 To install at project scope instead (overrides the user-level copy for that project):
 

@@ -1,6 +1,16 @@
 # rtl_buddy skill (materialized by `rtl-buddy skill install --project`)
 .claude/skills/rtl-buddy/
 .agents/skills/rtl-buddy/
+.claude/skills/rtl-buddy-test/
+.agents/skills/rtl-buddy-test/
+.claude/skills/rtl-buddy-dispatch/
+.agents/skills/rtl-buddy-dispatch/
+.claude/skills/rtl-buddy-graph/
+.agents/skills/rtl-buddy-graph/
+.claude/skills/rtl-buddy-fpv/
+.agents/skills/rtl-buddy-fpv/
+.claude/skills/rtl-buddy-implementation/
+.agents/skills/rtl-buddy-implementation/
 
 # rtl_buddy project-local env defaults (machine-specific; never commit)
 .rtl-buddy/.env
