@@ -576,10 +576,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-test-on-the-cluster-rb-test-dispatch" class="md-nav__link">
+  <a href="#selected-tests-on-the-cluster-rb-test-dispatch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One test on the cluster: rb test --dispatch
+        Selected tests on the cluster: rb test --dispatch
       
     </span>
   </a>
@@ -1760,10 +1760,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-test-on-the-cluster-rb-test-dispatch" class="md-nav__link">
+  <a href="#selected-tests-on-the-cluster-rb-test-dispatch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One test on the cluster: rb test --dispatch
+        Selected tests on the cluster: rb test --dispatch
       
     </span>
   </a>
@@ -2047,7 +2047,7 @@ fail the build job — the other sims still run, and the failing test
 recompiles (and fails) in its own sim job. <code>--dispatch</code> cannot be combined
 with <code>--early-stop</code>, and dispatched jobs deliberately skip the per-tree
 lock (see <a href="../../known-issues/#the-artefact-tree-lock-is-per-tree-and-its-lock-file-stays-behind">Known Issues</a>).</p>
-<h2 id="one-test-on-the-cluster-rb-test-dispatch">One test on the cluster: <code>rb test --dispatch</code></h2>
+<h2 id="selected-tests-on-the-cluster-rb-test-dispatch">Selected tests on the cluster: <code>rb test --dispatch</code></h2>
 <p>The three test-family commands take the same pair of flags, and they mean
 the same thing on each — only the <em>selection</em> differs:</p>
 <table>
@@ -2067,25 +2067,27 @@ the same thing on each — only the <em>selection</em> differs:</p>
 <td>one test, N seeds</td>
 </tr>
 <tr>
-<td><code>rb test [&lt;test&gt;]</code></td>
-<td>one named test — or the suite, when no name is given</td>
+<td><code>rb test [&lt;test&gt; ...]</code></td>
+<td>named tests, <code>--filter</code> matches, or the suite when neither is given</td>
 </tr>
 </tbody>
 </table>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>-B<span class="w"> </span>verilator<span class="w"> </span>-M<span class="w"> </span>reg<span class="w"> </span><span class="nb">test</span><span class="w"> </span>my_test<span class="w"> </span>-c<span class="w"> </span>verif/sch/tests.yaml<span class="w"> </span>--dispatch<span class="w"> </span>slurm
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>rb<span class="w"> </span>-B<span class="w"> </span>verilator<span class="w"> </span>-M<span class="w"> </span>reg<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke<span class="w"> </span>reset_error<span class="w"> </span>-c<span class="w"> </span>verif/sch/tests.yaml<span class="w"> </span>--dispatch<span class="w"> </span>slurm
 </code></pre></div>
-<p>This is the <strong>same planning path</strong>, narrowed: one plan manifest, one sim
-job, one collected envelope — with a build job in front of it, gated with
-<code>afterok</code>, whenever the test's builder can share a build. When it cannot
-(a VCS builder, or one pinned with an absolute <code>builder-simv:</code>) there is no
-build job at all and the single sim job compiles inside its own allocation,
-ungated — the same rule the whole page follows,
+<p>This is the <strong>same planning path</strong>, narrowed: one plan manifest, one sim job
+per selected test, and one collected envelope — with a build job in front,
+gated with <code>afterok</code>, whenever the test's builder can share a build. When it
+cannot (an unsupported simulator family, or one pinned with an absolute
+<code>builder-simv:</code>) there may be no build job and each sim job compiles inside
+its own allocation, ungated — the same rule the whole page follows,
 <a href="#how-arrays-interact-with-the-shared-build">below</a>. It exists because a
 single-test cluster run is what iterating on one failing test needs, and
 because on a shared submit host a large top-level build is not something to
 run locally at all
 (<a href="https://github.com/rtl-buddy/rtl_buddy/issues/440">#440</a>).</p>
-<p>Everything <code>rb test</code> already carried composes unchanged: <code>-c</code>,
+<p>Selection may be an explicit list or a case-sensitive regex such as
+<code>--filter '^smoke_'</code>; the two forms are mutually exclusive. Everything else
+<code>rb test</code> already carried composes unchanged: <code>-c</code>,
 <code>--reg-level</code> / <code>--start-level</code> (a test filtered out by level is skipped
 before the plan, exactly as in-process), <code>--share-build</code> (implied by
 <code>--dispatch</code> anyway), the <code>--coverage-*</code> set, and <code>-n</code> / <code>-l</code> seed

@@ -2298,11 +2298,25 @@ errors. It does not preserve the per-test verdicts or distinguish <code>PASS</co
 <p>Run a named test:
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke
 </code></pre></div></p>
+<p>Run several named tests in one invocation and one combined results table:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>smoke<span class="w"> </span>reset_error<span class="w"> </span>timeout
+</code></pre></div>
+<p>Run configured test names that match a case-sensitive Python regular expression:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--filter<span class="w"> </span><span class="s1">&#39;^smoke_|_error$&#39;</span>
+</code></pre></div>
+<p>The filter uses regex search semantics, so an unanchored expression may match
+anywhere in a name. Add <code>^</code> and <code>$</code> when you need an exact shape. Explicit test
+names and <code>--filter</code> are mutually exclusive. An unknown or duplicate explicit
+name, an invalid regex, or a regex that matches no tests is a configuration
+error (exit 2); rtl_buddy validates the whole selection before running anything.
+Explicit names run in command-line order, while regex matches retain their
+declaration order from <code>tests.yaml</code>. Both select configured base test names
+before any sweep expansion.</p>
 <p>Run all tests in a config:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span>
 </code></pre></div></p>
 <p>List tests without running:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--list
 </code></pre></div></p>
 <h3 id="sharing-compiled-builds-across-tests">Sharing compiled builds across tests</h3>
 <p>By default every test compiles into its own build directory
@@ -2311,8 +2325,8 @@ testbench verilates the design N times. For large designs the verilation
 step dominates wall-clock time.</p>
 <p><code>--share-build</code> opts into reusing one compiled <code>simv</code> across tests whose
 compile inputs are identical:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--share-build
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>rtl-buddy<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--share-build
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>rtl-buddy<span class="w"> </span>regression<span class="w"> </span>--share-build
 </code></pre></div>
 <p>The build directory is keyed on a hash of the compile inputs — the builder
 executable <em>as <code>PATH</code> resolves it</em>, compile-time options, plusdefines,

@@ -3759,56 +3759,58 @@ Run <code>python scripts/gen_cli_reference.py</code> from the repo root to regen
 <a id="__codelineno-0-75" name="__codelineno-0-75" href="#__codelineno-0-75"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="test">test</h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Usage: rtl-buddy test [OPTIONS] [TEST_NAME]                                            
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Usage: rtl-buddy test [OPTIONS] [TEST_NAME]...                                         
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a> run a simple test                                                                      
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
 <a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>╭─ Arguments ──────────────────────────────────────────────────────────────────────────╮
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>│   test_name      [TEST_NAME]  name of test [default: (run all tests)]                │
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>│   test_name      [TEST_NAME]...  names of tests [default: (run all tests)]           │
 <a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>╭─ Options ────────────────────────────────────────────────────────────────────────────╮
 <a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>│ --test-config                  -c      TEXT     test_config.yaml to use              │
 <a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>│                                                 [default: tests.yaml]                │
 <a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>│ --list                                          list tests in the selected           │
 <a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>│                                                 test-config and exit                 │
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>│ --coverage-merge                                merge coverage across selected       │
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>│                                                 tests; uses raw merge for            │
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>│                                                 summary/html and info-process for    │
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>│                                                 Coverview                            │
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>│ --coverage-merge-raw                            use raw Verilator merge for merged   │
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>│                                                 summary/html/Coverview               │
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>│ --coverage-merge-info-process                   use info-process merge for merged    │
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>│                                                 summary/Coverview; HTML merge is not │
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>│                                                 supported                            │
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>│ --coverage-html                                 generate merged LCOV HTML output in  │
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>│                                                 coverage_merge.html                  │
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>│ --coverage-coverview                            generate Coverview zip output from   │
-<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>│                                                 coverage info                        │
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>│ --coverage-dir-summary                 TEXT     append coverage summary lines for    │
-<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>│                                                 repo-relative directory prefixes;    │
-<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>│                                                 may be repeated                      │
-<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>│ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
-<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>│                                                 directory prefixes, one per line     │
-<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>│ --rnd-new                      -n               use a randomly generated seed        │
-<a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>│                                                 instead of root config seed          │
-<a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>│ --rnd-last                     -l               reuse last generated seed            │
-<a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>│ --share-build                                   reuse one compiled simv across tests │
-<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>│                                                 with identical compile inputs        │
-<a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>│                                                 (Verilator builders only)            │
-<a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>│ --reg-level                            INTEGER  regression level to stop at          │
-<a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>│ --start-level                          INTEGER  regression level to start at         │
-<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>│ --dispatch                             TEXT     execution backend for the test run   │
-<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>│                                                 (local, local-parallel, slurm);      │
-<a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>│                                                 opt-in per run —                     │
-<a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>│                                                 cfg-dispatch.backend does not        │
-<a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a>│                                                 redirect rb test                     │
-<a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a>│                                                 [default: (local)]                   │
-<a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a>│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
-<a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a>│                                                 local-parallel                       │
-<a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a>│                                                 [default: (cfg-dispatch jobs, else   │
-<a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a>│                                                 min(4, cpu count))]                  │
-<a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a>│ --help                                          Show this message and exit.          │
-<a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>│ --filter                               TEXT     case-sensitive Python regex matched  │
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>│                                                 against configured test names        │
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>│ --coverage-merge                                merge coverage across selected       │
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>│                                                 tests; uses raw merge for            │
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>│                                                 summary/html and info-process for    │
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>│                                                 Coverview                            │
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>│ --coverage-merge-raw                            use raw Verilator merge for merged   │
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>│                                                 summary/html/Coverview               │
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>│ --coverage-merge-info-process                   use info-process merge for merged    │
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>│                                                 summary/Coverview; HTML merge is not │
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>│                                                 supported                            │
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>│ --coverage-html                                 generate merged LCOV HTML output in  │
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>│                                                 coverage_merge.html                  │
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>│ --coverage-coverview                            generate Coverview zip output from   │
+<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>│                                                 coverage info                        │
+<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>│ --coverage-dir-summary                 TEXT     append coverage summary lines for    │
+<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>│                                                 repo-relative directory prefixes;    │
+<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>│                                                 may be repeated                      │
+<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>│ --coverage-dir-summary-file            TEXT     file containing repo-relative        │
+<a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>│                                                 directory prefixes, one per line     │
+<a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>│ --rnd-new                      -n               use a randomly generated seed        │
+<a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>│                                                 instead of root config seed          │
+<a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>│ --rnd-last                     -l               reuse last generated seed            │
+<a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>│ --share-build                                   reuse one compiled simv across tests │
+<a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>│                                                 with identical compile inputs        │
+<a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>│                                                 (Verilator builders only)            │
+<a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a>│ --reg-level                            INTEGER  regression level to stop at          │
+<a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a>│ --start-level                          INTEGER  regression level to start at         │
+<a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a>│ --dispatch                             TEXT     execution backend for the test run   │
+<a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a>│                                                 (local, local-parallel, slurm);      │
+<a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a>│                                                 opt-in per run —                     │
+<a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a>│                                                 cfg-dispatch.backend does not        │
+<a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a>│                                                 redirect rb test                     │
+<a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a>│                                                 [default: (local)]                   │
+<a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a>│ --jobs                         -j      INTEGER  concurrent jobs for --dispatch       │
+<a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a>│                                                 local-parallel                       │
+<a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a>│                                                 [default: (cfg-dispatch jobs, else   │
+<a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a>│                                                 min(4, cpu count))]                  │
+<a id="__codelineno-1-51" name="__codelineno-1-51" href="#__codelineno-1-51"></a>│ --help                                          Show this message and exit.          │
+<a id="__codelineno-1-52" name="__codelineno-1-52" href="#__codelineno-1-52"></a>╰──────────────────────────────────────────────────────────────────────────────────────╯
 </code></pre></div>
 <h2 id="randtest">randtest</h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Usage: rtl-buddy randtest [OPTIONS] TEST_NAME [RND_CNT]                                
