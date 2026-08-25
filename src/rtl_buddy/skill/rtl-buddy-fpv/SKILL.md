@@ -13,6 +13,9 @@ Use `rb --machine`; read `rb fpv --help`, `rb fpv-regression --help`, and
 ## Run and interpret
 
 - Gate the environment with `rb --machine tool-check --required-for fpv`.
+- `fpv` and `fpv-regression` exit 0 when every result counts as successful, 1
+  for any `FAIL` or strict `XPASS`, and 2 for a fatal configuration or
+  environment error. `SKIP`, `XFAIL`, and non-strict `XPASS` count as successful.
 - Treat `artefacts/<run>/sby_workdir/status` as the formal verdict when present,
   and read each machine result's `vacuity` and `coi` blocks.
 - A PASS with unreachable covers, vacuous properties, or dead assumptions is a
@@ -34,3 +37,5 @@ Use `rb --machine`; read `rb fpv --help`, `rb fpv-regression --help`, and
 
 For mutation campaigns, use `rb --machine docs show concepts/mut`. Survivors are
 verification holes; mutants that cannot build are errors, not kills.
+`mut run` exits 0 when it produces a scorable campaign and 1 when nothing is
+scorable; score and survivor count do not gate it. Fatal errors exit 2.

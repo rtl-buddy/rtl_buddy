@@ -18,6 +18,10 @@ installed-version page for `synthesis`, `pnr`, `power`, `fpga`, or `xplr`.
   `rb <flow> --help` rather than copying flags between flows.
 - A tool completing does not imply the design met its target. Report timing,
   area, power, routing, and guardrail fields separately from command execution.
+- `synth`, `pnr`, `power`, `fpga`, and their regressions exit 0 when every result
+  counts as successful, 1 for any `FAIL` or strict `XPASS`, and 2 for a fatal
+  configuration or environment error. `SKIP`, `XFAIL`, and non-strict `XPASS`
+  count as successful. XPLR verbs exit 0 on success and 2 on fatal errors.
 
 ## FPGA timing closure
 

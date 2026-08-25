@@ -20,6 +20,9 @@ full scheduler contract and YAML fields.
 
 Dispatch implies shared builds. A simulation starts only after its compile-key
 build succeeds; one failed or undersized build can therefore block a whole group.
+Dispatched `test`, `randtest`, and `regression` preserve their normal aggregate
+exit codes: 0 with no real failure, 1 when a job fails or its result envelope is
+missing, stale, or invalid, and 2 for a fatal orchestration/configuration error.
 
 ## Size resources from evidence
 
