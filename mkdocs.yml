@@ -73,10 +73,9 @@ nav:
       - Environment Setup: development/setup.md
       - Engineering Guidelines: development/guidelines.md
       - Documentation Guidelines: development/docs.md
+      - Project Template Guidelines: development/project-template.md
+      - Bundled Skill Guidelines: development/bundled-skills.md
       - Code Reviews: development/reviews.md
-      - Audit the Project Template: development/audit-template.md
-      - Audit the Documentation: development/audit-docs.md
-      - Audit the Bundled Skill Family: development/audit-bundled-skill.md
   - Migrations: migrations.md
   - Quirks & Known Issues: known-issues.md
   - Contributing: CONTRIBUTING.md

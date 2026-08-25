@@ -24,7 +24,7 @@ Where this file overlaps with the canonical guidelines, treat the guidelines as 
 
 ## Code Review Rules
 
-The authoritative review procedure and audit routing live in
+The authoritative review procedure and guideline routing live in
 [Code Reviews](docs/development/reviews.md). Read and follow that page rather
 than restating review rules here.
 
@@ -169,23 +169,10 @@ Policy lives in [Logging](docs/development/guidelines.md#logging) and [Error Han
 
 ## Skill Distribution
 
-The rtl_buddy agent skill family ships inside this wheel at `src/rtl_buddy/skill/` and is materialized by `rtl-buddy skill install`. There is no separate skill repo — the legacy `rtl-buddy-codex-skill` repo is deprecated. Maintainer audit procedures are routed from `docs/development/reviews.md`; they are documentation, not invocable skills.
-
-### Rules when editing skill content
-
-- `src/rtl_buddy/skill/SKILL.md` is the primary overview. Specialist source files live at `src/rtl_buddy/skill/<skill-name>/SKILL.md`; install places every member as a sibling under the target platform's `skills/` directory.
-- Keep every bundled `SKILL.md` under 8 KiB and agent-specific. The primary explains the purpose, use case, and basic invocation of each major feature, then routes advanced work; specialists contain only non-obvious workflow guidance. Anything deeper belongs in local docs.
-- Agent-facing local docs access goes through `rtl-buddy docs ...`. The wheel ships `docs/**/*.md` directly (via a symlink at `src/rtl_buddy/docs`) so docs are always in sync with the installed version.
-- Any skill edit takes effect for users only after they re-run `rtl-buddy skill install`. `rtl-buddy skill status` reports each family member and surfaces stale installs via its `.rtl_buddy_skill_version` marker.
-- Every installed directory name must equal its `name:` frontmatter. `SKILL_DIRNAME = "rtl-buddy"` remains the backward-compatible primary; `LEGACY_SKILL_DIRNAME` (`rtl_buddy`, pre-rename) is removed on install, reported by `status`, and cleaned by `uninstall`.
-- `src/rtl_buddy/skill/gitignore_snippet.txt` is printed by project-level installs and by `rtl-buddy skill print-gitignore`.
-- Files in `src/rtl_buddy/skill/` are included in the wheel automatically via hatchling's `packages = ["src/rtl_buddy"]`. Adding new files to the skill dir requires no extra config. The `docs/` directory ships via `force-include` in `pyproject.toml` and is excluded from package discovery to avoid double-inclusion.
-
-### Install scope policy
-
-- **Default is user-level** (`~/.claude/skills/<family-member>/`, `~/.codex/skills/<family-member>/`). This is deliberate: the guidance changes rarely across rtl_buddy versions, and one family per machine nudges users to keep rtl_buddy versions aligned across projects.
-- `--project` (or `--root PATH`) opts into project-level siblings at `<root>/.claude/skills/` and `<root>/.agents/skills/`. Claude Code's project-level precedence means a project family overrides user-level members — the escape hatch for projects pinned to a divergent rtl_buddy major.
-- Do not flip the default to project-level without rediscussion; the precedence model makes user-level-plus-project-override the clean path.
+The authoritative content, packaging, installation, and review rules for the
+bundled skill family live in
+[Bundled Skill Guidelines](docs/development/bundled-skills.md). There is no
+separate source-of-truth skill repository.
 
 ### Project root discovery
 
