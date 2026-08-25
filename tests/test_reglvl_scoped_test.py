@@ -13,8 +13,10 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 
 
@@ -65,6 +67,66 @@ def test_start_level_above_both_reglvls_skips_everything(minimal_project: Path):
     by_name = _results_by_name(_last_json(result.output))
     assert by_name["basic"]["result"] == "SKIP"
     assert by_name["extra"]["result"] == "SKIP"
+
+
+def test_multiple_test_names_run_once_in_command_line_order(minimal_project: Path):
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_multiple_names")
+    result = runner.invoke(
+        rb.app, ["--machine", "-E", "comp", "test", "extra", "basic"]
+    )
+    assert result.exit_code == 0, result.output
+
+    rows = _last_json(result.output)["payload"]["results"]
+    assert [row["name"] for row in rows] == ["extra", "basic"]
+    assert [row["result"] for row in rows] == ["NA", "NA"]
+
+
+def test_level_filtering_applies_only_to_selected_names(minimal_project: Path):
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_selected_name_reglvl")
+    result = runner.invoke(
+        rb.app, ["--machine", "-E", "comp", "test", "extra", "--reg-level", "0"]
+    )
+    assert result.exit_code == 0, result.output
+
+    rows = _last_json(result.output)["payload"]["results"]
+    assert [(row["name"], row["result"]) for row in rows] == [("extra", "SKIP")]
+
+
+def test_filter_uses_case_sensitive_regex_search_in_suite_order(
+    minimal_project: Path,
+):
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_regex_filter")
+    result = runner.invoke(
+        rb.app, ["--machine", "-E", "comp", "test", "--filter", "asi|xtr"]
+    )
+    assert result.exit_code == 0, result.output
+
+    rows = _last_json(result.output)["payload"]["results"]
+    assert [row["name"] for row in rows] == ["basic", "extra"]
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["basic", "missing"], "test_name missing not found"),
+        (["basic", "basic"], "duplicate test name 'basic'"),
+        (["basic", "--filter", "basic"], "mutually exclusive"),
+        (["--filter", "["], "invalid --filter regex"),
+        (["--filter", "BASIC"], "matched no tests"),
+    ],
+)
+def test_invalid_test_selections_fail_before_running(
+    minimal_project: Path, args: list[str], message: str
+):
+    runner = CliRunner()
+    rb = RtlBuddy(name="test_invalid_selection")
+    result = runner.invoke(rb.app, ["test", *args])
+
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert message in str(result.exception)
 
 
 def test_help_declares_reg_level_without_stealing_rnd_last_short_flag(

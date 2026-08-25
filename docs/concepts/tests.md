@@ -218,6 +218,27 @@ Run a named test:
 rtl-buddy test smoke
 ```
 
+Run several named tests in one invocation and one combined results table:
+
+```bash
+rtl-buddy test smoke reset_error timeout
+```
+
+Run configured test names that match a case-sensitive Python regular expression:
+
+```bash
+rtl-buddy test --filter '^smoke_|_error$'
+```
+
+The filter uses regex search semantics, so an unanchored expression may match
+anywhere in a name. Add `^` and `$` when you need an exact shape. Explicit test
+names and `--filter` are mutually exclusive. An unknown or duplicate explicit
+name, an invalid regex, or a regex that matches no tests is a configuration
+error (exit 2); rtl_buddy validates the whole selection before running anything.
+Explicit names run in command-line order, while regex matches retain their
+declaration order from `tests.yaml`. Both select configured base test names
+before any sweep expansion.
+
 Run all tests in a config:
 ```bash
 rtl-buddy test

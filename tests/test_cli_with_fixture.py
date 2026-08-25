@@ -13,6 +13,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from rtl_buddy.errors import FatalRtlBuddyError
 from rtl_buddy.rtl_buddy import RtlBuddy
 
 
@@ -34,6 +35,21 @@ def test_test_list_explicit_config_path(minimal_project: Path):
     result = runner.invoke(rb.app, ["test", "-c", "tests.yaml", "--list"])
     assert result.exit_code == 0, result.output
     assert "basic" in result.output
+
+
+def test_test_list_keeps_ignoring_the_legacy_optional_name(minimal_project: Path):
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["test", "basic", "--list"])
+    assert result.exit_code == 0, result.output
+    assert "basic" in result.output
+    assert "extra" in result.output
+
+
+def test_test_list_rejects_the_new_filter_option(minimal_project: Path):
+    runner, rb = _runner()
+    result = runner.invoke(rb.app, ["test", "--filter", "basic", "--list"])
+    assert isinstance(result.exception, FatalRtlBuddyError), result.output
+    assert "--list cannot be combined with --filter" in str(result.exception)
 
 
 def test_test_list_missing_config_errors_with_exit_2(minimal_project: Path):

@@ -119,27 +119,40 @@ class SuiteConfig:
 
     def get_tests(self, test_name=None):
         """
-        Retrieves tests, optionally based on name.
+        Retrieves tests, optionally based on one or more names.
 
         Args:
-          test_name (str|None): (optional) Name of test to retrieve.
+          test_name (str|iterable[str]|None): (optional) Test name(s) to retrieve.
         Returns:
           tests (list[TestConfig]): List of tests.
         """
         if test_name is not None:
-            if test_name not in self.tests.keys():
+            test_names = [test_name] if isinstance(test_name, str) else list(test_name)
+            if len(test_names) != len(set(test_names)):
+                duplicate = next(
+                    name
+                    for index, name in enumerate(test_names)
+                    if name in test_names[:index]
+                )
+                raise FatalRtlBuddyError(
+                    f"duplicate test name {duplicate!r} in test selection"
+                )
+
+            missing = [name for name in test_names if name not in self.tests]
+            if missing:
                 log_event(
                     logger,
                     logging.ERROR,
                     "suite_config.test_missing",
                     path=self.path,
-                    test=test_name,
+                    test=missing[0],
                 )
-                raise FatalRtlBuddyError(
-                    f"test_name {test_name} not found in suite {self.path}"
-                )
-            else:
-                return [self.tests[test_name]]
+                if len(missing) == 1:
+                    message = f"test_name {missing[0]} not found in suite {self.path}"
+                else:
+                    message = f"test_names {', '.join(missing)} not found in suite {self.path}"
+                raise FatalRtlBuddyError(message)
+            return [self.tests[name] for name in test_names]
         else:
             return self.tests.values()
 

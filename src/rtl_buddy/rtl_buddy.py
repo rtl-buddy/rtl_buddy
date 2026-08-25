@@ -1150,7 +1150,8 @@ class RtlBuddy:
             str, typer.Option("-c", "--test-config", help="test_config.yaml to use")
         ] = "tests.yaml",
         test_name: Annotated[
-            str, typer.Argument(help="name of test", show_default="run all tests")
+            list[str] | None,
+            typer.Argument(help="names of tests", show_default="run all tests"),
         ] = None,
         list_tests: Annotated[
             bool,
@@ -1158,6 +1159,13 @@ class RtlBuddy:
                 "--list", help="list tests in the selected test-config and exit"
             ),
         ] = False,
+        test_filter: Annotated[
+            str | None,
+            typer.Option(
+                "--filter",
+                help="case-sensitive Python regex matched against configured test names",
+            ),
+        ] = None,
         coverage_merge: Annotated[
             bool,
             typer.Option(
@@ -1260,6 +1268,10 @@ class RtlBuddy:
         """
         run a simple test
         """
+        # Keep direct callers that used the old scalar keyword working while
+        # Typer supplies a list for the variadic CLI argument.
+        test_names = [test_name] if isinstance(test_name, str) else test_name
+
         # Validated before anything else runs — including the `--list` short
         # circuit below, which exits without running a test: a flag that
         # cannot mean anything is rejected, never silently dropped (#360).
@@ -1277,6 +1289,13 @@ class RtlBuddy:
                 "prints the suite's test names and runs nothing, so there is "
                 "nothing to dispatch."
             )
+        if list_tests and test_filter is not None:
+            raise FatalRtlBuddyError(
+                "--list cannot be combined with --filter: --list prints every "
+                "configured test name and runs nothing."
+            )
+        if test_names and test_filter is not None:
+            raise FatalRtlBuddyError("test names and --filter are mutually exclusive")
         merge_mode_count = sum(
             1
             for enabled in [
@@ -1302,16 +1321,16 @@ class RtlBuddy:
             primary_config=test_config, list_only=list_tests
         )
         self.suite_cfg = SuiteConfig(path=str(ctx.primary_config))
-        log_event(
-            logger,
-            logging.INFO,
-            "command.test",
-            command="test",
-            test=test_name or "all",
-            test_config=test_config,
-        )
 
         if list_tests:
+            log_event(
+                logger,
+                logging.INFO,
+                "command.test",
+                command="test",
+                test="all" if not test_names else ", ".join(test_names),
+                test_config=test_config,
+            )
             if self.machine:
                 self._emit_machine_result(
                     "test --list", 0, names=list(self.suite_cfg.get_test_names())
@@ -1322,6 +1341,32 @@ class RtlBuddy:
                 )
             raise typer.Exit(0)
 
+        test_selection = test_names or None
+        if test_filter is not None:
+            try:
+                pattern = re.compile(test_filter)
+            except re.error as e:
+                raise FatalRtlBuddyError(
+                    f"invalid --filter regex {test_filter!r}: {e}"
+                ) from e
+            test_selection = [
+                name for name in self.suite_cfg.get_test_names() if pattern.search(name)
+            ]
+            if not test_selection:
+                raise FatalRtlBuddyError(
+                    f"--filter regex {test_filter!r} matched no tests in suite "
+                    f"{self.suite_cfg.get_path()}"
+                )
+
+        log_event(
+            logger,
+            logging.INFO,
+            "command.test",
+            command="test",
+            test="all" if test_selection is None else ", ".join(test_selection),
+            test_config=test_config,
+        )
+
         seed_mode: SeedMode = SeedMode.DEFAULT
         replay_run_id = None
         if rnd_new:
@@ -1330,11 +1375,10 @@ class RtlBuddy:
             seed_mode = SeedMode.REPLAY
         self.share_build = share_build
 
-        # `rb test` is the single-test entry point into the same planning
-        # path `rb regression --dispatch` already uses (#440): one plan, one
-        # build job, one gated sim job. No new dispatch machinery — the plan
-        # is simply narrowed to the named test (with no name it covers the
-        # suite, exactly as the in-process path selects).
+        # `rb test` enters the same planning path `rb regression --dispatch`
+        # already uses (#440): one plan, one build job, and one gated sim job
+        # per selected test. With no selection it covers the whole suite,
+        # exactly as the in-process path does.
         #
         # Dispatch here is **opt-in per invocation**: unlike its two
         # neighbours, `rb test` deliberately does not read
@@ -1353,7 +1397,7 @@ class RtlBuddy:
         if dispatch_backend is None:
             suite_results = self._do_test_suite(
                 self.suite_cfg,
-                test_name=test_name,
+                test_name=test_selection,
                 run_ids=[None],
                 seed_mode=seed_mode,
                 replay_run_id=replay_run_id,
@@ -1382,7 +1426,7 @@ class RtlBuddy:
                 self.suite_cfg,
                 dispatch_backend,
                 run_token=uuid.uuid4().hex,
-                test_name=test_name,
+                test_name=test_selection,
                 run_ids=[None],
                 seed_mode=seed_mode,
                 replay_run_id=replay_run_id,
@@ -1419,7 +1463,7 @@ class RtlBuddy:
             coverage_dir_summary=coverage_dir_summary,
             coverage_dir_summary_file=coverage_dir_summary_file,
         )
-        metadata = [self._builder_metadata_line(self.suite_cfg, test_name)]
+        metadata = [self._builder_metadata_line(self.suite_cfg, test_selection)]
         cov_metadata, coverage_payload = self.coverage.build_metadata(
             suite_results,
             outdir=str(ctx.command_root),
